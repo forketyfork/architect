@@ -1,0 +1,15 @@
+.{
+    .name = "architect",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        .ghostty = .{
+            .path = "../../ghostty-org/ghostty",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

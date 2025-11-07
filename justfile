@@ -2,15 +2,12 @@ default:
     @just --list
 
 build:
-    @echo "Building project..."
-    @echo "Build completed successfully"
+    zig build
 
 test:
-    @echo "Running tests..."
-    @echo "All tests passed"
+    zig build test
 
 lint:
-    @echo "Running linter..."
-    @echo "No linting issues found"
+    zig fmt --check src/
 
 ci: build test lint
