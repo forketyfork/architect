@@ -4,8 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "architect",
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -15,11 +14,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     })) |dep| {
-        exe.root_module.addImport(
+        exe_mod.addImport(
             "ghostty-vt",
             dep.module("ghostty-vt"),
         );
     }
+
+    const exe = b.addExecutable(.{
+        .name = "architect",
+        .root_module = exe_mod,
+    });
 
     b.installArtifact(exe);
 
@@ -34,9 +38,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = exe_mod,
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
