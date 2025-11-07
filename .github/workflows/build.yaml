@@ -11,6 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: architect
+
+      - name: Checkout ghostty dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ghostty-org/ghostty
+          path: ghostty-org/ghostty
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -26,9 +34,12 @@ jobs:
 
       - name: Build
         run: nix develop --command just build
+        working-directory: architect
 
       - name: Test
         run: nix develop --command just test
+        working-directory: architect
 
       - name: Lint
         run: nix develop --command just lint
+        working-directory: architect
