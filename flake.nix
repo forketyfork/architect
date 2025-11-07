@@ -25,6 +25,7 @@
           buildInputs = with pkgs; [
             just
             zig.packages.${system}."0.15.2"
+            SDL2
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             pkgs.gawk
             pkgs.gnused
