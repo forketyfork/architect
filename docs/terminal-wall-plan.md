@@ -1,7 +1,7 @@
 # Terminal Wall
 ## Step 1: Audit ghostty-vt Capabilities And Constraints
 ### Status Quo
-The `architect` repository is empty, and the `ghostty-org/ghostty` clone exists at `/Users/sergei.petunin/dev/github/ghostty-org/ghostty`. No documentation on `ghostty-vt` usage is captured for this project.
+The `architect` repository is empty, and the `ghostty-org/ghostty` clone exists at `../../ghostty-org/ghostty`. No documentation on `ghostty-vt` usage is captured for this project.
 
 ### Objectives
 Document the APIs, build requirements, and integration patterns for embedding `ghostty-vt` inside a Zig application.
