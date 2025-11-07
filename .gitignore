@@ -1,1 +1,6 @@
 .stepcat/
+
+.direnv/
+.envrc.cache
+result
+result-*
