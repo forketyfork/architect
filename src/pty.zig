@@ -153,7 +153,5 @@ const PosixPty = struct {
                 return error.SetControllingTerminalFailed;
             },
         }
-
-        posix.close(self.slave);
     }
 };
