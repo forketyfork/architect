@@ -9,12 +9,62 @@ const c = @cImport({
 
 const log = std.log.scoped(.main);
 
-const WINDOW_WIDTH = 800;
-const WINDOW_HEIGHT = 600;
-const CELL_WIDTH = 10;
-const CELL_HEIGHT = 20;
-const COLS = 80;
-const ROWS = 24;
+const WINDOW_WIDTH = 1200;
+const WINDOW_HEIGHT = 900;
+const CELL_WIDTH = 8;
+const CELL_HEIGHT = 16;
+const GRID_ROWS = 3;
+const GRID_COLS = 3;
+const COLS = 40;
+const ROWS = 12;
+
+const SessionState = struct {
+    id: usize,
+    shell: shell_mod.Shell,
+    terminal: ghostty_vt.Terminal,
+    output_buf: [4096]u8,
+
+    pub fn init(allocator: std.mem.Allocator, id: usize, shell_path: []const u8, size: pty_mod.winsize) !SessionState {
+        const shell = try shell_mod.Shell.spawn(shell_path, size);
+        errdefer {
+            var s = shell;
+            s.deinit();
+        }
+
+        var terminal = try ghostty_vt.Terminal.init(allocator, .{
+            .cols = size.ws_col,
+            .rows = size.ws_row,
+        });
+        errdefer terminal.deinit(allocator);
+
+        try makeNonBlocking(shell.pty.master);
+
+        return .{
+            .id = id,
+            .shell = shell,
+            .terminal = terminal,
+            .output_buf = undefined,
+        };
+    }
+
+    pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
+        self.terminal.deinit(allocator);
+        self.shell.deinit();
+    }
+
+    pub fn processOutput(self: *SessionState) !void {
+        const n = self.shell.read(&self.output_buf) catch |err| {
+            if (err == error.WouldBlock) return;
+            return err;
+        };
+
+        if (n > 0) {
+            var stream = self.terminal.vtStream();
+            defer stream.deinit();
+            try stream.nextSlice(self.output_buf[0..n]);
+        }
+    }
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -28,7 +78,7 @@ pub fn main() !void {
     defer c.SDL_Quit();
 
     const window = c.SDL_CreateWindow(
-        "Architect - Terminal",
+        "Architect - Terminal Wall",
         c.SDL_WINDOWPOS_CENTERED,
         c.SDL_WINDOWPOS_CENTERED,
         WINDOW_WIDTH,
@@ -47,33 +97,40 @@ pub fn main() !void {
     defer c.SDL_DestroyRenderer(renderer);
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
-    std.debug.print("Spawning shell: {s}\n", .{shell_path});
+    std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
+
+    const cell_width_pixels = WINDOW_WIDTH / GRID_COLS;
+    const cell_height_pixels = WINDOW_HEIGHT / GRID_ROWS;
 
     const size = pty_mod.winsize{
         .ws_row = ROWS,
         .ws_col = COLS,
-        .ws_xpixel = WINDOW_WIDTH,
-        .ws_ypixel = WINDOW_HEIGHT,
+        .ws_xpixel = cell_width_pixels,
+        .ws_ypixel = cell_height_pixels,
     };
 
-    var shell = try shell_mod.Shell.spawn(shell_path, size);
-    defer shell.deinit();
+    var sessions: [GRID_ROWS * GRID_COLS]SessionState = undefined;
+    var init_count: usize = 0;
+    errdefer {
+        for (0..init_count) |i| {
+            sessions[i].deinit(allocator);
+        }
+    }
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
-        .cols = size.ws_col,
-        .rows = size.ws_row,
-    });
-    defer terminal.deinit(allocator);
+    for (0..GRID_ROWS * GRID_COLS) |i| {
+        sessions[i] = try SessionState.init(allocator, i, shell_path, size);
+        init_count += 1;
+    }
+    defer {
+        for (&sessions) |*session| {
+            session.deinit(allocator);
+        }
+    }
 
-    var stream = terminal.vtStream();
-    defer stream.deinit();
-
-    try makeNonBlocking(shell.pty.master);
-
-    var output_buf: [4096]u8 = undefined;
     var running = true;
     var last_render: i64 = 0;
     const render_interval_ms: i64 = 16;
+    var focused_session: usize = 0;
 
     while (running) {
         var event: c.SDL_Event = undefined;
@@ -85,28 +142,28 @@ pub fn main() !void {
                     var buf: [8]u8 = undefined;
                     const n = try encodeKey(key, &buf);
                     if (n > 0) {
-                        _ = try shell.write(buf[0..n]);
+                        _ = try sessions[focused_session].shell.write(buf[0..n]);
                     }
+                },
+                c.SDL_MOUSEBUTTONDOWN => {
+                    const mouse_x = event.button.x;
+                    const mouse_y = event.button.y;
+                    const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
+                    const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
+                    focused_session = grid_row * GRID_COLS + grid_col;
+                    std.debug.print("Focused session: {d}\n", .{focused_session});
                 },
                 else => {},
             }
         }
 
-        const n = shell.read(&output_buf) catch |err| {
-            if (err == error.WouldBlock) {
-                c.SDL_Delay(1);
-                continue;
-            }
-            return err;
-        };
-
-        if (n > 0) {
-            try stream.nextSlice(output_buf[0..n]);
+        for (&sessions) |*session| {
+            try session.processOutput();
         }
 
         const now = std.time.milliTimestamp();
         if (now - last_render >= render_interval_ms) {
-            try renderTerminal(renderer, &terminal, allocator);
+            try renderGrid(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, focused_session);
             c.SDL_RenderPresent(renderer);
             last_render = now;
         }
@@ -115,38 +172,80 @@ pub fn main() !void {
     }
 }
 
-fn renderTerminal(renderer: *c.SDL_Renderer, terminal: *ghostty_vt.Terminal, _: std.mem.Allocator) !void {
+fn renderGrid(
+    renderer: *c.SDL_Renderer,
+    sessions: []SessionState,
+    _: std.mem.Allocator,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    focused_session: usize,
+) !void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
 
-    const screen = &terminal.screen;
-    const pages = screen.pages;
+    for (sessions, 0..) |*session, i| {
+        const grid_row: c_int = @intCast(i / GRID_COLS);
+        const grid_col: c_int = @intCast(i % GRID_COLS);
 
-    var row: usize = 0;
-    while (row < ROWS) : (row += 1) {
-        var col: usize = 0;
-        while (col < COLS) : (col += 1) {
-            const list_cell = pages.getCell(.{ .active = .{
-                .x = @intCast(col),
-                .y = @intCast(row),
-            } }) orelse continue;
+        const cell_x: c_int = grid_col * cell_width_pixels;
+        const cell_y: c_int = grid_row * cell_height_pixels;
 
-            const cell = list_cell.cell;
-            const cp = cell.content.codepoint;
-            if (cp == 0 or cp == ' ') continue;
-
-            const x: c_int = @intCast(col * CELL_WIDTH);
-            const y: c_int = @intCast(row * CELL_HEIGHT);
-
-            _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
-            const rect = c.SDL_Rect{
-                .x = x,
-                .y = y,
-                .w = CELL_WIDTH,
-                .h = CELL_HEIGHT,
-            };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
+        const is_focused = (i == focused_session);
+        if (is_focused) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
+        } else {
+            _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
         }
+        const bg_rect = c.SDL_Rect{
+            .x = cell_x,
+            .y = cell_y,
+            .w = cell_width_pixels,
+            .h = cell_height_pixels,
+        };
+        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+
+        const screen = &session.terminal.screen;
+        const pages = screen.pages;
+
+        var row: usize = 0;
+        while (row < ROWS) : (row += 1) {
+            var col: usize = 0;
+            while (col < COLS) : (col += 1) {
+                const list_cell = pages.getCell(.{ .active = .{
+                    .x = @intCast(col),
+                    .y = @intCast(row),
+                } }) orelse continue;
+
+                const cell = list_cell.cell;
+                const cp = cell.content.codepoint;
+                if (cp == 0 or cp == ' ') continue;
+
+                const x: c_int = cell_x + @as(c_int, @intCast(col * CELL_WIDTH));
+                const y: c_int = cell_y + @as(c_int, @intCast(row * CELL_HEIGHT));
+
+                _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+                const rect = c.SDL_Rect{
+                    .x = x,
+                    .y = y,
+                    .w = CELL_WIDTH,
+                    .h = CELL_HEIGHT,
+                };
+                _ = c.SDL_RenderFillRect(renderer, &rect);
+            }
+        }
+
+        if (is_focused) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+        } else {
+            _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+        }
+        const border_rect = c.SDL_Rect{
+            .x = cell_x,
+            .y = cell_y,
+            .w = cell_width_pixels,
+            .h = cell_height_pixels,
+        };
+        _ = c.SDL_RenderDrawRect(renderer, &border_rect);
     }
 }
 
