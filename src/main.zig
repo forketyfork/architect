@@ -18,10 +18,17 @@ const GRID_COLS = 3;
 const COLS = 40;
 const ROWS = 12;
 
+const VtStreamType = blk: {
+    const T = ghostty_vt.Terminal;
+    const fn_info = @typeInfo(@TypeOf(T.vtStream)).@"fn";
+    break :blk fn_info.return_type.?;
+};
+
 const SessionState = struct {
     id: usize,
     shell: shell_mod.Shell,
     terminal: ghostty_vt.Terminal,
+    stream: VtStreamType,
     output_buf: [4096]u8,
 
     pub fn init(allocator: std.mem.Allocator, id: usize, shell_path: []const u8, size: pty_mod.winsize) !SessionState {
@@ -37,17 +44,21 @@ const SessionState = struct {
         });
         errdefer terminal.deinit(allocator);
 
+        const stream = terminal.vtStream();
+
         try makeNonBlocking(shell.pty.master);
 
         return .{
             .id = id,
             .shell = shell,
             .terminal = terminal,
+            .stream = stream,
             .output_buf = undefined,
         };
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
+        self.stream.deinit();
         self.terminal.deinit(allocator);
         self.shell.deinit();
     }
@@ -59,9 +70,7 @@ const SessionState = struct {
         };
 
         if (n > 0) {
-            var stream = self.terminal.vtStream();
-            defer stream.deinit();
-            try stream.nextSlice(self.output_buf[0..n]);
+            try self.stream.nextSlice(self.output_buf[0..n]);
         }
     }
 };
