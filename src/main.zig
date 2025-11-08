@@ -17,6 +17,59 @@ const GRID_ROWS = 3;
 const GRID_COLS = 3;
 const COLS = 40;
 const ROWS = 12;
+const ANIMATION_DURATION_MS = 300;
+
+const ViewMode = enum {
+    Grid,
+    Expanding,
+    Full,
+    Collapsing,
+};
+
+const Rect = struct {
+    x: c_int,
+    y: c_int,
+    w: c_int,
+    h: c_int,
+};
+
+const AnimationState = struct {
+    mode: ViewMode,
+    focused_session: usize,
+    start_time: i64,
+    start_rect: Rect,
+    target_rect: Rect,
+
+    fn easeInOutCubic(t: f32) f32 {
+        if (t < 0.5) {
+            return 4 * t * t * t;
+        } else {
+            const p = 2 * t - 2;
+            return 1 + p * p * p / 2;
+        }
+    }
+
+    fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {
+        const eased = easeInOutCubic(progress);
+        return Rect{
+            .x = start.x + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.x - start.x)) * eased)),
+            .y = start.y + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.y - start.y)) * eased)),
+            .w = start.w + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.w - start.w)) * eased)),
+            .h = start.h + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.h - start.h)) * eased)),
+        };
+    }
+
+    fn getCurrentRect(self: *const AnimationState, current_time: i64) Rect {
+        const elapsed = current_time - self.start_time;
+        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+        return interpolateRect(self.start_rect, self.target_rect, progress);
+    }
+
+    fn isComplete(self: *const AnimationState, current_time: i64) bool {
+        const elapsed = current_time - self.start_time;
+        return elapsed >= ANIMATION_DURATION_MS;
+    }
+};
 
 const VtStreamType = blk: {
     const T = ghostty_vt.Terminal;
@@ -44,7 +97,8 @@ const SessionState = struct {
         });
         errdefer terminal.deinit(allocator);
 
-        const stream = terminal.vtStream();
+        var stream = terminal.vtStream();
+        errdefer stream.deinit();
 
         try makeNonBlocking(shell.pty.master);
 
@@ -139,28 +193,71 @@ pub fn main() !void {
     var running = true;
     var last_render: i64 = 0;
     const render_interval_ms: i64 = 16;
-    var focused_session: usize = 0;
+
+    var anim_state = AnimationState{
+        .mode = .Grid,
+        .focused_session = 0,
+        .start_time = 0,
+        .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    };
 
     while (running) {
+        const now = std.time.milliTimestamp();
+
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event) != 0) {
             switch (event.type) {
                 c.SDL_QUIT => running = false,
                 c.SDL_KEYDOWN => {
                     const key = event.key.keysym;
-                    var buf: [8]u8 = undefined;
-                    const n = try encodeKey(key, &buf);
-                    if (n > 0) {
-                        _ = try sessions[focused_session].shell.write(buf[0..n]);
+
+                    if (key.sym == c.SDLK_ESCAPE and anim_state.mode == .Full) {
+                        const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
+                        const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+                        const target_rect = Rect{
+                            .x = grid_col * cell_width_pixels,
+                            .y = grid_row * cell_height_pixels,
+                            .w = cell_width_pixels,
+                            .h = cell_height_pixels,
+                        };
+
+                        anim_state.mode = .Collapsing;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+                        anim_state.target_rect = target_rect;
+                        std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
+                    } else {
+                        var buf: [8]u8 = undefined;
+                        const n = try encodeKey(key, &buf);
+                        if (n > 0) {
+                            _ = try sessions[anim_state.focused_session].shell.write(buf[0..n]);
+                        }
                     }
                 },
                 c.SDL_MOUSEBUTTONDOWN => {
-                    const mouse_x = event.button.x;
-                    const mouse_y = event.button.y;
-                    const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
-                    const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
-                    focused_session = grid_row * GRID_COLS + grid_col;
-                    std.debug.print("Focused session: {d}\n", .{focused_session});
+                    if (anim_state.mode == .Grid) {
+                        const mouse_x = event.button.x;
+                        const mouse_y = event.button.y;
+                        const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
+                        const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
+                        const clicked_session = grid_row * GRID_COLS + grid_col;
+
+                        const start_rect = Rect{
+                            .x = @as(c_int, @intCast(grid_col)) * cell_width_pixels,
+                            .y = @as(c_int, @intCast(grid_row)) * cell_height_pixels,
+                            .w = cell_width_pixels,
+                            .h = cell_height_pixels,
+                        };
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+
+                        anim_state.mode = .Expanding;
+                        anim_state.focused_session = clicked_session;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = start_rect;
+                        anim_state.target_rect = target_rect;
+                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                    }
                 },
                 else => {},
             }
@@ -170,9 +267,15 @@ pub fn main() !void {
             try session.processOutput();
         }
 
-        const now = std.time.milliTimestamp();
+        if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing) {
+            if (anim_state.isComplete(now)) {
+                anim_state.mode = if (anim_state.mode == .Expanding) .Full else .Grid;
+                std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
+            }
+        }
+
         if (now - last_render >= render_interval_ms) {
-            try renderGrid(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, focused_session);
+            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now);
             c.SDL_RenderPresent(renderer);
             last_render = now;
         }
@@ -181,81 +284,123 @@ pub fn main() !void {
     }
 }
 
-fn renderGrid(
+fn render(
     renderer: *c.SDL_Renderer,
     sessions: []SessionState,
     _: std.mem.Allocator,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
-    focused_session: usize,
+    anim_state: *const AnimationState,
+    current_time: i64,
 ) !void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
 
-    for (sessions, 0..) |*session, i| {
-        const grid_row: c_int = @intCast(i / GRID_COLS);
-        const grid_col: c_int = @intCast(i % GRID_COLS);
+    switch (anim_state.mode) {
+        .Grid => {
+            for (sessions, 0..) |*session, i| {
+                const grid_row: c_int = @intCast(i / GRID_COLS);
+                const grid_col: c_int = @intCast(i % GRID_COLS);
 
-        const cell_x: c_int = grid_col * cell_width_pixels;
-        const cell_y: c_int = grid_row * cell_height_pixels;
-
-        const is_focused = (i == focused_session);
-        if (is_focused) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
-        } else {
-            _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
-        }
-        const bg_rect = c.SDL_Rect{
-            .x = cell_x,
-            .y = cell_y,
-            .w = cell_width_pixels,
-            .h = cell_height_pixels,
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-        const screen = &session.terminal.screen;
-        const pages = screen.pages;
-
-        var row: usize = 0;
-        while (row < ROWS) : (row += 1) {
-            var col: usize = 0;
-            while (col < COLS) : (col += 1) {
-                const list_cell = pages.getCell(.{ .active = .{
-                    .x = @intCast(col),
-                    .y = @intCast(row),
-                } }) orelse continue;
-
-                const cell = list_cell.cell;
-                const cp = cell.content.codepoint;
-                if (cp == 0 or cp == ' ') continue;
-
-                const x: c_int = cell_x + @as(c_int, @intCast(col * CELL_WIDTH));
-                const y: c_int = cell_y + @as(c_int, @intCast(row * CELL_HEIGHT));
-
-                _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
-                const rect = c.SDL_Rect{
-                    .x = x,
-                    .y = y,
-                    .w = CELL_WIDTH,
-                    .h = CELL_HEIGHT,
+                const cell_rect = Rect{
+                    .x = grid_col * cell_width_pixels,
+                    .y = grid_row * cell_height_pixels,
+                    .w = cell_width_pixels,
+                    .h = cell_height_pixels,
                 };
-                _ = c.SDL_RenderFillRect(renderer, &rect);
-            }
-        }
 
-        if (is_focused) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-        } else {
-            _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
-        }
-        const border_rect = c.SDL_Rect{
-            .x = cell_x,
-            .y = cell_y,
-            .w = cell_width_pixels,
-            .h = cell_height_pixels,
-        };
-        _ = c.SDL_RenderDrawRect(renderer, &border_rect);
+                try renderSession(renderer, session, cell_rect, i == anim_state.focused_session);
+            }
+        },
+        .Full => {
+            const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, true);
+        },
+        .Expanding, .Collapsing => {
+            const animating_rect = anim_state.getCurrentRect(current_time);
+
+            for (sessions, 0..) |*session, i| {
+                if (i != anim_state.focused_session) {
+                    const grid_row: c_int = @intCast(i / GRID_COLS);
+                    const grid_col: c_int = @intCast(i % GRID_COLS);
+
+                    const cell_rect = Rect{
+                        .x = grid_col * cell_width_pixels,
+                        .y = grid_row * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+
+                    try renderSession(renderer, session, cell_rect, false);
+                }
+            }
+
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, true);
+        },
     }
+}
+
+fn renderSession(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    rect: Rect,
+    is_focused: bool,
+) !void {
+    if (is_focused) {
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
+    } else {
+        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
+    }
+    const bg_rect = c.SDL_Rect{
+        .x = rect.x,
+        .y = rect.y,
+        .w = rect.w,
+        .h = rect.h,
+    };
+    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+
+    const screen = &session.terminal.screen;
+    const pages = screen.pages;
+
+    var row: usize = 0;
+    while (row < ROWS) : (row += 1) {
+        var col: usize = 0;
+        while (col < COLS) : (col += 1) {
+            const list_cell = pages.getCell(.{ .active = .{
+                .x = @intCast(col),
+                .y = @intCast(row),
+            } }) orelse continue;
+
+            const cell = list_cell.cell;
+            const cp = cell.content.codepoint;
+            if (cp == 0 or cp == ' ') continue;
+
+            const x: c_int = rect.x + @as(c_int, @intCast(col * CELL_WIDTH));
+            const y: c_int = rect.y + @as(c_int, @intCast(row * CELL_HEIGHT));
+
+            _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+            const char_rect = c.SDL_Rect{
+                .x = x,
+                .y = y,
+                .w = CELL_WIDTH,
+                .h = CELL_HEIGHT,
+            };
+            _ = c.SDL_RenderFillRect(renderer, &char_rect);
+        }
+    }
+
+    if (is_focused) {
+        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+    } else {
+        _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+    }
+    const border_rect = c.SDL_Rect{
+        .x = rect.x,
+        .y = rect.y,
+        .w = rect.w,
+        .h = rect.h,
+    };
+    _ = c.SDL_RenderDrawRect(renderer, &border_rect);
 }
 
 fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {

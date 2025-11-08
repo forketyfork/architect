@@ -1,4 +1,14 @@
 # Terminal Wall
+
+## Common Instructions
+
+- ALWAYS run the build, test and lint locally before committing the changes:
+```shell
+just build
+just test
+just lint
+```
+
 ## Step 1: Audit ghostty-vt Capabilities And Constraints
 ### Status Quo
 The `architect` repository is empty, and the `ghostty-org/ghostty` clone exists at `../../ghostty-org/ghostty`. No documentation on `ghostty-vt` usage is captured for this project.
