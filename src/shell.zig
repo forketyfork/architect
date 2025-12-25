@@ -30,9 +30,8 @@ pub const Shell = struct {
 
             const shell_path_z = @as([*:0]const u8, @ptrCast(shell_path.ptr));
             const argv = [_:null]?[*:0]const u8{ shell_path_z, null };
-            const envp = [_:null]?[*:0]const u8{null};
 
-            _ = std.c.execve(shell_path_z, &argv, &envp);
+            _ = std.c.execve(shell_path_z, &argv, @ptrCast(std.c.environ));
             std.c._exit(1);
         }
 
