@@ -97,18 +97,19 @@ const SessionState = struct {
         });
         errdefer terminal.deinit(allocator);
 
-        var stream = terminal.vtStream();
-        errdefer stream.deinit();
-
         try makeNonBlocking(shell.pty.master);
 
-        return .{
+        return SessionState{
             .id = id,
             .shell = shell,
             .terminal = terminal,
-            .stream = stream,
+            .stream = undefined,
             .output_buf = undefined,
         };
+    }
+
+    pub fn initStream(self: *SessionState) void {
+        self.stream = self.terminal.vtStream();
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
@@ -184,6 +185,11 @@ pub fn main() !void {
         sessions[i] = try SessionState.init(allocator, i, shell_path, size);
         init_count += 1;
     }
+
+    for (&sessions) |*session| {
+        session.initStream();
+    }
+
     defer {
         for (&sessions) |*session| {
             session.deinit(allocator);
@@ -241,7 +247,7 @@ pub fn main() !void {
                         const mouse_y = event.button.y;
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
-                        const clicked_session = grid_row * GRID_COLS + grid_col;
+                        const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
 
                         const start_rect = Rect{
                             .x = @as(c_int, @intCast(grid_col)) * cell_width_pixels,
@@ -359,7 +365,7 @@ fn renderSession(
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-    const screen = &session.terminal.screen;
+    const screen = session.terminal.screens.active;
     const pages = screen.pages;
 
     var row: usize = 0;
