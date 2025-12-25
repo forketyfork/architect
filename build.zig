@@ -25,8 +25,15 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    exe.linkSystemLibrary("SDL2");
+    exe.linkSystemLibrary("SDL2_ttf");
     exe.linkLibC();
+
+    if (std.posix.getenv("SDL2_INCLUDE_PATH")) |sdl2_include| {
+        exe.addIncludePath(.{ .cwd_relative = sdl2_include });
+    }
+    if (std.posix.getenv("SDL2_TTF_INCLUDE_PATH")) |sdl2_ttf_include| {
+        exe.addIncludePath(.{ .cwd_relative = sdl2_ttf_include });
+    }
 
     b.installArtifact(exe);
 

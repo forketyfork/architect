@@ -3,9 +3,8 @@ const posix = std.posix;
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
-const c = @cImport({
-    @cInclude("SDL2/SDL.h");
-});
+const font_mod = @import("font.zig");
+const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
 
@@ -141,6 +140,12 @@ pub fn main() !void {
     }
     defer c.SDL_Quit();
 
+    if (c.TTF_Init() != 0) {
+        std.debug.print("TTF_Init Error: {s}\n", .{c.TTF_GetError()});
+        return error.TTFInitFailed;
+    }
+    defer c.TTF_Quit();
+
     const window = c.SDL_CreateWindow(
         "Architect - Terminal Wall",
         c.SDL_WINDOWPOS_CENTERED,
@@ -159,6 +164,9 @@ pub fn main() !void {
         return error.RendererCreationFailed;
     };
     defer c.SDL_DestroyRenderer(renderer);
+
+    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/Monaco.ttf", 12);
+    defer font.deinit();
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
@@ -281,7 +289,7 @@ pub fn main() !void {
         }
 
         if (now - last_render >= render_interval_ms) {
-            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now);
+            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font);
             c.SDL_RenderPresent(renderer);
             last_render = now;
         }
@@ -298,6 +306,7 @@ fn render(
     cell_height_pixels: c_int,
     anim_state: *const AnimationState,
     current_time: i64,
+    font: *font_mod.Font,
 ) !void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -315,12 +324,12 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, i == anim_state.focused_session);
+                try renderSession(renderer, session, cell_rect, i == anim_state.focused_session, font);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, true);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, true, font);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -337,11 +346,11 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, false);
+                    try renderSession(renderer, session, cell_rect, false, font);
                 }
             }
 
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, true);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, true, font);
         },
     }
 }
@@ -351,6 +360,7 @@ fn renderSession(
     session: *const SessionState,
     rect: Rect,
     is_focused: bool,
+    font: *font_mod.Font,
 ) !void {
     if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
@@ -368,6 +378,11 @@ fn renderSession(
     const screen = session.terminal.screens.active;
     const pages = screen.pages;
 
+    const cell_width_actual: c_int = @divFloor(rect.w, COLS);
+    const cell_height_actual: c_int = @divFloor(rect.h, ROWS);
+
+    const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+
     var row: usize = 0;
     while (row < ROWS) : (row += 1) {
         var col: usize = 0;
@@ -381,17 +396,10 @@ fn renderSession(
             const cp = cell.content.codepoint;
             if (cp == 0 or cp == ' ') continue;
 
-            const x: c_int = rect.x + @as(c_int, @intCast(col * CELL_WIDTH));
-            const y: c_int = rect.y + @as(c_int, @intCast(row * CELL_HEIGHT));
+            const x: c_int = rect.x + @as(c_int, @intCast(col)) * cell_width_actual;
+            const y: c_int = rect.y + @as(c_int, @intCast(row)) * cell_height_actual;
 
-            _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
-            const char_rect = c.SDL_Rect{
-                .x = x,
-                .y = y,
-                .w = CELL_WIDTH,
-                .h = CELL_HEIGHT,
-            };
-            _ = c.SDL_RenderFillRect(renderer, &char_rect);
+            try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }
     }
 

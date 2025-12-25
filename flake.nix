@@ -22,16 +22,24 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
+          nativeBuildInputs = with pkgs; [
             just
             zig.packages.${system}."0.15.2"
-            SDL2
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            SDL2.dev
+            SDL2_ttf
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             pkgs.gawk
             pkgs.gnused
           ];
 
           shellHook = ''
+            export PKG_CONFIG_PATH="${pkgs.SDL2}/lib/pkgconfig:${pkgs.SDL2_ttf}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export SDL2_INCLUDE_PATH="${pkgs.SDL2.dev}/include"
+            export SDL2_TTF_INCLUDE_PATH="${pkgs.SDL2_ttf}/include"
             echo "Architect development environment"
             echo "Available commands: just --list"
           ''
