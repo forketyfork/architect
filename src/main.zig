@@ -377,12 +377,12 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, font, term_cols, term_rows);
+                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, font, term_cols, term_rows);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -406,11 +406,12 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, font, term_cols, term_rows);
+                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows);
                 }
             }
 
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, font, term_cols, term_rows);
+            const apply_effects = anim_scale < 0.999;
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows);
         },
     }
 }
@@ -421,6 +422,7 @@ fn renderSession(
     rect: Rect,
     scale: f32,
     is_focused: bool,
+    apply_effects: bool,
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
@@ -447,15 +449,25 @@ fn renderSession(
     const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
     const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
 
-    const origin_x: c_int = rect.x;
-    const origin_y: c_int = rect.y;
+    const padding: c_int = 8;
+    const drawable_w: c_int = rect.w - padding * 2;
+    const drawable_h: c_int = rect.h - padding * 2;
+    if (drawable_w <= 0 or drawable_h <= 0) return;
+
+    const origin_x: c_int = rect.x + padding;
+    const origin_y: c_int = rect.y + padding;
+
+    const max_cols_fit: usize = @intCast(@max(0, @divFloor(drawable_w, cell_width_actual)));
+    const max_rows_fit: usize = @intCast(@max(0, @divFloor(drawable_h, cell_height_actual)));
+    const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
+    const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
     const default_fg = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
 
     var row: usize = 0;
-    while (row < term_rows) : (row += 1) {
+    while (row < visible_rows) : (row += 1) {
         var col: usize = 0;
-        while (col < term_cols) : (col += 1) {
+        while (col < visible_cols) : (col += 1) {
             const list_cell = pages.getCell(.{ .active = .{
                 .x = @intCast(col),
                 .y = @intCast(row),
@@ -478,18 +490,72 @@ fn renderSession(
         }
     }
 
-    if (is_focused) {
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+    if (apply_effects) {
+        applyTvOverlay(renderer, rect, is_focused);
     } else {
-        _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+        if (is_focused) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+        } else {
+            _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+        }
+        const border_rect = c.SDL_Rect{
+            .x = rect.x,
+            .y = rect.y,
+            .w = rect.w,
+            .h = rect.h,
+        };
+        _ = c.SDL_RenderDrawRect(renderer, &border_rect);
     }
-    const border_rect = c.SDL_Rect{
+}
+
+fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+    // Subtle vignette across the panel
+    _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 60);
+    _ = c.SDL_RenderFillRect(renderer, &c.SDL_Rect{
         .x = rect.x,
         .y = rect.y,
         .w = rect.w,
         .h = rect.h,
-    };
-    _ = c.SDL_RenderDrawRect(renderer, &border_rect);
+    });
+
+    const radius: c_int = 12;
+
+    const border_color = if (is_focused)
+        c.SDL_Color{ .r = 120, .g = 170, .b = 255, .a = 190 }
+    else
+        c.SDL_Color{ .r = 80, .g = 80, .b = 90, .a = 170 };
+
+    _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
+    drawRoundedBorder(renderer, rect, radius);
+}
+
+fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {
+    // Straight edges
+    _ = c.SDL_RenderDrawLine(renderer, rect.x + radius, rect.y, rect.x + rect.w - radius - 1, rect.y);
+    _ = c.SDL_RenderDrawLine(renderer, rect.x + radius, rect.y + rect.h - 1, rect.x + rect.w - radius - 1, rect.y + rect.h - 1);
+    _ = c.SDL_RenderDrawLine(renderer, rect.x, rect.y + radius, rect.x, rect.y + rect.h - radius - 1);
+    _ = c.SDL_RenderDrawLine(renderer, rect.x + rect.w - 1, rect.y + radius, rect.x + rect.w - 1, rect.y + rect.h - radius - 1);
+
+    // Corners (quarter circles)
+    var angle: f32 = 0.0;
+    const step: f32 = std.math.pi / 64.0;
+    while (angle <= std.math.pi / 2.0) : (angle += step) {
+        const rx: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(radius)) * std.math.cos(angle)));
+        const ry: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(radius)) * std.math.sin(angle)));
+
+        const centers = [_]struct { x: c_int, y: c_int, sx: c_int, sy: c_int }{
+            .{ .x = rect.x + radius, .y = rect.y + radius, .sx = -1, .sy = -1 }, // top-left
+            .{ .x = rect.x + rect.w - radius - 1, .y = rect.y + radius, .sx = 1, .sy = -1 }, // top-right
+            .{ .x = rect.x + radius, .y = rect.y + rect.h - radius - 1, .sx = -1, .sy = 1 }, // bottom-left
+            .{ .x = rect.x + rect.w - radius - 1, .y = rect.y + rect.h - radius - 1, .sx = 1, .sy = 1 }, // bottom-right
+        };
+
+        for (centers) |cinfo| {
+            _ = c.SDL_RenderDrawPoint(renderer, cinfo.x + cinfo.sx * rx, cinfo.y + cinfo.sy * ry);
+        }
+    }
 }
 
 fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {
