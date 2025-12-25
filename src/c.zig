@@ -31,6 +31,11 @@ pub const SDL_QUIT = c_import.SDL_QUIT;
 pub const SDL_KEYDOWN = c_import.SDL_KEYDOWN;
 pub const SDL_MOUSEBUTTONDOWN = c_import.SDL_MOUSEBUTTONDOWN;
 
+pub const SDL_HINT_RENDER_SCALE_QUALITY = c_import.SDL_HINT_RENDER_SCALE_QUALITY;
+pub const SDL_SetHint = c_import.SDL_SetHint;
+pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
+pub const SDL_ScaleModeLinear = c_import.SDL_ScaleModeLinear;
+
 pub const SDLK_ESCAPE = c_import.SDLK_ESCAPE;
 pub const SDLK_RETURN = c_import.SDLK_RETURN;
 pub const SDLK_BACKSPACE = c_import.SDLK_BACKSPACE;

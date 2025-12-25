@@ -134,6 +134,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "1");
+
     if (c.SDL_Init(c.SDL_INIT_VIDEO) != 0) {
         std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.SDLInitFailed;
@@ -165,7 +167,7 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
-    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/Monaco.ttf", 12);
+    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/Monaco.ttf", 20);
     defer font.deinit();
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";

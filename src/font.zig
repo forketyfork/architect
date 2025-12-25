@@ -80,6 +80,8 @@ pub const Font = struct {
             return error.TextureCreationFailed;
         };
 
+        _ = c.SDL_SetTextureScaleMode(texture, c.SDL_ScaleModeLinear);
+
         try self.glyph_cache.put(codepoint, texture);
         return texture;
     }
