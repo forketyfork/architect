@@ -10,13 +10,10 @@ const log = std.log.scoped(.main);
 
 const WINDOW_WIDTH = 1200;
 const WINDOW_HEIGHT = 900;
-const CELL_WIDTH = 8;
-const CELL_HEIGHT = 16;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const COLS = 40;
-const ROWS = 12;
 const ANIMATION_DURATION_MS = 300;
+const GRID_SCALE: f32 = 1.0 / 3.0;
 
 const ViewMode = enum {
     Grid,
@@ -170,6 +167,11 @@ pub fn main() !void {
     var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/Monaco.ttf", 20);
     defer font.deinit();
 
+    const full_cols = @as(u16, @intCast(@divFloor(WINDOW_WIDTH, font.cell_width)));
+    const full_rows = @as(u16, @intCast(@divFloor(WINDOW_HEIGHT, font.cell_height)));
+
+    std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
+
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
 
@@ -177,10 +179,10 @@ pub fn main() !void {
     const cell_height_pixels = WINDOW_HEIGHT / GRID_ROWS;
 
     const size = pty_mod.winsize{
-        .ws_row = ROWS,
-        .ws_col = COLS,
-        .ws_xpixel = cell_width_pixels,
-        .ws_ypixel = cell_height_pixels,
+        .ws_row = full_rows,
+        .ws_col = full_cols,
+        .ws_xpixel = WINDOW_WIDTH,
+        .ws_ypixel = WINDOW_HEIGHT,
     };
 
     var sessions: [GRID_ROWS * GRID_COLS]SessionState = undefined;
@@ -291,7 +293,7 @@ pub fn main() !void {
         }
 
         if (now - last_render >= render_interval_ms) {
-            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font);
+            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows);
             c.SDL_RenderPresent(renderer);
             last_render = now;
         }
@@ -309,6 +311,8 @@ fn render(
     anim_state: *const AnimationState,
     current_time: i64,
     font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
 ) !void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -326,15 +330,22 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, i == anim_state.focused_session, font);
+                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, font, term_cols, term_rows);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, true, font);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, font, term_cols, term_rows);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
+            const elapsed = current_time - anim_state.start_time;
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+            const eased = AnimationState.easeInOutCubic(progress);
+            const anim_scale = if (anim_state.mode == .Expanding)
+                GRID_SCALE + (1.0 - GRID_SCALE) * eased
+            else
+                1.0 - (1.0 - GRID_SCALE) * eased;
 
             for (sessions, 0..) |*session, i| {
                 if (i != anim_state.focused_session) {
@@ -348,11 +359,11 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, false, font);
+                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, font, term_cols, term_rows);
                 }
             }
 
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, true, font);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, font, term_cols, term_rows);
         },
     }
 }
@@ -361,8 +372,11 @@ fn renderSession(
     renderer: *c.SDL_Renderer,
     session: *const SessionState,
     rect: Rect,
+    scale: f32,
     is_focused: bool,
     font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
 ) !void {
     if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
@@ -380,15 +394,21 @@ fn renderSession(
     const screen = session.terminal.screens.active;
     const pages = screen.pages;
 
-    const cell_width_actual: c_int = @divFloor(rect.w, COLS);
-    const cell_height_actual: c_int = @divFloor(rect.h, ROWS);
+    const base_cell_width = font.cell_width;
+    const base_cell_height = font.cell_height;
+
+    const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
+    const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
+
+    const origin_x: c_int = rect.x;
+    const origin_y: c_int = rect.y;
 
     const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
 
     var row: usize = 0;
-    while (row < ROWS) : (row += 1) {
+    while (row < term_rows) : (row += 1) {
         var col: usize = 0;
-        while (col < COLS) : (col += 1) {
+        while (col < term_cols) : (col += 1) {
             const list_cell = pages.getCell(.{ .active = .{
                 .x = @intCast(col),
                 .y = @intCast(row),
@@ -398,8 +418,11 @@ fn renderSession(
             const cp = cell.content.codepoint;
             if (cp == 0 or cp == ' ') continue;
 
-            const x: c_int = rect.x + @as(c_int, @intCast(col)) * cell_width_actual;
-            const y: c_int = rect.y + @as(c_int, @intCast(row)) * cell_height_actual;
+            const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
+            const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
+
+            if (x < rect.x or x >= rect.x + rect.w) continue;
+            if (y < rect.y or y >= rect.y + rect.h) continue;
 
             try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }

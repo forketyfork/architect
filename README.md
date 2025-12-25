@@ -1,6 +1,20 @@
 # Architect - Terminal Wall
 
-A Zig application demonstrating a 3×3 grid of interactive terminal sessions with smooth animations, built on top of ghostty-vt.
+A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL2 for rendering.
+
+![Architect Demo](https://via.placeholder.com/800x600?text=Architect+3x3+Terminal+Grid)
+
+## Features
+
+- **3×3 Terminal Grid**: Run 9 independent shell sessions simultaneously
+- **Smooth Animations**: Click any terminal to smoothly expand it to full screen
+- **Full-Window Scaling**: Each terminal is sized for the full window and scaled down in grid view
+- **Real-Time I/O**: Non-blocking PTY communication with live updates
+- **Interactive Control**:
+  - Click any grid cell to expand
+  - Press ESC to collapse back to grid view
+  - Type in the focused terminal
+- **High-Quality Rendering**: SDL_ttf font rendering with glyph caching
 
 ## Prerequisites
 
@@ -69,24 +83,53 @@ zig fmt src/
 
 ## Project Structure
 
-- `src/main.zig` - Main application entry point
-- `build.zig` - Zig build configuration
+- `src/main.zig` - Main application with SDL2 event loop and animation system
+- `src/shell.zig` - Shell process spawning and management
+- `src/pty.zig` - PTY abstractions and utilities
+- `src/font.zig` - Font rendering with SDL_ttf and glyph caching
+- `src/c.zig` - C library bindings for SDL2
+- `build.zig` - Zig build configuration with SDL2 dependencies
 - `build.zig.zon` - Zig package dependencies
 - `docs/` - Documentation and implementation plans
 - `justfile` - Convenient command shortcuts
+- `flake.nix` - Nix development environment
 
 ## Dependencies
 
 - **ghostty-vt**: Terminal emulation library from `ghostty-org/ghostty` (path dependency)
-- Cloned locally into `ghostty/` directory (gitignored)
-- Configured in `build.zig.zon` to point to the local ghostty clone
+  - Provides terminal state machine and ANSI escape sequence parsing
+  - Cloned locally into `ghostty/` directory (gitignored)
+  - Configured in `build.zig.zon` to point to the local ghostty clone
+- **SDL2**: Window management and rendering backend (via Nix)
+- **SDL2_ttf**: Font rendering library (via Nix)
 
-## Current Status
+## Architecture
 
-Step 2 of the implementation plan completed:
-- ✅ Zig project scaffolded
-- ✅ ghostty-vt dependency configured
-- ✅ Basic main.zig imports ghostty-vt
-- ✅ Build system configured with `build.zig`
+### Terminal Scaling
+Each terminal session is initialized with full-window dimensions (calculated from font metrics). In grid view, these full-sized terminals are scaled down to 1/3 and rendered into grid cells, providing a "zoomed out" view of complete terminal sessions.
 
-Next step: Establish windowing and single terminal rendering (Step 3)
+### Animation System
+The application uses cubic ease-in-out interpolation to smoothly transition between grid and full-screen views over 300ms. Four view modes (Grid, Expanding, Full, Collapsing) manage the animation state.
+
+### Rendering Pipeline
+1. Font glyphs are rendered to cached SDL textures
+2. Terminal cells are iterated and glyphs drawn at scaled positions
+3. Content is clipped to grid cell boundaries
+4. Borders indicate focus state
+
+## Implementation Status
+
+✅ **Fully Implemented**:
+- 3×3 grid layout with 9 terminal sessions
+- PTY management and shell spawning
+- Real-time terminal I/O
+- SDL2 window and event loop
+- Font rendering with SDL_ttf
+- Click-to-expand interaction
+- Smooth expand/collapse animations
+- Keyboard input handling
+- Full-window terminal scaling
+
+## License
+
+MIT

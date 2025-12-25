@@ -60,11 +60,15 @@ just ci
 
 ### Current State
 
-The project currently consists of:
-- Basic Zig executable that imports ghostty-vt module
-- Build system configured to use ghostty as a path dependency
-- Application prints a simple message confirming ghostty-vt module loads successfully
-- No windowing, rendering, or PTY management yet implemented
+The project is a fully functional terminal multiplexer with:
+- **3×3 grid layout** displaying 9 independent terminal sessions
+- **SDL2-based rendering** with SDL_ttf for font rendering
+- **PTY management** spawning real shell processes for each session
+- **Interactive animations** with smooth expand/collapse transitions
+- **Full-window terminals scaled to grid cells** - each terminal is sized for the full window and scaled down to 1/3 when displayed in the grid
+- **Click-to-expand** - clicking any grid cell smoothly expands it to full screen
+- **Keyboard support** - ESC key collapses expanded sessions back to grid view
+- **Real-time I/O** - non-blocking PTY reading with live terminal updates
 
 ### Dependency Management
 
@@ -80,8 +84,12 @@ Key dependency details:
 
 ### Project Structure
 
-- `src/main.zig` - Main application entry point (currently minimal)
-- `build.zig` - Zig build configuration with ghostty-vt module import
+- `src/main.zig` - Main application with SDL2 event loop, animation system, and rendering
+- `src/shell.zig` - Shell process spawning and management
+- `src/pty.zig` - PTY (pseudo-terminal) abstractions and utilities
+- `src/font.zig` - Font rendering with SDL_ttf and glyph caching
+- `src/c.zig` - C library bindings for SDL2 and SDL_ttf
+- `build.zig` - Zig build configuration with ghostty-vt module and SDL2 dependencies
 - `build.zig.zon` - Package manifest with ghostty path dependency
 - `docs/ghostty-vt-notes.md` - Comprehensive integration documentation for ghostty-vt
 - `docs/terminal-wall-plan.md` - Implementation plan documentation
@@ -108,15 +116,33 @@ Key dependency details:
 4. Handle keyboard input → encode via `input.encodeKey()` → write to PTY
 5. Render loop: extract cell grid from terminal → draw to window
 
-### Multi-Terminal Grid Architecture
+### Multi-Terminal Grid Architecture (Implemented)
 
-For the 3×3 grid, the application will need:
-- Data structure managing 9 independent `ghostty_vt.Terminal` instances
-- 9 separate PTY handles and shell processes
-- Layout manager computing grid cell rectangles based on window size
-- Render loop iterating over sessions and blitting to grid cells
-- Focus manager tracking selected session
-- Animation system for smooth transitions between grid and fullscreen views
+The application implements a 3×3 grid with the following components:
+
+**Terminal Management:**
+- `SessionState` struct managing each terminal instance, shell process, and PTY
+- Each terminal is initialized with full-window dimensions (calculated from font metrics)
+- Terminals report full-window size to shells, providing proper sizing information
+
+**Rendering System:**
+- Each grid cell displays a full-window terminal scaled down to 1/3
+- Terminals render from top-left of their rect (not centered)
+- Scale factor applied directly to font cell dimensions
+- Bounds checking clips content to rect boundaries
+- Font glyphs cached in textures for performance
+
+**Animation System:**
+- Four view modes: Grid, Expanding, Full, Collapsing
+- Cubic ease-in-out interpolation for smooth transitions
+- 300ms animation duration
+- Real-time rect interpolation between grid cell and full window
+
+**Input Handling:**
+- Mouse clicks detect grid cell selection and trigger expansion
+- ESC key collapses expanded sessions back to grid
+- Keyboard input encoded to ANSI sequences and written to active PTY
+- Non-blocking PTY reads avoid blocking the event loop
 
 ## Zig Version
 
