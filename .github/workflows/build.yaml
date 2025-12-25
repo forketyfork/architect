@@ -17,7 +17,7 @@ jobs:
       - name: Checkout ghostty dependency
         uses: actions/checkout@v4
         with:
-          repository: forketyfork/ghostty
+          repository: ghostty-org/ghostty
           path: ghostty
 
       - name: Install Nix

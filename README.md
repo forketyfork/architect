@@ -5,11 +5,17 @@ A Zig application demonstrating a 3×3 grid of interactive terminal sessions wit
 ## Prerequisites
 
 - Nix with flakes enabled
-- The ghostty repository cloned at `../../ghostty-org/ghostty` (relative to this repository)
 
 ## Setup
 
-1. Update the Nix flake and enter the development shell:
+1. Clone the ghostty dependency:
+   ```bash
+   just setup
+   ```
+
+   This will clone `ghostty-org/ghostty` into the `ghostty/` directory.
+
+2. Update the Nix flake and enter the development shell:
    ```bash
    nix flake update
    nix develop
@@ -20,9 +26,9 @@ A Zig application demonstrating a 3×3 grid of interactive terminal sessions wit
    direnv allow
    ```
 
-2. Verify the environment:
+3. Verify the environment:
    ```bash
-   zig version  # Should show 0.13+ (compatible with ghostty-vt)
+   zig version  # Should show 0.15.2+ (compatible with ghostty-vt)
    just --list  # Show available commands
    ```
 
@@ -71,7 +77,8 @@ zig fmt src/
 
 ## Dependencies
 
-- **ghostty-vt**: Terminal emulation library (path dependency)
+- **ghostty-vt**: Terminal emulation library from `ghostty-org/ghostty` (path dependency)
+- Cloned locally into `ghostty/` directory (gitignored)
 - Configured in `build.zig.zon` to point to the local ghostty clone
 
 ## Current Status

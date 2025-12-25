@@ -11,6 +11,9 @@ Architect is a Zig application that demonstrates a 3×3 grid of interactive term
 This project uses Nix flakes for reproducible development environments:
 
 ```bash
+# Clone the ghostty dependency (first time only)
+just setup
+
 # Enter development shell
 nix develop
 
@@ -25,6 +28,9 @@ The Nix flake provides:
 ## Build Commands
 
 ```bash
+# Clone ghostty dependency (first time setup)
+just setup
+
 # Build the project
 zig build
 # or
@@ -62,13 +68,15 @@ The project currently consists of:
 
 ### Dependency Management
 
-The project depends on **ghostty-vt**, a production-grade terminal emulation library extracted from Ghostty. This dependency is configured as a **path dependency** pointing to `../ghostty` (the ghostty repository must be cloned at this relative location).
+The project depends on **ghostty-vt**, a production-grade terminal emulation library extracted from Ghostty. This dependency is configured as a **path dependency** pointing to `ghostty/` directory (gitignored).
 
 Key dependency details:
-- Configured in `build.zig.zon` as a path dependency
+- The official `ghostty-org/ghostty` repository is cloned locally using `just setup`
+- Configured in `build.zig.zon` as a path dependency pointing to `ghostty/`
 - Imported in `build.zig` via `lazyDependency()` mechanism
 - The ghostty-vt module provides terminal emulation core without rendering or PTY management
 - API is explicitly unstable and subject to change
+- CI automatically clones the dependency from `ghostty-org/ghostty`
 
 ### Project Structure
 
@@ -125,7 +133,7 @@ For detailed ghostty-vt integration patterns, API overview, and usage examples, 
 - Rendering integration patterns (not provided by ghostty-vt)
 - Memory management considerations
 
-The ghostty repository at `../ghostty` contains reference implementations in:
+The ghostty repository at `ghostty/` contains reference implementations in:
 - `src/pty.zig` - PTY lifecycle management
 - `src/termio/Termio.zig` - Terminal I/O coordination
 - `example/zig-vt/` - Basic terminal examples
