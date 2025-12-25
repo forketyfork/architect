@@ -41,7 +41,12 @@ pub const Font = struct {
     pub fn renderGlyph(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) !void {
         if (codepoint == 0 or codepoint == ' ') return;
 
-        const texture = try self.getGlyphTexture(codepoint, fg_color);
+        const texture = self.getGlyphTexture(codepoint, fg_color) catch |err| {
+            if (err == error.GlyphRenderFailed) {
+                return;
+            }
+            return err;
+        };
 
         var tex_width: c_int = 0;
         var tex_height: c_int = 0;
@@ -62,16 +67,23 @@ pub const Font = struct {
             return texture;
         }
 
-        var utf8_buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch return error.InvalidCodepoint;
+        const surface = if (codepoint < 0x10000) blk: {
+            break :blk c.TTF_RenderGlyph_Blended(self.font, @intCast(codepoint), fg_color) orelse {
+                std.debug.print("TTF_RenderGlyph_Blended Error for U+{X:0>4}: {s}\n", .{ codepoint, c.TTF_GetError() });
+                return error.GlyphRenderFailed;
+            };
+        } else blk: {
+            var utf8_buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch return error.InvalidCodepoint;
 
-        var text_buf: [5]u8 = undefined;
-        @memcpy(text_buf[0..len], utf8_buf[0..len]);
-        text_buf[len] = 0;
+            var text_buf: [5]u8 = undefined;
+            @memcpy(text_buf[0..len], utf8_buf[0..len]);
+            text_buf[len] = 0;
 
-        const surface = c.TTF_RenderText_Blended(self.font, @ptrCast(&text_buf), fg_color) orelse {
-            std.debug.print("TTF_RenderText_Blended Error for codepoint {d}: {s}\n", .{ codepoint, c.TTF_GetError() });
-            return error.GlyphRenderFailed;
+            break :blk c.TTF_RenderText_Blended(self.font, @ptrCast(&text_buf), fg_color) orelse {
+                std.debug.print("TTF_RenderText_Blended Error for U+{X:0>4}: {s}\n", .{ codepoint, c.TTF_GetError() });
+                return error.GlyphRenderFailed;
+            };
         };
         defer c.SDL_FreeSurface(surface);
 

@@ -50,6 +50,7 @@ pub const TTF_Quit = c_import.TTF_Quit;
 pub const TTF_OpenFont = c_import.TTF_OpenFont;
 pub const TTF_CloseFont = c_import.TTF_CloseFont;
 pub const TTF_RenderText_Blended = c_import.TTF_RenderText_Blended;
+pub const TTF_RenderGlyph_Blended = c_import.TTF_RenderGlyph_Blended;
 pub const TTF_SizeText = c_import.TTF_SizeText;
 pub const TTF_GetError = c_import.TTF_GetError;
 

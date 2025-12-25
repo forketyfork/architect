@@ -164,7 +164,7 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
-    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/Monaco.ttf", 20);
+    var font = try font_mod.Font.init(allocator, renderer, "/Library/Fonts/Nix Fonts/4shzmavxa3immxybvjrg6kc697jiqmqq-nerd-fonts-iosevka-3.4.0+33.2.1/share/fonts/truetype/NerdFonts/Iosevka/IosevkaNerdFontMono-Regular.ttf", 16);
     defer font.deinit();
 
     const full_cols = @as(u16, @intCast(@divFloor(WINDOW_WIDTH, font.cell_width)));
@@ -302,6 +302,53 @@ pub fn main() !void {
     }
 }
 
+const ansi_colors = [_]c.SDL_Color{
+    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    .{ .r = 205, .g = 49, .b = 49, .a = 255 },
+    .{ .r = 13, .g = 188, .b = 121, .a = 255 },
+    .{ .r = 229, .g = 229, .b = 16, .a = 255 },
+    .{ .r = 36, .g = 114, .b = 200, .a = 255 },
+    .{ .r = 188, .g = 63, .b = 188, .a = 255 },
+    .{ .r = 17, .g = 168, .b = 205, .a = 255 },
+    .{ .r = 229, .g = 229, .b = 229, .a = 255 },
+    .{ .r = 102, .g = 102, .b = 102, .a = 255 },
+    .{ .r = 241, .g = 76, .b = 76, .a = 255 },
+    .{ .r = 35, .g = 209, .b = 139, .a = 255 },
+    .{ .r = 245, .g = 245, .b = 67, .a = 255 },
+    .{ .r = 59, .g = 142, .b = 234, .a = 255 },
+    .{ .r = 214, .g = 112, .b = 214, .a = 255 },
+    .{ .r = 41, .g = 184, .b = 219, .a = 255 },
+    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+};
+
+fn get256Color(idx: u8) c.SDL_Color {
+    if (idx < 16) {
+        return ansi_colors[idx];
+    } else if (idx < 232) {
+        const color_idx = idx - 16;
+        const r = (color_idx / 36) * 51;
+        const g = ((color_idx % 36) / 6) * 51;
+        const b = (color_idx % 6) * 51;
+        return .{ .r = @intCast(r), .g = @intCast(g), .b = @intCast(b), .a = 255 };
+    } else {
+        const gray = 8 + (idx - 232) * 10;
+        return .{ .r = @intCast(gray), .g = @intCast(gray), .b = @intCast(gray), .a = 255 };
+    }
+}
+
+fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color) c.SDL_Color {
+    return switch (color) {
+        .none => default,
+        .palette => |idx| get256Color(idx),
+        .rgb => |rgb| c.SDL_Color{
+            .r = rgb.r,
+            .g = rgb.g,
+            .b = rgb.b,
+            .a = 255,
+        },
+    };
+}
+
 fn render(
     renderer: *c.SDL_Renderer,
     sessions: []SessionState,
@@ -403,7 +450,7 @@ fn renderSession(
     const origin_x: c_int = rect.x;
     const origin_y: c_int = rect.y;
 
-    const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const default_fg = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
 
     var row: usize = 0;
     while (row < term_rows) : (row += 1) {
@@ -418,11 +465,16 @@ fn renderSession(
             const cp = cell.content.codepoint;
             if (cp == 0 or cp == ' ') continue;
 
+            if (cp >= 0x1F000) continue;
+
             const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
 
             if (x < rect.x or x >= rect.x + rect.w) continue;
             if (y < rect.y or y >= rect.y + rect.h) continue;
+
+            const style = list_cell.style();
+            const fg_color = getCellColor(style.fg_color, default_fg);
 
             try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }
