@@ -1,10 +1,15 @@
 const std = @import("std");
 const c = @import("c.zig");
 
+const GlyphKey = struct {
+    codepoint: u32,
+    color: u32,
+};
+
 pub const Font = struct {
     font: *c.TTF_Font,
     renderer: *c.SDL_Renderer,
-    glyph_cache: std.AutoHashMap(u21, *c.SDL_Texture),
+    glyph_cache: std.AutoHashMap(GlyphKey, *c.SDL_Texture),
     allocator: std.mem.Allocator,
     cell_width: c_int,
     cell_height: c_int,
@@ -22,7 +27,7 @@ pub const Font = struct {
         return Font{
             .font = font,
             .renderer = renderer,
-            .glyph_cache = std.AutoHashMap(u21, *c.SDL_Texture).init(allocator),
+            .glyph_cache = std.AutoHashMap(GlyphKey, *c.SDL_Texture).init(allocator),
             .allocator = allocator,
             .cell_width = cell_width,
             .cell_height = cell_height,
@@ -63,7 +68,12 @@ pub const Font = struct {
     }
 
     fn getGlyphTexture(self: *Font, codepoint: u21, fg_color: c.SDL_Color) !*c.SDL_Texture {
-        if (self.glyph_cache.get(codepoint)) |texture| {
+        const key = GlyphKey{
+            .codepoint = @intCast(codepoint),
+            .color = packColor(fg_color),
+        };
+
+        if (self.glyph_cache.get(key)) |texture| {
             return texture;
         }
 
@@ -94,7 +104,11 @@ pub const Font = struct {
 
         _ = c.SDL_SetTextureScaleMode(texture, c.SDL_ScaleModeLinear);
 
-        try self.glyph_cache.put(codepoint, texture);
+        try self.glyph_cache.put(key, texture);
         return texture;
+    }
+
+    fn packColor(color: c.SDL_Color) u32 {
+        return (@as(u32, color.r)) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16) | (@as(u32, color.a) << 24);
     }
 };

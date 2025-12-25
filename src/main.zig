@@ -465,8 +465,6 @@ fn renderSession(
             const cp = cell.content.codepoint;
             if (cp == 0 or cp == ' ') continue;
 
-            if (cp >= 0x1F000) continue;
-
             const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
 
