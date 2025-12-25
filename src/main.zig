@@ -164,7 +164,7 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
-    var font = try font_mod.Font.init(allocator, renderer, "/Library/Fonts/Nix Fonts/4shzmavxa3immxybvjrg6kc697jiqmqq-nerd-fonts-iosevka-3.4.0+33.2.1/share/fonts/truetype/NerdFonts/Iosevka/IosevkaNerdFontMono-Regular.ttf", 16);
+    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
     defer font.deinit();
 
     const full_cols = @as(u16, @intCast(@divFloor(WINDOW_WIDTH, font.cell_width)));
