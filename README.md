@@ -7,7 +7,9 @@ A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3Ã
 >
 > The application is experimental and may have bugs, stability issues, or unexpected behavior. See [Known Limitations](#known-limitations) for current shortcomings.
 
-https://github.com/forketyfork/architect/assets/2043479/architect-demo.mp4
+<video src="https://github.com/forketyfork/architect/raw/main/docs/assets/architect-demo.mp4" controls="controls" style="max-width: 100%;">
+  Your browser does not support the video tag.
+</video>
 
 ## Features
 
