@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-24_05.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
     zig = {
       url = "github:mitchellh/zig-overlay";
@@ -10,7 +11,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig }:
+  outputs = { self, nixpkgs, nixpkgs-24_05, flake-utils, zig }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -19,6 +20,14 @@
             allowUnfree = true;
           };
         };
+        legacy = import nixpkgs-24_05 {
+          inherit system;
+          config = {
+            allowUnfree = true;
+          };
+        };
+        sdl2 = legacy.SDL2;
+        sdl2_ttf = legacy.SDL2_ttf;
       in
       {
         devShells.default = pkgs.mkShell {
@@ -28,18 +37,20 @@
             pkg-config
           ];
 
-          buildInputs = with pkgs; [
-            SDL2.dev
-            SDL2_ttf
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
-            pkgs.gawk
-            pkgs.gnused
-          ];
+          buildInputs =
+            [
+              sdl2.dev
+              sdl2_ttf
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+              pkgs.gawk
+              pkgs.gnused
+            ];
 
           shellHook = ''
-            export PKG_CONFIG_PATH="${pkgs.SDL2}/lib/pkgconfig:${pkgs.SDL2_ttf}/lib/pkgconfig:$PKG_CONFIG_PATH"
-            export SDL2_INCLUDE_PATH="${pkgs.SDL2.dev}/include"
-            export SDL2_TTF_INCLUDE_PATH="${pkgs.SDL2_ttf}/include"
+            export PKG_CONFIG_PATH="${sdl2}/lib/pkgconfig:${sdl2_ttf}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export SDL2_INCLUDE_PATH="${sdl2.dev}/include"
+            export SDL2_TTF_INCLUDE_PATH="${sdl2_ttf}/include"
             echo "Architect development environment"
             echo "Available commands: just --list"
           ''

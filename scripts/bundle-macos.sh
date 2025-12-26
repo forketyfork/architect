@@ -13,7 +13,17 @@ echo "Bundling macOS application: $EXECUTABLE -> $OUTPUT_DIR"
 
 mkdir -p "$OUTPUT_DIR/lib"
 
-cp "$EXECUTABLE" "$OUTPUT_DIR/architect"
+# Keep the real binary as architect.bin and provide a wrapper that sets env vars
+cp "$EXECUTABLE" "$OUTPUT_DIR/architect.bin"
+chmod +x "$OUTPUT_DIR/architect.bin"
+
+cat > "$OUTPUT_DIR/architect" <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
+export DYLD_FALLBACK_LIBRARY_PATH="${SCRIPT_DIR}/lib:${DYLD_FALLBACK_LIBRARY_PATH:-/lib:/usr/lib}"
+exec "${SCRIPT_DIR}/architect.bin" "$@"
+EOS
 chmod +x "$OUTPUT_DIR/architect"
 
 seen_list=""
@@ -87,7 +97,7 @@ done
 for original in $seen_list; do
     [ -z "$original" ] && continue
     name=$(basename "$original")
-    install_name_tool -change "$original" "@executable_path/lib/$name" "$OUTPUT_DIR/architect" || true
+    install_name_tool -change "$original" "@executable_path/lib/$name" "$OUTPUT_DIR/architect.bin" || true
 done
 
 echo ""
