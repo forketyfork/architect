@@ -7,7 +7,7 @@ A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3Ã
 >
 > The application is experimental and may have bugs, stability issues, or unexpected behavior. See [Known Limitations](#known-limitations) for current shortcomings.
 
-![Architect Demo](https://via.placeholder.com/800x600?text=Architect+3x3+Terminal+Grid)
+https://github.com/forketyfork/architect/assets/2043479/architect-demo.mp4
 
 ## Features
 
