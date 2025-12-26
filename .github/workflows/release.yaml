@@ -36,6 +36,13 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      - name: Import code-signing certificate
+        if: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_CERTIFICATE_PWD != '' }}
+        uses: Apple-Actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
       - name: Cache Nix store
         uses: cachix/cachix-action@v16
         with:
@@ -50,6 +57,20 @@ jobs:
         run: |
           chmod +x scripts/bundle-macos.sh
           ./scripts/bundle-macos.sh zig-out/bin/architect release
+          if security find-identity -v -p codesigning >/tmp/codesign-identities.txt 2>/dev/null; then
+            IDENTITY=$(awk 'NR==1 {print $2}' /tmp/codesign-identities.txt)
+            echo "Signing with identity ${IDENTITY}"
+            for lib in release/lib/*.dylib; do
+              codesign --force --options runtime --timestamp --sign "$IDENTITY" "$lib"
+            done
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" release/architect.bin
+          else
+            echo "No Developer ID cert available; applying ad-hoc signature for Gatekeeper"
+            for lib in release/lib/*.dylib; do
+              codesign --force --sign - "$lib"
+            done
+            codesign --force --sign - release/architect.bin
+          fi
           cd release
           tar -czf architect-macos-${{ matrix.arch }}.tar.gz *
         working-directory: architect
