@@ -2,6 +2,11 @@
 
 A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL2 for rendering.
 
+> [!WARNING]
+> **This project is in early stages of development. Use at your own risk.**
+>
+> The application is experimental and may have bugs, stability issues, or unexpected behavior. See [Known Limitations](#known-limitations) for current shortcomings.
+
 ![Architect Demo](https://via.placeholder.com/800x600?text=Architect+3x3+Terminal+Grid)
 
 ## Features
@@ -56,6 +61,11 @@ just build
 zig build
 ```
 
+Build optimized release:
+```bash
+zig build -Doptimize=ReleaseFast
+```
+
 Run the application:
 ```bash
 zig build run
@@ -90,7 +100,7 @@ zig fmt src/
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
   - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid.
   - `{"session":0,"state":"done"}` shows a solid yellow border in the grid.
-- **Example (Python)**:
+- **Example from inside a terminal session**:
   ```bash
   python - <<'PY'
   import json, socket, os
@@ -102,16 +112,72 @@ zig fmt src/
   s.close()
   PY
   ```
-- **Demo from host** (replace `<pid>` with the actual Architect process ID):
+- **Example from outside (host)**:
   ```bash
-  python - <<'PY'
-  import json, socket
-  sock = "/tmp/architect_notify_<pid>.sock"
-  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sock)
-  s.sendall(json.dumps({"session":0,"state":"done"}).encode()); s.close()
+  # Find the socket (PID is included in the filename)
+  SOCK=$(ls ${XDG_RUNTIME_DIR:-/tmp}/architect_notify_*.sock 2>/dev/null | head -1)
+
+  # Send notification for session 0
+  python - <<PY
+  import json, socket, os
+  sock = os.environ["SOCK"]
+  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  s.connect(sock)
+  s.sendall(json.dumps({"session":0,"state":"done"}).encode() + b"\n")
+  s.close()
   PY
   ```
 
+### Configuring Claude Code Hooks
+
+To automatically send notifications when Claude Code stops or requests approval:
+
+1. Download the notification script (included in this repository):
+   ```bash
+   cp architect_notify.py ~/.claude/architect_notify.py
+   chmod +x ~/.claude/architect_notify.py
+   ```
+
+2. Add hooks to your `~/.claude/settings.json`:
+   ```json
+   {
+     "hooks": {
+       "Stop": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "python3 ~/.claude/architect_notify.py done || true"
+             }
+           ]
+         }
+       ],
+       "Notification": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "python3 ~/.claude/architect_notify.py awaiting_approval || true"
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+3. Run Architect and start Claude Code in one of the terminal sessions. The grid cell will automatically highlight when Claude requests approval or completes a task.
+
+## Releases
+
+macOS release binaries are automatically built and published via GitHub Actions when a version tag is pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
 
 ## Project Structure
 
@@ -125,6 +191,7 @@ zig fmt src/
 - `docs/` - Documentation and implementation plans
 - `justfile` - Convenient command shortcuts
 - `flake.nix` - Nix development environment
+- `.github/workflows/` - CI/CD workflows (build and release)
 
 ## Dependencies
 
@@ -161,6 +228,16 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Smooth expand/collapse animations
 - Keyboard input handling
 - Full-window terminal scaling
+- Claude Code integration via Unix domain sockets
+
+## Known Limitations
+
+The following features are not yet implemented:
+- **No terminal scrolling**: Cannot scroll back through terminal history
+- **No emoji support**: Unicode emojis may not render correctly
+- **No font selection**: Hardcoded to SF Mono font
+- **No configurability**: Grid size, colors, and keybindings are hardcoded
+- **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
 
 ## License
 

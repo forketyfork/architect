@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Architect is a Zig application that demonstrates a 3×3 grid of interactive terminal sessions with smooth animations, built on top of ghostty-vt. Currently, the project is in early development with basic scaffolding and dependency configuration in place.
+Architect is a Zig application that displays a 3×3 grid of interactive terminal sessions with smooth animations, built on top of ghostty-vt. The project is in early stages of development with PTY management, SDL2 rendering, real-time I/O, and Claude Code integration via Unix domain sockets.
 
 ## Development Environment Setup
 
@@ -36,6 +36,9 @@ zig build
 # or
 just build
 
+# Build optimized release
+zig build -Doptimize=ReleaseFast
+
 # Run the application
 zig build run
 
@@ -56,11 +59,28 @@ zig fmt src/
 just ci
 ```
 
+## Release Process
+
+To create a new release:
+
+1. Tag the commit with a version tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+2. GitHub Actions will automatically:
+   - Build the macOS release binary with `ReleaseFast` optimization
+   - Package it as `architect-macos.tar.gz`
+   - Create a GitHub release with the binary as an artifact
+
+The release workflow (`.github/workflows/release.yaml`) can also be triggered manually via workflow_dispatch.
+
 ## Architecture
 
 ### Current State
 
-The project is a fully functional terminal multiplexer with:
+The project is an experimental terminal multiplexer with:
 - **3×3 grid layout** displaying 9 independent terminal sessions
 - **SDL2-based rendering** with SDL_ttf for font rendering
 - **PTY management** spawning real shell processes for each session
@@ -144,6 +164,15 @@ The application implements a 3×3 grid with the following components:
 - Keyboard input encoded to ANSI sequences and written to active PTY
 - Non-blocking PTY reads avoid blocking the event loop
 
+### Known Limitations
+
+The following features are not yet implemented:
+- **No terminal scrolling**: Cannot scroll back through terminal history
+- **No emoji support**: Unicode emojis may not render correctly
+- **No font selection**: Hardcoded to SF Mono font
+- **No configurability**: Grid size, colors, and keybindings are hardcoded
+- **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
+
 ## Zig Version
 
 Minimum Zig version: **0.15.2** (specified in `build.zig.zon`)
@@ -192,3 +221,36 @@ The ghostty repository at `ghostty/` contains reference implementations in:
   s.sendall(msg.encode())
   s.close()
   ```
+
+### Configuring Claude Code Hooks
+
+For automatic notifications, users can configure Claude Code hooks in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/architect_notify.py done || true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/architect_notify.py awaiting_approval || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `architect_notify.py` script is included in the repository and should be copied to `~/.claude/`.
