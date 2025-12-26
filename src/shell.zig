@@ -5,6 +5,8 @@ const libc = @cImport({
     @cInclude("stdlib.h");
 });
 
+const log = std.log.scoped(.shell);
+
 pub const Shell = struct {
     pty: pty_mod.Pty,
     child_pid: std.c.pid_t,

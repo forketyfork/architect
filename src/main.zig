@@ -101,12 +101,12 @@ const NotificationQueue = struct {
         try self.items.append(allocator, item);
     }
 
-    pub fn drain(self: *NotificationQueue, handler: anytype) void {
+    pub fn drainAll(self: *NotificationQueue) std.ArrayListUnmanaged(Notification) {
         self.mutex.lock();
         defer self.mutex.unlock();
-        while (self.items.pop()) |item| {
-            handler(item);
-        }
+        const items = self.items;
+        self.items = .{};
+        return items;
     }
 };
 
@@ -119,6 +119,33 @@ const SessionState = struct {
     status: SessionStatus = .running,
     attention: bool = false,
 
+    // Two-phase initialization is required:
+    // 1. init() creates the SessionState with stream = undefined
+    // 2. initStream() must be called after the terminal is at its final memory location
+    //
+    // This is necessary because terminal.vtStream() creates a stream that holds an
+    // internal reference to the terminal. If we call vtStream() before moving the
+    // terminal into the struct, the stream ends up with an invalid reference,
+    // causing segfaults when the stream tries to access the terminal.
+    //
+    // While this leaves a brief window where stream is undefined, it's the only
+    // safe approach given ghostty-vt's internal architecture. The pattern ensures
+    // initStream() is called immediately after all sessions are created.
+
+    pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
+        DivisionByZero,
+        GraphemeAllocOutOfMemory,
+        GraphemeMapOutOfMemory,
+        HyperlinkMapOutOfMemory,
+        HyperlinkSetNeedsRehash,
+        HyperlinkSetOutOfMemory,
+        NeedsRehash,
+        OutOfMemory,
+        StringAllocOutOfMemory,
+        StyleSetNeedsRehash,
+        StyleSetOutOfMemory,
+    };
+
     pub fn init(
         allocator: std.mem.Allocator,
         id: usize,
@@ -126,7 +153,7 @@ const SessionState = struct {
         size: pty_mod.winsize,
         session_id_z: [:0]const u8,
         notify_sock: [:0]const u8,
-    ) !SessionState {
+    ) InitError!SessionState {
         const shell = try shell_mod.Shell.spawn(shell_path, size, session_id_z, notify_sock);
         errdefer {
             var s = shell;
@@ -160,7 +187,21 @@ const SessionState = struct {
         self.shell.deinit();
     }
 
-    pub fn processOutput(self: *SessionState) !void {
+    pub const ProcessOutputError = posix.ReadError || error{
+        DivisionByZero,
+        GraphemeAllocOutOfMemory,
+        GraphemeMapOutOfMemory,
+        HyperlinkMapOutOfMemory,
+        HyperlinkSetNeedsRehash,
+        HyperlinkSetOutOfMemory,
+        NeedsRehash,
+        OutOfMemory,
+        StringAllocOutOfMemory,
+        StyleSetNeedsRehash,
+        StyleSetOutOfMemory,
+    };
+
+    pub fn processOutput(self: *SessionState) ProcessOutputError!void {
         const n = self.shell.read(&self.output_buf) catch |err| {
             if (err == error.WouldBlock) return;
             return err;
@@ -308,7 +349,7 @@ pub fn main() !void {
                         std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
                     } else {
                         var buf: [8]u8 = undefined;
-                        const n = try encodeKey(key, &buf);
+                        const n = encodeKey(key, &buf);
                         if (n > 0) {
                             _ = try sessions[anim_state.focused_session].shell.write(buf[0..n]);
                         }
@@ -349,8 +390,9 @@ pub fn main() !void {
             try session.processOutput();
         }
 
-        notify_queue.mutex.lock();
-        while (notify_queue.items.pop()) |note| {
+        var notifications = notify_queue.drainAll();
+        defer notifications.deinit(allocator);
+        for (notifications.items) |note| {
             if (note.session < sessions.len) {
                 var session = &sessions[note.session];
                 session.status = note.state;
@@ -361,7 +403,6 @@ pub fn main() !void {
                 std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
             }
         }
-        notify_queue.mutex.unlock();
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing) {
             if (anim_state.isComplete(now)) {
@@ -427,6 +468,8 @@ fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color) c.SDL_Color
     };
 }
 
+const RenderError = font_mod.Font.RenderGlyphError;
+
 fn render(
     renderer: *c.SDL_Renderer,
     sessions: []SessionState,
@@ -438,7 +481,7 @@ fn render(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
-) !void {
+) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
 
@@ -506,7 +549,7 @@ fn renderSession(
     term_rows: u16,
     current_time_ms: i64,
     is_grid_view: bool,
-) !void {
+) RenderError!void {
     if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
     } else {
@@ -683,7 +726,7 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
     }
 }
 
-fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {
+fn encodeKey(key: c.SDL_Keysym, buf: []u8) usize {
     const sym = key.sym;
 
     if (key.mod & c.KMOD_CTRL != 0) {
@@ -726,14 +769,18 @@ fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {
     };
 }
 
-fn makeNonBlocking(fd: posix.fd_t) !void {
+const MakeNonBlockingError = posix.FcntlError;
+
+fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
     const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
     _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
-fn getNotifySocketPath(allocator: std.mem.Allocator) ![:0]u8 {
+const GetNotifySocketPathError = std.mem.Allocator.Error;
+
+fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathError![:0]u8 {
     const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
@@ -747,11 +794,13 @@ const NotifyContext = struct {
     queue: *NotificationQueue,
 };
 
+const StartNotifyThreadError = std.Thread.SpawnError;
+
 fn startNotifyThread(
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
-) !std.Thread {
+) StartNotifyThreadError!std.Thread {
     // Best-effort remove stale socket.
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -834,6 +883,117 @@ fn startNotifyThread(
     return try std.Thread.spawn(.{}, handler.run, .{ctx});
 }
 
-test "basic test" {
-    try std.testing.expectEqual(10, 3 + 7);
+test "encodeKey - return key" {
+    var buf: [8]u8 = undefined;
+    const key = c.SDL_Keysym{ .sym = c.SDLK_RETURN, .mod = 0, .scancode = 0, .unused = 0 };
+    const n = encodeKey(key, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
+}
+
+test "encodeKey - arrow keys" {
+    var buf: [8]u8 = undefined;
+
+    const up = c.SDL_Keysym{ .sym = c.SDLK_UP, .mod = 0, .scancode = 0, .unused = 0 };
+    const n_up = encodeKey(up, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_up);
+    try std.testing.expectEqualSlices(u8, "\x1b[A", buf[0..n_up]);
+
+    const down = c.SDL_Keysym{ .sym = c.SDLK_DOWN, .mod = 0, .scancode = 0, .unused = 0 };
+    const n_down = encodeKey(down, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_down);
+    try std.testing.expectEqualSlices(u8, "\x1b[B", buf[0..n_down]);
+
+    const right = c.SDL_Keysym{ .sym = c.SDLK_RIGHT, .mod = 0, .scancode = 0, .unused = 0 };
+    const n_right = encodeKey(right, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_right);
+    try std.testing.expectEqualSlices(u8, "\x1b[C", buf[0..n_right]);
+
+    const left = c.SDL_Keysym{ .sym = c.SDLK_LEFT, .mod = 0, .scancode = 0, .unused = 0 };
+    const n_left = encodeKey(left, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_left);
+    try std.testing.expectEqualSlices(u8, "\x1b[D", buf[0..n_left]);
+}
+
+test "encodeKey - ctrl+a" {
+    var buf: [8]u8 = undefined;
+    const key = c.SDL_Keysym{ .sym = c.SDLK_a, .mod = c.KMOD_CTRL, .scancode = 0, .unused = 0 };
+    const n = encodeKey(key, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 1), buf[0]);
+}
+
+test "encodeKey - unknown key" {
+    var buf: [8]u8 = undefined;
+    const key = c.SDL_Keysym{ .sym = 0, .mod = 0, .scancode = 0, .unused = 0 };
+    const n = encodeKey(key, &buf);
+    try std.testing.expectEqual(@as(usize, 0), n);
+}
+
+test "NotificationQueue - push and drain" {
+    const allocator = std.testing.allocator;
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+
+    try queue.push(allocator, .{ .session = 0, .state = .running });
+    try queue.push(allocator, .{ .session = 1, .state = .awaiting_approval });
+    try queue.push(allocator, .{ .session = 2, .state = .done });
+
+    var items = queue.drainAll();
+    defer items.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), items.items[0].session);
+    try std.testing.expectEqual(SessionStatus.running, items.items[0].state);
+    try std.testing.expectEqual(@as(usize, 1), items.items[1].session);
+    try std.testing.expectEqual(SessionStatus.awaiting_approval, items.items[1].state);
+    try std.testing.expectEqual(@as(usize, 2), items.items[2].session);
+    try std.testing.expectEqual(SessionStatus.done, items.items[2].state);
+}
+
+test "get256Color - basic ANSI colors" {
+    const black = get256Color(0);
+    try std.testing.expectEqual(@as(u8, 0), black.r);
+    try std.testing.expectEqual(@as(u8, 0), black.g);
+    try std.testing.expectEqual(@as(u8, 0), black.b);
+
+    const white = get256Color(15);
+    try std.testing.expectEqual(@as(u8, 255), white.r);
+    try std.testing.expectEqual(@as(u8, 255), white.g);
+    try std.testing.expectEqual(@as(u8, 255), white.b);
+}
+
+test "get256Color - grayscale" {
+    const gray = get256Color(232);
+    try std.testing.expectEqual(gray.r, gray.g);
+    try std.testing.expectEqual(gray.g, gray.b);
+}
+
+test "AnimationState.easeInOutCubic" {
+    try std.testing.expectEqual(@as(f32, 0.0), AnimationState.easeInOutCubic(0.0));
+    try std.testing.expectEqual(@as(f32, 1.0), AnimationState.easeInOutCubic(1.0));
+
+    const mid = AnimationState.easeInOutCubic(0.5);
+    try std.testing.expect(mid > 0.4 and mid < 0.6);
+}
+
+test "AnimationState.interpolateRect" {
+    const start = Rect{ .x = 0, .y = 0, .w = 100, .h = 100 };
+    const target = Rect{ .x = 100, .y = 100, .w = 200, .h = 200 };
+
+    const at_start = AnimationState.interpolateRect(start, target, 0.0);
+    try std.testing.expectEqual(start.x, at_start.x);
+    try std.testing.expectEqual(start.y, at_start.y);
+    try std.testing.expectEqual(start.w, at_start.w);
+    try std.testing.expectEqual(start.h, at_start.h);
+
+    const at_end = AnimationState.interpolateRect(start, target, 1.0);
+    try std.testing.expectEqual(target.x, at_end.x);
+    try std.testing.expectEqual(target.y, at_end.y);
+    try std.testing.expectEqual(target.w, at_end.w);
+    try std.testing.expectEqual(target.h, at_end.h);
+
+    const at_mid = AnimationState.interpolateRect(start, target, 0.5);
+    try std.testing.expect(at_mid.x > start.x and at_mid.x < target.x);
+    try std.testing.expect(at_mid.y > start.y and at_mid.y < target.y);
 }
