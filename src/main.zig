@@ -1,3 +1,5 @@
+// Main application entry: wires SDL2 rendering, ghostty-vt terminals, PTY-backed
+// shells, and the grid/animation system that drives the 3×3 terminal wall UI.
 const std = @import("std");
 const posix = std.posix;
 const ghostty_vt = @import("ghostty-vt");
@@ -45,6 +47,7 @@ const AnimationState = struct {
     start_rect: Rect,
     target_rect: Rect,
 
+    // Ease curve keeps both expansion and collapse feeling smooth instead of linear.
     fn easeInOutCubic(t: f32) f32 {
         if (t < 0.5) {
             return 4 * t * t * t;
@@ -81,6 +84,8 @@ const VtStreamType = blk: {
     const fn_info = @typeInfo(@TypeOf(T.vtStream)).@"fn";
     break :blk fn_info.return_type.?;
 };
+// ghostty-vt exposes vtStream() as a factory; we peel its return type here so
+// SessionState can store the concrete stream without duplicating the signature.
 
 const Notification = struct {
     session: usize,
@@ -91,6 +96,7 @@ const NotificationQueue = struct {
     mutex: std.Thread.Mutex = .{},
     items: std.ArrayListUnmanaged(Notification) = .{},
 
+    // Single-producer (notify thread) / single-consumer (render loop) queue guarded by a mutex.
     pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
@@ -201,6 +207,8 @@ const SessionState = struct {
         StyleSetOutOfMemory,
     };
 
+    // Pump PTY output into ghostty's parser; non-blocking reads mean it's safe to
+    // call every frame without stalling the event loop.
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
         const n = self.shell.read(&self.output_buf) catch |err| {
             if (err == error.WouldBlock) return;
@@ -218,6 +226,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Socket listener relays external "awaiting approval / done" signals from
+    // shells (or other tools) into the UI thread without blocking rendering.
     var notify_queue = NotificationQueue{};
     defer notify_queue.deinit(allocator);
 
@@ -318,6 +328,8 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
+    // Main loop: handle SDL input, feed PTY output into terminals, apply async
+    // notifications, drive animations, and render at ~60 FPS.
     while (running) {
         const now = std.time.milliTimestamp();
 
@@ -482,6 +494,8 @@ fn render(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
+    // Central draw routine: depending on view mode, paint either the full grid
+    // or the focused session with animation-aware scaling and overlays.
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
 
@@ -550,6 +564,9 @@ fn renderSession(
     current_time_ms: i64,
     is_grid_view: bool,
 ) RenderError!void {
+    // Each session renders as a scaled terminal snapshot clipped to its rect.
+    // Scaling happens via glyph re-render at the target size rather than texture
+    // scaling to keep text crisp at 1/3 scale.
     if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
     } else {
@@ -631,6 +648,8 @@ fn renderSession(
     }
 
     if (is_grid_view and session.attention) {
+        // Visual signal used by Claude/Gemini approval flow: pulsing yellow for
+        // awaiting_approval, solid green for done.
         const color = switch (session.status) {
             .awaiting_approval => blk: {
                 const phase_ms: f32 = @floatFromInt(@mod(current_time_ms, @as(i64, 1000)));
@@ -729,6 +748,7 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
 fn encodeKey(key: c.SDL_Keysym, buf: []u8) usize {
     const sym = key.sym;
 
+    // Minimal key → ANSI encoding for terminals; return 0 when unhandled.
     if (key.mod & c.KMOD_CTRL != 0) {
         if (sym >= c.SDLK_a and sym <= c.SDLK_z) {
             buf[0] = @as(u8, @intCast(sym - c.SDLK_a + 1));
@@ -781,6 +801,7 @@ fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
 const GetNotifySocketPathError = std.mem.Allocator.Error;
 
 fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathError![:0]u8 {
+    // Use XDG runtime dir when available; fall back to /tmp for ad-hoc runs.
     const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
@@ -852,6 +873,8 @@ fn startNotifyThread(
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
             _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
 
+            // Accept JSON lines from helper processes and enqueue lightweight
+            // notifications for the render thread; malformed inputs are ignored.
             while (true) {
                 const conn_fd = posix.accept(fd, null, null, 0) catch continue;
                 defer posix.close(conn_fd);

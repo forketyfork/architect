@@ -1,3 +1,5 @@
+// Shell process wrapper: spawns a login shell connected to a PTY and provides
+// minimal read/write/wait helpers for the main event loop.
 const std = @import("std");
 const posix = std.posix;
 const pty_mod = @import("pty.zig");
@@ -30,6 +32,8 @@ pub const Shell = struct {
         if (pid < 0) return error.ForkFailed;
 
         if (pid == 0) {
+            // Child: claim the PTY as controlling terminal and exec the shell with
+            // session metadata injected for external notification hooks.
             try pty_instance.childPreExec();
 
             if (libc.setenv(NAME_SESSION.ptr, session_id, 1) != 0) {
