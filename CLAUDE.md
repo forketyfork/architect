@@ -174,7 +174,7 @@ The ghostty repository at `ghostty/` contains reference implementations in:
 
 ## Claude Code Hook
 
-- Architect exposes a Unix domain socket at `${XDG_RUNTIME_DIR:-/tmp}/architect_notify.sock` (created at startup, chmod 600).
+- Architect exposes a Unix domain socket at `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` (created at startup, chmod 600, where `<pid>` is the process ID).
 - Every spawned shell gets two env vars:
   - `ARCHITECT_SESSION_ID`: 0-based grid index (matches the 3×3 order).
   - `ARCHITECT_NOTIFY_SOCK`: absolute path to the socket.

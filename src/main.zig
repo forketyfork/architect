@@ -14,7 +14,7 @@ const GRID_ROWS = 3;
 const GRID_COLS = 3;
 const ANIMATION_DURATION_MS = 300;
 const GRID_SCALE: f32 = 1.0 / 3.0;
-const ATTENTION_THICKNESS: c_int = 12;
+const ATTENTION_THICKNESS: c_int = 16;
 const NOTIFY_SOCKET_NAME = "architect_notify.sock";
 
 const SessionStatus = enum {
@@ -599,6 +599,21 @@ fn renderSession(
             else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 230 },
         };
         drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
+
+        const tint_color = switch (session.status) {
+            .awaiting_approval => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
+            .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 30 },
+            else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
+        };
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, tint_color.r, tint_color.g, tint_color.b, tint_color.a);
+        const tint_rect = c.SDL_Rect{
+            .x = rect.x,
+            .y = rect.y,
+            .w = rect.w,
+            .h = rect.h,
+        };
+        _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
 }
 
@@ -655,15 +670,16 @@ fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void 
 fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, color: c.SDL_Color) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
     _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    const radius: c_int = 12;
     var i: c_int = 0;
     while (i < thickness) : (i += 1) {
-        const r = c.SDL_Rect{
-            .x = rect.x - i,
-            .y = rect.y - i,
-            .w = rect.w + i * 2,
-            .h = rect.h + i * 2,
+        const r = Rect{
+            .x = rect.x + i,
+            .y = rect.y + i,
+            .w = rect.w - i * 2,
+            .h = rect.h - i * 2,
         };
-        _ = c.SDL_RenderDrawRect(renderer, &r);
+        drawRoundedBorder(renderer, r, radius);
     }
 }
 
@@ -719,7 +735,10 @@ fn makeNonBlocking(fd: posix.fd_t) !void {
 
 fn getNotifySocketPath(allocator: std.mem.Allocator) ![:0]u8 {
     const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
-    return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, NOTIFY_SOCKET_NAME });
+    const pid = std.c.getpid();
+    const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
+    defer allocator.free(socket_name);
+    return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, socket_name });
 }
 
 const NotifyContext = struct {

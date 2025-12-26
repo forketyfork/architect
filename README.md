@@ -84,7 +84,7 @@ zig fmt src/
 
 ## Claude Code Integration
 
-- **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify.sock` (Unix domain socket, mode 0600).
+- **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` (Unix domain socket, mode 0600, where `<pid>` is the process ID).
 - **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
 - **Protocol**: Send a single-line JSON object to the socket:
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
@@ -102,11 +102,11 @@ zig fmt src/
   s.close()
   PY
   ```
-- **Demo from host**:
+- **Demo from host** (replace `<pid>` with the actual Architect process ID):
   ```bash
   python - <<'PY'
   import json, socket
-  sock = "/tmp/architect_notify.sock"
+  sock = "/tmp/architect_notify_<pid>.sock"
   s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sock)
   s.sendall(json.dumps({"session":0,"state":"done"}).encode()); s.close()
   PY
