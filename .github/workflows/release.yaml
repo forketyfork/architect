@@ -39,13 +39,12 @@ jobs:
         run: nix develop --command zig build -Doptimize=ReleaseFast
         working-directory: architect
 
-      - name: Package release
+      - name: Bundle libraries and package
         run: |
-          mkdir -p release
-          cp zig-out/bin/architect release/architect
-          chmod +x release/architect
+          chmod +x scripts/bundle-macos.sh
+          ./scripts/bundle-macos.sh zig-out/bin/architect release
           cd release
-          tar -czf architect-macos.tar.gz architect
+          tar -czf architect-macos.tar.gz *
         working-directory: architect
 
       - name: Upload artifact

@@ -25,15 +25,19 @@ Download the latest release from the [releases page](https://github.com/forketyf
 # Download the latest release
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos.tar.gz
 
-# Extract the archive
+# Extract the archive (creates architect and lib/ directory)
 tar -xzf architect-macos.tar.gz
 
-# Remove macOS quarantine flag
-xattr -d com.apple.quarantine architect
+# Remove macOS quarantine flag (if set)
+xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
 
 # Run the application
 ./architect
 ```
+
+**Note**: The archive contains both the `architect` executable and a `lib/` directory with required dynamic libraries. Keep both in the same location.
+
+If you see "No such xattr" when removing the quarantine flag, that's fine - it means the flag wasn't set and you can proceed directly to running the application.
 
 ### Build from Source
 

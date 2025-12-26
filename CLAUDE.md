@@ -71,10 +71,31 @@ To create a new release:
 
 2. GitHub Actions will automatically:
    - Build the macOS release binary with `ReleaseFast` optimization
-   - Package it as `architect-macos.tar.gz`
+   - Bundle required dynamic libraries (SDL2, SDL2_ttf, and dependencies) using `scripts/bundle-macos.sh`
+   - Fix library paths to use `@executable_path/lib/` for portability
+   - Package it as `architect-macos.tar.gz` containing the executable and `lib/` directory
    - Create a GitHub release with the binary as an artifact
 
 The release workflow (`.github/workflows/release.yaml`) can also be triggered manually via workflow_dispatch.
+
+### Testing Release Bundle Locally
+
+To test the bundling process locally:
+
+```bash
+# Build release binary
+zig build -Doptimize=ReleaseFast
+
+# Run bundling script
+./scripts/bundle-macos.sh zig-out/bin/architect test-bundle
+
+# Test the bundled executable
+cd test-bundle && ./architect
+```
+
+The bundled package includes:
+- `architect` - main executable with fixed library paths
+- `lib/` - directory containing all required dynamic libraries (SDL2, SDL2_ttf, freetype, harfbuzz, etc.)
 
 ## Architecture
 
