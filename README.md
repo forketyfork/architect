@@ -1,5 +1,7 @@
 # Architect - Terminal Wall
 
+![Architect Hero](docs/assets/architect-hero.png)
+
 A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL2 for rendering.
 
 > [!WARNING]
