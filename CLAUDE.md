@@ -171,3 +171,24 @@ The ghostty repository at `ghostty/` contains reference implementations in:
 - Update `CLAUDE.md` when architecture, build processes, or development workflows change
 - Update `README.md` when user-facing features, setup instructions, or project status change
 - Ensure both files remain consistent and accurate with the current state of the project
+
+## Claude Code Hook
+
+- Architect exposes a Unix domain socket at `${XDG_RUNTIME_DIR:-/tmp}/architect_notify.sock` (created at startup, chmod 600).
+- Every spawned shell gets two env vars:
+  - `ARCHITECT_SESSION_ID`: 0-based grid index (matches the 3×3 order).
+  - `ARCHITECT_NOTIFY_SOCK`: absolute path to the socket.
+- Protocol: send a single JSON line to the socket:
+  - `{"session":N,"state":"start"}` → clear highlight / mark running
+  - `{"session":N,"state":"awaiting_approval"}` → pulsing yellow border in grid
+  - `{"session":N,"state":"done"}` → solid yellow border in grid
+- Minimal Python helper Claude can run inside the session:
+  ```python
+  import json, os, socket
+  sock = os.environ["ARCHITECT_NOTIFY_SOCK"]
+  msg = json.dumps({"session": int(os.environ["ARCHITECT_SESSION_ID"]), "state": "awaiting_approval"}) + "\n"
+  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  s.connect(sock)
+  s.sendall(msg.encode())
+  s.close()
+  ```

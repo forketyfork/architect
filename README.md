@@ -15,6 +15,7 @@ A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3�
   - Press ESC to collapse back to grid view
   - Type in the focused terminal
 - **High-Quality Rendering**: SDL_ttf font rendering with glyph caching
+- **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 
 ## Prerequisites
 
@@ -80,6 +81,37 @@ Format code:
 ```bash
 zig fmt src/
 ```
+
+## Claude Code Integration
+
+- **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify.sock` (Unix domain socket, mode 0600).
+- **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
+- **Protocol**: Send a single-line JSON object to the socket:
+  - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
+  - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid.
+  - `{"session":0,"state":"done"}` shows a solid yellow border in the grid.
+- **Example (Python)**:
+  ```bash
+  python - <<'PY'
+  import json, socket, os
+  sock = os.environ["ARCHITECT_NOTIFY_SOCK"]
+  msg = json.dumps({"session": int(os.environ["ARCHITECT_SESSION_ID"]), "state": "awaiting_approval"}) + "\n"
+  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  s.connect(sock)
+  s.sendall(msg.encode())
+  s.close()
+  PY
+  ```
+- **Demo from host**:
+  ```bash
+  python - <<'PY'
+  import json, socket
+  sock = "/tmp/architect_notify.sock"
+  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sock)
+  s.sendall(json.dumps({"session":0,"state":"done"}).encode()); s.close()
+  PY
+  ```
+
 
 ## Project Structure
 

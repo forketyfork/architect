@@ -1,6 +1,9 @@
 const std = @import("std");
 const posix = std.posix;
 const pty_mod = @import("pty.zig");
+const libc = @cImport({
+    @cInclude("stdlib.h");
+});
 
 pub const Shell = struct {
     pty: pty_mod.Pty,
@@ -11,7 +14,10 @@ pub const Shell = struct {
         ExecFailed,
     } || pty_mod.Pty.Error;
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize) SpawnError!Shell {
+    const NAME_SESSION: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
+    const NAME_SOCK: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
+
+    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8) SpawnError!Shell {
         const pty_instance = try pty_mod.Pty.open(size);
         errdefer {
             var pty_copy = pty_instance;
@@ -23,6 +29,13 @@ pub const Shell = struct {
 
         if (pid == 0) {
             try pty_instance.childPreExec();
+
+            if (libc.setenv(NAME_SESSION.ptr, session_id, 1) != 0) {
+                std.c._exit(1);
+            }
+            if (libc.setenv(NAME_SOCK.ptr, notify_sock, 1) != 0) {
+                std.c._exit(1);
+            }
 
             posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
             posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);

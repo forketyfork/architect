@@ -14,6 +14,15 @@ const GRID_ROWS = 3;
 const GRID_COLS = 3;
 const ANIMATION_DURATION_MS = 300;
 const GRID_SCALE: f32 = 1.0 / 3.0;
+const ATTENTION_THICKNESS: c_int = 12;
+const NOTIFY_SOCKET_NAME = "architect_notify.sock";
+
+const SessionStatus = enum {
+    idle,
+    running,
+    awaiting_approval,
+    done,
+};
 
 const ViewMode = enum {
     Grid,
@@ -73,15 +82,52 @@ const VtStreamType = blk: {
     break :blk fn_info.return_type.?;
 };
 
+const Notification = struct {
+    session: usize,
+    state: SessionStatus,
+};
+
+const NotificationQueue = struct {
+    mutex: std.Thread.Mutex = .{},
+    items: std.ArrayListUnmanaged(Notification) = .{},
+
+    pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
+        self.items.deinit(allocator);
+    }
+
+    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, item: Notification) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.items.append(allocator, item);
+    }
+
+    pub fn drain(self: *NotificationQueue, handler: anytype) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        while (self.items.pop()) |item| {
+            handler(item);
+        }
+    }
+};
+
 const SessionState = struct {
     id: usize,
     shell: shell_mod.Shell,
     terminal: ghostty_vt.Terminal,
     stream: VtStreamType,
     output_buf: [4096]u8,
+    status: SessionStatus = .running,
+    attention: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, id: usize, shell_path: []const u8, size: pty_mod.winsize) !SessionState {
-        const shell = try shell_mod.Shell.spawn(shell_path, size);
+    pub fn init(
+        allocator: std.mem.Allocator,
+        id: usize,
+        shell_path: []const u8,
+        size: pty_mod.winsize,
+        session_id_z: [:0]const u8,
+        notify_sock: [:0]const u8,
+    ) !SessionState {
+        const shell = try shell_mod.Shell.spawn(shell_path, size, session_id_z, notify_sock);
         errdefer {
             var s = shell;
             s.deinit();
@@ -130,6 +176,15 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    var notify_queue = NotificationQueue{};
+    defer notify_queue.deinit(allocator);
+
+    const notify_sock = try getNotifySocketPath(allocator);
+    defer allocator.free(notify_sock);
+
+    const notify_thread = try startNotifyThread(allocator, notify_sock, &notify_queue);
+    notify_thread.detach();
 
     _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
@@ -194,7 +249,9 @@ pub fn main() !void {
     }
 
     for (0..GRID_ROWS * GRID_COLS) |i| {
-        sessions[i] = try SessionState.init(allocator, i, shell_path, size);
+        var session_buf: [16]u8 = undefined;
+        const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
+        sessions[i] = try SessionState.init(allocator, i, shell_path, size, session_z, notify_sock);
         init_count += 1;
     }
 
@@ -227,6 +284,10 @@ pub fn main() !void {
         while (c.SDL_PollEvent(&event) != 0) {
             switch (event.type) {
                 c.SDL_QUIT => running = false,
+                c.SDL_TEXTINPUT => {
+                    const text = std.mem.sliceTo(&event.text.text, 0);
+                    _ = try sessions[anim_state.focused_session].shell.write(text);
+                },
                 c.SDL_KEYDOWN => {
                     const key = event.key.keysym;
 
@@ -261,6 +322,9 @@ pub fn main() !void {
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
 
+                        sessions[clicked_session].status = .running;
+                        sessions[clicked_session].attention = false;
+
                         const start_rect = Rect{
                             .x = @as(c_int, @intCast(grid_col)) * cell_width_pixels,
                             .y = @as(c_int, @intCast(grid_row)) * cell_height_pixels,
@@ -284,6 +348,20 @@ pub fn main() !void {
         for (&sessions) |*session| {
             try session.processOutput();
         }
+
+        notify_queue.mutex.lock();
+        while (notify_queue.items.pop()) |note| {
+            if (note.session < sessions.len) {
+                var session = &sessions[note.session];
+                session.status = note.state;
+                session.attention = switch (note.state) {
+                    .awaiting_approval, .done => true,
+                    else => false,
+                };
+                std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
+            }
+        }
+        notify_queue.mutex.unlock();
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing) {
             if (anim_state.isComplete(now)) {
@@ -377,12 +455,12 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows);
+                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, true);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -406,12 +484,12 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows);
+                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows, current_time, true);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false);
         },
     }
 }
@@ -426,6 +504,8 @@ fn renderSession(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    current_time_ms: i64,
+    is_grid_view: bool,
 ) !void {
     if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
@@ -506,6 +586,20 @@ fn renderSession(
         };
         _ = c.SDL_RenderDrawRect(renderer, &border_rect);
     }
+
+    if (is_grid_view and session.attention) {
+        const color = switch (session.status) {
+            .awaiting_approval => blk: {
+                const phase_ms: f32 = @floatFromInt(@mod(current_time_ms, @as(i64, 1000)));
+                const pulse = 0.5 + 0.5 * std.math.sin(phase_ms / 1000.0 * 2.0 * std.math.pi);
+                const base_alpha: u8 = @intFromFloat(170 + 70 * pulse);
+                break :blk c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = base_alpha };
+            },
+            .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 230 },
+            else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 230 },
+        };
+        drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
+    }
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
@@ -558,8 +652,31 @@ fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void 
     }
 }
 
+fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, color: c.SDL_Color) void {
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    var i: c_int = 0;
+    while (i < thickness) : (i += 1) {
+        const r = c.SDL_Rect{
+            .x = rect.x - i,
+            .y = rect.y - i,
+            .w = rect.w + i * 2,
+            .h = rect.h + i * 2,
+        };
+        _ = c.SDL_RenderDrawRect(renderer, &r);
+    }
+}
+
 fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {
     const sym = key.sym;
+
+    if (key.mod & c.KMOD_CTRL != 0) {
+        if (sym >= c.SDLK_a and sym <= c.SDLK_z) {
+            buf[0] = @as(u8, @intCast(sym - c.SDLK_a + 1));
+            return 1;
+        }
+    }
+
     return switch (sym) {
         c.SDLK_RETURN => blk: {
             buf[0] = '\r';
@@ -589,21 +706,7 @@ fn encodeKey(key: c.SDL_Keysym, buf: []u8) !usize {
             @memcpy(buf[0..3], "\x1b[D");
             break :blk 3;
         },
-        else => blk: {
-            if (sym >= 32 and sym <= 126) {
-                var char_byte: u8 = @intCast(sym);
-                if (key.mod & c.KMOD_CTRL != 0) {
-                    if (char_byte >= 'a' and char_byte <= 'z') {
-                        char_byte = char_byte - 'a' + 1;
-                    } else if (char_byte >= 'A' and char_byte <= 'Z') {
-                        char_byte = char_byte - 'A' + 1;
-                    }
-                }
-                buf[0] = char_byte;
-                break :blk 1;
-            }
-            break :blk 0;
-        },
+        else => 0,
     };
 }
 
@@ -612,6 +715,104 @@ fn makeNonBlocking(fd: posix.fd_t) !void {
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
     _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
+}
+
+fn getNotifySocketPath(allocator: std.mem.Allocator) ![:0]u8 {
+    const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, NOTIFY_SOCKET_NAME });
+}
+
+const NotifyContext = struct {
+    allocator: std.mem.Allocator,
+    socket_path: [:0]const u8,
+    queue: *NotificationQueue,
+};
+
+fn startNotifyThread(
+    allocator: std.mem.Allocator,
+    socket_path: [:0]const u8,
+    queue: *NotificationQueue,
+) !std.Thread {
+    // Best-effort remove stale socket.
+    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => {},
+    };
+
+    const handler = struct {
+        fn parseNotification(bytes: []const u8) ?Notification {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+
+            const alloc = arena.allocator();
+            const parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{}) catch return null;
+            defer parsed.deinit();
+
+            const root = parsed.value;
+            if (root != .object) return null;
+            const obj = root.object;
+
+            const state_val = obj.get("state") orelse return null;
+            if (state_val != .string) return null;
+            const state_str = state_val.string;
+            const state = if (std.mem.eql(u8, state_str, "start"))
+                SessionStatus.running
+            else if (std.mem.eql(u8, state_str, "awaiting_approval"))
+                SessionStatus.awaiting_approval
+            else if (std.mem.eql(u8, state_str, "done"))
+                SessionStatus.done
+            else
+                return null;
+
+            const session_val = obj.get("session") orelse return null;
+            if (session_val != .integer) return null;
+            if (session_val.integer < 0) return null;
+
+            return Notification{
+                .session = @intCast(session_val.integer),
+                .state = state,
+            };
+        }
+
+        fn run(ctx: NotifyContext) !void {
+            const addr = try std.net.Address.initUnix(ctx.socket_path);
+            const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+            defer posix.close(fd);
+
+            try posix.bind(fd, &addr.any, addr.getOsSockLen());
+            try posix.listen(fd, 16);
+            const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
+            _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
+
+            while (true) {
+                const conn_fd = posix.accept(fd, null, null, 0) catch continue;
+                defer posix.close(conn_fd);
+
+                var buffer = std.ArrayList(u8){};
+                defer buffer.deinit(ctx.allocator);
+
+                var tmp: [512]u8 = undefined;
+                while (true) {
+                    const n = posix.read(conn_fd, &tmp) catch |err| switch (err) {
+                        error.WouldBlock, error.ConnectionResetByPeer => break,
+                        else => break,
+                    };
+                    if (n == 0) break;
+                    if (buffer.items.len + n > 1024) break;
+                    buffer.appendSlice(ctx.allocator, tmp[0..n]) catch break;
+                }
+
+                if (buffer.items.len == 0) continue;
+
+                if (parseNotification(buffer.items)) |note| {
+                    ctx.queue.push(ctx.allocator, note) catch {};
+                }
+            }
+        }
+    };
+
+    const ctx = NotifyContext{ .allocator = allocator, .socket_path = socket_path, .queue = queue };
+    return try std.Thread.spawn(.{}, handler.run, .{ctx});
 }
 
 test "basic test" {

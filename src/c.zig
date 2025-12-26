@@ -33,6 +33,7 @@ pub const SDL_RENDERER_ACCELERATED = c_import.SDL_RENDERER_ACCELERATED;
 pub const SDL_BLENDMODE_BLEND = c_import.SDL_BLENDMODE_BLEND;
 pub const SDL_QUIT = c_import.SDL_QUIT;
 pub const SDL_KEYDOWN = c_import.SDL_KEYDOWN;
+pub const SDL_TEXTINPUT = c_import.SDL_TEXTINPUT;
 pub const SDL_MOUSEBUTTONDOWN = c_import.SDL_MOUSEBUTTONDOWN;
 
 pub const SDL_HINT_RENDER_SCALE_QUALITY = c_import.SDL_HINT_RENDER_SCALE_QUALITY;
@@ -47,6 +48,8 @@ pub const SDLK_UP = c_import.SDLK_UP;
 pub const SDLK_DOWN = c_import.SDLK_DOWN;
 pub const SDLK_LEFT = c_import.SDLK_LEFT;
 pub const SDLK_RIGHT = c_import.SDLK_RIGHT;
+pub const SDLK_a = c_import.SDLK_a;
+pub const SDLK_z = c_import.SDLK_z;
 pub const KMOD_CTRL = c_import.KMOD_CTRL;
 
 pub const TTF_Init = c_import.TTF_Init;
