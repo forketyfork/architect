@@ -1,7 +1,15 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // GitHub's macOS runners default the deployment target to the host
+    // (currently 15.x), which makes release binaries fail to start on older
+    // macOS versions. Pin a lower default; callers can still override with
+    // -Dtarget.
+    const target = b.standardTargetOptions(.{
+        .default_target = .{
+            .os_version_min = .{ .semver = .{ .major = 12, .minor = 0, .patch = 0 } },
+        },
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     const exe_mod = b.createModule(.{
