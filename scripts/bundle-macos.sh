@@ -45,7 +45,7 @@ $dep"
 }
 
 echo "Analyzing dynamic library dependencies..."
-initial_deps=$(otool -L "$EXECUTABLE" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
 
 if [ -z "$initial_deps" ]; then
     echo "No Nix store dependencies found"
@@ -75,7 +75,7 @@ while [ -n "$queue" ]; do
 
     install_name_tool -id "@executable_path/lib/$lib_name" "$dest"
 
-    nested_list=$(otool -L "$lib_path" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+    nested_list=$(otool -L "$lib_path" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
     while IFS= read -r nested_dep; do
         [ -z "$nested_dep" ] && continue
         nested_name=$(basename "$nested_dep")
