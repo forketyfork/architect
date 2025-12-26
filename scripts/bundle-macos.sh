@@ -11,58 +11,102 @@ OUTPUT_DIR="$2"
 
 echo "Bundling macOS application: $EXECUTABLE -> $OUTPUT_DIR"
 
-mkdir -p "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR/lib"
 
 cp "$EXECUTABLE" "$OUTPUT_DIR/architect"
 chmod +x "$OUTPUT_DIR/architect"
 
-echo "Analyzing dynamic library dependencies..."
-DYLIBS=$(otool -L "$EXECUTABLE" | grep -E '^\s+/nix/store' | awk '{print $1}' || true)
+seen_list=""
+queue=""
 
-if [ -z "$DYLIBS" ]; then
+enqueue() {
+    local dep="$1"
+    if [ -z "$dep" ]; then
+        return
+    fi
+
+    if [ ! -f "$dep" ]; then
+        echo "Warning: $dep not found, skipping"
+        return
+    fi
+
+    if echo "$seen_list" | grep -Fxq "$dep"; then
+        return
+    fi
+
+    seen_list="$seen_list
+$dep"
+    if [ -z "$queue" ]; then
+        queue="$dep"
+    else
+        queue="$queue
+$dep"
+    fi
+}
+
+echo "Analyzing dynamic library dependencies..."
+mapfile -t initial_deps < <(otool -L "$EXECUTABLE" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+
+if [ ${#initial_deps[@]} -eq 0 ]; then
     echo "No Nix store dependencies found"
     exit 0
 fi
 
-echo "Found dependencies:"
-echo "$DYLIBS"
+for dep in "${initial_deps[@]}"; do
+    enqueue "$dep"
+done
 
-for dylib in $DYLIBS; do
-    if [ ! -f "$dylib" ]; then
-        echo "Warning: $dylib not found, skipping"
-        continue
+echo "Found dependencies:"
+printf '  %s\n' "${initial_deps[@]}"
+
+while [ -n "$queue" ]; do
+    lib_path=$(printf '%s\n' "$queue" | head -n1)
+    queue=$(printf '%s\n' "$queue" | tail -n +2)
+
+    lib_name=$(basename "$lib_path")
+    dest="$OUTPUT_DIR/lib/$lib_name"
+
+    if [ ! -f "$dest" ]; then
+        echo "Copying $lib_name..."
+        cp "$lib_path" "$dest"
+        chmod 644 "$dest"
     fi
 
-    dylib_name=$(basename "$dylib")
-    echo "Copying $dylib_name..."
-    cp "$dylib" "$OUTPUT_DIR/lib/"
-    chmod 644 "$OUTPUT_DIR/lib/$dylib_name"
+    install_name_tool -id "@executable_path/lib/$lib_name" "$dest"
 
-    echo "Fixing install name for $dylib_name in executable..."
-    install_name_tool -change "$dylib" "@executable_path/lib/$dylib_name" "$OUTPUT_DIR/architect"
+    while IFS= read -r nested_dep; do
+        [ -z "$nested_dep" ] && continue
+        nested_name=$(basename "$nested_dep")
+        install_name_tool -change "$nested_dep" "@executable_path/lib/$nested_name" "$dest"
+        enqueue "$nested_dep"
+    done < <(otool -L "$lib_path" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+done
 
-    nested_dylibs=$(otool -L "$dylib" | grep -E '^\s+/nix/store' | awk '{print $1}' || true)
-    for nested_dylib in $nested_dylibs; do
-        if [ ! -f "$nested_dylib" ]; then
-            continue
-        fi
-
-        nested_name=$(basename "$nested_dylib")
-        if [ ! -f "$OUTPUT_DIR/lib/$nested_name" ]; then
-            echo "Copying nested dependency $nested_name..."
-            cp "$nested_dylib" "$OUTPUT_DIR/lib/"
-            chmod 644 "$OUTPUT_DIR/lib/$nested_name"
-        fi
-
-        echo "Fixing install name for $nested_name in $dylib_name..."
-        install_name_tool -change "$nested_dylib" "@executable_path/lib/$nested_name" "$OUTPUT_DIR/lib/$dylib_name"
-    done
+for original in $seen_list; do
+    [ -z "$original" ] && continue
+    name=$(basename "$original")
+    install_name_tool -change "$original" "@executable_path/lib/$name" "$OUTPUT_DIR/architect" || true
 done
 
 echo ""
 echo "Verifying final dependencies..."
-otool -L "$OUTPUT_DIR/architect"
+if otool -L "$OUTPUT_DIR/architect" | grep -q '/nix/store'; then
+    echo "Warning: Nix store references remain in architect binary"
+    otool -L "$OUTPUT_DIR/architect" | grep '/nix/store'
+fi
+
+remaining=0
+for file in "$OUTPUT_DIR"/lib/*.dylib; do
+    if otool -L "$file" | grep -q '/nix/store'; then
+        echo "Warning: Nix store references remain in $file"
+        otool -L "$file" | grep '/nix/store'
+        remaining=1
+    fi
+done
+
+if [ $remaining -eq 0 ]; then
+    echo "All bundled libraries patched to use @executable_path/lib"
+fi
 
 echo ""
 echo "Bundle complete! Structure:"
