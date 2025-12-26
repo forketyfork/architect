@@ -42,10 +42,10 @@ jobs:
       - name: Package release
         run: |
           mkdir -p release
-          cp zig-out/bin/architect release/architect-macos
-          chmod +x release/architect-macos
+          cp zig-out/bin/architect release/architect
+          chmod +x release/architect
           cd release
-          tar -czf architect-macos.tar.gz architect-macos
+          tar -czf architect-macos.tar.gz architect
         working-directory: architect
 
       - name: Upload artifact

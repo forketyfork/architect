@@ -9,6 +9,30 @@ A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3Ã
 
 ![Architect Demo](docs/assets/architect-demo.gif)
 
+## Installation
+
+### Download Pre-built Binary (macOS)
+
+Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases):
+
+```bash
+# Download the latest release
+curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos.tar.gz
+
+# Extract the archive
+tar -xzf architect-macos.tar.gz
+
+# Remove macOS quarantine flag
+xattr -d com.apple.quarantine architect
+
+# Run the application
+./architect
+```
+
+### Build from Source
+
+See [Setup](#setup) section below for building from source.
+
 ## Features
 
 - **3Ã—3 Terminal Grid**: Run 9 independent shell sessions simultaneously
