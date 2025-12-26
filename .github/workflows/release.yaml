@@ -11,7 +11,14 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -44,20 +51,20 @@ jobs:
           chmod +x scripts/bundle-macos.sh
           ./scripts/bundle-macos.sh zig-out/bin/architect release
           cd release
-          tar -czf architect-macos.tar.gz *
+          tar -czf architect-macos-${{ matrix.arch }}.tar.gz *
         working-directory: architect
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: architect-macos
-          path: architect/release/architect-macos.tar.gz
+          name: architect-macos-${{ matrix.arch }}
+          path: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: architect/release/architect-macos.tar.gz
+          files: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true

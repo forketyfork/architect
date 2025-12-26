@@ -70,13 +70,13 @@ To create a new release:
    ```
 
 2. GitHub Actions will automatically:
-   - Build the macOS release binary with `ReleaseFast` optimization
+   - Build macOS release binaries for both ARM64 (Apple Silicon) and x86_64 (Intel) architectures with `ReleaseFast` optimization
    - Bundle required dynamic libraries (SDL2, SDL2_ttf, and dependencies) using `scripts/bundle-macos.sh`
    - Fix library paths to use `@executable_path/lib/` for portability
-   - Package it as `architect-macos.tar.gz` containing the executable and `lib/` directory
-   - Create a GitHub release with the binary as an artifact
+   - Package as `architect-macos-arm64.tar.gz` and `architect-macos-x86_64.tar.gz`, each containing the executable and `lib/` directory
+   - Create a GitHub release with both architecture binaries as artifacts
 
-The release workflow (`.github/workflows/release.yaml`) can also be triggered manually via workflow_dispatch.
+The release workflow (`.github/workflows/release.yaml`) uses a matrix strategy to build on both `macos-latest` (ARM64) and `macos-13` (Intel) runners. It can also be triggered manually via workflow_dispatch.
 
 ### Testing Release Bundle Locally
 

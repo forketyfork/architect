@@ -19,25 +19,28 @@ A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3Ã
 
 ### Download Pre-built Binary (macOS)
 
-Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases):
+Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
 
+**For Apple Silicon (M1/M2/M3/M4):**
 ```bash
-# Download the latest release
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos.tar.gz
-
-# Extract the archive (creates architect and lib/ directory)
-tar -xzf architect-macos.tar.gz
-
-# Remove macOS quarantine flag (if set)
+curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
+tar -xzf architect-macos-arm64.tar.gz
 xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
-
-# Run the application
 ./architect
 ```
 
-**Note**: The archive contains both the `architect` executable and a `lib/` directory with required dynamic libraries. Keep both in the same location.
+**For Intel Macs:**
+```bash
+curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
+tar -xzf architect-macos-x86_64.tar.gz
+xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
+./architect
+```
 
-If you see "No such xattr" when removing the quarantine flag, that's fine - it means the flag wasn't set and you can proceed directly to running the application.
+**Note**:
+- The archive contains both the `architect` executable and a `lib/` directory with required dynamic libraries. Keep both in the same location.
+- If you see "No such xattr" when removing the quarantine flag, that's fine - it means the flag wasn't set and you can proceed directly to running the application.
+- Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
 ### Build from Source
 
@@ -204,12 +207,16 @@ To automatically send notifications when Claude Code stops or requests approval:
 
 ## Releases
 
-macOS release binaries are automatically built and published via GitHub Actions when a version tag is pushed:
+macOS release binaries are automatically built for both ARM64 (Apple Silicon) and x86_64 (Intel) architectures via GitHub Actions when a version tag is pushed:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+Each release includes:
+- `architect-macos-arm64.tar.gz` - For Apple Silicon Macs (M1/M2/M3/M4)
+- `architect-macos-x86_64.tar.gz` - For Intel Macs
 
 Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
 
