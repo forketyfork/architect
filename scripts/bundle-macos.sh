@@ -45,19 +45,20 @@ $dep"
 }
 
 echo "Analyzing dynamic library dependencies..."
-mapfile -t initial_deps < <(otool -L "$EXECUTABLE" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+initial_deps=$(otool -L "$EXECUTABLE" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
 
-if [ ${#initial_deps[@]} -eq 0 ]; then
+if [ -z "$initial_deps" ]; then
     echo "No Nix store dependencies found"
     exit 0
 fi
 
-for dep in "${initial_deps[@]}"; do
+while IFS= read -r dep; do
+    [ -z "$dep" ] && continue
     enqueue "$dep"
-done
+done <<< "$initial_deps"
 
 echo "Found dependencies:"
-printf '  %s\n' "${initial_deps[@]}"
+printf '  %s\n' $initial_deps
 
 while [ -n "$queue" ]; do
     lib_path=$(printf '%s\n' "$queue" | head -n1)
@@ -74,12 +75,13 @@ while [ -n "$queue" ]; do
 
     install_name_tool -id "@executable_path/lib/$lib_name" "$dest"
 
+    nested_list=$(otool -L "$lib_path" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
     while IFS= read -r nested_dep; do
         [ -z "$nested_dep" ] && continue
         nested_name=$(basename "$nested_dep")
         install_name_tool -change "$nested_dep" "@executable_path/lib/$nested_name" "$dest"
         enqueue "$nested_dep"
-    done < <(otool -L "$lib_path" | awk '/^\s/ {print $1}' | grep '^/nix/store' || true)
+    done <<< "$nested_list"
 done
 
 for original in $seen_list; do
