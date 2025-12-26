@@ -1,3 +1,5 @@
+// SDL_ttf-backed font helper with glyph caching so terminals can render text
+// efficiently at varying scales.
 const std = @import("std");
 const c = @import("c.zig");
 
@@ -89,6 +91,8 @@ pub const Font = struct {
             return texture;
         }
 
+        // Cache miss: rasterize glyph (UTF-16 path for BMP, UTF-8 fallback for
+        // others), then keep a texture keyed by codepoint+color for reuse.
         const surface = if (codepoint < 0x10000) blk: {
             break :blk c.TTF_RenderGlyph_Blended(self.font, @intCast(codepoint), fg_color) orelse {
                 log.debug("TTF_RenderGlyph_Blended failed for U+{X:0>4}: {s}", .{ codepoint, c.TTF_GetError() });

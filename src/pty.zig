@@ -1,3 +1,5 @@
+// Cross-platform (macOS/Linux) PTY helper that wraps openpty, window sizing, and
+// controlling-terminal setup for spawned shells.
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
@@ -53,6 +55,8 @@ const PosixPty = struct {
     pub fn open(size: winsize) OpenError!Pty {
         var sizeCopy = size;
 
+        // openpty gives us a connected master/slave pair with the requested
+        // window size; we mark the master CLOEXEC to avoid leaking into children.
         var master_fd: Fd = undefined;
         var slave_fd: Fd = undefined;
         if (c.openpty(
@@ -125,6 +129,9 @@ const PosixPty = struct {
     pub const ChildPreExecError = error{ ProcessGroupFailed, SetControllingTerminalFailed };
 
     pub fn childPreExec(self: Pty) ChildPreExecError!void {
+        // Reset inherited handlers that can interfere with child shells and
+        // make this process the session leader before binding the slave as the
+        // controlling terminal.
         var sa: posix.Sigaction = .{
             .handler = .{ .handler = posix.SIG.DFL },
             .mask = posix.sigemptyset(),

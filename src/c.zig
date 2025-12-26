@@ -1,3 +1,5 @@
+// Minimal re-export layer that isolates C includes so the rest of the codebase
+// can `@import("c.zig")` without pulling headers repeatedly.
 const c_import = @cImport({
     @cInclude("SDL2/SDL.h");
     @cInclude("SDL2/SDL_ttf.h");
