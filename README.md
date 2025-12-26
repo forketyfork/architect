@@ -25,7 +25,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
 tar -xzf architect-macos-arm64.tar.gz
-xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
+xattr -d com.apple.quarantine architect.bin lib/* 2>/dev/null || true
 ./architect
 ```
 
@@ -33,12 +33,12 @@ xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
 tar -xzf architect-macos-x86_64.tar.gz
-xattr -d com.apple.quarantine architect lib/* 2>/dev/null || true
+xattr -d com.apple.quarantine architect.bin lib/* 2>/dev/null || true
 ./architect
 ```
 
 **Note**:
-- The archive contains both the `architect` executable and a `lib/` directory with required dynamic libraries. Keep both in the same location.
+- The archive contains a small launcher `architect`, the main binary `architect.bin`, and a `lib/` directory with required dynamic libraries. Keep all of them in the same location.
 - If you see "No such xattr" when removing the quarantine flag, that's fine - it means the flag wasn't set and you can proceed directly to running the application.
 - Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
