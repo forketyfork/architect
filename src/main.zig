@@ -277,8 +277,8 @@ pub fn main() !void {
     var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
     defer font.deinit();
 
-    const full_cols = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_WIDTH, font.cell_width)));
-    const full_rows = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_HEIGHT, font.cell_height)));
+    var full_cols = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_WIDTH, font.cell_width)));
+    var full_rows = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_HEIGHT, font.cell_height)));
 
     std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
@@ -349,7 +349,27 @@ pub fn main() !void {
                     window_height = @intCast(event.window.data2);
                     cell_width_pixels = @divFloor(window_width, GRID_COLS);
                     cell_height_pixels = @divFloor(window_height, GRID_ROWS);
-                    std.debug.print("Window resized to: {d}x{d}\n", .{ window_width, window_height });
+
+                    full_cols = @as(u16, @intCast(@divFloor(window_width, font.cell_width)));
+                    full_rows = @as(u16, @intCast(@divFloor(window_height, font.cell_height)));
+
+                    const new_size = pty_mod.winsize{
+                        .ws_row = full_rows,
+                        .ws_col = full_cols,
+                        .ws_xpixel = @intCast(window_width),
+                        .ws_ypixel = @intCast(window_height),
+                    };
+
+                    for (&sessions) |*session| {
+                        session.shell.pty.setSize(new_size) catch |err| {
+                            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+                        };
+                        session.terminal.resize(allocator, full_cols, full_rows) catch |err| {
+                            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+                        };
+                    }
+
+                    std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
@@ -364,22 +384,20 @@ pub fn main() !void {
                     const key = event.key.key;
                     const mod = event.key.mod;
 
-                    if ((mod & c.SDL_KMOD_GUI != 0) and (mod & c.SDL_KMOD_SHIFT != 0) and
-                        (key == c.SDLK_RIGHTBRACKET or key == c.SDLK_LEFTBRACKET) and
-                        anim_state.mode == .Full)
-                    {
-                        const is_next = (key == c.SDLK_RIGHTBRACKET);
-                        const total_sessions = GRID_ROWS * GRID_COLS;
-                        const new_session = if (is_next)
-                            (anim_state.focused_session + 1) % total_sessions
-                        else
-                            (anim_state.focused_session + total_sessions - 1) % total_sessions;
+                    if (isSwitchTerminalShortcut(key, mod)) |is_next| {
+                        if (anim_state.mode == .Full) {
+                            const total_sessions = GRID_ROWS * GRID_COLS;
+                            const new_session = if (is_next)
+                                (anim_state.focused_session + 1) % total_sessions
+                            else
+                                (anim_state.focused_session + total_sessions - 1) % total_sessions;
 
-                        anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
-                        anim_state.previous_session = anim_state.focused_session;
-                        anim_state.focused_session = new_session;
-                        anim_state.start_time = now;
-                        std.debug.print("Panning to session {d} from {d}\n", .{ new_session, anim_state.previous_session });
+                            anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
+                            anim_state.previous_session = anim_state.focused_session;
+                            anim_state.focused_session = new_session;
+                            anim_state.start_time = now;
+                            std.debug.print("Panning to session {d} from {d}\n", .{ new_session, anim_state.previous_session });
+                        }
                     } else if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
                         const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
                         const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
@@ -887,6 +905,13 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
         };
         drawRoundedBorder(renderer, r, radius);
     }
+}
+
+fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
+    if ((mod & c.SDL_KMOD_GUI) == 0 or (mod & c.SDL_KMOD_SHIFT) == 0) return null;
+    if (key == c.SDLK_RIGHTBRACKET) return true;
+    if (key == c.SDLK_LEFTBRACKET) return false;
+    return null;
 }
 
 fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
