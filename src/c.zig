@@ -32,11 +32,13 @@ pub const SDL_StopTextInput = c_import.SDL_StopTextInput;
 
 pub const SDL_INIT_VIDEO = c_import.SDL_INIT_VIDEO;
 pub const SDL_BLENDMODE_BLEND = c_import.SDL_BLENDMODE_BLEND;
+pub const SDL_WINDOW_RESIZABLE = c_import.SDL_WINDOW_RESIZABLE;
 pub const SDL_EVENT_QUIT = c_import.SDL_EVENT_QUIT;
 pub const SDL_EVENT_KEY_DOWN = c_import.SDL_EVENT_KEY_DOWN;
 pub const SDL_EVENT_TEXT_INPUT = c_import.SDL_EVENT_TEXT_INPUT;
 pub const SDL_EVENT_MOUSE_BUTTON_DOWN = c_import.SDL_EVENT_MOUSE_BUTTON_DOWN;
 pub const SDL_EVENT_MOUSE_WHEEL = c_import.SDL_EVENT_MOUSE_WHEEL;
+pub const SDL_EVENT_WINDOW_RESIZED = c_import.SDL_EVENT_WINDOW_RESIZED;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;
@@ -50,7 +52,11 @@ pub const SDLK_LEFT = c_import.SDLK_LEFT;
 pub const SDLK_RIGHT = c_import.SDLK_RIGHT;
 pub const SDLK_A = c_import.SDLK_A;
 pub const SDLK_Z = c_import.SDLK_Z;
+pub const SDLK_LEFTBRACKET = c_import.SDLK_LEFTBRACKET;
+pub const SDLK_RIGHTBRACKET = c_import.SDLK_RIGHTBRACKET;
 pub const SDL_KMOD_CTRL = c_import.SDL_KMOD_CTRL;
+pub const SDL_KMOD_SHIFT = c_import.SDL_KMOD_SHIFT;
+pub const SDL_KMOD_GUI = c_import.SDL_KMOD_GUI;
 
 pub const TTF_Init = c_import.TTF_Init;
 pub const TTF_Quit = c_import.TTF_Quit;
