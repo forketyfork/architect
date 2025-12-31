@@ -288,8 +288,8 @@ pub fn main() !void {
     defer c.SDL_DestroyRenderer(renderer);
 
     const vsync_enabled = blk: {
-        const ok = c.SDL_SetRenderVSync(renderer, 1);
-        if (!ok) {
+        const success = c.SDL_SetRenderVSync(renderer, 1);
+        if (!success) {
             std.debug.print("Warning: failed to enable vsync: {s}\n", .{c.SDL_GetError()});
             break :blk false;
         }
@@ -1067,7 +1067,7 @@ fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
     const shift_held = (mod & c.SDL_KMOD_SHIFT) != 0;
     return switch (key) {
         c.SDLK_EQUALS => if (shift_held) .increase else null,
-        c.SDLK_MINUS => if (shift_held) .decrease else null,
+        c.SDLK_MINUS => .decrease,
         c.SDLK_KP_PLUS => .increase,
         c.SDLK_KP_MINUS => .decrease,
         else => null,
@@ -1281,9 +1281,9 @@ test "encodeKeyWithMod - unknown key" {
 
 test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
-    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
-    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
-    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
 }
 
