@@ -274,6 +274,15 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
+    const vsync_enabled = blk: {
+        const ok = c.SDL_SetRenderVSync(renderer, 1);
+        if (!ok) {
+            std.debug.print("Warning: failed to enable vsync: {s}\n", .{c.SDL_GetError()});
+            break :blk false;
+        }
+        break :blk true;
+    };
+
     var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
     defer font.deinit();
 
@@ -323,8 +332,6 @@ pub fn main() !void {
     }
 
     var running = true;
-    var last_render: i64 = 0;
-    const render_interval_ms: i64 = 16;
 
     var anim_state = AnimationState{
         .mode = .Grid,
@@ -338,6 +345,7 @@ pub fn main() !void {
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
     while (running) {
+        const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
 
         var event: c.SDL_Event = undefined;
@@ -510,13 +518,17 @@ pub fn main() !void {
             }
         }
 
-        if (now - last_render >= render_interval_ms) {
-            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
-            _ = c.SDL_RenderPresent(renderer);
-            last_render = now;
-        }
+        try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
+        _ = c.SDL_RenderPresent(renderer);
 
-        c.SDL_Delay(1);
+        if (!vsync_enabled) {
+            const target_frame_ns: i128 = 16_666_667;
+            const frame_end_ns: i128 = std.time.nanoTimestamp();
+            const frame_ns = frame_end_ns - frame_start_ns;
+            if (frame_ns < target_frame_ns) {
+                std.Thread.sleep(@intCast(target_frame_ns - frame_ns));
+            }
+        }
     }
 }
 

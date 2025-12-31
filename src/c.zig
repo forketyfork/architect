@@ -18,6 +18,7 @@ pub const SDL_RenderFillRect = c_import.SDL_RenderFillRect;
 pub const SDL_RenderRect = c_import.SDL_RenderRect;
 pub const SDL_RenderLine = c_import.SDL_RenderLine;
 pub const SDL_RenderPoint = c_import.SDL_RenderPoint;
+pub const SDL_SetRenderVSync = c_import.SDL_SetRenderVSync;
 pub const SDL_RenderTexture = c_import.SDL_RenderTexture;
 pub const SDL_SetRenderDrawBlendMode = c_import.SDL_SetRenderDrawBlendMode;
 pub const SDL_GetTextureSize = c_import.SDL_GetTextureSize;
