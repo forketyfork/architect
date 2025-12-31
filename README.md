@@ -58,7 +58,7 @@ See [Setup](#setup) section below for building from source.
   - Press ESC to collapse back to grid view
   - Type in the focused terminal
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with glyph caching
+- **High-Quality Rendering**: SDL_ttf font rendering with glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 
 ## Prerequisites

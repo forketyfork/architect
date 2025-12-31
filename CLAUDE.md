@@ -175,6 +175,8 @@ The application implements a 3×3 grid with the following components:
 - Scale factor applied directly to font cell dimensions
 - Bounds checking clips content to rect boundaries
 - Font glyphs cached in textures for performance
+- SDL3 renderer is created with vsync enabled for tear-free presentation; a manual sleep path keeps ~60 FPS if vsync is unavailable
+- Grid view uses per-session target textures: PTY output, scroll, or resize marks a session dirty; dirty sessions are re-rendered into their texture, clean sessions reuse the cached tile each frame
 
 **Animation System:**
 - Six view modes: Grid, Expanding, Full, Collapsing, PanningLeft, PanningRight
