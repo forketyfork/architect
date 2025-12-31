@@ -19,6 +19,11 @@ const GRID_SCALE: f32 = 1.0 / 3.0;
 const ATTENTION_THICKNESS: c_int = 16;
 const NOTIFY_SOCKET_NAME = "architect_notify.sock";
 const SCROLL_LINES_PER_TICK: isize = 3;
+const DEFAULT_FONT_SIZE: c_int = 14;
+const MIN_FONT_SIZE: c_int = 8;
+const MAX_FONT_SIZE: c_int = 32;
+const FONT_STEP: c_int = 1;
+const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 
 const SessionStatus = enum {
     idle,
@@ -291,19 +296,22 @@ pub fn main() !void {
         break :blk true;
     };
 
-    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
+    var font_size: c_int = DEFAULT_FONT_SIZE;
+    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
     defer font.deinit();
 
-    var full_cols = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_WIDTH, font.cell_width)));
-    var full_rows = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_HEIGHT, font.cell_height)));
+    var window_width: c_int = INITIAL_WINDOW_WIDTH;
+    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
+
+    const initial_term_size = calculateTerminalSize(&font, window_width, window_height);
+    var full_cols: u16 = initial_term_size.cols;
+    var full_rows: u16 = initial_term_size.rows;
 
     std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
 
-    var window_width: c_int = INITIAL_WINDOW_WIDTH;
-    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
     var cell_width_pixels = @divFloor(window_width, GRID_COLS);
     var cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
@@ -366,25 +374,10 @@ pub fn main() !void {
                     cell_width_pixels = @divFloor(window_width, GRID_COLS);
                     cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
-                    full_cols = @as(u16, @intCast(@divFloor(window_width, font.cell_width)));
-                    full_rows = @as(u16, @intCast(@divFloor(window_height, font.cell_height)));
-
-                    const new_size = pty_mod.winsize{
-                        .ws_row = full_rows,
-                        .ws_col = full_cols,
-                        .ws_xpixel = @intCast(window_width),
-                        .ws_ypixel = @intCast(window_height),
-                    };
-
-                    for (&sessions) |*session| {
-                        session.shell.pty.setSize(new_size) catch |err| {
-                            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-                        };
-                        session.terminal.resize(allocator, full_cols, full_rows) catch |err| {
-                            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-                        };
-                        session.dirty = true;
-                    }
+                    const new_term_size = calculateTerminalSize(&font, window_width, window_height);
+                    full_cols = new_term_size.cols;
+                    full_rows = new_term_size.rows;
+                    applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
 
                     std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
                 },
@@ -401,7 +394,23 @@ pub fn main() !void {
                     const key = event.key.key;
                     const mod = event.key.mod;
 
-                    if (isSwitchTerminalShortcut(key, mod)) |is_next| {
+                    if (fontSizeShortcut(key, mod)) |direction| {
+                        const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
+                        const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
+
+                        if (target_size != font_size) {
+                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, target_size);
+                            font.deinit();
+                            font = new_font;
+                            font_size = target_size;
+
+                            const term_size = calculateTerminalSize(&font, window_width, window_height);
+                            full_cols = term_size.cols;
+                            full_rows = term_size.rows;
+                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
+                            std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
+                        }
+                    } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
                             const new_session = if (is_next)
@@ -578,6 +587,41 @@ fn scrollSession(session: *SessionState, delta: isize) void {
 
     session.is_scrolled = (pages.viewport != .active);
     session.dirty = true;
+}
+
+fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
+    const cols = @max(1, @divFloor(window_width, font.cell_width));
+    const rows = @max(1, @divFloor(window_height, font.cell_height));
+    return .{
+        .cols = @intCast(cols),
+        .rows = @intCast(rows),
+    };
+}
+
+fn applyTerminalResize(
+    sessions: []SessionState,
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    window_width: c_int,
+    window_height: c_int,
+) void {
+    const new_size = pty_mod.winsize{
+        .ws_row = rows,
+        .ws_col = cols,
+        .ws_xpixel = @intCast(window_width),
+        .ws_ypixel = @intCast(window_height),
+    };
+
+    for (sessions) |*session| {
+        session.shell.pty.setSize(new_size) catch |err| {
+            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+        };
+        session.terminal.resize(allocator, cols, rows) catch |err| {
+            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+        };
+        session.dirty = true;
+    }
 }
 
 const ansi_colors = [_]c.SDL_Color{
@@ -810,7 +854,6 @@ fn renderSessionContent(
             try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }
     }
-
 }
 
 fn renderSessionOverlays(
@@ -1016,6 +1059,21 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
     }
 }
 
+const FontSizeDirection = enum { increase, decrease };
+
+fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
+
+    const shift_held = (mod & c.SDL_KMOD_SHIFT) != 0;
+    return switch (key) {
+        c.SDLK_EQUALS => if (shift_held) .increase else null,
+        c.SDLK_MINUS => if (shift_held) .decrease else null,
+        c.SDLK_KP_PLUS => .increase,
+        c.SDLK_KP_MINUS => .decrease,
+        else => null,
+    };
+}
+
 fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
     if ((mod & c.SDL_KMOD_GUI) == 0 or (mod & c.SDL_KMOD_SHIFT) == 0) return null;
     if (key == c.SDLK_RIGHTBRACKET) return true;
@@ -1219,6 +1277,14 @@ test "encodeKeyWithMod - unknown key" {
     var buf: [8]u8 = undefined;
     const n = encodeKeyWithMod(0, 0, &buf);
     try std.testing.expectEqual(@as(usize, 0), n);
+}
+
+test "fontSizeShortcut - plus/minus variants" {
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
 }
 
 test "NotificationQueue - push and drain" {
