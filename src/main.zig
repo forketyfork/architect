@@ -10,8 +10,8 @@ const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
 
-const WINDOW_WIDTH = 1200;
-const WINDOW_HEIGHT = 900;
+const INITIAL_WINDOW_WIDTH = 1200;
+const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
 const ANIMATION_DURATION_MS = 300;
@@ -32,6 +32,8 @@ const ViewMode = enum {
     Expanding,
     Full,
     Collapsing,
+    PanningLeft,
+    PanningRight,
 };
 
 const Rect = struct {
@@ -44,6 +46,7 @@ const Rect = struct {
 const AnimationState = struct {
     mode: ViewMode,
     focused_session: usize,
+    previous_session: usize,
     start_time: i64,
     start_rect: Rect,
     target_rect: Rect,
@@ -253,9 +256,9 @@ pub fn main() !void {
 
     const window = c.SDL_CreateWindow(
         "Architect - Terminal Wall",
-        WINDOW_WIDTH,
-        WINDOW_HEIGHT,
-        0,
+        INITIAL_WINDOW_WIDTH,
+        INITIAL_WINDOW_HEIGHT,
+        c.SDL_WINDOW_RESIZABLE,
     ) orelse {
         std.debug.print("SDL_CreateWindow Error: {s}\n", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
@@ -274,22 +277,24 @@ pub fn main() !void {
     var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
     defer font.deinit();
 
-    const full_cols = @as(u16, @intCast(@divFloor(WINDOW_WIDTH, font.cell_width)));
-    const full_rows = @as(u16, @intCast(@divFloor(WINDOW_HEIGHT, font.cell_height)));
+    const full_cols = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_WIDTH, font.cell_width)));
+    const full_rows = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_HEIGHT, font.cell_height)));
 
     std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
 
-    const cell_width_pixels = WINDOW_WIDTH / GRID_COLS;
-    const cell_height_pixels = WINDOW_HEIGHT / GRID_ROWS;
+    var window_width: c_int = INITIAL_WINDOW_WIDTH;
+    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
+    var cell_width_pixels = @divFloor(window_width, GRID_COLS);
+    var cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
         .ws_col = full_cols,
-        .ws_xpixel = WINDOW_WIDTH,
-        .ws_ypixel = WINDOW_HEIGHT,
+        .ws_xpixel = @intCast(window_width),
+        .ws_ypixel = @intCast(window_height),
     };
 
     var sessions: [GRID_ROWS * GRID_COLS]SessionState = undefined;
@@ -324,6 +329,7 @@ pub fn main() !void {
     var anim_state = AnimationState{
         .mode = .Grid,
         .focused_session = 0,
+        .previous_session = 0,
         .start_time = 0,
         .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -338,6 +344,13 @@ pub fn main() !void {
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_WINDOW_RESIZED => {
+                    window_width = @intCast(event.window.data1);
+                    window_height = @intCast(event.window.data2);
+                    cell_width_pixels = @divFloor(window_width, GRID_COLS);
+                    cell_height_pixels = @divFloor(window_height, GRID_ROWS);
+                    std.debug.print("Window resized to: {d}x{d}\n", .{ window_width, window_height });
+                },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
                     if (focused.is_scrolled) {
@@ -351,7 +364,23 @@ pub fn main() !void {
                     const key = event.key.key;
                     const mod = event.key.mod;
 
-                    if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
+                    if ((mod & c.SDL_KMOD_GUI != 0) and (mod & c.SDL_KMOD_SHIFT != 0) and
+                        (key == c.SDLK_RIGHTBRACKET or key == c.SDLK_LEFTBRACKET) and
+                        anim_state.mode == .Full)
+                    {
+                        const is_next = (key == c.SDLK_RIGHTBRACKET);
+                        const total_sessions = GRID_ROWS * GRID_COLS;
+                        const new_session = if (is_next)
+                            (anim_state.focused_session + 1) % total_sessions
+                        else
+                            (anim_state.focused_session + total_sessions - 1) % total_sessions;
+
+                        anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
+                        anim_state.previous_session = anim_state.focused_session;
+                        anim_state.focused_session = new_session;
+                        anim_state.start_time = now;
+                        std.debug.print("Panning to session {d} from {d}\n", .{ new_session, anim_state.previous_session });
+                    } else if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
                         const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
                         const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
                         const target_rect = Rect{
@@ -363,7 +392,7 @@ pub fn main() !void {
 
                         anim_state.mode = .Collapsing;
                         anim_state.start_time = now;
-                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
                         anim_state.target_rect = target_rect;
                         std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
                     } else {
@@ -396,7 +425,7 @@ pub fn main() !void {
                             .w = cell_width_pixels,
                             .h = cell_height_pixels,
                         };
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
 
                         anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
@@ -416,6 +445,8 @@ pub fn main() !void {
                         &anim_state,
                         cell_width_pixels,
                         cell_height_pixels,
+                        window_width,
+                        window_height,
                     );
 
                     if (hovered_session) |session_idx| {
@@ -448,15 +479,21 @@ pub fn main() !void {
             }
         }
 
-        if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing) {
+        if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
+            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
+        {
             if (anim_state.isComplete(now)) {
-                anim_state.mode = if (anim_state.mode == .Expanding) .Full else .Grid;
+                anim_state.mode = switch (anim_state.mode) {
+                    .Expanding, .PanningLeft, .PanningRight => .Full,
+                    .Collapsing => .Grid,
+                    else => anim_state.mode,
+                };
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
         }
 
         if (now - last_render >= render_interval_ms) {
-            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows);
+            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
             _ = c.SDL_RenderPresent(renderer);
             last_render = now;
         }
@@ -471,17 +508,19 @@ fn calculateHoveredSession(
     anim_state: *const AnimationState,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
+    window_width: c_int,
+    window_height: c_int,
 ) ?usize {
     return switch (anim_state.mode) {
         .Grid => {
-            if (mouse_x < 0 or mouse_x >= WINDOW_WIDTH or
-                mouse_y < 0 or mouse_y >= WINDOW_HEIGHT) return null;
+            if (mouse_x < 0 or mouse_x >= window_width or
+                mouse_y < 0 or mouse_y >= window_height) return null;
 
             const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
             const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
             return grid_row * GRID_COLS + grid_col;
         },
-        .Full => anim_state.focused_session,
+        .Full, .PanningLeft, .PanningRight => anim_state.focused_session,
         .Expanding, .Collapsing => {
             const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
@@ -561,6 +600,8 @@ fn render(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    window_width: c_int,
+    window_height: c_int,
 ) RenderError!void {
     // Central draw routine: depending on view mode, paint either the full grid
     // or the focused session with animation-aware scaling and overlays.
@@ -584,8 +625,26 @@ fn render(
             }
         },
         .Full => {
-            const full_rect = Rect{ .x = 0, .y = 0, .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT };
+            const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
+        },
+        .PanningLeft, .PanningRight => {
+            const elapsed = current_time - anim_state.start_time;
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+            const eased = AnimationState.easeInOutCubic(progress);
+
+            const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_width)) * eased));
+            const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
+
+            const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false);
+
+            const new_offset = if (anim_state.mode == .PanningLeft)
+                window_width - offset
+            else
+                -window_width + offset;
+            const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
