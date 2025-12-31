@@ -420,10 +420,7 @@ pub fn main() !void {
 
                     if (hovered_session) |session_idx| {
                         const raw_delta = event.wheel.preciseY;
-                        const direction_multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                        const normalized_delta = raw_delta * direction_multiplier;
-
-                        const scroll_delta = -@as(isize, @intFromFloat(normalized_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
+                        const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         if (scroll_delta != 0) {
                             scrollSession(&sessions[session_idx], scroll_delta);
                         }
