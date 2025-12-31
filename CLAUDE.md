@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Architect is a Zig application that displays a 3×3 grid of interactive terminal sessions with smooth animations, built on top of ghostty-vt. The project is in early stages of development with PTY management, SDL2 rendering, real-time I/O, and Claude Code integration via Unix domain sockets.
+Architect is a Zig application that displays a 3×3 grid of interactive terminal sessions with smooth animations, built on top of ghostty-vt. The project is in early stages of development with PTY management, SDL3 rendering, real-time I/O, resizable window support, and Claude Code integration via Unix domain sockets.
 
 ## Development Environment Setup
 
@@ -103,13 +103,16 @@ The bundled package includes:
 
 The project is an experimental terminal multiplexer with:
 - **3×3 grid layout** displaying 9 independent terminal sessions
-- **SDL2-based rendering** with SDL_ttf for font rendering
+- **SDL3-based rendering** with SDL_ttf for font rendering
 - **PTY management** spawning real shell processes for each session
 - **Interactive animations** with smooth expand/collapse transitions
 - **Full-window terminals scaled to grid cells** - each terminal is sized for the full window and scaled down to 1/3 when displayed in the grid
 - **Click-to-expand** - clicking any grid cell smoothly expands it to full screen
+- **Resizable window** - window can be resized dynamically with automatic terminal and PTY resizing
+- **Terminal switching with panning** - use Cmd+Shift+[ / Cmd+Shift+] to switch between terminals in full-screen mode with smooth horizontal panning animation
 - **Keyboard support** - ESC key collapses expanded sessions back to grid view
 - **Real-time I/O** - non-blocking PTY reading with live terminal updates
+- **Scrollback in place** - mouse wheel scrolls per-terminal history; typing or new input snaps back to live output and a yellow strip in grid view indicates a scrolled session
 
 ### Dependency Management
 
@@ -125,12 +128,12 @@ Key dependency details:
 
 ### Project Structure
 
-- `src/main.zig` - Main application with SDL2 event loop, animation system, and rendering
+- `src/main.zig` - Main application with SDL3 event loop, animation system, and rendering
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY (pseudo-terminal) abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
-- `src/c.zig` - C library bindings for SDL2 and SDL_ttf
-- `build.zig` - Zig build configuration with ghostty-vt module and SDL2 dependencies
+- `src/c.zig` - C library bindings for SDL3 and SDL_ttf
+- `build.zig` - Zig build configuration with ghostty-vt module and SDL3 dependencies
 - `build.zig.zon` - Package manifest with ghostty path dependency
 - `docs/ghostty-vt-notes.md` - Comprehensive integration documentation for ghostty-vt
 - `docs/terminal-wall-plan.md` - Implementation plan documentation
@@ -147,7 +150,7 @@ Key dependency details:
 
 **What must be implemented separately:**
 - **PTY management**: Creating pseudo-terminals and spawning shells
-- **Rendering**: Choosing windowing backend (SDL2, GLFW, etc.) and drawing terminal grid
+- **Rendering**: Choosing windowing backend (SDL3, GLFW, etc.) and drawing terminal grid
 - **Event loop**: Polling PTY output, keyboard/mouse input, and driving animations
 
 **Integration flow:**
@@ -174,21 +177,24 @@ The application implements a 3×3 grid with the following components:
 - Font glyphs cached in textures for performance
 
 **Animation System:**
-- Four view modes: Grid, Expanding, Full, Collapsing
+- Six view modes: Grid, Expanding, Full, Collapsing, PanningLeft, PanningRight
 - Cubic ease-in-out interpolation for smooth transitions
 - 300ms animation duration
 - Real-time rect interpolation between grid cell and full window
+- Horizontal panning animation for terminal switching in full-screen mode
 
 **Input Handling:**
 - Mouse clicks detect grid cell selection and trigger expansion
 - ESC key collapses expanded sessions back to grid
+- Cmd+Shift+[ / Cmd+Shift+] switches between terminals in full-screen mode with panning animation
+- Mouse wheel scrolls per-session history; typing or new output snaps the viewport back to live
 - Keyboard input encoded to ANSI sequences and written to active PTY
 - Non-blocking PTY reads avoid blocking the event loop
+- Window resize events trigger automatic terminal and PTY resizing
 
 ### Known Limitations
 
 The following features are not yet implemented:
-- **No terminal scrolling**: Cannot scroll back through terminal history
 - **No emoji support**: Unicode emojis may not render correctly
 - **No font selection**: Hardcoded to SF Mono font
 - **No configurability**: Grid size, colors, and keybindings are hardcoded

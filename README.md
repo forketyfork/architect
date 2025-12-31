@@ -6,7 +6,7 @@
 
 ![Architect Hero](docs/assets/architect-hero.png)
 
-A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL2 for rendering.
+A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL3 for rendering.
 
 > [!WARNING]
 > **This project is in early stages of development. Use at your own risk.**
@@ -50,11 +50,14 @@ See [Setup](#setup) section below for building from source.
 - **3×3 Terminal Grid**: Run 9 independent shell sessions simultaneously
 - **Smooth Animations**: Click any terminal to smoothly expand it to full screen
 - **Full-Window Scaling**: Each terminal is sized for the full window and scaled down in grid view
+- **Resizable Window**: Dynamically resize the window with automatic terminal and PTY resizing
+- **Terminal Switching**: Use Cmd+Shift+[ / Cmd+Shift+] to switch between terminals in full-screen mode with smooth horizontal panning animation
 - **Real-Time I/O**: Non-blocking PTY communication with live updates
 - **Interactive Control**:
   - Click any grid cell to expand
   - Press ESC to collapse back to grid view
   - Type in the focused terminal
+- **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with glyph caching
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 
@@ -221,12 +224,12 @@ Download the latest release from the [releases page](https://github.com/forketyf
 
 ## Project Structure
 
-- `src/main.zig` - Main application with SDL2 event loop and animation system
+- `src/main.zig` - Main application with SDL3 event loop and animation system
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
-- `src/c.zig` - C library bindings for SDL2
-- `build.zig` - Zig build configuration with SDL2 dependencies
+- `src/c.zig` - C library bindings for SDL3
+- `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
 - `docs/` - Documentation and implementation plans
 - `justfile` - Convenient command shortcuts
@@ -239,8 +242,8 @@ Download the latest release from the [releases page](https://github.com/forketyf
   - Provides terminal state machine and ANSI escape sequence parsing
   - Cloned locally into `ghostty/` directory (gitignored)
   - Configured in `build.zig.zon` to point to the local ghostty clone
-- **SDL2**: Window management and rendering backend (via Nix)
-- **SDL2_ttf**: Font rendering library (via Nix)
+- **SDL3**: Window management and rendering backend (via Nix)
+- **SDL3_ttf**: Font rendering library (via Nix)
 
 ## Architecture
 
@@ -248,7 +251,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 Each terminal session is initialized with full-window dimensions (calculated from font metrics). In grid view, these full-sized terminals are scaled down to 1/3 and rendered into grid cells, providing a "zoomed out" view of complete terminal sessions.
 
 ### Animation System
-The application uses cubic ease-in-out interpolation to smoothly transition between grid and full-screen views over 300ms. Four view modes (Grid, Expanding, Full, Collapsing) manage the animation state.
+The application uses cubic ease-in-out interpolation to smoothly transition between grid and full-screen views over 300ms. Six view modes (Grid, Expanding, Full, Collapsing, PanningLeft, PanningRight) manage the animation state, including horizontal panning for terminal switching.
 
 ### Rendering Pipeline
 1. Font glyphs are rendered to cached SDL textures
@@ -262,14 +265,16 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - 3×3 grid layout with 9 terminal sessions
 - PTY management and shell spawning
 - Real-time terminal I/O
-- SDL2 window and event loop
+- SDL3 window and event loop with resizable window support
 - Font rendering with SDL_ttf
 - Click-to-expand interaction
 - Smooth expand/collapse animations
+- Terminal switching with horizontal panning animation (Cmd+Shift+[ / Cmd+Shift+])
 - Keyboard input handling
 - Full-window terminal scaling
+- Dynamic terminal and PTY resizing on window resize
 - Claude Code integration via Unix domain sockets
-- Scrolling back through terminal history
+- Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
 
 ## Known Limitations
 
