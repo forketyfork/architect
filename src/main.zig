@@ -129,6 +129,10 @@ const SessionState = struct {
     status: SessionStatus = .running,
     attention: bool = false,
     is_scrolled: bool = false,
+    dirty: bool = true,
+    cache_texture: ?*c.SDL_Texture = null,
+    cache_w: c_int = 0,
+    cache_h: c_int = 0,
 
     // Two-phase initialization is required:
     // 1. init() creates the SessionState with stream = undefined
@@ -193,6 +197,9 @@ const SessionState = struct {
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
+        if (self.cache_texture) |tex| {
+            c.SDL_DestroyTexture(tex);
+        }
         self.stream.deinit();
         self.terminal.deinit(allocator);
         self.shell.deinit();
@@ -222,6 +229,7 @@ const SessionState = struct {
 
         if (n > 0) {
             try self.stream.nextSlice(self.output_buf[0..n]);
+            self.dirty = true;
         }
     }
 };
@@ -375,6 +383,7 @@ pub fn main() !void {
                         session.terminal.resize(allocator, full_cols, full_rows) catch |err| {
                             std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
                         };
+                        session.dirty = true;
                     }
 
                     std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
@@ -568,6 +577,7 @@ fn scrollSession(session: *SessionState, delta: isize) void {
     pages.scroll(.{ .delta_row = delta });
 
     session.is_scrolled = (pages.viewport != .active);
+    session.dirty = true;
 }
 
 const ansi_colors = [_]c.SDL_Color{
@@ -651,7 +661,7 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, true);
+                try renderGridSessionCached(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time);
             }
         },
         .Full => {
@@ -698,7 +708,7 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows, current_time, true);
+                    try renderGridSessionCached(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows, current_time);
                 }
             }
 
@@ -720,6 +730,20 @@ fn renderSession(
     term_rows: u16,
     current_time_ms: i64,
     is_grid_view: bool,
+) RenderError!void {
+    try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
+    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
+}
+
+fn renderSessionContent(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
 ) RenderError!void {
     // Each session renders as a scaled terminal snapshot clipped to its rect.
     // Scaling happens via glyph re-render at the target size rather than texture
@@ -787,6 +811,17 @@ fn renderSession(
         }
     }
 
+}
+
+fn renderSessionOverlays(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    rect: Rect,
+    is_focused: bool,
+    apply_effects: bool,
+    current_time_ms: i64,
+    is_grid_view: bool,
+) void {
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused);
     } else {
@@ -845,6 +880,68 @@ fn renderSession(
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
+}
+
+fn ensureCacheTexture(renderer: *c.SDL_Renderer, session: *SessionState, width: c_int, height: c_int) bool {
+    if (session.cache_texture) |tex| {
+        if (session.cache_w == width and session.cache_h == height) {
+            return true;
+        }
+        c.SDL_DestroyTexture(tex);
+        session.cache_texture = null;
+    }
+
+    const tex = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_TARGET, width, height) orelse {
+        std.debug.print("Failed to create cache texture {d}x{d} for session {d}: {s}\n", .{ width, height, session.id, c.SDL_GetError() });
+        return false;
+    };
+    _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
+    session.cache_texture = tex;
+    session.cache_w = width;
+    session.cache_h = height;
+    session.dirty = true;
+    return true;
+}
+
+fn renderGridSessionCached(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    apply_effects: bool,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+    current_time_ms: i64,
+) RenderError!void {
+    const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
+
+    if (can_cache) {
+        if (session.cache_texture) |tex| {
+            if (session.dirty) {
+                _ = c.SDL_SetRenderTarget(renderer, tex);
+                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
+                const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
+                try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows);
+                session.dirty = false;
+                _ = c.SDL_SetRenderTarget(renderer, null);
+            }
+
+            const dest_rect = c.SDL_FRect{
+                .x = @floatFromInt(rect.x),
+                .y = @floatFromInt(rect.y),
+                .w = @floatFromInt(rect.w),
+                .h = @floatFromInt(rect.h),
+            };
+            _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
+            return;
+        }
+    }
+
+    // Fallback to direct rendering if cache unavailable.
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {

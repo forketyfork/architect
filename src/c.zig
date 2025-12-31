@@ -18,6 +18,9 @@ pub const SDL_RenderFillRect = c_import.SDL_RenderFillRect;
 pub const SDL_RenderRect = c_import.SDL_RenderRect;
 pub const SDL_RenderLine = c_import.SDL_RenderLine;
 pub const SDL_RenderPoint = c_import.SDL_RenderPoint;
+pub const SDL_CreateTexture = c_import.SDL_CreateTexture;
+pub const SDL_SetRenderTarget = c_import.SDL_SetRenderTarget;
+pub const SDL_SetTextureBlendMode = c_import.SDL_SetTextureBlendMode;
 pub const SDL_SetRenderVSync = c_import.SDL_SetRenderVSync;
 pub const SDL_RenderTexture = c_import.SDL_RenderTexture;
 pub const SDL_SetRenderDrawBlendMode = c_import.SDL_SetRenderDrawBlendMode;
@@ -33,6 +36,7 @@ pub const SDL_StopTextInput = c_import.SDL_StopTextInput;
 
 pub const SDL_INIT_VIDEO = c_import.SDL_INIT_VIDEO;
 pub const SDL_BLENDMODE_BLEND = c_import.SDL_BLENDMODE_BLEND;
+pub const SDL_BLENDMODE_NONE = c_import.SDL_BLENDMODE_NONE;
 pub const SDL_WINDOW_RESIZABLE = c_import.SDL_WINDOW_RESIZABLE;
 pub const SDL_EVENT_QUIT = c_import.SDL_EVENT_QUIT;
 pub const SDL_EVENT_KEY_DOWN = c_import.SDL_EVENT_KEY_DOWN;
@@ -58,6 +62,8 @@ pub const SDLK_RIGHTBRACKET = c_import.SDLK_RIGHTBRACKET;
 pub const SDL_KMOD_CTRL = c_import.SDL_KMOD_CTRL;
 pub const SDL_KMOD_SHIFT = c_import.SDL_KMOD_SHIFT;
 pub const SDL_KMOD_GUI = c_import.SDL_KMOD_GUI;
+pub const SDL_PIXELFORMAT_RGBA8888 = c_import.SDL_PIXELFORMAT_RGBA8888;
+pub const SDL_TEXTUREACCESS_TARGET = c_import.SDL_TEXTUREACCESS_TARGET;
 
 pub const TTF_Init = c_import.TTF_Init;
 pub const TTF_Quit = c_import.TTF_Quit;
