@@ -36,7 +36,7 @@ pub const Font = struct {
             return error.FontLoadFailed;
         }
 
-        log.info("Font cell dimensions: {d}x{d}", .{ cell_width, cell_height });
+        log.debug("Font cell dimensions: {d}x{d}", .{ cell_width, cell_height });
 
         return Font{
             .font = font,
