@@ -33,14 +33,19 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    exe.linkSystemLibrary("SDL2_ttf");
+    exe.linkSystemLibrary("SDL3");
+    exe.linkSystemLibrary("SDL3_ttf");
     exe.linkLibC();
 
-    if (std.posix.getenv("SDL2_INCLUDE_PATH")) |sdl2_include| {
-        exe.addIncludePath(.{ .cwd_relative = sdl2_include });
+    if (std.posix.getenv("SDL3_INCLUDE_PATH")) |sdl3_include| {
+        exe.addIncludePath(.{ .cwd_relative = sdl3_include });
+        const lib_path = b.fmt("{s}/../lib", .{sdl3_include});
+        exe.addLibraryPath(.{ .cwd_relative = lib_path });
     }
-    if (std.posix.getenv("SDL2_TTF_INCLUDE_PATH")) |sdl2_ttf_include| {
-        exe.addIncludePath(.{ .cwd_relative = sdl2_ttf_include });
+    if (std.posix.getenv("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
+        exe.addIncludePath(.{ .cwd_relative = sdl3_ttf_include });
+        const ttf_lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
+        exe.addLibraryPath(.{ .cwd_relative = ttf_lib_path });
     }
 
     b.installArtifact(exe);

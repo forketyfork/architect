@@ -23,14 +23,20 @@ pub const Font = struct {
     } || std.mem.Allocator.Error;
 
     pub fn init(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font_path: [*:0]const u8, size: c_int) InitError!Font {
-        const font = c.TTF_OpenFont(font_path, size) orelse {
-            log.err("TTF_OpenFont failed: {s}", .{c.TTF_GetError()});
+        const font = c.TTF_OpenFont(font_path, @floatFromInt(size)) orelse {
+            log.err("TTF_OpenFont failed: {s}", .{c.SDL_GetError()});
             return error.FontLoadFailed;
         };
 
         var cell_width: c_int = 0;
         var cell_height: c_int = 0;
-        _ = c.TTF_SizeText(font, "M", &cell_width, &cell_height);
+        if (!c.TTF_GetStringSize(font, "M", 1, &cell_width, &cell_height)) {
+            log.err("TTF_GetStringSize failed: {s}", .{c.SDL_GetError()});
+            c.TTF_CloseFont(font);
+            return error.FontLoadFailed;
+        }
+
+        log.debug("Font cell dimensions: {d}x{d}", .{ cell_width, cell_height });
 
         return Font{
             .font = font,
@@ -67,18 +73,18 @@ pub const Font = struct {
             return err;
         };
 
-        var tex_width: c_int = 0;
-        var tex_height: c_int = 0;
-        _ = c.SDL_QueryTexture(texture, null, null, &tex_width, &tex_height);
+        var tex_width_f: f32 = 0;
+        var tex_height_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(texture, &tex_width_f, &tex_height_f);
 
-        const dest_rect = c.SDL_Rect{
-            .x = x,
-            .y = y,
-            .w = target_width,
-            .h = target_height,
+        const dest_rect = c.SDL_FRect{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(target_width),
+            .h = @floatFromInt(target_height),
         };
 
-        _ = c.SDL_RenderCopy(self.renderer, texture, null, &dest_rect);
+        _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
     }
 
     fn getGlyphTexture(self: *Font, codepoint: u21, fg_color: c.SDL_Color) RenderGlyphError!*c.SDL_Texture {
@@ -95,7 +101,7 @@ pub const Font = struct {
         // others), then keep a texture keyed by codepoint+color for reuse.
         const surface = if (codepoint < 0x10000) blk: {
             break :blk c.TTF_RenderGlyph_Blended(self.font, @intCast(codepoint), fg_color) orelse {
-                log.debug("TTF_RenderGlyph_Blended failed for U+{X:0>4}: {s}", .{ codepoint, c.TTF_GetError() });
+                log.debug("TTF_RenderGlyph_Blended failed for U+{X:0>4}: {s}", .{ codepoint, c.SDL_GetError() });
                 return error.GlyphRenderFailed;
             };
         } else blk: {
@@ -106,19 +112,19 @@ pub const Font = struct {
             @memcpy(text_buf[0..len], utf8_buf[0..len]);
             text_buf[len] = 0;
 
-            break :blk c.TTF_RenderText_Blended(self.font, @ptrCast(&text_buf), fg_color) orelse {
-                log.debug("TTF_RenderText_Blended failed for U+{X:0>4}: {s}", .{ codepoint, c.TTF_GetError() });
+            break :blk c.TTF_RenderText_Blended(self.font, @ptrCast(&text_buf), len, fg_color) orelse {
+                log.debug("TTF_RenderText_Blended failed for U+{X:0>4}: {s}", .{ codepoint, c.SDL_GetError() });
                 return error.GlyphRenderFailed;
             };
         };
-        defer c.SDL_FreeSurface(surface);
+        defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(self.renderer, surface) orelse {
             log.err("SDL_CreateTextureFromSurface failed: {s}", .{c.SDL_GetError()});
             return error.TextureCreationFailed;
         };
 
-        _ = c.SDL_SetTextureScaleMode(texture, c.SDL_ScaleModeLinear);
+        _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_LINEAR);
 
         try self.glyph_cache.put(key, texture);
         return texture;

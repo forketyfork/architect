@@ -239,34 +239,33 @@ pub fn main() !void {
     const notify_thread = try startNotifyThread(allocator, notify_sock, &notify_queue);
     notify_thread.detach();
 
-    _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "1");
-
-    if (c.SDL_Init(c.SDL_INIT_VIDEO) != 0) {
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.SDLInitFailed;
     }
     defer c.SDL_Quit();
 
-    if (c.TTF_Init() != 0) {
-        std.debug.print("TTF_Init Error: {s}\n", .{c.TTF_GetError()});
+    if (!c.TTF_Init()) {
+        std.debug.print("TTF_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.TTFInitFailed;
     }
     defer c.TTF_Quit();
 
     const window = c.SDL_CreateWindow(
         "Architect - Terminal Wall",
-        c.SDL_WINDOWPOS_CENTERED,
-        c.SDL_WINDOWPOS_CENTERED,
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
-        c.SDL_WINDOW_SHOWN,
+        0,
     ) orelse {
         std.debug.print("SDL_CreateWindow Error: {s}\n", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
     };
     defer c.SDL_DestroyWindow(window);
 
-    const renderer = c.SDL_CreateRenderer(window, -1, c.SDL_RENDERER_ACCELERATED) orelse {
+    _ = c.SDL_StartTextInput(window);
+    defer _ = c.SDL_StopTextInput(window);
+
+    const renderer = c.SDL_CreateRenderer(window, null) orelse {
         std.debug.print("SDL_CreateRenderer Error: {s}\n", .{c.SDL_GetError()});
         return error.RendererCreationFailed;
     };
@@ -336,22 +335,23 @@ pub fn main() !void {
         const now = std.time.milliTimestamp();
 
         var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event) != 0) {
+        while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
-                c.SDL_QUIT => running = false,
-                c.SDL_TEXTINPUT => {
+                c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
                     if (focused.is_scrolled) {
                         focused.terminal.screens.active.pages.scroll(.{ .active = {} });
                         focused.is_scrolled = false;
                     }
-                    const text = std.mem.sliceTo(&event.text.text, 0);
+                    const text = std.mem.sliceTo(event.text.text, 0);
                     _ = try focused.shell.write(text);
                 },
-                c.SDL_KEYDOWN => {
-                    const key = event.key.keysym;
+                c.SDL_EVENT_KEY_DOWN => {
+                    const key = event.key.key;
+                    const mod = event.key.mod;
 
-                    if (key.sym == c.SDLK_ESCAPE and anim_state.mode == .Full) {
+                    if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
                         const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
                         const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
                         const target_rect = Rect{
@@ -373,16 +373,16 @@ pub fn main() !void {
                             focused.is_scrolled = false;
                         }
                         var buf: [8]u8 = undefined;
-                        const n = encodeKey(key, &buf);
+                        const n = encodeKeyWithMod(key, mod, &buf);
                         if (n > 0) {
                             _ = try focused.shell.write(buf[0..n]);
                         }
                     }
                 },
-                c.SDL_MOUSEBUTTONDOWN => {
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if (anim_state.mode == .Grid) {
-                        const mouse_x = event.button.x;
-                        const mouse_y = event.button.y;
+                        const mouse_x: c_int = @intFromFloat(event.button.x);
+                        const mouse_y: c_int = @intFromFloat(event.button.y);
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
@@ -406,9 +406,9 @@ pub fn main() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     }
                 },
-                c.SDL_MOUSEWHEEL => {
-                    const mouse_x = event.wheel.mouseX;
-                    const mouse_y = event.wheel.mouseY;
+                c.SDL_EVENT_MOUSE_WHEEL => {
+                    const mouse_x: c_int = @intFromFloat(event.wheel.mouse_x);
+                    const mouse_y: c_int = @intFromFloat(event.wheel.mouse_y);
 
                     const hovered_session = calculateHoveredSession(
                         mouse_x,
@@ -419,7 +419,7 @@ pub fn main() !void {
                     );
 
                     if (hovered_session) |session_idx| {
-                        const raw_delta = event.wheel.preciseY;
+                        const raw_delta = event.wheel.y;
                         const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         if (scroll_delta != 0) {
                             scrollSession(&sessions[session_idx], scroll_delta);
@@ -457,7 +457,7 @@ pub fn main() !void {
 
         if (now - last_render >= render_interval_ms) {
             try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows);
-            c.SDL_RenderPresent(renderer);
+            _ = c.SDL_RenderPresent(renderer);
             last_render = now;
         }
 
@@ -640,11 +640,11 @@ fn renderSession(
     } else {
         _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
     }
-    const bg_rect = c.SDL_Rect{
-        .x = rect.x,
-        .y = rect.y,
-        .w = rect.w,
-        .h = rect.h,
+    const bg_rect = c.SDL_FRect{
+        .x = @floatFromInt(rect.x),
+        .y = @floatFromInt(rect.y),
+        .w = @floatFromInt(rect.w),
+        .h = @floatFromInt(rect.h),
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
@@ -706,22 +706,22 @@ fn renderSession(
         } else {
             _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
         }
-        const border_rect = c.SDL_Rect{
-            .x = rect.x,
-            .y = rect.y,
-            .w = rect.w,
-            .h = rect.h,
+        const border_rect = c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .w = @floatFromInt(rect.w),
+            .h = @floatFromInt(rect.h),
         };
-        _ = c.SDL_RenderDrawRect(renderer, &border_rect);
+        _ = c.SDL_RenderRect(renderer, &border_rect);
     }
 
     if (is_grid_view and session.is_scrolled) {
         _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 100, 200);
-        const indicator_rect = c.SDL_Rect{
-            .x = rect.x,
-            .y = rect.y + rect.h - 4,
-            .w = rect.w,
-            .h = 4,
+        const indicator_rect = c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y + rect.h - 4),
+            .w = @floatFromInt(rect.w),
+            .h = 4.0,
         };
         _ = c.SDL_RenderFillRect(renderer, &indicator_rect);
     }
@@ -748,11 +748,11 @@ fn renderSession(
         };
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, tint_color.r, tint_color.g, tint_color.b, tint_color.a);
-        const tint_rect = c.SDL_Rect{
-            .x = rect.x,
-            .y = rect.y,
-            .w = rect.w,
-            .h = rect.h,
+        const tint_rect = c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .w = @floatFromInt(rect.w),
+            .h = @floatFromInt(rect.h),
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
@@ -763,11 +763,11 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
 
     // Subtle vignette across the panel
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 60);
-    _ = c.SDL_RenderFillRect(renderer, &c.SDL_Rect{
-        .x = rect.x,
-        .y = rect.y,
-        .w = rect.w,
-        .h = rect.h,
+    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+        .x = @floatFromInt(rect.x),
+        .y = @floatFromInt(rect.y),
+        .w = @floatFromInt(rect.w),
+        .h = @floatFromInt(rect.h),
     });
 
     const radius: c_int = 12;
@@ -782,28 +782,34 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
 }
 
 fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {
+    const fx = @as(f32, @floatFromInt(rect.x));
+    const fy = @as(f32, @floatFromInt(rect.y));
+    const fw = @as(f32, @floatFromInt(rect.w));
+    const fh = @as(f32, @floatFromInt(rect.h));
+    const frad = @as(f32, @floatFromInt(radius));
+
     // Straight edges
-    _ = c.SDL_RenderDrawLine(renderer, rect.x + radius, rect.y, rect.x + rect.w - radius - 1, rect.y);
-    _ = c.SDL_RenderDrawLine(renderer, rect.x + radius, rect.y + rect.h - 1, rect.x + rect.w - radius - 1, rect.y + rect.h - 1);
-    _ = c.SDL_RenderDrawLine(renderer, rect.x, rect.y + radius, rect.x, rect.y + rect.h - radius - 1);
-    _ = c.SDL_RenderDrawLine(renderer, rect.x + rect.w - 1, rect.y + radius, rect.x + rect.w - 1, rect.y + rect.h - radius - 1);
+    _ = c.SDL_RenderLine(renderer, fx + frad, fy, fx + fw - frad - 1.0, fy);
+    _ = c.SDL_RenderLine(renderer, fx + frad, fy + fh - 1.0, fx + fw - frad - 1.0, fy + fh - 1.0);
+    _ = c.SDL_RenderLine(renderer, fx, fy + frad, fx, fy + fh - frad - 1.0);
+    _ = c.SDL_RenderLine(renderer, fx + fw - 1.0, fy + frad, fx + fw - 1.0, fy + fh - frad - 1.0);
 
     // Corners (quarter circles)
     var angle: f32 = 0.0;
     const step: f32 = std.math.pi / 64.0;
     while (angle <= std.math.pi / 2.0) : (angle += step) {
-        const rx: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(radius)) * std.math.cos(angle)));
-        const ry: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(radius)) * std.math.sin(angle)));
+        const rx = frad * std.math.cos(angle);
+        const ry = frad * std.math.sin(angle);
 
-        const centers = [_]struct { x: c_int, y: c_int, sx: c_int, sy: c_int }{
-            .{ .x = rect.x + radius, .y = rect.y + radius, .sx = -1, .sy = -1 }, // top-left
-            .{ .x = rect.x + rect.w - radius - 1, .y = rect.y + radius, .sx = 1, .sy = -1 }, // top-right
-            .{ .x = rect.x + radius, .y = rect.y + rect.h - radius - 1, .sx = -1, .sy = 1 }, // bottom-left
-            .{ .x = rect.x + rect.w - radius - 1, .y = rect.y + rect.h - radius - 1, .sx = 1, .sy = 1 }, // bottom-right
+        const centers = [_]struct { x: f32, y: f32, sx: f32, sy: f32 }{
+            .{ .x = fx + frad, .y = fy + frad, .sx = -1.0, .sy = -1.0 }, // top-left
+            .{ .x = fx + fw - frad - 1.0, .y = fy + frad, .sx = 1.0, .sy = -1.0 }, // top-right
+            .{ .x = fx + frad, .y = fy + fh - frad - 1.0, .sx = -1.0, .sy = 1.0 }, // bottom-left
+            .{ .x = fx + fw - frad - 1.0, .y = fy + fh - frad - 1.0, .sx = 1.0, .sy = 1.0 }, // bottom-right
         };
 
         for (centers) |cinfo| {
-            _ = c.SDL_RenderDrawPoint(renderer, cinfo.x + cinfo.sx * rx, cinfo.y + cinfo.sy * ry);
+            _ = c.SDL_RenderPoint(renderer, cinfo.x + cinfo.sx * rx, cinfo.y + cinfo.sy * ry);
         }
     }
 }
@@ -824,18 +830,15 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
     }
 }
 
-fn encodeKey(key: c.SDL_Keysym, buf: []u8) usize {
-    const sym = key.sym;
-
-    // Minimal key → ANSI encoding for terminals; return 0 when unhandled.
-    if (key.mod & c.KMOD_CTRL != 0) {
-        if (sym >= c.SDLK_a and sym <= c.SDLK_z) {
-            buf[0] = @as(u8, @intCast(sym - c.SDLK_a + 1));
+fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
+    if (mod & c.SDL_KMOD_CTRL != 0) {
+        if (key >= c.SDLK_A and key <= c.SDLK_Z) {
+            buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
             return 1;
         }
     }
 
-    return switch (sym) {
+    return switch (key) {
         c.SDLK_RETURN => blk: {
             buf[0] = '\r';
             break :blk 1;
@@ -985,50 +988,43 @@ fn startNotifyThread(
     return try std.Thread.spawn(.{}, handler.run, .{ctx});
 }
 
-test "encodeKey - return key" {
+test "encodeKeyWithMod - return key" {
     var buf: [8]u8 = undefined;
-    const key = c.SDL_Keysym{ .sym = c.SDLK_RETURN, .mod = 0, .scancode = 0, .unused = 0 };
-    const n = encodeKey(key, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, 0, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
 }
 
-test "encodeKey - arrow keys" {
+test "encodeKeyWithMod - arrow keys" {
     var buf: [8]u8 = undefined;
 
-    const up = c.SDL_Keysym{ .sym = c.SDLK_UP, .mod = 0, .scancode = 0, .unused = 0 };
-    const n_up = encodeKey(up, &buf);
+    const n_up = encodeKeyWithMod(c.SDLK_UP, 0, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_up);
     try std.testing.expectEqualSlices(u8, "\x1b[A", buf[0..n_up]);
 
-    const down = c.SDL_Keysym{ .sym = c.SDLK_DOWN, .mod = 0, .scancode = 0, .unused = 0 };
-    const n_down = encodeKey(down, &buf);
+    const n_down = encodeKeyWithMod(c.SDLK_DOWN, 0, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_down);
     try std.testing.expectEqualSlices(u8, "\x1b[B", buf[0..n_down]);
 
-    const right = c.SDL_Keysym{ .sym = c.SDLK_RIGHT, .mod = 0, .scancode = 0, .unused = 0 };
-    const n_right = encodeKey(right, &buf);
+    const n_right = encodeKeyWithMod(c.SDLK_RIGHT, 0, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_right);
     try std.testing.expectEqualSlices(u8, "\x1b[C", buf[0..n_right]);
 
-    const left = c.SDL_Keysym{ .sym = c.SDLK_LEFT, .mod = 0, .scancode = 0, .unused = 0 };
-    const n_left = encodeKey(left, &buf);
+    const n_left = encodeKeyWithMod(c.SDLK_LEFT, 0, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_left);
     try std.testing.expectEqualSlices(u8, "\x1b[D", buf[0..n_left]);
 }
 
-test "encodeKey - ctrl+a" {
+test "encodeKeyWithMod - ctrl+a" {
     var buf: [8]u8 = undefined;
-    const key = c.SDL_Keysym{ .sym = c.SDLK_a, .mod = c.KMOD_CTRL, .scancode = 0, .unused = 0 };
-    const n = encodeKey(key, &buf);
+    const n = encodeKeyWithMod(c.SDLK_A, c.SDL_KMOD_CTRL, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
 }
 
-test "encodeKey - unknown key" {
+test "encodeKeyWithMod - unknown key" {
     var buf: [8]u8 = undefined;
-    const key = c.SDL_Keysym{ .sym = 0, .mod = 0, .scancode = 0, .unused = 0 };
-    const n = encodeKey(key, &buf);
+    const n = encodeKeyWithMod(0, 0, &buf);
     try std.testing.expectEqual(@as(usize, 0), n);
 }
 
