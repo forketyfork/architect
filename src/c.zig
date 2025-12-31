@@ -37,6 +37,7 @@ pub const SDL_QUIT = c_import.SDL_QUIT;
 pub const SDL_KEYDOWN = c_import.SDL_KEYDOWN;
 pub const SDL_TEXTINPUT = c_import.SDL_TEXTINPUT;
 pub const SDL_MOUSEBUTTONDOWN = c_import.SDL_MOUSEBUTTONDOWN;
+pub const SDL_MOUSEWHEEL = c_import.SDL_MOUSEWHEEL;
 
 pub const SDL_HINT_RENDER_SCALE_QUALITY = c_import.SDL_HINT_RENDER_SCALE_QUALITY;
 pub const SDL_SetHint = c_import.SDL_SetHint;

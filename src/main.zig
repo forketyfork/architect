@@ -18,6 +18,7 @@ const ANIMATION_DURATION_MS = 300;
 const GRID_SCALE: f32 = 1.0 / 3.0;
 const ATTENTION_THICKNESS: c_int = 16;
 const NOTIFY_SOCKET_NAME = "architect_notify.sock";
+const SCROLL_LINES_PER_TICK: isize = 3;
 
 const SessionStatus = enum {
     idle,
@@ -124,6 +125,7 @@ const SessionState = struct {
     output_buf: [4096]u8,
     status: SessionStatus = .running,
     attention: bool = false,
+    is_scrolled: bool = false,
 
     // Two-phase initialization is required:
     // 1. init() creates the SessionState with stream = undefined
@@ -338,8 +340,13 @@ pub fn main() !void {
             switch (event.type) {
                 c.SDL_QUIT => running = false,
                 c.SDL_TEXTINPUT => {
+                    const focused = &sessions[anim_state.focused_session];
+                    if (focused.is_scrolled) {
+                        focused.terminal.screens.active.pages.scroll(.{ .active = {} });
+                        focused.is_scrolled = false;
+                    }
                     const text = std.mem.sliceTo(&event.text.text, 0);
-                    _ = try sessions[anim_state.focused_session].shell.write(text);
+                    _ = try focused.shell.write(text);
                 },
                 c.SDL_KEYDOWN => {
                     const key = event.key.keysym;
@@ -360,10 +367,15 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
                     } else {
+                        const focused = &sessions[anim_state.focused_session];
+                        if (focused.is_scrolled) {
+                            focused.terminal.screens.active.pages.scroll(.{ .active = {} });
+                            focused.is_scrolled = false;
+                        }
                         var buf: [8]u8 = undefined;
                         const n = encodeKey(key, &buf);
                         if (n > 0) {
-                            _ = try sessions[anim_state.focused_session].shell.write(buf[0..n]);
+                            _ = try focused.shell.write(buf[0..n]);
                         }
                     }
                 },
@@ -392,6 +404,26 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                    }
+                },
+                c.SDL_MOUSEWHEEL => {
+                    const mouse_x = event.wheel.mouseX;
+                    const mouse_y = event.wheel.mouseY;
+
+                    const hovered_session = calculateHoveredSession(
+                        mouse_x,
+                        mouse_y,
+                        &anim_state,
+                        cell_width_pixels,
+                        cell_height_pixels,
+                    );
+
+                    if (hovered_session) |session_idx| {
+                        const raw_delta = event.wheel.preciseY;
+                        const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
+                        if (scroll_delta != 0) {
+                            scrollSession(&sessions[session_idx], scroll_delta);
+                        }
                     }
                 },
                 else => {},
@@ -431,6 +463,42 @@ pub fn main() !void {
 
         c.SDL_Delay(1);
     }
+}
+
+fn calculateHoveredSession(
+    mouse_x: c_int,
+    mouse_y: c_int,
+    anim_state: *const AnimationState,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+) ?usize {
+    return switch (anim_state.mode) {
+        .Grid => {
+            if (mouse_x < 0 or mouse_x >= WINDOW_WIDTH or
+                mouse_y < 0 or mouse_y >= WINDOW_HEIGHT) return null;
+
+            const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
+            const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
+            return grid_row * GRID_COLS + grid_col;
+        },
+        .Full => anim_state.focused_session,
+        .Expanding, .Collapsing => {
+            const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
+            if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
+                mouse_y >= rect.y and mouse_y < rect.y + rect.h)
+            {
+                return anim_state.focused_session;
+            }
+            return null;
+        },
+    };
+}
+
+fn scrollSession(session: *SessionState, delta: isize) void {
+    var pages = &session.terminal.screens.active.pages;
+    pages.scroll(.{ .delta_row = delta });
+
+    session.is_scrolled = (pages.viewport != .active);
 }
 
 const ansi_colors = [_]c.SDL_Color{
@@ -608,10 +676,10 @@ fn renderSession(
     while (row < visible_rows) : (row += 1) {
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
-            const list_cell = pages.getCell(.{ .active = .{
-                .x = @intCast(col),
-                .y = @intCast(row),
-            } }) orelse continue;
+            const list_cell = pages.getCell(if (session.is_scrolled)
+                .{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
+            else
+                .{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse continue;
 
             const cell = list_cell.cell;
             const cp = cell.content.codepoint;
@@ -645,6 +713,17 @@ fn renderSession(
             .h = rect.h,
         };
         _ = c.SDL_RenderDrawRect(renderer, &border_rect);
+    }
+
+    if (is_grid_view and session.is_scrolled) {
+        _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 100, 200);
+        const indicator_rect = c.SDL_Rect{
+            .x = rect.x,
+            .y = rect.y + rect.h - 4,
+            .w = rect.w,
+            .h = 4,
+        };
+        _ = c.SDL_RenderFillRect(renderer, &indicator_rect);
     }
 
     if (is_grid_view and session.attention) {
