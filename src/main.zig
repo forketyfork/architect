@@ -854,6 +854,30 @@ fn renderSessionContent(
             try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }
     }
+
+    if (!session.is_scrolled and is_focused) {
+        const cursor = screen.cursor;
+        const cursor_col = cursor.x;
+        const cursor_row = cursor.y;
+
+        if (cursor_col < visible_cols and cursor_row < visible_rows) {
+            const cursor_x: c_int = origin_x + @as(c_int, @intCast(cursor_col)) * cell_width_actual;
+            const cursor_y: c_int = origin_y + @as(c_int, @intCast(cursor_row)) * cell_height_actual;
+
+            if (cursor_x >= rect.x and cursor_x < rect.x + rect.w and
+                cursor_y >= rect.y and cursor_y < rect.y + rect.h)
+            {
+                _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+                const cursor_rect = c.SDL_FRect{
+                    .x = @floatFromInt(cursor_x),
+                    .y = @floatFromInt(cursor_y),
+                    .w = @floatFromInt(cell_width_actual),
+                    .h = @floatFromInt(cell_height_actual),
+                };
+                _ = c.SDL_RenderFillRect(renderer, &cursor_rect);
+            }
+        }
+    }
 }
 
 fn renderSessionOverlays(
@@ -1089,6 +1113,42 @@ fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
         }
     }
 
+    if (mod & c.SDL_KMOD_GUI != 0) {
+        return switch (key) {
+            c.SDLK_LEFT => blk: {
+                buf[0] = 1;
+                break :blk 1;
+            },
+            c.SDLK_RIGHT => blk: {
+                buf[0] = 5;
+                break :blk 1;
+            },
+            c.SDLK_BACKSPACE => blk: {
+                buf[0] = 21;
+                break :blk 1;
+            },
+            else => 0,
+        };
+    }
+
+    if (mod & c.SDL_KMOD_ALT != 0) {
+        return switch (key) {
+            c.SDLK_LEFT => blk: {
+                @memcpy(buf[0..2], "\x1bb");
+                break :blk 2;
+            },
+            c.SDLK_RIGHT => blk: {
+                @memcpy(buf[0..2], "\x1bf");
+                break :blk 2;
+            },
+            c.SDLK_BACKSPACE => blk: {
+                buf[0] = 23;
+                break :blk 1;
+            },
+            else => 0,
+        };
+    }
+
     return switch (key) {
         c.SDLK_RETURN => blk: {
             buf[0] = '\r';
@@ -1271,6 +1331,48 @@ test "encodeKeyWithMod - ctrl+a" {
     const n = encodeKeyWithMod(c.SDLK_A, c.SDL_KMOD_CTRL, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
+}
+
+test "encodeKeyWithMod - cmd+left (beginning of line)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_GUI, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 1), buf[0]);
+}
+
+test "encodeKeyWithMod - cmd+right (end of line)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_GUI, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 5), buf[0]);
+}
+
+test "encodeKeyWithMod - alt+left (backward word)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_ALT, &buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualSlices(u8, "\x1bb", buf[0..n]);
+}
+
+test "encodeKeyWithMod - alt+right (forward word)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_ALT, &buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualSlices(u8, "\x1bf", buf[0..n]);
+}
+
+test "encodeKeyWithMod - cmd+backspace (delete line)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 21), buf[0]);
+}
+
+test "encodeKeyWithMod - alt+backspace (delete word)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 23), buf[0]);
 }
 
 test "encodeKeyWithMod - unknown key" {
