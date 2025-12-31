@@ -269,11 +269,11 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Claude Code integration via Unix domain sockets
+- Scrolling back through terminal history
 
 ## Known Limitations
 
 The following features are not yet implemented:
-- **No terminal scrolling**: Cannot scroll back through terminal history
 - **No emoji support**: Unicode emojis may not render correctly
 - **No font selection**: Hardcoded to SF Mono font
 - **No configurability**: Grid size, colors, and keybindings are hardcoded
