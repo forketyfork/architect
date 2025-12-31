@@ -19,6 +19,11 @@ const GRID_SCALE: f32 = 1.0 / 3.0;
 const ATTENTION_THICKNESS: c_int = 16;
 const NOTIFY_SOCKET_NAME = "architect_notify.sock";
 const SCROLL_LINES_PER_TICK: isize = 3;
+const DEFAULT_FONT_SIZE: c_int = 14;
+const MIN_FONT_SIZE: c_int = 8;
+const MAX_FONT_SIZE: c_int = 32;
+const FONT_STEP: c_int = 1;
+const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 
 const SessionStatus = enum {
     idle,
@@ -129,6 +134,10 @@ const SessionState = struct {
     status: SessionStatus = .running,
     attention: bool = false,
     is_scrolled: bool = false,
+    dirty: bool = true,
+    cache_texture: ?*c.SDL_Texture = null,
+    cache_w: c_int = 0,
+    cache_h: c_int = 0,
 
     // Two-phase initialization is required:
     // 1. init() creates the SessionState with stream = undefined
@@ -193,6 +202,9 @@ const SessionState = struct {
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
+        if (self.cache_texture) |tex| {
+            c.SDL_DestroyTexture(tex);
+        }
         self.stream.deinit();
         self.terminal.deinit(allocator);
         self.shell.deinit();
@@ -222,6 +234,7 @@ const SessionState = struct {
 
         if (n > 0) {
             try self.stream.nextSlice(self.output_buf[0..n]);
+            self.dirty = true;
         }
     }
 };
@@ -274,19 +287,31 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
-    var font = try font_mod.Font.init(allocator, renderer, "/System/Library/Fonts/SFNSMono.ttf", 14);
+    const vsync_enabled = blk: {
+        const success = c.SDL_SetRenderVSync(renderer, 1);
+        if (!success) {
+            std.debug.print("Warning: failed to enable vsync: {s}\n", .{c.SDL_GetError()});
+            break :blk false;
+        }
+        break :blk true;
+    };
+
+    var font_size: c_int = DEFAULT_FONT_SIZE;
+    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
     defer font.deinit();
 
-    var full_cols = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_WIDTH, font.cell_width)));
-    var full_rows = @as(u16, @intCast(@divFloor(INITIAL_WINDOW_HEIGHT, font.cell_height)));
+    var window_width: c_int = INITIAL_WINDOW_WIDTH;
+    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
+
+    const initial_term_size = calculateTerminalSize(&font, window_width, window_height);
+    var full_cols: u16 = initial_term_size.cols;
+    var full_rows: u16 = initial_term_size.rows;
 
     std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
 
-    var window_width: c_int = INITIAL_WINDOW_WIDTH;
-    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
     var cell_width_pixels = @divFloor(window_width, GRID_COLS);
     var cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
@@ -323,8 +348,6 @@ pub fn main() !void {
     }
 
     var running = true;
-    var last_render: i64 = 0;
-    const render_interval_ms: i64 = 16;
 
     var anim_state = AnimationState{
         .mode = .Grid,
@@ -338,6 +361,7 @@ pub fn main() !void {
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
     while (running) {
+        const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
 
         var event: c.SDL_Event = undefined;
@@ -350,24 +374,10 @@ pub fn main() !void {
                     cell_width_pixels = @divFloor(window_width, GRID_COLS);
                     cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
-                    full_cols = @as(u16, @intCast(@divFloor(window_width, font.cell_width)));
-                    full_rows = @as(u16, @intCast(@divFloor(window_height, font.cell_height)));
-
-                    const new_size = pty_mod.winsize{
-                        .ws_row = full_rows,
-                        .ws_col = full_cols,
-                        .ws_xpixel = @intCast(window_width),
-                        .ws_ypixel = @intCast(window_height),
-                    };
-
-                    for (&sessions) |*session| {
-                        session.shell.pty.setSize(new_size) catch |err| {
-                            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-                        };
-                        session.terminal.resize(allocator, full_cols, full_rows) catch |err| {
-                            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-                        };
-                    }
+                    const new_term_size = calculateTerminalSize(&font, window_width, window_height);
+                    full_cols = new_term_size.cols;
+                    full_rows = new_term_size.rows;
+                    applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
 
                     std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
                 },
@@ -384,7 +394,23 @@ pub fn main() !void {
                     const key = event.key.key;
                     const mod = event.key.mod;
 
-                    if (isSwitchTerminalShortcut(key, mod)) |is_next| {
+                    if (fontSizeShortcut(key, mod)) |direction| {
+                        const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
+                        const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
+
+                        if (target_size != font_size) {
+                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, target_size);
+                            font.deinit();
+                            font = new_font;
+                            font_size = target_size;
+
+                            const term_size = calculateTerminalSize(&font, window_width, window_height);
+                            full_cols = term_size.cols;
+                            full_rows = term_size.rows;
+                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
+                            std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
+                        }
+                    } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
                             const new_session = if (is_next)
@@ -510,13 +536,17 @@ pub fn main() !void {
             }
         }
 
-        if (now - last_render >= render_interval_ms) {
-            try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
-            _ = c.SDL_RenderPresent(renderer);
-            last_render = now;
-        }
+        try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
+        _ = c.SDL_RenderPresent(renderer);
 
-        c.SDL_Delay(1);
+        if (!vsync_enabled) {
+            const target_frame_ns: i128 = 16_666_667;
+            const frame_end_ns: i128 = std.time.nanoTimestamp();
+            const frame_ns = frame_end_ns - frame_start_ns;
+            if (frame_ns < target_frame_ns) {
+                std.Thread.sleep(@intCast(target_frame_ns - frame_ns));
+            }
+        }
     }
 }
 
@@ -556,6 +586,42 @@ fn scrollSession(session: *SessionState, delta: isize) void {
     pages.scroll(.{ .delta_row = delta });
 
     session.is_scrolled = (pages.viewport != .active);
+    session.dirty = true;
+}
+
+fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
+    const cols = @max(1, @divFloor(window_width, font.cell_width));
+    const rows = @max(1, @divFloor(window_height, font.cell_height));
+    return .{
+        .cols = @intCast(cols),
+        .rows = @intCast(rows),
+    };
+}
+
+fn applyTerminalResize(
+    sessions: []SessionState,
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    window_width: c_int,
+    window_height: c_int,
+) void {
+    const new_size = pty_mod.winsize{
+        .ws_row = rows,
+        .ws_col = cols,
+        .ws_xpixel = @intCast(window_width),
+        .ws_ypixel = @intCast(window_height),
+    };
+
+    for (sessions) |*session| {
+        session.shell.pty.setSize(new_size) catch |err| {
+            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+        };
+        session.terminal.resize(allocator, cols, rows) catch |err| {
+            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+        };
+        session.dirty = true;
+    }
 }
 
 const ansi_colors = [_]c.SDL_Color{
@@ -639,7 +705,7 @@ fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderSession(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, true);
+                try renderGridSessionCached(renderer, session, cell_rect, GRID_SCALE, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time);
             }
         },
         .Full => {
@@ -686,7 +752,7 @@ fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderSession(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows, current_time, true);
+                    try renderGridSessionCached(renderer, session, cell_rect, GRID_SCALE, false, true, font, term_cols, term_rows, current_time);
                 }
             }
 
@@ -708,6 +774,20 @@ fn renderSession(
     term_rows: u16,
     current_time_ms: i64,
     is_grid_view: bool,
+) RenderError!void {
+    try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
+    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
+}
+
+fn renderSessionContent(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
 ) RenderError!void {
     // Each session renders as a scaled terminal snapshot clipped to its rect.
     // Scaling happens via glyph re-render at the target size rather than texture
@@ -774,7 +854,17 @@ fn renderSession(
             try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
         }
     }
+}
 
+fn renderSessionOverlays(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    rect: Rect,
+    is_focused: bool,
+    apply_effects: bool,
+    current_time_ms: i64,
+    is_grid_view: bool,
+) void {
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused);
     } else {
@@ -833,6 +923,68 @@ fn renderSession(
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
+}
+
+fn ensureCacheTexture(renderer: *c.SDL_Renderer, session: *SessionState, width: c_int, height: c_int) bool {
+    if (session.cache_texture) |tex| {
+        if (session.cache_w == width and session.cache_h == height) {
+            return true;
+        }
+        c.SDL_DestroyTexture(tex);
+        session.cache_texture = null;
+    }
+
+    const tex = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_TARGET, width, height) orelse {
+        std.debug.print("Failed to create cache texture {d}x{d} for session {d}: {s}\n", .{ width, height, session.id, c.SDL_GetError() });
+        return false;
+    };
+    _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
+    session.cache_texture = tex;
+    session.cache_w = width;
+    session.cache_h = height;
+    session.dirty = true;
+    return true;
+}
+
+fn renderGridSessionCached(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    apply_effects: bool,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+    current_time_ms: i64,
+) RenderError!void {
+    const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
+
+    if (can_cache) {
+        if (session.cache_texture) |tex| {
+            if (session.dirty) {
+                _ = c.SDL_SetRenderTarget(renderer, tex);
+                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
+                const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
+                try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows);
+                session.dirty = false;
+                _ = c.SDL_SetRenderTarget(renderer, null);
+            }
+
+            const dest_rect = c.SDL_FRect{
+                .x = @floatFromInt(rect.x),
+                .y = @floatFromInt(rect.y),
+                .w = @floatFromInt(rect.w),
+                .h = @floatFromInt(rect.h),
+            };
+            _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
+            return;
+        }
+    }
+
+    // Fallback to direct rendering if cache unavailable.
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
@@ -905,6 +1057,21 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
         };
         drawRoundedBorder(renderer, r, radius);
     }
+}
+
+const FontSizeDirection = enum { increase, decrease };
+
+fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
+
+    const shift_held = (mod & c.SDL_KMOD_SHIFT) != 0;
+    return switch (key) {
+        c.SDLK_EQUALS => if (shift_held) .increase else null,
+        c.SDLK_MINUS => .decrease,
+        c.SDLK_KP_PLUS => .increase,
+        c.SDLK_KP_MINUS => .decrease,
+        else => null,
+    };
 }
 
 fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
@@ -1110,6 +1277,14 @@ test "encodeKeyWithMod - unknown key" {
     var buf: [8]u8 = undefined;
     const n = encodeKeyWithMod(0, 0, &buf);
     try std.testing.expectEqual(@as(usize, 0), n);
+}
+
+test "fontSizeShortcut - plus/minus variants" {
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
 }
 
 test "NotificationQueue - push and drain" {
