@@ -66,6 +66,7 @@ pub const SDLK_RIGHTBRACKET = c_import.SDLK_RIGHTBRACKET;
 pub const SDL_KMOD_CTRL = c_import.SDL_KMOD_CTRL;
 pub const SDL_KMOD_SHIFT = c_import.SDL_KMOD_SHIFT;
 pub const SDL_KMOD_GUI = c_import.SDL_KMOD_GUI;
+pub const SDL_KMOD_ALT = c_import.SDL_KMOD_ALT;
 pub const SDL_PIXELFORMAT_RGBA8888 = c_import.SDL_PIXELFORMAT_RGBA8888;
 pub const SDL_TEXTUREACCESS_TARGET = c_import.SDL_TEXTUREACCESS_TARGET;
 
