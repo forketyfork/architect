@@ -9,6 +9,7 @@ pub const SDL_Init = c_import.SDL_Init;
 pub const SDL_Quit = c_import.SDL_Quit;
 pub const SDL_CreateWindow = c_import.SDL_CreateWindow;
 pub const SDL_DestroyWindow = c_import.SDL_DestroyWindow;
+pub const SDL_SetWindowPosition = c_import.SDL_SetWindowPosition;
 pub const SDL_CreateRenderer = c_import.SDL_CreateRenderer;
 pub const SDL_DestroyRenderer = c_import.SDL_DestroyRenderer;
 pub const SDL_SetRenderDrawColor = c_import.SDL_SetRenderDrawColor;
@@ -44,6 +45,7 @@ pub const SDL_EVENT_TEXT_INPUT = c_import.SDL_EVENT_TEXT_INPUT;
 pub const SDL_EVENT_MOUSE_BUTTON_DOWN = c_import.SDL_EVENT_MOUSE_BUTTON_DOWN;
 pub const SDL_EVENT_MOUSE_WHEEL = c_import.SDL_EVENT_MOUSE_WHEEL;
 pub const SDL_EVENT_WINDOW_RESIZED = c_import.SDL_EVENT_WINDOW_RESIZED;
+pub const SDL_EVENT_WINDOW_MOVED = c_import.SDL_EVENT_WINDOW_MOVED;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;
