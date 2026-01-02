@@ -168,9 +168,9 @@ const NotificationQueue = struct {
 
 const SessionState = struct {
     id: usize,
-    shell: shell_mod.Shell,
-    terminal: ghostty_vt.Terminal,
-    stream: VtStreamType,
+    shell: ?shell_mod.Shell,
+    terminal: ?ghostty_vt.Terminal,
+    stream: ?VtStreamType,
     output_buf: [4096]u8,
     status: SessionStatus = .running,
     attention: bool = false,
@@ -179,19 +179,12 @@ const SessionState = struct {
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
     cache_h: c_int = 0,
-
-    // Two-phase initialization is required:
-    // 1. init() creates the SessionState with stream = undefined
-    // 2. initStream() must be called after the terminal is at its final memory location
-    //
-    // This is necessary because terminal.vtStream() creates a stream that holds an
-    // internal reference to the terminal. If we call vtStream() before moving the
-    // terminal into the struct, the stream ends up with an invalid reference,
-    // causing segfaults when the stream tries to access the terminal.
-    //
-    // While this leaves a brief window where stream is undefined, it's the only
-    // safe approach given ghostty-vt's internal architecture. The pattern ensures
-    // initStream() is called immediately after all sessions are created.
+    spawned: bool = false,
+    shell_path: []const u8,
+    pty_size: pty_mod.winsize,
+    session_id_z: [16:0]u8,
+    notify_sock_z: [:0]const u8,
+    allocator: std.mem.Allocator,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -215,40 +208,73 @@ const SessionState = struct {
         session_id_z: [:0]const u8,
         notify_sock: [:0]const u8,
     ) InitError!SessionState {
-        const shell = try shell_mod.Shell.spawn(shell_path, size, session_id_z, notify_sock);
+        var session_id_buf: [16:0]u8 = undefined;
+        @memcpy(session_id_buf[0..session_id_z.len], session_id_z);
+        session_id_buf[session_id_z.len] = 0;
+
+        return SessionState{
+            .id = id,
+            .shell = null,
+            .terminal = null,
+            .stream = null,
+            .output_buf = undefined,
+            .spawned = false,
+            .shell_path = shell_path,
+            .pty_size = size,
+            .session_id_z = session_id_buf,
+            .notify_sock_z = notify_sock,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn ensureSpawned(self: *SessionState) InitError!void {
+        if (self.spawned) return;
+
+        const shell = try shell_mod.Shell.spawn(
+            self.shell_path,
+            self.pty_size,
+            &self.session_id_z,
+            self.notify_sock_z,
+        );
         errdefer {
             var s = shell;
             s.deinit();
         }
 
-        var terminal = try ghostty_vt.Terminal.init(allocator, .{
-            .cols = size.ws_col,
-            .rows = size.ws_row,
+        var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
+            .cols = self.pty_size.ws_col,
+            .rows = self.pty_size.ws_row,
         });
-        errdefer terminal.deinit(allocator);
+        errdefer terminal.deinit(self.allocator);
 
         try makeNonBlocking(shell.pty.master);
 
-        return SessionState{
-            .id = id,
-            .shell = shell,
-            .terminal = terminal,
-            .stream = undefined,
-            .output_buf = undefined,
-        };
-    }
+        self.shell = shell;
+        self.terminal = terminal;
+        self.spawned = true;
+        self.stream = self.terminal.?.vtStream();
+        self.dirty = true;
 
-    pub fn initStream(self: *SessionState) void {
-        self.stream = self.terminal.vtStream();
+        log.debug("spawned session {d}", .{self.id});
+
+        self.processOutput() catch {};
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         if (self.cache_texture) |tex| {
             c.SDL_DestroyTexture(tex);
         }
-        self.stream.deinit();
-        self.terminal.deinit(allocator);
-        self.shell.deinit();
+        if (self.spawned) {
+            if (self.stream) |*stream| {
+                stream.deinit();
+            }
+            if (self.terminal) |*terminal| {
+                terminal.deinit(allocator);
+            }
+            if (self.shell) |*shell| {
+                shell.deinit();
+            }
+        }
     }
 
     pub const ProcessOutputError = posix.ReadError || error{
@@ -265,16 +291,19 @@ const SessionState = struct {
         StyleSetOutOfMemory,
     };
 
-    // Pump PTY output into ghostty's parser; non-blocking reads mean it's safe to
-    // call every frame without stalling the event loop.
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
-        const n = self.shell.read(&self.output_buf) catch |err| {
+        if (!self.spawned) return;
+
+        const shell = &(self.shell orelse return);
+        const stream = &(self.stream orelse return);
+
+        const n = shell.read(&self.output_buf) catch |err| {
             if (err == error.WouldBlock) return;
             return err;
         };
 
         if (n > 0) {
-            try self.stream.nextSlice(self.output_buf[0..n]);
+            try stream.nextSlice(self.output_buf[0..n]);
             self.dirty = true;
         }
     }
@@ -399,9 +428,7 @@ pub fn main() !void {
         init_count += 1;
     }
 
-    for (&sessions) |*session| {
-        session.initStream();
-    }
+    try sessions[0].ensureSpawned();
 
     defer {
         for (&sessions) |*session| {
@@ -462,12 +489,18 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    if (focused.is_scrolled) {
-                        focused.terminal.screens.active.pages.scroll(.{ .active = {} });
-                        focused.is_scrolled = false;
+                    if (focused.spawned) {
+                        if (focused.is_scrolled) {
+                            if (focused.terminal) |*terminal| {
+                                terminal.screens.active.pages.scroll(.{ .active = {} });
+                                focused.is_scrolled = false;
+                            }
+                        }
+                        const text = std.mem.sliceTo(event.text.text, 0);
+                        if (focused.shell) |*shell| {
+                            _ = try shell.write(text);
+                        }
                     }
-                    const text = std.mem.sliceTo(event.text.text, 0);
-                    _ = try focused.shell.write(text);
                 },
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = event.key.key;
@@ -513,6 +546,8 @@ pub fn main() !void {
                             else
                                 (anim_state.focused_session + total_sessions - 1) % total_sessions;
 
+                            try sessions[new_session].ensureSpawned();
+
                             anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
                             anim_state.previous_session = anim_state.focused_session;
                             anim_state.focused_session = new_session;
@@ -524,7 +559,85 @@ pub fn main() !void {
                             const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
                             toast_notification.show(notification_msg, now);
                         }
-                    } else if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
+                    } else if (gridNavShortcut(key, mod)) |direction| {
+                        if (anim_state.mode == .Grid) {
+                            const current_row: usize = anim_state.focused_session / GRID_COLS;
+                            const current_col: usize = anim_state.focused_session % GRID_COLS;
+                            var new_row: usize = current_row;
+                            var new_col: usize = current_col;
+
+                            switch (direction) {
+                                .up => {
+                                    if (current_row > 0) {
+                                        new_row = current_row - 1;
+                                    }
+                                },
+                                .down => {
+                                    if (current_row < GRID_ROWS - 1) {
+                                        new_row = current_row + 1;
+                                    }
+                                },
+                                .left => {
+                                    if (current_col > 0) {
+                                        new_col = current_col - 1;
+                                    }
+                                },
+                                .right => {
+                                    if (current_col < GRID_COLS - 1) {
+                                        new_col = current_col + 1;
+                                    }
+                                },
+                            }
+
+                            const new_session = new_row * GRID_COLS + new_col;
+                            if (new_session != anim_state.focused_session) {
+                                sessions[anim_state.focused_session].dirty = true;
+                                sessions[new_session].dirty = true;
+                                anim_state.focused_session = new_session;
+                                std.debug.print("Grid nav to session {d}\n", .{new_session});
+                            }
+                        } else {
+                            const focused = &sessions[anim_state.focused_session];
+                            if (focused.spawned) {
+                                if (focused.is_scrolled) {
+                                    if (focused.terminal) |*terminal| {
+                                        terminal.screens.active.pages.scroll(.{ .active = {} });
+                                        focused.is_scrolled = false;
+                                    }
+                                }
+                                var buf: [8]u8 = undefined;
+                                const n = encodeKeyWithMod(key, mod, &buf);
+                                if (n > 0) {
+                                    if (focused.shell) |*shell| {
+                                        _ = try shell.write(buf[0..n]);
+                                    }
+                                }
+                            }
+                        }
+                    } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
+                        const clicked_session = anim_state.focused_session;
+                        try sessions[clicked_session].ensureSpawned();
+
+                        sessions[clicked_session].status = .running;
+                        sessions[clicked_session].attention = false;
+
+                        const grid_row: c_int = @intCast(clicked_session / GRID_COLS);
+                        const grid_col: c_int = @intCast(clicked_session % GRID_COLS);
+                        const start_rect = Rect{
+                            .x = grid_col * cell_width_pixels,
+                            .y = grid_row * cell_height_pixels,
+                            .w = cell_width_pixels,
+                            .h = cell_height_pixels,
+                        };
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+
+                        anim_state.mode = .Expanding;
+                        anim_state.focused_session = clicked_session;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = start_rect;
+                        anim_state.target_rect = target_rect;
+                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                    } else if (key == c.SDLK_ESCAPE and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Full) {
                         const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
                         const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
                         const target_rect = Rect{
@@ -541,14 +654,20 @@ pub fn main() !void {
                         std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
-                        if (focused.is_scrolled) {
-                            focused.terminal.screens.active.pages.scroll(.{ .active = {} });
-                            focused.is_scrolled = false;
-                        }
-                        var buf: [8]u8 = undefined;
-                        const n = encodeKeyWithMod(key, mod, &buf);
-                        if (n > 0) {
-                            _ = try focused.shell.write(buf[0..n]);
+                        if (focused.spawned) {
+                            if (focused.is_scrolled) {
+                                if (focused.terminal) |*terminal| {
+                                    terminal.screens.active.pages.scroll(.{ .active = {} });
+                                    focused.is_scrolled = false;
+                                }
+                            }
+                            var buf: [8]u8 = undefined;
+                            const n = encodeKeyWithMod(key, mod, &buf);
+                            if (n > 0) {
+                                if (focused.shell) |*shell| {
+                                    _ = try shell.write(buf[0..n]);
+                                }
+                            }
                         }
                     }
                 },
@@ -559,6 +678,8 @@ pub fn main() !void {
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
+
+                        try sessions[clicked_session].ensureSpawned();
 
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
@@ -683,11 +804,14 @@ fn calculateHoveredSession(
 }
 
 fn scrollSession(session: *SessionState, delta: isize) void {
-    var pages = &session.terminal.screens.active.pages;
-    pages.scroll(.{ .delta_row = delta });
+    if (!session.spawned) return;
+    if (session.terminal) |*terminal| {
+        var pages = &terminal.screens.active.pages;
+        pages.scroll(.{ .delta_row = delta });
 
-    session.is_scrolled = (pages.viewport != .active);
-    session.dirty = true;
+        session.is_scrolled = (pages.viewport != .active);
+        session.dirty = true;
+    }
 }
 
 fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
@@ -715,13 +839,20 @@ fn applyTerminalResize(
     };
 
     for (sessions) |*session| {
-        session.shell.pty.setSize(new_size) catch |err| {
-            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-        };
-        session.terminal.resize(allocator, cols, rows) catch |err| {
-            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-        };
-        session.dirty = true;
+        session.pty_size = new_size;
+        if (session.spawned) {
+            if (session.shell) |*shell| {
+                shell.pty.setSize(new_size) catch |err| {
+                    std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+                };
+            }
+            if (session.terminal) |*terminal| {
+                terminal.resize(allocator, cols, rows) catch |err| {
+                    std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+                };
+            }
+            session.dirty = true;
+        }
     }
 }
 
@@ -890,13 +1021,12 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
-    // Each session renders as a scaled terminal snapshot clipped to its rect.
-    // Scaling happens via glyph re-render at the target size rather than texture
-    // scaling to keep text crisp at 1/3 scale.
-    if (is_focused) {
+    if (!session.spawned) {
+        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    } else if (is_focused) {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
     } else {
-        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
+        _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, 255);
     }
     const bg_rect = c.SDL_FRect{
         .x = @floatFromInt(rect.x),
@@ -906,7 +1036,13 @@ fn renderSessionContent(
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-    const screen = session.terminal.screens.active;
+    if (!session.spawned) return;
+
+    const terminal = session.terminal orelse {
+        log.err("session {d} is spawned but terminal is null!", .{session.id});
+        return;
+    };
+    const screen = terminal.screens.active;
     const pages = screen.pages;
 
     const base_cell_width = font.cell_width;
@@ -1055,10 +1191,12 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, session: *SessionState, width: 
         if (session.cache_w == width and session.cache_h == height) {
             return true;
         }
+        log.debug("destroying cache for session {d} (resize)", .{session.id});
         c.SDL_DestroyTexture(tex);
         session.cache_texture = null;
     }
 
+    log.debug("creating cache for session {d} spawned={}", .{ session.id, session.spawned });
     const tex = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_TARGET, width, height) orelse {
         std.debug.print("Failed to create cache texture {d}x{d} for session {d}: {s}\n", .{ width, height, session.id, c.SDL_GetError() });
         return false;
@@ -1088,8 +1226,11 @@ fn renderGridSessionCached(
     if (can_cache) {
         if (session.cache_texture) |tex| {
             if (session.dirty) {
+                log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
                 _ = c.SDL_SetRenderTarget(renderer, tex);
                 _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
+                _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows);
                 session.dirty = false;
@@ -1266,6 +1407,20 @@ fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
     if (key == c.SDLK_RIGHTBRACKET) return true;
     if (key == c.SDLK_LEFTBRACKET) return false;
     return null;
+}
+
+const GridNavDirection = enum { up, down, left, right };
+
+fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
+    if ((mod & c.SDL_KMOD_SHIFT) != 0) return null;
+    return switch (key) {
+        c.SDLK_UP => .up,
+        c.SDLK_DOWN => .down,
+        c.SDLK_LEFT => .left,
+        c.SDLK_RIGHT => .right,
+        else => null,
+    };
 }
 
 fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
