@@ -59,6 +59,8 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **Persistent Configuration**: Automatically saves and restores font size, window dimensions, and window position
+- **Font Size Adjustment**: Use Cmd+Plus/Minus to adjust font size (saved automatically)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 
 ## Prerequisites
@@ -108,6 +110,32 @@ zig build -Doptimize=ReleaseFast
 Run the application:
 ```bash
 zig build run
+```
+
+## Configuration
+
+Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
+
+- **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-32px, default: 14px)
+- **Window dimensions**: Automatically saved when you resize the window
+- **Window position**: Automatically saved when you move the window
+
+The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
+
+**Example configuration:**
+```json
+{
+  "font_size": 16,
+  "window_width": 1920,
+  "window_height": 1080,
+  "window_x": 150,
+  "window_y": 100
+}
+```
+
+To reset to defaults, simply delete the configuration file:
+```bash
+rm ~/.config/architect/config.json
 ```
 
 ## Development
@@ -228,6 +256,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
+- `src/config.zig` - Configuration persistence (saves font size, window size, and position)
 - `src/c.zig` - C library bindings for SDL3
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
@@ -273,6 +302,8 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize
+- Persistent configuration (font size, window size, and position)
+- Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
 
@@ -280,8 +311,8 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 
 The following features are not yet implemented:
 - **No emoji support**: Unicode emojis may not render correctly
-- **No font selection**: Hardcoded to SF Mono font
-- **No configurability**: Grid size, colors, and keybindings are hardcoded
+- **No font selection**: Hardcoded to SF Mono font (though size is adjustable)
+- **Limited configurability**: Grid size, colors, and keybindings are hardcoded
 - **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
 
 ## License
