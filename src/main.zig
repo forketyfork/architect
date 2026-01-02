@@ -6,6 +6,7 @@ const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
+const config_mod = @import("config.zig");
 const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
@@ -267,16 +268,35 @@ pub fn main() !void {
     }
     defer c.TTF_Quit();
 
+    const config = config_mod.Config.load(allocator) catch |err| blk: {
+        if (err == error.ConfigNotFound) {
+            std.debug.print("Config not found, using defaults\n", .{});
+        } else {
+            std.debug.print("Failed to load config: {}, using defaults\n", .{err});
+        }
+        break :blk config_mod.Config{
+            .font_size = DEFAULT_FONT_SIZE,
+            .window_width = INITIAL_WINDOW_WIDTH,
+            .window_height = INITIAL_WINDOW_HEIGHT,
+            .window_x = -1,
+            .window_y = -1,
+        };
+    };
+
     const window = c.SDL_CreateWindow(
         "Architect - Terminal Wall",
-        INITIAL_WINDOW_WIDTH,
-        INITIAL_WINDOW_HEIGHT,
+        config.window_width,
+        config.window_height,
         c.SDL_WINDOW_RESIZABLE,
     ) orelse {
         std.debug.print("SDL_CreateWindow Error: {s}\n", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
     };
     defer c.SDL_DestroyWindow(window);
+
+    if (config.window_x >= 0 and config.window_y >= 0) {
+        _ = c.SDL_SetWindowPosition(window, config.window_x, config.window_y);
+    }
 
     _ = c.SDL_StartTextInput(window);
     defer _ = c.SDL_StopTextInput(window);
@@ -296,12 +316,14 @@ pub fn main() !void {
         break :blk true;
     };
 
-    var font_size: c_int = DEFAULT_FONT_SIZE;
+    var font_size: c_int = config.font_size;
     var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
     defer font.deinit();
 
-    var window_width: c_int = INITIAL_WINDOW_WIDTH;
-    var window_height: c_int = INITIAL_WINDOW_HEIGHT;
+    var window_width: c_int = config.window_width;
+    var window_height: c_int = config.window_height;
+    var window_x: c_int = config.window_x;
+    var window_y: c_int = config.window_y;
 
     const initial_term_size = calculateTerminalSize(&font, window_width, window_height);
     var full_cols: u16 = initial_term_size.cols;
@@ -368,6 +390,10 @@ pub fn main() !void {
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_WINDOW_MOVED => {
+                    window_x = event.window.data1;
+                    window_y = event.window.data2;
+                },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     window_width = @intCast(event.window.data1);
                     window_height = @intCast(event.window.data2);
@@ -380,6 +406,17 @@ pub fn main() !void {
                     applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
 
                     std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
+
+                    const updated_config = config_mod.Config{
+                        .font_size = font_size,
+                        .window_width = window_width,
+                        .window_height = window_height,
+                        .window_x = window_x,
+                        .window_y = window_y,
+                    };
+                    updated_config.save(allocator) catch |err| {
+                        std.debug.print("Failed to save config: {}\n", .{err});
+                    };
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
@@ -409,6 +446,17 @@ pub fn main() !void {
                             full_rows = term_size.rows;
                             applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
+
+                            const updated_config = config_mod.Config{
+                                .font_size = font_size,
+                                .window_width = window_width,
+                                .window_height = window_height,
+                                .window_x = window_x,
+                                .window_y = window_y,
+                            };
+                            updated_config.save(allocator) catch |err| {
+                                std.debug.print("Failed to save config: {}\n", .{err});
+                            };
                         }
                     } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {

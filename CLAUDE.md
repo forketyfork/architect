@@ -111,6 +111,8 @@ The project is an experimental terminal multiplexer with:
 - **Resizable window** - window can be resized dynamically with automatic terminal and PTY resizing
 - **Terminal switching with panning** - use Cmd+Shift+[ / Cmd+Shift+] to switch between terminals in full-screen mode with smooth horizontal panning animation
 - **Keyboard support** - ESC key collapses expanded sessions back to grid view
+- **Font size adjustment** - Cmd+Plus/Minus to adjust font size (8-32px range, saved automatically)
+- **Persistent configuration** - automatically saves and restores font size, window dimensions, and window position to `~/.config/architect/config.json`
 - **Real-time I/O** - non-blocking PTY reading with live terminal updates
 - **Scrollback in place** - mouse wheel scrolls per-terminal history; typing or new input snaps back to live output and a yellow strip in grid view indicates a scrolled session
 
@@ -132,6 +134,7 @@ Key dependency details:
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY (pseudo-terminal) abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
+- `src/config.zig` - Configuration persistence (font size, window dimensions, and position)
 - `src/c.zig` - C library bindings for SDL3 and SDL_ttf
 - `build.zig` - Zig build configuration with ghostty-vt module and SDL3 dependencies
 - `build.zig.zon` - Package manifest with ghostty path dependency
@@ -189,17 +192,27 @@ The application implements a 3×3 grid with the following components:
 - Mouse clicks detect grid cell selection and trigger expansion
 - ESC key collapses expanded sessions back to grid
 - Cmd+Shift+[ / Cmd+Shift+] switches between terminals in full-screen mode with panning animation
+- Cmd+Plus/Minus adjusts font size (8-32px range)
 - Mouse wheel scrolls per-session history; typing or new output snaps the viewport back to live
 - Keyboard input encoded to ANSI sequences and written to active PTY
 - Non-blocking PTY reads avoid blocking the event loop
-- Window resize events trigger automatic terminal and PTY resizing
+- Window move events update internal position tracking
+- Window resize events trigger automatic config saving and terminal/PTY resizing
+
+**Configuration System:**
+- Settings stored in `~/.config/architect/config.json` as JSON
+- Automatically saves on: window resize, font size change (window position is tracked and saved with these events)
+- Automatically loads on startup with fallback to defaults
+- Configuration includes: `font_size`, `window_width`, `window_height`, `window_x`, `window_y`
+- Config directory created automatically if it doesn't exist
+- Window position uses -1 as sentinel for "no saved position" (allows restoring position at 0,0 or with negative coordinates on multi-monitor setups)
 
 ### Known Limitations
 
 The following features are not yet implemented:
 - **No emoji support**: Unicode emojis may not render correctly
-- **No font selection**: Hardcoded to SF Mono font
-- **No configurability**: Grid size, colors, and keybindings are hardcoded
+- **No font selection**: Hardcoded to SF Mono font (though size is adjustable via Cmd+Plus/Minus)
+- **Limited configurability**: Grid size, colors, and keybindings are hardcoded (font size, window size, and position are configurable)
 - **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
 
 ## Zig Version
