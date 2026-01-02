@@ -22,9 +22,12 @@ const NOTIFY_SOCKET_NAME = "architect_notify.sock";
 const SCROLL_LINES_PER_TICK: isize = 3;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
-const MAX_FONT_SIZE: c_int = 32;
+const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
+const NOTIFICATION_DURATION_MS: i64 = 2500;
+const NOTIFICATION_FADE_START_MS: i64 = 1500;
+const NOTIFICATION_FONT_SIZE: c_int = 36;
 
 const SessionStatus = enum {
     idle,
@@ -100,6 +103,39 @@ const VtStreamType = blk: {
 const Notification = struct {
     session: usize,
     state: SessionStatus,
+};
+
+const ToastNotification = struct {
+    message: [256]u8 = undefined,
+    message_len: usize = 0,
+    start_time: i64 = 0,
+    active: bool = false,
+
+    pub fn show(self: *ToastNotification, message: []const u8, current_time: i64) void {
+        const len = @min(message.len, self.message.len - 1);
+        @memcpy(self.message[0..len], message[0..len]);
+        self.message_len = len;
+        self.start_time = current_time;
+        self.active = true;
+    }
+
+    pub fn isVisible(self: *const ToastNotification, current_time: i64) bool {
+        if (!self.active) return false;
+        const elapsed = current_time - self.start_time;
+        return elapsed < NOTIFICATION_DURATION_MS;
+    }
+
+    pub fn getAlpha(self: *const ToastNotification, current_time: i64) u8 {
+        if (!self.isVisible(current_time)) return 0;
+        const elapsed = current_time - self.start_time;
+        if (elapsed < NOTIFICATION_FADE_START_MS) {
+            return 255;
+        }
+        const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
+                             @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
+        const alpha = 255.0 * (1.0 - fade_progress);
+        return @intFromFloat(@max(0, @min(255, alpha)));
+    }
 };
 
 const NotificationQueue = struct {
@@ -380,6 +416,8 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
+    var toast_notification = ToastNotification{};
+
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
     while (running) {
@@ -458,6 +496,11 @@ pub fn main() !void {
                                 std.debug.print("Failed to save config: {}\n", .{err});
                             };
                         }
+
+                        var notification_buf: [64]u8 = undefined;
+                        const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
+                        const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{hotkey, font_size}) catch "Font size changed";
+                        toast_notification.show(notification_msg, now);
                     } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
@@ -471,6 +514,11 @@ pub fn main() !void {
                             anim_state.focused_session = new_session;
                             anim_state.start_time = now;
                             std.debug.print("Panning to session {d} from {d}\n", .{ new_session, anim_state.previous_session });
+
+                            var notification_buf: [64]u8 = undefined;
+                            const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
+                            const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{hotkey, new_session}) catch "Terminal switched";
+                            toast_notification.show(notification_msg, now);
                         }
                     } else if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
                         const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
@@ -585,6 +633,7 @@ pub fn main() !void {
         }
 
         try render(renderer, &sessions, allocator, cell_width_pixels, cell_height_pixels, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
+        renderToastNotification(renderer, &toast_notification, now, window_width);
         _ = c.SDL_RenderPresent(renderer);
 
         if (!vsync_enabled) {
@@ -1129,6 +1178,68 @@ fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, colo
         };
         drawRoundedBorder(renderer, r, radius);
     }
+}
+
+fn renderToastNotification(
+    renderer: *c.SDL_Renderer,
+    notification: *const ToastNotification,
+    current_time: i64,
+    window_width: c_int,
+) void {
+    if (!notification.isVisible(current_time)) return;
+
+    const alpha = notification.getAlpha(current_time);
+    if (alpha == 0) return;
+
+    const notification_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(NOTIFICATION_FONT_SIZE)) orelse return;
+    defer c.TTF_CloseFont(notification_font);
+
+    const message_z = @as([*:0]const u8, @ptrCast(&notification.message));
+    const fg_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = alpha };
+    const surface = c.TTF_RenderText_Blended(notification_font, message_z, notification.message_len, fg_color) orelse return;
+    defer c.SDL_DestroySurface(surface);
+
+    const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
+    defer c.SDL_DestroyTexture(texture);
+
+    _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
+
+    var text_width_f: f32 = 0;
+    var text_height_f: f32 = 0;
+    _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
+
+    const text_width: c_int = @intFromFloat(text_width_f);
+    const text_height: c_int = @intFromFloat(text_height_f);
+
+    const padding: c_int = 30;
+    const bg_padding: c_int = 20;
+    const x = @divFloor(window_width - text_width, 2);
+    const y = padding;
+
+    const bg_rect = c.SDL_FRect{
+        .x = @as(f32, @floatFromInt(x - bg_padding)),
+        .y = @as(f32, @floatFromInt(y - bg_padding)),
+        .w = @as(f32, @floatFromInt(text_width + bg_padding * 2)),
+        .h = @as(f32, @floatFromInt(text_height + bg_padding * 2)),
+    };
+
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+    const bg_alpha = @min(alpha, 200);
+    _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, bg_alpha);
+    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+
+    const border_alpha = @min(alpha, 180);
+    _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, border_alpha);
+    _ = c.SDL_RenderRect(renderer, &bg_rect);
+
+    const dest_rect = c.SDL_FRect{
+        .x = @floatFromInt(x),
+        .y = @floatFromInt(y),
+        .w = text_width_f,
+        .h = text_height_f,
+    };
+
+    _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
 }
 
 const FontSizeDirection = enum { increase, decrease };
