@@ -278,8 +278,8 @@ pub fn main() !void {
             .font_size = DEFAULT_FONT_SIZE,
             .window_width = INITIAL_WINDOW_WIDTH,
             .window_height = INITIAL_WINDOW_HEIGHT,
-            .window_x = 0,
-            .window_y = 0,
+            .window_x = -1,
+            .window_y = -1,
         };
     };
 
@@ -294,7 +294,7 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyWindow(window);
 
-    if (config.window_x > 0 and config.window_y > 0) {
+    if (config.window_x >= 0 and config.window_y >= 0) {
         _ = c.SDL_SetWindowPosition(window, config.window_x, config.window_y);
     }
 
@@ -393,17 +393,6 @@ pub fn main() !void {
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = event.window.data1;
                     window_y = event.window.data2;
-
-                    const updated_config = config_mod.Config{
-                        .font_size = font_size,
-                        .window_width = window_width,
-                        .window_height = window_height,
-                        .window_x = window_x,
-                        .window_y = window_y,
-                    };
-                    updated_config.save(allocator) catch |err| {
-                        std.debug.print("Failed to save config: {}\n", .{err});
-                    };
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     window_width = @intCast(event.window.data1);

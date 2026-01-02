@@ -75,7 +75,9 @@ pub const Config = struct {
         );
         defer allocator.free(content);
 
-        try fs.cwd().writeFile(.{ .sub_path = config_path, .data = content });
+        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(content);
     }
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {

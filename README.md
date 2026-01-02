@@ -118,7 +118,7 @@ Architect automatically saves your preferences to `~/.config/architect/config.js
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-32px, default: 14px)
 - **Window dimensions**: Automatically saved when you resize the window
-- **Window position**: Automatically saved when you move the window
+- **Window position**: Saved along with window dimensions when you resize or adjust font size
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
 

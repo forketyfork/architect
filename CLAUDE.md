@@ -196,16 +196,16 @@ The application implements a 3×3 grid with the following components:
 - Mouse wheel scrolls per-session history; typing or new output snaps the viewport back to live
 - Keyboard input encoded to ANSI sequences and written to active PTY
 - Non-blocking PTY reads avoid blocking the event loop
-- Window resize and move events trigger automatic config saving
-- Window resize events trigger automatic terminal and PTY resizing
+- Window move events update internal position tracking
+- Window resize events trigger automatic config saving and terminal/PTY resizing
 
 **Configuration System:**
 - Settings stored in `~/.config/architect/config.json` as JSON
-- Automatically saves on: window resize, window move, font size change
+- Automatically saves on: window resize, font size change (window position is tracked and saved with these events)
 - Automatically loads on startup with fallback to defaults
 - Configuration includes: `font_size`, `window_width`, `window_height`, `window_x`, `window_y`
 - Config directory created automatically if it doesn't exist
-- Window position restored on launch (skipped if 0,0 to allow default positioning on first run)
+- Window position uses -1 as sentinel for "no saved position" (allows restoring position at 0,0 or with negative coordinates on multi-monitor setups)
 
 ### Known Limitations
 
