@@ -596,6 +596,23 @@ pub fn main() !void {
                                 anim_state.focused_session = new_session;
                                 std.debug.print("Grid nav to session {d}\n", .{new_session});
                             }
+                        } else {
+                            const focused = &sessions[anim_state.focused_session];
+                            if (focused.spawned) {
+                                if (focused.is_scrolled) {
+                                    if (focused.terminal) |*terminal| {
+                                        terminal.screens.active.pages.scroll(.{ .active = {} });
+                                        focused.is_scrolled = false;
+                                    }
+                                }
+                                var buf: [8]u8 = undefined;
+                                const n = encodeKeyWithMod(key, mod, &buf);
+                                if (n > 0) {
+                                    if (focused.shell) |*shell| {
+                                        _ = try shell.write(buf[0..n]);
+                                    }
+                                }
+                            }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
                         const clicked_session = anim_state.focused_session;
