@@ -135,7 +135,7 @@ const ToastNotification = struct {
             return 255;
         }
         const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
-                             @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
+            @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
         const eased_progress = fade_progress * fade_progress * (3.0 - 2.0 * fade_progress);
         const alpha = 255.0 * (1.0 - eased_progress);
         return @intFromFloat(@max(0, @min(255, alpha)));
@@ -503,7 +503,7 @@ pub fn main() !void {
 
                         var notification_buf: [64]u8 = undefined;
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
-                        const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{hotkey, font_size}) catch "Font size changed";
+                        const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         toast_notification.show(notification_msg, now);
                     } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
@@ -521,7 +521,7 @@ pub fn main() !void {
 
                             var notification_buf: [64]u8 = undefined;
                             const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
-                            const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{hotkey, new_session}) catch "Terminal switched";
+                            const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
                             toast_notification.show(notification_msg, now);
                         }
                     } else if (key == c.SDLK_ESCAPE and anim_state.mode == .Full) {
