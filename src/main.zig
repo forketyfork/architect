@@ -28,6 +28,8 @@ const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 const NOTIFICATION_DURATION_MS: i64 = 2500;
 const NOTIFICATION_FADE_START_MS: i64 = 1500;
 const NOTIFICATION_FONT_SIZE: c_int = 36;
+const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
+const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
 
 const SessionStatus = enum {
     idle,
@@ -114,6 +116,7 @@ const ToastNotification = struct {
     pub fn show(self: *ToastNotification, message: []const u8, current_time: i64) void {
         const len = @min(message.len, self.message.len - 1);
         @memcpy(self.message[0..len], message[0..len]);
+        self.message[len] = 0;
         self.message_len = len;
         self.start_time = current_time;
         self.active = true;
@@ -133,7 +136,8 @@ const ToastNotification = struct {
         }
         const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
                              @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
-        const alpha = 255.0 * (1.0 - fade_progress);
+        const eased_progress = fade_progress * fade_progress * (3.0 - 2.0 * fade_progress);
+        const alpha = 255.0 * (1.0 - eased_progress);
         return @intFromFloat(@max(0, @min(255, alpha)));
     }
 };
@@ -1224,11 +1228,11 @@ fn renderToastNotification(
     };
 
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    const bg_alpha = @min(alpha, 200);
+    const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
     _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, bg_alpha);
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-    const border_alpha = @min(alpha, 180);
+    const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
     _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, border_alpha);
     _ = c.SDL_RenderRect(renderer, &bg_rect);
 
