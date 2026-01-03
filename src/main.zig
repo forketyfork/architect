@@ -16,6 +16,9 @@ const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
 const ANIMATION_DURATION_MS = 300;
+const PRECOLLAPSE_PAUSE_MS = 200;
+const PRECOLLAPSE_DURATION_MS = 500;
+const PRECOLLAPSE_SCALE: f32 = 0.99;
 const GRID_SCALE: f32 = 1.0 / 3.0;
 const ATTENTION_THICKNESS: c_int = 16;
 const NOTIFY_SOCKET_NAME = "architect_notify.sock";
@@ -45,6 +48,8 @@ const ViewMode = enum {
     Collapsing,
     PanningLeft,
     PanningRight,
+    PreCollapse,
+    CancelPreCollapse,
 };
 
 const Rect = struct {
@@ -61,6 +66,7 @@ const AnimationState = struct {
     start_time: i64,
     start_rect: Rect,
     target_rect: Rect,
+    escape_press_time: ?i64,
 
     // Ease curve keeps both expansion and collapse feeling smooth instead of linear.
     fn easeInOutCubic(t: f32) f32 {
@@ -445,6 +451,7 @@ pub fn main() !void {
         .start_time = 0,
         .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .escape_press_time = null,
     };
 
     var toast_notification = ToastNotification{};
@@ -637,21 +644,15 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Full) {
-                        const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
-                        const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
-                        const target_rect = Rect{
-                            .x = grid_col * cell_width_pixels,
-                            .y = grid_row * cell_height_pixels,
-                            .w = cell_width_pixels,
-                            .h = cell_height_pixels,
-                        };
+                    } else if (key == c.SDLK_ESCAPE and canHandleEscapePress(anim_state.mode)) {
+                        const focused = &sessions[anim_state.focused_session];
+                        if (focused.spawned and focused.shell != null) {
+                            const esc_byte: [1]u8 = .{27};
+                            _ = focused.shell.?.write(&esc_byte) catch {};
+                        }
 
-                        anim_state.mode = .Collapsing;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-                        anim_state.target_rect = target_rect;
-                        std.debug.print("Collapsing session: {d}\n", .{anim_state.focused_session});
+                        anim_state.escape_press_time = now;
+                        std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned) {
@@ -669,6 +670,20 @@ pub fn main() !void {
                                 }
                             }
                         }
+                    }
+                },
+                c.SDL_EVENT_KEY_UP => {
+                    const key = event.key.key;
+                    if (key == c.SDLK_ESCAPE) {
+                        if (anim_state.mode == .PreCollapse) {
+                            anim_state.mode = .CancelPreCollapse;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = anim_state.getCurrentRect(now);
+                            anim_state.target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+                            std.debug.print("PreCollapse cancelled, bouncing back\n", .{});
+                        }
+                        anim_state.escape_press_time = null;
+                        std.debug.print("Escape released\n", .{});
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -730,6 +745,32 @@ pub fn main() !void {
             try session.processOutput();
         }
 
+        if (anim_state.escape_press_time) |press_time| {
+            const elapsed = now - press_time;
+            if (elapsed >= PRECOLLAPSE_PAUSE_MS and canStartPreCollapse(anim_state.mode)) {
+                const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
+                const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
+                const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * PRECOLLAPSE_SCALE);
+                const shrink_height: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * PRECOLLAPSE_SCALE);
+
+                anim_state.mode = .PreCollapse;
+                anim_state.start_time = now;
+                anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+                anim_state.target_rect = Rect{
+                    .x = shrink_offset_x,
+                    .y = shrink_offset_y,
+                    .w = shrink_width,
+                    .h = shrink_height,
+                };
+                // Clear escape_press_time since we've acted on it. Further animation is handled
+                // by PreCollapse state which auto-transitions to Collapsing after 500ms.
+                anim_state.escape_press_time = null;
+                std.debug.print("PreCollapse started after pause for session: {d}\n", .{anim_state.focused_session});
+            } else if (anim_state.mode == .Grid or anim_state.mode == .Collapsing) {
+                anim_state.escape_press_time = null;
+            }
+        }
+
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
         for (notifications.items) |note| {
@@ -744,12 +785,33 @@ pub fn main() !void {
             }
         }
 
+        if (anim_state.mode == .PreCollapse) {
+            const elapsed = now - anim_state.start_time;
+            if (elapsed >= PRECOLLAPSE_DURATION_MS) {
+                const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
+                const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+                const target_rect = Rect{
+                    .x = grid_col * cell_width_pixels,
+                    .y = grid_row * cell_height_pixels,
+                    .w = cell_width_pixels,
+                    .h = cell_height_pixels,
+                };
+
+                anim_state.mode = .Collapsing;
+                anim_state.start_time = now;
+                anim_state.start_rect = anim_state.getCurrentRect(now);
+                anim_state.target_rect = target_rect;
+                std.debug.print("PreCollapse -> Collapsing session: {d}\n", .{anim_state.focused_session});
+            }
+        }
+
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
-            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
+            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight or
+            anim_state.mode == .CancelPreCollapse)
         {
             if (anim_state.isComplete(now)) {
                 anim_state.mode = switch (anim_state.mode) {
-                    .Expanding, .PanningLeft, .PanningRight => .Full,
+                    .Expanding, .PanningLeft, .PanningRight, .CancelPreCollapse => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
@@ -790,7 +852,7 @@ fn calculateHoveredSession(
             const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
             return grid_row * GRID_COLS + grid_col;
         },
-        .Full, .PanningLeft, .PanningRight => anim_state.focused_session,
+        .Full, .PanningLeft, .PanningRight, .PreCollapse, .CancelPreCollapse => anim_state.focused_session,
         .Expanding, .Collapsing => {
             const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
@@ -961,6 +1023,38 @@ fn render(
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
+        },
+        .PreCollapse => {
+            const elapsed = current_time - anim_state.start_time;
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(PRECOLLAPSE_DURATION_MS)));
+            const eased = AnimationState.easeInOutCubic(progress);
+            const anim_scale = 1.0 + (PRECOLLAPSE_SCALE - 1.0) * eased;
+
+            const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - anim_scale) / 2.0);
+            const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - anim_scale) / 2.0);
+            const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * anim_scale);
+            const shrink_height: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * anim_scale);
+
+            const animating_rect = Rect{
+                .x = shrink_offset_x,
+                .y = shrink_offset_y,
+                .w = shrink_width,
+                .h = shrink_height,
+            };
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, true, font, term_cols, term_rows, current_time, false);
+        },
+        .CancelPreCollapse => {
+            const animating_rect = anim_state.getCurrentRect(current_time);
+            const elapsed = current_time - anim_state.start_time;
+            const duration: i64 = ANIMATION_DURATION_MS;
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(duration)));
+            const eased = AnimationState.easeInOutCubic(progress);
+
+            const start_scale: f32 = PRECOLLAPSE_SCALE;
+            const end_scale: f32 = 1.0;
+            const anim_scale = start_scale + (end_scale - start_scale) * eased;
+
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, true, font, term_cols, term_rows, current_time, false);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -1423,6 +1517,14 @@ fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
     };
 }
 
+fn canHandleEscapePress(mode: ViewMode) bool {
+    return mode != .Grid and mode != .Collapsing and mode != .PreCollapse and mode != .CancelPreCollapse;
+}
+
+fn canStartPreCollapse(mode: ViewMode) bool {
+    return mode != .Grid and mode != .PreCollapse and mode != .Collapsing and mode != .CancelPreCollapse;
+}
+
 fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
     if (mod & c.SDL_KMOD_CTRL != 0) {
         if (key >= c.SDLK_A and key <= c.SDLK_Z) {
@@ -1470,6 +1572,10 @@ fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
     return switch (key) {
         c.SDLK_RETURN => blk: {
             buf[0] = '\r';
+            break :blk 1;
+        },
+        c.SDLK_TAB => blk: {
+            buf[0] = '\t';
             break :blk 1;
         },
         c.SDLK_BACKSPACE => blk: {
@@ -1622,6 +1728,13 @@ test "encodeKeyWithMod - return key" {
     const n = encodeKeyWithMod(c.SDLK_RETURN, 0, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
+}
+
+test "encodeKeyWithMod - tab key" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_TAB, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, '\t'), buf[0]);
 }
 
 test "encodeKeyWithMod - arrow keys" {
