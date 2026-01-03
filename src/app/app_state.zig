@@ -17,8 +17,6 @@ pub const ViewMode = enum {
     Collapsing,
     PanningLeft,
     PanningRight,
-    PreCollapse,
-    CancelPreCollapse,
 };
 
 pub const HelpButtonState = enum {
@@ -42,7 +40,6 @@ pub const AnimationState = struct {
     start_time: i64,
     start_rect: Rect,
     target_rect: Rect,
-    escape_press_time: ?i64,
 
     pub fn easeInOutCubic(t: f32) f32 {
         if (t < 0.5) {
@@ -112,9 +109,9 @@ pub const ToastNotification = struct {
 
 pub const NOTIFICATION_DURATION_MS: i64 = 2500;
 pub const NOTIFICATION_FADE_START_MS: i64 = 1500;
-pub const PRECOLLAPSE_PAUSE_MS: i64 = 200;
-pub const PRECOLLAPSE_DURATION_MS: i64 = 500;
-pub const PRECOLLAPSE_SCALE: f32 = 0.99;
+pub const ESC_HOLD_TOTAL_MS: i64 = 700;
+pub const ESC_ARC_COUNT: usize = 5;
+pub const ESC_ARC_SEGMENT_MS: i64 = ESC_HOLD_TOTAL_MS / ESC_ARC_COUNT;
 
 pub const HELP_BUTTON_SIZE_SMALL: c_int = 40;
 pub const HELP_BUTTON_SIZE_LARGE: c_int = 400;
@@ -164,6 +161,37 @@ pub const HelpButtonAnimation = struct {
         const x = window_width - HELP_BUTTON_MARGIN - size;
         const y = HELP_BUTTON_MARGIN;
         return Rect{ .x = x, .y = y, .w = size, .h = size };
+    }
+};
+
+pub const ESC_INDICATOR_MARGIN: c_int = 40;
+pub const ESC_INDICATOR_RADIUS: c_int = 30;
+
+pub const EscapeIndicator = struct {
+    active: bool = false,
+    start_time: i64 = 0,
+
+    pub fn start(self: *EscapeIndicator, current_time: i64) void {
+        self.active = true;
+        self.start_time = current_time;
+    }
+
+    pub fn stop(self: *EscapeIndicator) void {
+        self.active = false;
+    }
+
+    pub fn getCompletedArcs(self: *const EscapeIndicator, current_time: i64) usize {
+        if (!self.active) return 0;
+        const elapsed = current_time - self.start_time;
+        if (elapsed < 0) return 0;
+        return @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
+    }
+
+    pub fn isComplete(self: *const EscapeIndicator, current_time: i64) bool {
+        if (!self.active) return false;
+        const elapsed = current_time - self.start_time;
+        if (elapsed < 0) return false;
+        return elapsed >= ESC_HOLD_TOTAL_MS;
     }
 };
 

@@ -20,14 +20,12 @@ const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const PRECOLLAPSE_PAUSE_MS = 200;
-const PRECOLLAPSE_DURATION_MS = 500;
-const PRECOLLAPSE_SCALE: f32 = 0.99;
 const SCROLL_LINES_PER_TICK: isize = 3;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
+const UI_FONT_SIZE: c_int = 18;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
@@ -35,6 +33,7 @@ const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const ToastNotification = app_state.ToastNotification;
 const HelpButtonAnimation = app_state.HelpButtonAnimation;
+const EscapeIndicator = app_state.EscapeIndicator;
 const NotificationQueue = notify.NotificationQueue;
 const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
@@ -87,6 +86,9 @@ pub fn main() !void {
     var font_size: c_int = config.font_size;
     var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
     defer font.deinit();
+
+    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, UI_FONT_SIZE);
+    defer ui_font.deinit();
 
     var window_width: c_int = config.window_width;
     var window_height: c_int = config.window_height;
@@ -144,11 +146,11 @@ pub fn main() !void {
         .start_time = 0,
         .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        .escape_press_time = null,
     };
 
     var toast_notification = ToastNotification{};
     var help_button = HelpButtonAnimation{};
+    var escape_indicator = EscapeIndicator{};
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -206,6 +208,7 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = event.key.key;
                     const mod = event.key.mod;
+                    const is_repeat = event.key.repeat;
 
                     if (input.fontSizeShortcut(key, mod)) |direction| {
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
@@ -338,14 +341,14 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
+                    } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
                             _ = focused.shell.?.write(&esc_byte) catch {};
                         }
 
-                        anim_state.escape_press_time = now;
+                        escape_indicator.start(now);
                         std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
@@ -369,14 +372,7 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_UP => {
                     const key = event.key.key;
                     if (key == c.SDLK_ESCAPE) {
-                        if (anim_state.mode == .PreCollapse) {
-                            anim_state.mode = .CancelPreCollapse;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = anim_state.getCurrentRect(now);
-                            anim_state.target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-                            std.debug.print("PreCollapse cancelled, bouncing back\n", .{});
-                        }
-                        anim_state.escape_press_time = null;
+                        escape_indicator.stop();
                         std.debug.print("Escape released\n", .{});
                     }
                 },
@@ -455,30 +451,21 @@ pub fn main() !void {
             try session.processOutput();
         }
 
-        if (anim_state.escape_press_time) |press_time| {
-            const elapsed = now - press_time;
-            if (elapsed >= PRECOLLAPSE_PAUSE_MS and input.canStartPreCollapse(anim_state.mode)) {
-                const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
-                const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
-                const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * PRECOLLAPSE_SCALE);
-                const shrink_height: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * PRECOLLAPSE_SCALE);
+        if (escape_indicator.isComplete(now) and anim_state.mode == .Full) {
+            const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
+            const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+            const target_rect = Rect{
+                .x = grid_col * cell_width_pixels,
+                .y = grid_row * cell_height_pixels,
+                .w = cell_width_pixels,
+                .h = cell_height_pixels,
+            };
 
-                anim_state.mode = .PreCollapse;
-                anim_state.start_time = now;
-                anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-                anim_state.target_rect = Rect{
-                    .x = shrink_offset_x,
-                    .y = shrink_offset_y,
-                    .w = shrink_width,
-                    .h = shrink_height,
-                };
-                // Clear escape_press_time since we've acted on it. Further animation is handled
-                // by PreCollapse state which auto-transitions to Collapsing after 500ms.
-                anim_state.escape_press_time = null;
-                std.debug.print("PreCollapse started after pause for session: {d}\n", .{anim_state.focused_session});
-            } else if (anim_state.mode == .Grid or anim_state.mode == .Collapsing) {
-                anim_state.escape_press_time = null;
-            }
+            anim_state.mode = .Collapsing;
+            anim_state.start_time = now;
+            anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+            anim_state.target_rect = target_rect;
+            std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
         }
 
         var notifications = notify_queue.drainAll();
@@ -495,36 +482,19 @@ pub fn main() !void {
             }
         }
 
-        if (anim_state.mode == .PreCollapse) {
-            const elapsed = now - anim_state.start_time;
-            if (elapsed >= PRECOLLAPSE_DURATION_MS) {
-                const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
-                const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
-                const target_rect = Rect{
-                    .x = grid_col * cell_width_pixels,
-                    .y = grid_row * cell_height_pixels,
-                    .w = cell_width_pixels,
-                    .h = cell_height_pixels,
-                };
-
-                anim_state.mode = .Collapsing;
-                anim_state.start_time = now;
-                anim_state.start_rect = anim_state.getCurrentRect(now);
-                anim_state.target_rect = target_rect;
-                std.debug.print("PreCollapse -> Collapsing session: {d}\n", .{anim_state.focused_session});
-            }
-        }
-
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
-            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight or
-            anim_state.mode == .CancelPreCollapse)
+            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
         {
             if (anim_state.isComplete(now)) {
+                const prev_mode = anim_state.mode;
                 anim_state.mode = switch (anim_state.mode) {
-                    .Expanding, .PanningLeft, .PanningRight, .CancelPreCollapse => .Full,
+                    .Expanding, .PanningLeft, .PanningRight => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
+                if (prev_mode == .Collapsing and anim_state.mode == .Grid) {
+                    escape_indicator.stop();
+                }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
         }
@@ -541,6 +511,7 @@ pub fn main() !void {
         try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
         renderer_mod.renderToastNotification(renderer, &toast_notification, now, window_width);
         renderer_mod.renderHelpButton(renderer, &help_button, now, window_width, window_height);
+        renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
         _ = c.SDL_RenderPresent(renderer);
 
         if (!vsync_enabled) {
@@ -572,7 +543,7 @@ fn calculateHoveredSession(
             const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
             return grid_row * GRID_COLS + grid_col;
         },
-        .Full, .PanningLeft, .PanningRight, .PreCollapse, .CancelPreCollapse => anim_state.focused_session,
+        .Full, .PanningLeft, .PanningRight => anim_state.focused_session,
         .Expanding, .Collapsing => {
             const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
