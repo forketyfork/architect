@@ -649,6 +649,32 @@ pub fn renderEscapeIndicator(
 
     const completed_arcs = indicator.getCompletedArcs(current_time);
 
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+    const backdrop_radius = @as(f32, @floatFromInt(radius)) + 20.0;
+    const backdrop_segments: usize = 64;
+
+    var r: f32 = backdrop_radius;
+    while (r > 0) : (r -= 0.5) {
+        const dist_factor = r / backdrop_radius;
+        const alpha: u8 = @intFromFloat(100.0 * (1.0 - dist_factor));
+
+        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, alpha);
+
+        var seg: usize = 0;
+        while (seg < backdrop_segments) : (seg += 1) {
+            const angle1 = @as(f32, @floatFromInt(seg)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
+            const angle2 = @as(f32, @floatFromInt(seg + 1)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
+
+            const x1 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle1);
+            const y1 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle1);
+            const x2 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle2);
+            const y2 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle2);
+
+            _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
+        }
+    }
+
     const esc_text = "Esc";
     const text_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
 
@@ -663,19 +689,38 @@ pub fn renderEscapeIndicator(
         x += font.cell_width;
     }
 
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-
     const arc_segments: usize = 32;
     const degrees_per_arc: f32 = 360.0 / @as(f32, @floatFromInt(app_state.ESC_ARC_COUNT));
     const gap_degrees: f32 = 8.0;
 
+    const all_complete = completed_arcs >= app_state.ESC_ARC_COUNT;
+    var flash_brightness: f32 = 1.0;
+    var flash_scale: f32 = 1.0;
+
+    if (all_complete and indicator.active) {
+        const elapsed_since_complete = current_time - (indicator.start_time + app_state.ESC_HOLD_TOTAL_MS);
+        if (elapsed_since_complete >= 0) {
+            const flash_duration_ms: i64 = 200;
+            const flash_progress = @min(1.0, @as(f32, @floatFromInt(elapsed_since_complete)) / @as(f32, @floatFromInt(flash_duration_ms)));
+            const pulse = std.math.sin(flash_progress * std.math.pi);
+            flash_brightness = 1.0 + 1.0 * pulse;
+            flash_scale = 1.0 + 0.15 * pulse;
+        }
+    }
+
     var arc: usize = 0;
     while (arc < app_state.ESC_ARC_COUNT) : (arc += 1) {
         const is_completed = arc < completed_arcs;
-        const color = if (is_completed)
-            c.SDL_Color{ .r = 241, .g = 76, .b = 76, .a = 255 }
+        var color = if (is_completed)
+            c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 255 }
         else
-            c.SDL_Color{ .r = 13, .g = 188, .b = 121, .a = 255 };
+            c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 255 };
+
+        if (is_completed and all_complete) {
+            color.r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.r)) * flash_brightness));
+            color.g = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.g)) * flash_brightness));
+            color.b = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.b)) * flash_brightness));
+        }
 
         _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
 
@@ -689,8 +734,11 @@ pub fn renderEscapeIndicator(
             const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
             const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
 
-            const inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
-            const outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
+            const base_inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
+            const base_outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
+
+            const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
+            const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;
 
             const x1_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle1);
             const y1_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle1);
@@ -702,10 +750,16 @@ pub fn renderEscapeIndicator(
             const x2_outer = @as(f32, @floatFromInt(center_x)) + outer_radius * std.math.cos(angle2);
             const y2_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle2);
 
-            _ = c.SDL_RenderLine(renderer, x1_inner, y1_inner, x1_outer, y1_outer);
-            _ = c.SDL_RenderLine(renderer, x1_outer, y1_outer, x2_outer, y2_outer);
-            _ = c.SDL_RenderLine(renderer, x2_outer, y2_outer, x2_inner, y2_inner);
-            _ = c.SDL_RenderLine(renderer, x2_inner, y2_inner, x1_inner, y1_inner);
+            const vertices = [_]c.SDL_Vertex{
+                .{ .position = .{ .x = x1_inner, .y = y1_inner }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x1_outer, .y = y1_outer }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_outer, .y = y2_outer }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_inner, .y = y2_inner }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+            };
+
+            const indices = [_]c_int{ 0, 1, 2, 0, 2, 3 };
+
+            _ = c.SDL_RenderGeometry(renderer, null, &vertices, vertices.len, &indices, indices.len);
         }
     }
 }
