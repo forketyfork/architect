@@ -95,6 +95,14 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             buf[0] = '\t';
             break :blk 1;
         },
+        c.SDLK_BACKSPACE => blk: {
+            buf[0] = 127;
+            break :blk 1;
+        },
+        c.SDLK_ESCAPE => blk: {
+            buf[0] = 27;
+            break :blk 1;
+        },
         c.SDLK_UP => blk: {
             @memcpy(buf[0..3], "\x1b[A");
             break :blk 3;
@@ -127,6 +135,20 @@ test "encodeKeyWithMod - tab key" {
     const n = encodeKeyWithMod(c.SDLK_TAB, 0, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\t'), buf[0]);
+}
+
+test "encodeKeyWithMod - backspace key" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 127), buf[0]);
+}
+
+test "encodeKeyWithMod - escape key" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_ESCAPE, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 27), buf[0]);
 }
 
 test "encodeKeyWithMod - arrow keys" {
