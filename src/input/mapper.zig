@@ -35,11 +35,7 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
 }
 
 pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
-    return mode != .Grid and mode != .Collapsing and mode != .PreCollapse and mode != .CancelPreCollapse;
-}
-
-pub fn canStartPreCollapse(mode: app_state.ViewMode) bool {
-    return mode != .Grid and mode != .PreCollapse and mode != .Collapsing and mode != .CancelPreCollapse;
+    return mode != .Grid and mode != .Collapsing;
 }
 
 pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
