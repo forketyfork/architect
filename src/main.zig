@@ -3,6 +3,11 @@
 const std = @import("std");
 const posix = std.posix;
 const ghostty_vt = @import("ghostty-vt");
+const app_state = @import("app/app_state.zig");
+const notify = @import("session/notify.zig");
+const session_state = @import("session/state.zig");
+const platform = @import("platform/sdl.zig");
+const input = @import("input/mapper.zig");
 const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
@@ -15,305 +20,31 @@ const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const ANIMATION_DURATION_MS = 300;
+const ANIMATION_DURATION_MS = app_state.ANIMATION_DURATION_MS;
 const PRECOLLAPSE_PAUSE_MS = 200;
 const PRECOLLAPSE_DURATION_MS = 500;
 const PRECOLLAPSE_SCALE: f32 = 0.99;
 const GRID_SCALE: f32 = 1.0 / 3.0;
 const ATTENTION_THICKNESS: c_int = 16;
-const NOTIFY_SOCKET_NAME = "architect_notify.sock";
 const SCROLL_LINES_PER_TICK: isize = 3;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-const NOTIFICATION_DURATION_MS: i64 = 2500;
-const NOTIFICATION_FADE_START_MS: i64 = 1500;
 const NOTIFICATION_FONT_SIZE: c_int = 36;
 const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
 const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
-
-const SessionStatus = enum {
-    idle,
-    running,
-    awaiting_approval,
-    done,
-};
-
-const ViewMode = enum {
-    Grid,
-    Expanding,
-    Full,
-    Collapsing,
-    PanningLeft,
-    PanningRight,
-    PreCollapse,
-    CancelPreCollapse,
-};
-
-const Rect = struct {
-    x: c_int,
-    y: c_int,
-    w: c_int,
-    h: c_int,
-};
-
-const AnimationState = struct {
-    mode: ViewMode,
-    focused_session: usize,
-    previous_session: usize,
-    start_time: i64,
-    start_rect: Rect,
-    target_rect: Rect,
-    escape_press_time: ?i64,
-
-    // Ease curve keeps both expansion and collapse feeling smooth instead of linear.
-    fn easeInOutCubic(t: f32) f32 {
-        if (t < 0.5) {
-            return 4 * t * t * t;
-        } else {
-            const p = 2 * t - 2;
-            return 1 + p * p * p / 2;
-        }
-    }
-
-    fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {
-        const eased = easeInOutCubic(progress);
-        return Rect{
-            .x = start.x + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.x - start.x)) * eased)),
-            .y = start.y + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.y - start.y)) * eased)),
-            .w = start.w + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.w - start.w)) * eased)),
-            .h = start.h + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.h - start.h)) * eased)),
-        };
-    }
-
-    fn getCurrentRect(self: *const AnimationState, current_time: i64) Rect {
-        const elapsed = current_time - self.start_time;
-        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
-        return interpolateRect(self.start_rect, self.target_rect, progress);
-    }
-
-    fn isComplete(self: *const AnimationState, current_time: i64) bool {
-        const elapsed = current_time - self.start_time;
-        return elapsed >= ANIMATION_DURATION_MS;
-    }
-};
-
-const VtStreamType = blk: {
-    const T = ghostty_vt.Terminal;
-    const fn_info = @typeInfo(@TypeOf(T.vtStream)).@"fn";
-    break :blk fn_info.return_type.?;
-};
-// ghostty-vt exposes vtStream() as a factory; we peel its return type here so
-// SessionState can store the concrete stream without duplicating the signature.
-
-const Notification = struct {
-    session: usize,
-    state: SessionStatus,
-};
-
-const ToastNotification = struct {
-    message: [256]u8 = undefined,
-    message_len: usize = 0,
-    start_time: i64 = 0,
-    active: bool = false,
-
-    pub fn show(self: *ToastNotification, message: []const u8, current_time: i64) void {
-        const len = @min(message.len, self.message.len - 1);
-        @memcpy(self.message[0..len], message[0..len]);
-        self.message[len] = 0;
-        self.message_len = len;
-        self.start_time = current_time;
-        self.active = true;
-    }
-
-    pub fn isVisible(self: *const ToastNotification, current_time: i64) bool {
-        if (!self.active) return false;
-        const elapsed = current_time - self.start_time;
-        return elapsed < NOTIFICATION_DURATION_MS;
-    }
-
-    pub fn getAlpha(self: *const ToastNotification, current_time: i64) u8 {
-        if (!self.isVisible(current_time)) return 0;
-        const elapsed = current_time - self.start_time;
-        if (elapsed < NOTIFICATION_FADE_START_MS) {
-            return 255;
-        }
-        const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
-            @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
-        const eased_progress = fade_progress * fade_progress * (3.0 - 2.0 * fade_progress);
-        const alpha = 255.0 * (1.0 - eased_progress);
-        return @intFromFloat(@max(0, @min(255, alpha)));
-    }
-};
-
-const NotificationQueue = struct {
-    mutex: std.Thread.Mutex = .{},
-    items: std.ArrayListUnmanaged(Notification) = .{},
-
-    // Single-producer (notify thread) / single-consumer (render loop) queue guarded by a mutex.
-    pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
-        self.items.deinit(allocator);
-    }
-
-    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, item: Notification) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        try self.items.append(allocator, item);
-    }
-
-    pub fn drainAll(self: *NotificationQueue) std.ArrayListUnmanaged(Notification) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const items = self.items;
-        self.items = .{};
-        return items;
-    }
-};
-
-const SessionState = struct {
-    id: usize,
-    shell: ?shell_mod.Shell,
-    terminal: ?ghostty_vt.Terminal,
-    stream: ?VtStreamType,
-    output_buf: [4096]u8,
-    status: SessionStatus = .running,
-    attention: bool = false,
-    is_scrolled: bool = false,
-    dirty: bool = true,
-    cache_texture: ?*c.SDL_Texture = null,
-    cache_w: c_int = 0,
-    cache_h: c_int = 0,
-    spawned: bool = false,
-    shell_path: []const u8,
-    pty_size: pty_mod.winsize,
-    session_id_z: [16:0]u8,
-    notify_sock_z: [:0]const u8,
-    allocator: std.mem.Allocator,
-
-    pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
-        DivisionByZero,
-        GraphemeAllocOutOfMemory,
-        GraphemeMapOutOfMemory,
-        HyperlinkMapOutOfMemory,
-        HyperlinkSetNeedsRehash,
-        HyperlinkSetOutOfMemory,
-        NeedsRehash,
-        OutOfMemory,
-        StringAllocOutOfMemory,
-        StyleSetNeedsRehash,
-        StyleSetOutOfMemory,
-    };
-
-    pub fn init(
-        allocator: std.mem.Allocator,
-        id: usize,
-        shell_path: []const u8,
-        size: pty_mod.winsize,
-        session_id_z: [:0]const u8,
-        notify_sock: [:0]const u8,
-    ) InitError!SessionState {
-        var session_id_buf: [16:0]u8 = undefined;
-        @memcpy(session_id_buf[0..session_id_z.len], session_id_z);
-        session_id_buf[session_id_z.len] = 0;
-
-        return SessionState{
-            .id = id,
-            .shell = null,
-            .terminal = null,
-            .stream = null,
-            .output_buf = undefined,
-            .spawned = false,
-            .shell_path = shell_path,
-            .pty_size = size,
-            .session_id_z = session_id_buf,
-            .notify_sock_z = notify_sock,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn ensureSpawned(self: *SessionState) InitError!void {
-        if (self.spawned) return;
-
-        const shell = try shell_mod.Shell.spawn(
-            self.shell_path,
-            self.pty_size,
-            &self.session_id_z,
-            self.notify_sock_z,
-        );
-        errdefer {
-            var s = shell;
-            s.deinit();
-        }
-
-        var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
-            .cols = self.pty_size.ws_col,
-            .rows = self.pty_size.ws_row,
-        });
-        errdefer terminal.deinit(self.allocator);
-
-        try makeNonBlocking(shell.pty.master);
-
-        self.shell = shell;
-        self.terminal = terminal;
-        self.spawned = true;
-        self.stream = self.terminal.?.vtStream();
-        self.dirty = true;
-
-        log.debug("spawned session {d}", .{self.id});
-
-        self.processOutput() catch {};
-    }
-
-    pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
-        if (self.cache_texture) |tex| {
-            c.SDL_DestroyTexture(tex);
-        }
-        if (self.spawned) {
-            if (self.stream) |*stream| {
-                stream.deinit();
-            }
-            if (self.terminal) |*terminal| {
-                terminal.deinit(allocator);
-            }
-            if (self.shell) |*shell| {
-                shell.deinit();
-            }
-        }
-    }
-
-    pub const ProcessOutputError = posix.ReadError || error{
-        DivisionByZero,
-        GraphemeAllocOutOfMemory,
-        GraphemeMapOutOfMemory,
-        HyperlinkMapOutOfMemory,
-        HyperlinkSetNeedsRehash,
-        HyperlinkSetOutOfMemory,
-        NeedsRehash,
-        OutOfMemory,
-        StringAllocOutOfMemory,
-        StyleSetNeedsRehash,
-        StyleSetOutOfMemory,
-    };
-
-    pub fn processOutput(self: *SessionState) ProcessOutputError!void {
-        if (!self.spawned) return;
-
-        const shell = &(self.shell orelse return);
-        const stream = &(self.stream orelse return);
-
-        const n = shell.read(&self.output_buf) catch |err| {
-            if (err == error.WouldBlock) return;
-            return err;
-        };
-
-        if (n > 0) {
-            try stream.nextSlice(self.output_buf[0..n]);
-            self.dirty = true;
-        }
-    }
-};
+const SessionStatus = app_state.SessionStatus;
+const ViewMode = app_state.ViewMode;
+const Rect = app_state.Rect;
+const AnimationState = app_state.AnimationState;
+const ToastNotification = app_state.ToastNotification;
+const NotificationQueue = notify.NotificationQueue;
+const Notification = notify.Notification;
+const SessionState = session_state.SessionState;
+const FontSizeDirection = input.FontSizeDirection;
+const GridNavDirection = input.GridNavDirection;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -325,23 +56,11 @@ pub fn main() !void {
     var notify_queue = NotificationQueue{};
     defer notify_queue.deinit(allocator);
 
-    const notify_sock = try getNotifySocketPath(allocator);
+    const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
-    const notify_thread = try startNotifyThread(allocator, notify_sock, &notify_queue);
+    const notify_thread = try notify.startNotifyThread(allocator, notify_sock, &notify_queue);
     notify_thread.detach();
-
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
-        std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
-        return error.SDLInitFailed;
-    }
-    defer c.SDL_Quit();
-
-    if (!c.TTF_Init()) {
-        std.debug.print("TTF_Init Error: {s}\n", .{c.SDL_GetError()});
-        return error.TTFInitFailed;
-    }
-    defer c.TTF_Quit();
 
     const config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -358,38 +77,17 @@ pub fn main() !void {
         };
     };
 
-    const window = c.SDL_CreateWindow(
-        "Architect - Terminal Wall",
-        config.window_width,
-        config.window_height,
-        c.SDL_WINDOW_RESIZABLE,
-    ) orelse {
-        std.debug.print("SDL_CreateWindow Error: {s}\n", .{c.SDL_GetError()});
-        return error.WindowCreationFailed;
-    };
-    defer c.SDL_DestroyWindow(window);
+    const window_pos = if (config.window_x >= 0 and config.window_y >= 0)
+        platform.WindowPosition{ .x = config.window_x, .y = config.window_y }
+    else
+        null;
+    var sdl = try platform.init("Architect - Terminal Wall", config.window_width, config.window_height, window_pos);
+    defer platform.deinit(&sdl);
+    platform.startTextInput(sdl.window);
+    defer platform.stopTextInput(sdl.window);
 
-    if (config.window_x >= 0 and config.window_y >= 0) {
-        _ = c.SDL_SetWindowPosition(window, config.window_x, config.window_y);
-    }
-
-    _ = c.SDL_StartTextInput(window);
-    defer _ = c.SDL_StopTextInput(window);
-
-    const renderer = c.SDL_CreateRenderer(window, null) orelse {
-        std.debug.print("SDL_CreateRenderer Error: {s}\n", .{c.SDL_GetError()});
-        return error.RendererCreationFailed;
-    };
-    defer c.SDL_DestroyRenderer(renderer);
-
-    const vsync_enabled = blk: {
-        const success = c.SDL_SetRenderVSync(renderer, 1);
-        if (!success) {
-            std.debug.print("Warning: failed to enable vsync: {s}\n", .{c.SDL_GetError()});
-            break :blk false;
-        }
-        break :blk true;
-    };
+    const renderer = sdl.renderer;
+    const vsync_enabled = sdl.vsync_enabled;
 
     var font_size: c_int = config.font_size;
     var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
@@ -513,7 +211,7 @@ pub fn main() !void {
                     const key = event.key.key;
                     const mod = event.key.mod;
 
-                    if (fontSizeShortcut(key, mod)) |direction| {
+                    if (input.fontSizeShortcut(key, mod)) |direction| {
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
@@ -545,7 +243,7 @@ pub fn main() !void {
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         toast_notification.show(notification_msg, now);
-                    } else if (isSwitchTerminalShortcut(key, mod)) |is_next| {
+                    } else if (input.isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
                             const new_session = if (is_next)
@@ -566,7 +264,7 @@ pub fn main() !void {
                             const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
                             toast_notification.show(notification_msg, now);
                         }
-                    } else if (gridNavShortcut(key, mod)) |direction| {
+                    } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
                             const current_row: usize = anim_state.focused_session / GRID_COLS;
                             const current_col: usize = anim_state.focused_session % GRID_COLS;
@@ -613,7 +311,7 @@ pub fn main() !void {
                                     }
                                 }
                                 var buf: [8]u8 = undefined;
-                                const n = encodeKeyWithMod(key, mod, &buf);
+                                const n = input.encodeKeyWithMod(key, mod, &buf);
                                 if (n > 0) {
                                     if (focused.shell) |*shell| {
                                         _ = try shell.write(buf[0..n]);
@@ -644,7 +342,7 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and canHandleEscapePress(anim_state.mode)) {
+                    } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
@@ -663,7 +361,7 @@ pub fn main() !void {
                                 }
                             }
                             var buf: [8]u8 = undefined;
-                            const n = encodeKeyWithMod(key, mod, &buf);
+                            const n = input.encodeKeyWithMod(key, mod, &buf);
                             if (n > 0) {
                                 if (focused.shell) |*shell| {
                                     _ = try shell.write(buf[0..n]);
@@ -747,7 +445,7 @@ pub fn main() !void {
 
         if (anim_state.escape_press_time) |press_time| {
             const elapsed = now - press_time;
-            if (elapsed >= PRECOLLAPSE_PAUSE_MS and canStartPreCollapse(anim_state.mode)) {
+            if (elapsed >= PRECOLLAPSE_PAUSE_MS and input.canStartPreCollapse(anim_state.mode)) {
                 const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
                 const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
                 const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * PRECOLLAPSE_SCALE);
@@ -1481,366 +1179,6 @@ fn renderToastNotification(
     _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
 }
 
-const FontSizeDirection = enum { increase, decrease };
-
-fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
-    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-
-    const shift_held = (mod & c.SDL_KMOD_SHIFT) != 0;
-    return switch (key) {
-        c.SDLK_EQUALS => if (shift_held) .increase else null,
-        c.SDLK_MINUS => .decrease,
-        c.SDLK_KP_PLUS => .increase,
-        c.SDLK_KP_MINUS => .decrease,
-        else => null,
-    };
-}
-
-fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
-    if ((mod & c.SDL_KMOD_GUI) == 0 or (mod & c.SDL_KMOD_SHIFT) == 0) return null;
-    if (key == c.SDLK_RIGHTBRACKET) return true;
-    if (key == c.SDLK_LEFTBRACKET) return false;
-    return null;
-}
-
-const GridNavDirection = enum { up, down, left, right };
-
-fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
-    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    if ((mod & c.SDL_KMOD_SHIFT) != 0) return null;
-    return switch (key) {
-        c.SDLK_UP => .up,
-        c.SDLK_DOWN => .down,
-        c.SDLK_LEFT => .left,
-        c.SDLK_RIGHT => .right,
-        else => null,
-    };
-}
-
-fn canHandleEscapePress(mode: ViewMode) bool {
-    return mode != .Grid and mode != .Collapsing and mode != .PreCollapse and mode != .CancelPreCollapse;
-}
-
-fn canStartPreCollapse(mode: ViewMode) bool {
-    return mode != .Grid and mode != .PreCollapse and mode != .Collapsing and mode != .CancelPreCollapse;
-}
-
-fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
-    if (mod & c.SDL_KMOD_CTRL != 0) {
-        if (key >= c.SDLK_A and key <= c.SDLK_Z) {
-            buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
-            return 1;
-        }
-    }
-
-    if (mod & c.SDL_KMOD_GUI != 0) {
-        return switch (key) {
-            c.SDLK_LEFT => blk: {
-                buf[0] = 1;
-                break :blk 1;
-            },
-            c.SDLK_RIGHT => blk: {
-                buf[0] = 5;
-                break :blk 1;
-            },
-            c.SDLK_BACKSPACE => blk: {
-                buf[0] = 21;
-                break :blk 1;
-            },
-            else => 0,
-        };
-    }
-
-    if (mod & c.SDL_KMOD_ALT != 0) {
-        return switch (key) {
-            c.SDLK_LEFT => blk: {
-                @memcpy(buf[0..2], "\x1bb");
-                break :blk 2;
-            },
-            c.SDLK_RIGHT => blk: {
-                @memcpy(buf[0..2], "\x1bf");
-                break :blk 2;
-            },
-            c.SDLK_BACKSPACE => blk: {
-                buf[0] = 23;
-                break :blk 1;
-            },
-            else => 0,
-        };
-    }
-
-    return switch (key) {
-        c.SDLK_RETURN => blk: {
-            buf[0] = '\r';
-            break :blk 1;
-        },
-        c.SDLK_TAB => blk: {
-            buf[0] = '\t';
-            break :blk 1;
-        },
-        c.SDLK_BACKSPACE => blk: {
-            buf[0] = 127;
-            break :blk 1;
-        },
-        c.SDLK_ESCAPE => blk: {
-            buf[0] = 27;
-            break :blk 1;
-        },
-        c.SDLK_UP => blk: {
-            @memcpy(buf[0..3], "\x1b[A");
-            break :blk 3;
-        },
-        c.SDLK_DOWN => blk: {
-            @memcpy(buf[0..3], "\x1b[B");
-            break :blk 3;
-        },
-        c.SDLK_RIGHT => blk: {
-            @memcpy(buf[0..3], "\x1b[C");
-            break :blk 3;
-        },
-        c.SDLK_LEFT => blk: {
-            @memcpy(buf[0..3], "\x1b[D");
-            break :blk 3;
-        },
-        else => 0,
-    };
-}
-
-const MakeNonBlockingError = posix.FcntlError;
-
-fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
-    const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-    var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
-    o_flags.NONBLOCK = true;
-    _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
-}
-
-const GetNotifySocketPathError = std.mem.Allocator.Error;
-
-fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathError![:0]u8 {
-    // Use XDG runtime dir when available; fall back to /tmp for ad-hoc runs.
-    const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
-    const pid = std.c.getpid();
-    const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
-    defer allocator.free(socket_name);
-    return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, socket_name });
-}
-
-const NotifyContext = struct {
-    allocator: std.mem.Allocator,
-    socket_path: [:0]const u8,
-    queue: *NotificationQueue,
-};
-
-const StartNotifyThreadError = std.Thread.SpawnError;
-
-fn startNotifyThread(
-    allocator: std.mem.Allocator,
-    socket_path: [:0]const u8,
-    queue: *NotificationQueue,
-) StartNotifyThreadError!std.Thread {
-    // Best-effort remove stale socket.
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => {},
-    };
-
-    const handler = struct {
-        fn parseNotification(bytes: []const u8) ?Notification {
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-
-            const alloc = arena.allocator();
-            const parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{}) catch return null;
-            defer parsed.deinit();
-
-            const root = parsed.value;
-            if (root != .object) return null;
-            const obj = root.object;
-
-            const state_val = obj.get("state") orelse return null;
-            if (state_val != .string) return null;
-            const state_str = state_val.string;
-            const state = if (std.mem.eql(u8, state_str, "start"))
-                SessionStatus.running
-            else if (std.mem.eql(u8, state_str, "awaiting_approval"))
-                SessionStatus.awaiting_approval
-            else if (std.mem.eql(u8, state_str, "done"))
-                SessionStatus.done
-            else
-                return null;
-
-            const session_val = obj.get("session") orelse return null;
-            if (session_val != .integer) return null;
-            if (session_val.integer < 0) return null;
-
-            return Notification{
-                .session = @intCast(session_val.integer),
-                .state = state,
-            };
-        }
-
-        fn run(ctx: NotifyContext) !void {
-            const addr = try std.net.Address.initUnix(ctx.socket_path);
-            const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-            defer posix.close(fd);
-
-            try posix.bind(fd, &addr.any, addr.getOsSockLen());
-            try posix.listen(fd, 16);
-            const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
-
-            // Accept JSON lines from helper processes and enqueue lightweight
-            // notifications for the render thread; malformed inputs are ignored.
-            while (true) {
-                const conn_fd = posix.accept(fd, null, null, 0) catch continue;
-                defer posix.close(conn_fd);
-
-                var buffer = std.ArrayList(u8){};
-                defer buffer.deinit(ctx.allocator);
-
-                var tmp: [512]u8 = undefined;
-                while (true) {
-                    const n = posix.read(conn_fd, &tmp) catch |err| switch (err) {
-                        error.WouldBlock, error.ConnectionResetByPeer => break,
-                        else => break,
-                    };
-                    if (n == 0) break;
-                    if (buffer.items.len + n > 1024) break;
-                    buffer.appendSlice(ctx.allocator, tmp[0..n]) catch break;
-                }
-
-                if (buffer.items.len == 0) continue;
-
-                if (parseNotification(buffer.items)) |note| {
-                    ctx.queue.push(ctx.allocator, note) catch {};
-                }
-            }
-        }
-    };
-
-    const ctx = NotifyContext{ .allocator = allocator, .socket_path = socket_path, .queue = queue };
-    return try std.Thread.spawn(.{}, handler.run, .{ctx});
-}
-
-test "encodeKeyWithMod - return key" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
-}
-
-test "encodeKeyWithMod - tab key" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, '\t'), buf[0]);
-}
-
-test "encodeKeyWithMod - arrow keys" {
-    var buf: [8]u8 = undefined;
-
-    const n_up = encodeKeyWithMod(c.SDLK_UP, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 3), n_up);
-    try std.testing.expectEqualSlices(u8, "\x1b[A", buf[0..n_up]);
-
-    const n_down = encodeKeyWithMod(c.SDLK_DOWN, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 3), n_down);
-    try std.testing.expectEqualSlices(u8, "\x1b[B", buf[0..n_down]);
-
-    const n_right = encodeKeyWithMod(c.SDLK_RIGHT, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 3), n_right);
-    try std.testing.expectEqualSlices(u8, "\x1b[C", buf[0..n_right]);
-
-    const n_left = encodeKeyWithMod(c.SDLK_LEFT, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 3), n_left);
-    try std.testing.expectEqualSlices(u8, "\x1b[D", buf[0..n_left]);
-}
-
-test "encodeKeyWithMod - ctrl+a" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_A, c.SDL_KMOD_CTRL, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, 1), buf[0]);
-}
-
-test "encodeKeyWithMod - cmd+left (beginning of line)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_GUI, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, 1), buf[0]);
-}
-
-test "encodeKeyWithMod - cmd+right (end of line)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_GUI, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, 5), buf[0]);
-}
-
-test "encodeKeyWithMod - alt+left (backward word)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_ALT, &buf);
-    try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqualSlices(u8, "\x1bb", buf[0..n]);
-}
-
-test "encodeKeyWithMod - alt+right (forward word)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_ALT, &buf);
-    try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqualSlices(u8, "\x1bf", buf[0..n]);
-}
-
-test "encodeKeyWithMod - cmd+backspace (delete line)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, 21), buf[0]);
-}
-
-test "encodeKeyWithMod - alt+backspace (delete word)" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT, &buf);
-    try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, 23), buf[0]);
-}
-
-test "encodeKeyWithMod - unknown key" {
-    var buf: [8]u8 = undefined;
-    const n = encodeKeyWithMod(0, 0, &buf);
-    try std.testing.expectEqual(@as(usize, 0), n);
-}
-
-test "fontSizeShortcut - plus/minus variants" {
-    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
-    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI).?);
-    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
-    try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
-    try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
-}
-
-test "NotificationQueue - push and drain" {
-    const allocator = std.testing.allocator;
-    var queue = NotificationQueue{};
-    defer queue.deinit(allocator);
-
-    try queue.push(allocator, .{ .session = 0, .state = .running });
-    try queue.push(allocator, .{ .session = 1, .state = .awaiting_approval });
-    try queue.push(allocator, .{ .session = 2, .state = .done });
-
-    var items = queue.drainAll();
-    defer items.deinit(allocator);
-
-    try std.testing.expectEqual(@as(usize, 3), items.items.len);
-    try std.testing.expectEqual(@as(usize, 0), items.items[0].session);
-    try std.testing.expectEqual(SessionStatus.running, items.items[0].state);
-    try std.testing.expectEqual(@as(usize, 1), items.items[1].session);
-    try std.testing.expectEqual(SessionStatus.awaiting_approval, items.items[1].state);
-    try std.testing.expectEqual(@as(usize, 2), items.items[2].session);
-    try std.testing.expectEqual(SessionStatus.done, items.items[2].state);
-}
-
 test "get256Color - basic ANSI colors" {
     const black = get256Color(0);
     try std.testing.expectEqual(@as(u8, 0), black.r);
@@ -1857,33 +1195,4 @@ test "get256Color - grayscale" {
     const gray = get256Color(232);
     try std.testing.expectEqual(gray.r, gray.g);
     try std.testing.expectEqual(gray.g, gray.b);
-}
-
-test "AnimationState.easeInOutCubic" {
-    try std.testing.expectEqual(@as(f32, 0.0), AnimationState.easeInOutCubic(0.0));
-    try std.testing.expectEqual(@as(f32, 1.0), AnimationState.easeInOutCubic(1.0));
-
-    const mid = AnimationState.easeInOutCubic(0.5);
-    try std.testing.expect(mid > 0.4 and mid < 0.6);
-}
-
-test "AnimationState.interpolateRect" {
-    const start = Rect{ .x = 0, .y = 0, .w = 100, .h = 100 };
-    const target = Rect{ .x = 100, .y = 100, .w = 200, .h = 200 };
-
-    const at_start = AnimationState.interpolateRect(start, target, 0.0);
-    try std.testing.expectEqual(start.x, at_start.x);
-    try std.testing.expectEqual(start.y, at_start.y);
-    try std.testing.expectEqual(start.w, at_start.w);
-    try std.testing.expectEqual(start.h, at_start.h);
-
-    const at_end = AnimationState.interpolateRect(start, target, 1.0);
-    try std.testing.expectEqual(target.x, at_end.x);
-    try std.testing.expectEqual(target.y, at_end.y);
-    try std.testing.expectEqual(target.w, at_end.w);
-    try std.testing.expectEqual(target.h, at_end.h);
-
-    const at_mid = AnimationState.interpolateRect(start, target, 0.5);
-    try std.testing.expect(at_mid.x > start.x and at_mid.x < target.x);
-    try std.testing.expect(at_mid.y > start.y and at_mid.y < target.y);
 }
