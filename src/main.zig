@@ -644,7 +644,7 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and anim_state.mode != .Grid and anim_state.mode != .Collapsing and anim_state.mode != .PreCollapse and anim_state.mode != .CancelPreCollapse) {
+                    } else if (key == c.SDLK_ESCAPE and canHandleEscapePress(anim_state.mode)) {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
@@ -747,7 +747,7 @@ pub fn main() !void {
 
         if (anim_state.escape_press_time) |press_time| {
             const elapsed = now - press_time;
-            if (elapsed >= PRECOLLAPSE_PAUSE_MS and anim_state.mode != .Grid and anim_state.mode != .PreCollapse and anim_state.mode != .Collapsing and anim_state.mode != .CancelPreCollapse) {
+            if (elapsed >= PRECOLLAPSE_PAUSE_MS and canStartPreCollapse(anim_state.mode)) {
                 const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
                 const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - PRECOLLAPSE_SCALE) / 2.0);
                 const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * PRECOLLAPSE_SCALE);
@@ -762,6 +762,8 @@ pub fn main() !void {
                     .w = shrink_width,
                     .h = shrink_height,
                 };
+                // Clear escape_press_time since we've acted on it. Further animation is handled
+                // by PreCollapse state which auto-transitions to Collapsing after 500ms.
                 anim_state.escape_press_time = null;
                 std.debug.print("PreCollapse started after pause for session: {d}\n", .{anim_state.focused_session});
             } else if (anim_state.mode == .Grid or anim_state.mode == .Collapsing) {
@@ -1513,6 +1515,14 @@ fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
         c.SDLK_RIGHT => .right,
         else => null,
     };
+}
+
+fn canHandleEscapePress(mode: ViewMode) bool {
+    return mode != .Grid and mode != .Collapsing and mode != .PreCollapse and mode != .CancelPreCollapse;
+}
+
+fn canStartPreCollapse(mode: ViewMode) bool {
+    return mode != .Grid and mode != .PreCollapse and mode != .Collapsing and mode != .CancelPreCollapse;
 }
 
 fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
