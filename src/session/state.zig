@@ -1,24 +1,21 @@
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
 const app_state = @import("../app/app_state.zig");
 const c = @import("../c.zig");
+const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
+const vt_stream = @import("../vt_stream.zig");
 
 const log = std.log.scoped(.session_state);
-
-const VtStreamType = blk: {
-    const T = ghostty_vt.Terminal;
-    const fn_info = @typeInfo(@TypeOf(T.vtStream)).@"fn";
-    break :blk fn_info.return_type.?;
-};
 
 pub const SessionState = struct {
     id: usize,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
-    stream: ?VtStreamType,
+    stream: ?vt_stream.StreamType,
     output_buf: [4096]u8,
     status: app_state.SessionStatus = .running,
     attention: bool = false,
@@ -30,6 +27,7 @@ pub const SessionState = struct {
     restart_button_texture: ?*c.SDL_Texture = null,
     restart_button_w: c_int = 0,
     restart_button_h: c_int = 0,
+    cwd_font: ?*c.TTF_Font = null,
     spawned: bool = false,
     dead: bool = false,
     shell_path: []const u8,
@@ -37,6 +35,11 @@ pub const SessionState = struct {
     session_id_z: [16:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
+    cwd_path: ?[]const u8 = null,
+    /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
+    /// When cwd_path is freed, this becomes invalid and must not be used.
+    cwd_basename: ?[]const u8 = null,
+    cwd_last_check: i64 = 0,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -104,7 +107,12 @@ pub const SessionState = struct {
         self.shell = shell;
         self.terminal = terminal;
         self.spawned = true;
-        self.stream = self.terminal.?.vtStream();
+        const stream = vt_stream.initStream(
+            self.allocator,
+            &self.terminal.?,
+            &self.shell.?,
+        );
+        self.stream = stream;
         self.dirty = true;
 
         log.debug("spawned session {d}", .{self.id});
@@ -119,6 +127,12 @@ pub const SessionState = struct {
         if (self.restart_button_texture) |tex| {
             c.SDL_DestroyTexture(tex);
         }
+        if (self.cwd_font) |font| {
+            c.TTF_CloseFont(font);
+        }
+        if (self.cwd_path) |path| {
+            allocator.free(path);
+        }
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();
@@ -132,7 +146,7 @@ pub const SessionState = struct {
         }
     }
 
-    pub const ProcessOutputError = posix.ReadError || error{
+    pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
         DivisionByZero,
         GraphemeAllocOutOfMemory,
         GraphemeMapOutOfMemory,
@@ -207,6 +221,34 @@ pub const SessionState = struct {
             try stream.nextSlice(self.output_buf[0..n]);
             self.dirty = true;
         }
+    }
+
+    pub fn updateCwd(self: *SessionState, current_time: i64) void {
+        if (builtin.os.tag != .macos) return;
+
+        if (!self.spawned or self.dead) return;
+
+        const shell = self.shell orelse return;
+
+        const check_interval_ms: i64 = 1000;
+        if (current_time - self.cwd_last_check < check_interval_ms) return;
+        self.cwd_last_check = current_time;
+
+        const new_path = cwd_mod.getCwd(self.allocator, shell.child_pid) catch {
+            return;
+        };
+
+        if (self.cwd_path) |old_path| {
+            if (std.mem.eql(u8, old_path, new_path)) {
+                self.allocator.free(new_path);
+                return;
+            }
+            self.allocator.free(old_path);
+        }
+
+        self.cwd_path = new_path;
+        self.cwd_basename = cwd_mod.getBasename(new_path);
+        self.dirty = true;
     }
 };
 

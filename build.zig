@@ -37,6 +37,10 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("SDL3_ttf");
     exe.linkLibC();
 
+    if (target.result.os.tag == .macos) {
+        exe.linkSystemLibrary("proc");
+    }
+
     if (std.posix.getenv("SDL3_INCLUDE_PATH")) |sdl3_include| {
         exe.addIncludePath(.{ .cwd_relative = sdl3_include });
         const lib_path = b.fmt("{s}/../lib", .{sdl3_include});

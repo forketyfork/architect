@@ -464,6 +464,7 @@ pub fn main() !void {
         for (&sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
+            session.updateCwd(now);
         }
 
         if (escape_indicator.isComplete(now) and anim_state.mode == .Full) {

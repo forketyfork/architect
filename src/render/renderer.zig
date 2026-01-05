@@ -24,6 +24,11 @@ const RESTART_BUTTON_FONT_SIZE: c_int = 16;
 const RESTART_BUTTON_PADDING: c_int = 12;
 const RESTART_BUTTON_MARGIN: c_int = 8;
 const RESTART_BUTTON_RADIUS: c_int = 8;
+const CWD_BAR_HEIGHT: c_int = 24;
+const CWD_FONT_SIZE: c_int = 12;
+const CWD_PADDING: c_int = 8;
+const MARQUEE_SPEED: f32 = 30.0;
+const FADE_WIDTH: c_int = 20;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -151,6 +156,9 @@ fn renderSession(
     is_grid_view: bool,
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
+    if (is_grid_view) {
+        renderCwdBar(renderer, session, rect, current_time_ms);
+    }
     renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
 }
 
@@ -463,6 +471,7 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+            renderCwdBar(renderer, session, rect, current_time_ms);
             renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
             return;
         }
@@ -736,6 +745,199 @@ pub fn renderHelpButton(
 
             y_offset += line_height;
         }
+    }
+}
+
+fn renderCwdBar(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    rect: Rect,
+    current_time: i64,
+) void {
+    const cwd_path = session.cwd_path orelse return;
+    const cwd_basename = session.cwd_basename orelse return;
+
+    const bar_rect = Rect{
+        .x = rect.x,
+        .y = rect.y + rect.h - CWD_BAR_HEIGHT,
+        .w = rect.w,
+        .h = CWD_BAR_HEIGHT,
+    };
+
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+    _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, 230);
+    const bg_rect = c.SDL_FRect{
+        .x = @floatFromInt(bar_rect.x),
+        .y = @floatFromInt(bar_rect.y),
+        .w = @floatFromInt(bar_rect.w),
+        .h = @floatFromInt(bar_rect.h),
+    };
+    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+
+    if (session.cwd_font == null) {
+        session.cwd_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(CWD_FONT_SIZE));
+    }
+    const cwd_font = session.cwd_font orelse return;
+
+    const text_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+
+    var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const basename_with_slash = blk: {
+        if (std.mem.eql(u8, cwd_basename, "/")) {
+            break :blk cwd_basename;
+        }
+        if (cwd_basename.len + 1 > basename_with_slash_buf.len) {
+            log.warn("CWD basename too long for buffer (len={}, max_without_slash={}); skipping CWD bar rendering", .{
+                cwd_basename.len,
+                basename_with_slash_buf.len - 1,
+            });
+            return;
+        }
+        @memcpy(basename_with_slash_buf[0..cwd_basename.len], cwd_basename);
+        basename_with_slash_buf[cwd_basename.len] = '/';
+        break :blk basename_with_slash_buf[0 .. cwd_basename.len + 1];
+    };
+
+    const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
+    defer c.SDL_DestroySurface(basename_surface);
+
+    const basename_texture = c.SDL_CreateTextureFromSurface(renderer, basename_surface) orelse return;
+    defer c.SDL_DestroyTexture(basename_texture);
+
+    var basename_width_f: f32 = 0;
+    var basename_height_f: f32 = 0;
+    _ = c.SDL_GetTextureSize(basename_texture, &basename_width_f, &basename_height_f);
+
+    const basename_width: c_int = @intFromFloat(basename_width_f);
+    const text_height: c_int = @intFromFloat(basename_height_f);
+
+    const basename_x = bar_rect.x + bar_rect.w - basename_width - CWD_PADDING;
+    const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
+
+    _ = c.SDL_RenderTexture(renderer, basename_texture, null, &c.SDL_FRect{
+        .x = @floatFromInt(basename_x),
+        .y = @floatFromInt(text_y),
+        .w = basename_width_f,
+        .h = basename_height_f,
+    });
+
+    var parent_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const parent_path = blk: {
+        if (cwd_path.len <= cwd_basename.len) return;
+
+        const parent_without_slash = cwd_path[0 .. cwd_path.len - cwd_basename.len];
+        if (parent_without_slash.len == 0) return;
+
+        if (parent_without_slash[parent_without_slash.len - 1] == '/') {
+            break :blk parent_without_slash;
+        } else {
+            if (parent_without_slash.len + 1 > parent_path_buf.len) {
+                log.warn(
+                    "render: parent path too long (required={} bytes, buffer size={}), skipping parent path rendering",
+                    .{ parent_without_slash.len + 1, parent_path_buf.len },
+                );
+                return;
+            }
+            @memcpy(parent_path_buf[0..parent_without_slash.len], parent_without_slash);
+            parent_path_buf[parent_without_slash.len] = '/';
+            break :blk parent_path_buf[0 .. parent_without_slash.len + 1];
+        }
+    };
+
+    const parent_surface = c.TTF_RenderText_Blended(cwd_font, parent_path.ptr, parent_path.len, text_color) orelse return;
+    defer c.SDL_DestroySurface(parent_surface);
+
+    const parent_texture = c.SDL_CreateTextureFromSurface(renderer, parent_surface) orelse return;
+    defer c.SDL_DestroyTexture(parent_texture);
+
+    var parent_width_f: f32 = 0;
+    var parent_height_f: f32 = 0;
+    _ = c.SDL_GetTextureSize(parent_texture, &parent_width_f, &parent_height_f);
+
+    const parent_width: c_int = @intFromFloat(parent_width_f);
+
+    const available_width = basename_x - bar_rect.x - CWD_PADDING;
+    if (available_width <= 0) return;
+
+    if (parent_width <= available_width) {
+        const parent_x = basename_x - parent_width;
+        _ = c.SDL_RenderTexture(renderer, parent_texture, null, &c.SDL_FRect{
+            .x = @floatFromInt(parent_x),
+            .y = @floatFromInt(text_y),
+            .w = parent_width_f,
+            .h = parent_height_f,
+        });
+    } else {
+        const clip_rect = c.SDL_Rect{
+            .x = bar_rect.x + CWD_PADDING,
+            .y = bar_rect.y,
+            .w = available_width,
+            .h = bar_rect.h,
+        };
+        _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
+
+        const scroll_range = parent_width - available_width;
+        const scroll_range_f: f32 = @floatFromInt(scroll_range);
+        const idle_ms: f32 = 1000.0;
+        const scroll_ms: f32 = scroll_range_f / MARQUEE_SPEED * 1000.0;
+        const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
+        const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
+        const elapsed_ms: f32 = @floatFromInt(@mod(current_time, cycle_ms_i64));
+
+        const scroll_offset: c_int = blk: {
+            if (elapsed_ms < idle_ms) break :blk 0;
+            if (elapsed_ms < idle_ms + scroll_ms) {
+                const progress = (elapsed_ms - idle_ms) / scroll_ms;
+                break :blk @intFromFloat(progress * scroll_range_f);
+            }
+            break :blk scroll_range;
+        };
+
+        const parent_x = basename_x - parent_width + scroll_offset;
+        _ = c.SDL_RenderTexture(renderer, parent_texture, null, &c.SDL_FRect{
+            .x = @floatFromInt(parent_x),
+            .y = @floatFromInt(text_y),
+            .w = parent_width_f,
+            .h = parent_height_f,
+        });
+
+        _ = c.SDL_SetRenderClipRect(renderer, null);
+
+        const fade_left = scroll_offset < scroll_range;
+        const fade_right = scroll_offset > 0;
+
+        if (fade_left) {
+            renderFadeGradient(renderer, bar_rect, true);
+        }
+        if (fade_right) {
+            const visible_end_x = bar_rect.x + CWD_PADDING + available_width;
+            const fade_rect = Rect{
+                .x = bar_rect.x,
+                .y = bar_rect.y,
+                .w = visible_end_x - bar_rect.x,
+                .h = bar_rect.h,
+            };
+            renderFadeGradient(renderer, fade_rect, false);
+        }
+    }
+}
+
+fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool) void {
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+    const fade_x = if (is_left) bar_rect.x + CWD_PADDING else bar_rect.x + bar_rect.w - FADE_WIDTH;
+
+    var i: c_int = 0;
+    while (i < FADE_WIDTH) : (i += 1) {
+        const alpha_progress = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(FADE_WIDTH));
+        const alpha = if (is_left)
+            @as(u8, @intFromFloat(230.0 * (1.0 - alpha_progress)))
+        else
+            @as(u8, @intFromFloat(230.0 * alpha_progress));
+
+        _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, alpha);
+        const line_x = fade_x + i;
+        _ = c.SDL_RenderLine(renderer, @floatFromInt(line_x), @floatFromInt(bar_rect.y), @floatFromInt(line_x), @floatFromInt(bar_rect.y + bar_rect.h));
     }
 }
 
