@@ -903,8 +903,8 @@ fn renderCwdBar(
 
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
-        const fade_left = scroll_offset > 0;
-        const fade_right = scroll_offset < scroll_range;
+        const fade_left = scroll_offset < scroll_range;
+        const fade_right = scroll_offset > 0;
 
         if (fade_left) {
             renderFadeGradient(renderer, bar_rect, true);
