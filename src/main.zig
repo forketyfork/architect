@@ -1,6 +1,7 @@
 // Main application entry: wires SDL2 rendering, ghostty-vt terminals, PTY-backed
 // shells, and the grid/animation system that drives the 3×3 terminal wall UI.
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const app_state = @import("app/app_state.zig");
 const notify = @import("session/notify.zig");
@@ -306,19 +307,7 @@ pub fn main() !void {
                         } else {
                             const focused = &sessions[anim_state.focused_session];
                             if (focused.spawned and !focused.dead) {
-                                if (focused.is_scrolled) {
-                                    if (focused.terminal) |*terminal| {
-                                        terminal.screens.active.pages.scroll(.{ .active = {} });
-                                        focused.is_scrolled = false;
-                                    }
-                                }
-                                var buf: [8]u8 = undefined;
-                                const n = input.encodeKeyWithMod(key, mod, &buf);
-                                if (n > 0) {
-                                    if (focused.shell) |*shell| {
-                                        _ = try shell.write(buf[0..n]);
-                                    }
-                                }
+                                try handleKeyInput(focused, key, mod, is_repeat);
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
@@ -345,38 +334,32 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
-                        const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned and !focused.dead and focused.shell != null) {
-                            const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch {};
-                        }
-
                         escape_indicator.start(now);
                         std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead) {
-                            if (focused.is_scrolled) {
-                                if (focused.terminal) |*terminal| {
-                                    terminal.screens.active.pages.scroll(.{ .active = {} });
-                                    focused.is_scrolled = false;
-                                }
-                            }
-                            var buf: [8]u8 = undefined;
-                            const n = input.encodeKeyWithMod(key, mod, &buf);
-                            if (n > 0) {
-                                if (focused.shell) |*shell| {
-                                    _ = try shell.write(buf[0..n]);
-                                }
-                            }
+                            try handleKeyInput(focused, key, mod, is_repeat);
                         }
                     }
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = event.key.key;
                     if (key == c.SDLK_ESCAPE) {
+                        const was_complete = escape_indicator.isComplete(now);
+                        const was_consumed = escape_indicator.consumed;
                         escape_indicator.stop();
-                        std.debug.print("Escape released\n", .{});
+
+                        if (!was_complete and !was_consumed and input.canHandleEscapePress(anim_state.mode)) {
+                            const focused = &sessions[anim_state.focused_session];
+                            if (focused.spawned and !focused.dead and focused.shell != null) {
+                                const esc_byte: [1]u8 = .{27};
+                                _ = focused.shell.?.write(&esc_byte) catch {};
+                            }
+                            std.debug.print("Escape released quickly, sent to terminal\n", .{});
+                        } else {
+                            std.debug.print("Escape released after hold or consumed by UI\n", .{});
+                        }
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -481,6 +464,7 @@ pub fn main() !void {
             anim_state.start_time = now;
             anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             anim_state.target_rect = target_rect;
+            escape_indicator.consume();
             std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
         }
 
@@ -627,6 +611,31 @@ fn applyTerminalResize(
                 };
             }
             session.dirty = true;
+        }
+    }
+}
+
+fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
+    if (key == c.SDLK_ESCAPE) return;
+
+    if (focused.is_scrolled) {
+        if (focused.terminal) |*terminal| {
+            terminal.screens.active.pages.scroll(.{ .active = {} });
+            focused.is_scrolled = false;
+        }
+    }
+    var buf: [8]u8 = undefined;
+    const n = input.encodeKeyWithMod(key, mod, &buf);
+    if (n > 0) {
+        if (focused.shell) |*shell| {
+            _ = try shell.write(buf[0..n]);
+        }
+    } else if (is_repeat and builtin.os.tag == .macos) {
+        if (input.keyToChar(key, mod)) |ch| {
+            buf[0] = ch;
+            if (focused.shell) |*shell| {
+                _ = try shell.write(buf[0..1]);
+            }
         }
     }
 }
