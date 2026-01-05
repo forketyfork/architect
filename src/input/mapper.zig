@@ -38,6 +38,69 @@ pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
     return mode != .Grid and mode != .Collapsing;
 }
 
+pub fn keyToChar(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
+    const shift = (mod & c.SDL_KMOD_SHIFT) != 0;
+
+    if (key >= c.SDLK_A and key <= c.SDLK_Z) {
+        const base: u8 = @intCast(key - c.SDLK_A);
+        return if (shift) 'A' + base else 'a' + base;
+    }
+
+    if (key >= c.SDLK_0 and key <= c.SDLK_9) {
+        if (shift) {
+            return switch (key) {
+                c.SDLK_0 => ')',
+                c.SDLK_1 => '!',
+                c.SDLK_2 => '@',
+                c.SDLK_3 => '#',
+                c.SDLK_4 => '$',
+                c.SDLK_5 => '%',
+                c.SDLK_6 => '^',
+                c.SDLK_7 => '&',
+                c.SDLK_8 => '*',
+                c.SDLK_9 => '(',
+                else => null,
+            };
+        }
+        const base: u8 = @intCast(key - c.SDLK_0);
+        return '0' + base;
+    }
+
+    if (!shift) {
+        return switch (key) {
+            c.SDLK_SPACE => ' ',
+            c.SDLK_MINUS => '-',
+            c.SDLK_EQUALS => '=',
+            c.SDLK_LEFTBRACKET => '[',
+            c.SDLK_RIGHTBRACKET => ']',
+            c.SDLK_BACKSLASH => '\\',
+            c.SDLK_SEMICOLON => ';',
+            c.SDLK_APOSTROPHE => '\'',
+            c.SDLK_GRAVE => '`',
+            c.SDLK_COMMA => ',',
+            c.SDLK_PERIOD => '.',
+            c.SDLK_SLASH => '/',
+            else => null,
+        };
+    } else {
+        return switch (key) {
+            c.SDLK_SPACE => ' ',
+            c.SDLK_MINUS => '_',
+            c.SDLK_EQUALS => '+',
+            c.SDLK_LEFTBRACKET => '{',
+            c.SDLK_RIGHTBRACKET => '}',
+            c.SDLK_BACKSLASH => '|',
+            c.SDLK_SEMICOLON => ':',
+            c.SDLK_APOSTROPHE => '"',
+            c.SDLK_GRAVE => '~',
+            c.SDLK_COMMA => '<',
+            c.SDLK_PERIOD => '>',
+            c.SDLK_SLASH => '?',
+            else => null,
+        };
+    }
+}
+
 pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
     if (mod & c.SDL_KMOD_CTRL != 0) {
         if (key >= c.SDLK_A and key <= c.SDLK_Z) {

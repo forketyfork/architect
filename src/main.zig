@@ -318,6 +318,13 @@ pub fn main() !void {
                                     if (focused.shell) |*shell| {
                                         _ = try shell.write(buf[0..n]);
                                     }
+                                } else if (is_repeat) {
+                                    if (input.keyToChar(key, mod)) |ch| {
+                                        buf[0] = ch;
+                                        if (focused.shell) |*shell| {
+                                            _ = try shell.write(buf[0..1]);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -345,12 +352,6 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
-                        const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned and !focused.dead and focused.shell != null) {
-                            const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch {};
-                        }
-
                         escape_indicator.start(now);
                         std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
@@ -368,6 +369,13 @@ pub fn main() !void {
                                 if (focused.shell) |*shell| {
                                     _ = try shell.write(buf[0..n]);
                                 }
+                            } else if (is_repeat) {
+                                if (input.keyToChar(key, mod)) |ch| {
+                                    buf[0] = ch;
+                                    if (focused.shell) |*shell| {
+                                        _ = try shell.write(buf[0..1]);
+                                    }
+                                }
                             }
                         }
                     }
@@ -375,8 +383,19 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_UP => {
                     const key = event.key.key;
                     if (key == c.SDLK_ESCAPE) {
+                        const was_complete = escape_indicator.isComplete(now);
                         escape_indicator.stop();
-                        std.debug.print("Escape released\n", .{});
+
+                        if (!was_complete and input.canHandleEscapePress(anim_state.mode)) {
+                            const focused = &sessions[anim_state.focused_session];
+                            if (focused.spawned and !focused.dead and focused.shell != null) {
+                                const esc_byte: [1]u8 = .{27};
+                                _ = focused.shell.?.write(&esc_byte) catch {};
+                            }
+                            std.debug.print("Escape released quickly, sent to terminal\n", .{});
+                        } else {
+                            std.debug.print("Escape released after hold\n", .{});
+                        }
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
