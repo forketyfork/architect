@@ -16,6 +16,9 @@ build:
 test:
     zig build test
 
+run:
+    zig build run
+
 lint:
     zig fmt --check src/
 

@@ -12,6 +12,7 @@ const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const ToastNotification = app_state.ToastNotification;
 const HelpButtonAnimation = app_state.HelpButtonAnimation;
+const EscapeIndicator = app_state.EscapeIndicator;
 
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 const NOTIFICATION_FONT_SIZE: c_int = 36;
@@ -77,37 +78,6 @@ pub fn render(
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
-        },
-        .PreCollapse => {
-            const elapsed = current_time - anim_state.start_time;
-            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(app_state.PRECOLLAPSE_DURATION_MS)));
-            const eased = AnimationState.easeInOutCubic(progress);
-            const anim_scale = 1.0 + (app_state.PRECOLLAPSE_SCALE - 1.0) * eased;
-
-            const shrink_offset_x: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * (1.0 - anim_scale) / 2.0);
-            const shrink_offset_y: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * (1.0 - anim_scale) / 2.0);
-            const shrink_width: c_int = @intFromFloat(@as(f32, @floatFromInt(window_width)) * anim_scale);
-            const shrink_height: c_int = @intFromFloat(@as(f32, @floatFromInt(window_height)) * anim_scale);
-
-            const animating_rect = Rect{
-                .x = shrink_offset_x,
-                .y = shrink_offset_y,
-                .w = shrink_width,
-                .h = shrink_height,
-            };
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, true, font, term_cols, term_rows, current_time, false);
-        },
-        .CancelPreCollapse => {
-            const animating_rect = anim_state.getCurrentRect(current_time);
-            const elapsed = current_time - anim_state.start_time;
-            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(app_state.ANIMATION_DURATION_MS)));
-            const eased = AnimationState.easeInOutCubic(progress);
-
-            const start_scale: f32 = app_state.PRECOLLAPSE_SCALE;
-            const end_scale: f32 = 1.0;
-            const anim_scale = start_scale + (end_scale - start_scale) * eased;
-
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, true, font, term_cols, term_rows, current_time, false);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -661,6 +631,142 @@ pub fn renderHelpButton(
             });
 
             y_offset += line_height;
+        }
+    }
+}
+
+pub fn renderEscapeIndicator(
+    renderer: *c.SDL_Renderer,
+    indicator: *const EscapeIndicator,
+    current_time: i64,
+    font: *font_mod.Font,
+) void {
+    if (!indicator.active) return;
+
+    const center_x = app_state.ESC_INDICATOR_MARGIN;
+    const center_y = app_state.ESC_INDICATOR_MARGIN;
+    const radius = app_state.ESC_INDICATOR_RADIUS;
+
+    const completed_arcs = indicator.getCompletedArcs(current_time);
+
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+    const backdrop_radius = @as(f32, @floatFromInt(radius)) + 20.0;
+    const backdrop_segments: usize = 64;
+
+    var r: f32 = backdrop_radius;
+    while (r > 0) : (r -= 0.5) {
+        const dist_factor = r / backdrop_radius;
+        const alpha: u8 = @intFromFloat(100.0 * (1.0 - dist_factor));
+
+        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, alpha);
+
+        var seg: usize = 0;
+        while (seg < backdrop_segments) : (seg += 1) {
+            const angle1 = @as(f32, @floatFromInt(seg)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
+            const angle2 = @as(f32, @floatFromInt(seg + 1)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
+
+            const x1 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle1);
+            const y1 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle1);
+            const x2 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle2);
+            const y2 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle2);
+
+            _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
+        }
+    }
+
+    const esc_text = "Esc";
+    const text_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+
+    const text_width = font.cell_width * @as(c_int, @intCast(esc_text.len));
+    const text_height = font.cell_height;
+
+    var x = center_x - @divFloor(text_width, 2);
+    const y = center_y - @divFloor(text_height, 2);
+
+    for (esc_text) |ch| {
+        font.renderGlyph(ch, x, y, font.cell_width, font.cell_height, text_color) catch continue;
+        x += font.cell_width;
+    }
+
+    const arc_segments: usize = 32;
+    const degrees_per_arc: f32 = 360.0 / @as(f32, @floatFromInt(app_state.ESC_ARC_COUNT));
+    const gap_degrees: f32 = 8.0;
+
+    const all_complete = completed_arcs >= app_state.ESC_ARC_COUNT;
+    var flash_brightness: f32 = 1.0;
+    var flash_scale: f32 = 1.0;
+
+    if (all_complete and indicator.active) {
+        const elapsed_since_complete = current_time - (indicator.start_time + app_state.ESC_HOLD_TOTAL_MS);
+        if (elapsed_since_complete >= 0) {
+            const flash_duration_ms: i64 = 200;
+            const flash_progress = @min(1.0, @as(f32, @floatFromInt(elapsed_since_complete)) / @as(f32, @floatFromInt(flash_duration_ms)));
+            const pulse = std.math.sin(flash_progress * std.math.pi);
+            flash_brightness = 1.0 + 1.0 * pulse;
+            flash_scale = 1.0 + 0.15 * pulse;
+        }
+    }
+
+    var arc: usize = 0;
+    while (arc < app_state.ESC_ARC_COUNT) : (arc += 1) {
+        const is_completed = arc < completed_arcs;
+        var color = if (is_completed)
+            c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 255 }
+        else
+            c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 255 };
+
+        if (is_completed and all_complete) {
+            color.r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.r)) * flash_brightness));
+            color.g = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.g)) * flash_brightness));
+            color.b = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.b)) * flash_brightness));
+        }
+
+        _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+
+        const start_angle = (@as(f32, @floatFromInt(arc)) * degrees_per_arc - 90.0 + gap_degrees / 2.0) * std.math.pi / 180.0;
+        const end_angle = (@as(f32, @floatFromInt(arc + 1)) * degrees_per_arc - 90.0 - gap_degrees / 2.0) * std.math.pi / 180.0;
+
+        const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(arc_segments));
+
+        const fcolor = c.SDL_FColor{
+            .r = @as(f32, @floatFromInt(color.r)) / 255.0,
+            .g = @as(f32, @floatFromInt(color.g)) / 255.0,
+            .b = @as(f32, @floatFromInt(color.b)) / 255.0,
+            .a = @as(f32, @floatFromInt(color.a)) / 255.0,
+        };
+
+        var i: usize = 0;
+        while (i < arc_segments) : (i += 1) {
+            const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
+            const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
+
+            const base_inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
+            const base_outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
+
+            const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
+            const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;
+
+            const x1_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle1);
+            const y1_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle1);
+            const x1_outer = @as(f32, @floatFromInt(center_x)) + outer_radius * std.math.cos(angle1);
+            const y1_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle1);
+
+            const x2_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle2);
+            const y2_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle2);
+            const x2_outer = @as(f32, @floatFromInt(center_x)) + outer_radius * std.math.cos(angle2);
+            const y2_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle2);
+
+            const vertices = [_]c.SDL_Vertex{
+                .{ .position = .{ .x = x1_inner, .y = y1_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x1_outer, .y = y1_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_outer, .y = y2_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_inner, .y = y2_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+            };
+
+            const indices = [_]c_int{ 0, 1, 2, 0, 2, 3 };
+
+            _ = c.SDL_RenderGeometry(renderer, null, &vertices, vertices.len, &indices, indices.len);
         }
     }
 }
