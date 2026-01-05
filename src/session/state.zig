@@ -28,6 +28,17 @@ pub const SessionState = struct {
     restart_button_w: c_int = 0,
     restart_button_h: c_int = 0,
     cwd_font: ?*c.TTF_Font = null,
+    cwd_basename_tex: ?*c.SDL_Texture = null,
+    cwd_parent_tex: ?*c.SDL_Texture = null,
+    cwd_basename_w: c_int = 0,
+    cwd_basename_h: c_int = 0,
+    cwd_parent_w: c_int = 0,
+    cwd_parent_h: c_int = 0,
+    cwd_basename_w_f: f32 = 0,
+    cwd_basename_h_f: f32 = 0,
+    cwd_parent_w_f: f32 = 0,
+    cwd_parent_h_f: f32 = 0,
+    cwd_dirty: bool = true,
     spawned: bool = false,
     dead: bool = false,
     shell_path: []const u8,
@@ -113,6 +124,7 @@ pub const SessionState = struct {
             &self.shell.?,
         );
         self.stream = stream;
+        self.cwd_dirty = true;
         self.dirty = true;
 
         log.debug("spawned session {d}", .{self.id});
@@ -125,6 +137,20 @@ pub const SessionState = struct {
             c.SDL_DestroyTexture(tex);
         }
         if (self.restart_button_texture) |tex| {
+            c.SDL_DestroyTexture(tex);
+        }
+        if (self.cwd_basename_tex) |tex| {
+            c.SDL_DestroyTexture(tex);
+            self.cwd_basename_tex = null;
+        }
+        if (self.cwd_parent_tex) |tex| {
+            c.SDL_DestroyTexture(tex);
+            self.cwd_parent_tex = null;
+        }
+        if (self.cwd_basename_tex) |tex| {
+            c.SDL_DestroyTexture(tex);
+        }
+        if (self.cwd_parent_tex) |tex| {
             c.SDL_DestroyTexture(tex);
         }
         if (self.cwd_font) |font| {
@@ -212,14 +238,19 @@ pub const SessionState = struct {
         const shell = &(self.shell orelse return);
         const stream = &(self.stream orelse return);
 
-        const n = shell.read(&self.output_buf) catch |err| {
-            if (err == error.WouldBlock) return;
-            return err;
-        };
+        while (true) {
+            const n = shell.read(&self.output_buf) catch |err| {
+                if (err == error.WouldBlock) return;
+                return err;
+            };
 
-        if (n > 0) {
+            if (n == 0) return;
+
             try stream.nextSlice(self.output_buf[0..n]);
             self.dirty = true;
+
+            // Keep draining until the PTY would block to avoid frame-bound
+            // throttling of bursty output (e.g. startup logos).
         }
     }
 
@@ -248,6 +279,7 @@ pub const SessionState = struct {
 
         self.cwd_path = new_path;
         self.cwd_basename = cwd_mod.getBasename(new_path);
+        self.cwd_dirty = true;
         self.dirty = true;
     }
 };

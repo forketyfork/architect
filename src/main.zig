@@ -76,7 +76,27 @@ pub fn main() !void {
         platform.WindowPosition{ .x = config.window_x, .y = config.window_y }
     else
         null;
-    var sdl = try platform.init("Architect - Terminal Wall", config.window_width, config.window_height, window_pos);
+    var vsync_requested: bool = true;
+    if (std.posix.getenv("ARCHITECT_NO_VSYNC") != null) {
+        vsync_requested = false;
+    } else if (std.posix.getenv("ARCHITECT_VSYNC")) |val| {
+        if (std.ascii.eqlIgnoreCase(val, "0") or
+            std.ascii.eqlIgnoreCase(val, "false") or
+            std.ascii.eqlIgnoreCase(val, "no"))
+        {
+            vsync_requested = false;
+        } else {
+            vsync_requested = true;
+        }
+    }
+
+    var sdl = try platform.init(
+        "Architect - Terminal Wall",
+        config.window_width,
+        config.window_height,
+        window_pos,
+        vsync_requested,
+    );
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);

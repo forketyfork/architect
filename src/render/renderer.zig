@@ -798,18 +798,28 @@ fn renderCwdBar(
         break :blk basename_with_slash_buf[0 .. cwd_basename.len + 1];
     };
 
-    const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
-    defer c.SDL_DestroySurface(basename_surface);
+    if (session.cwd_basename_tex == null or session.cwd_basename_w == 0 or session.cwd_dirty) {
+        if (session.cwd_basename_tex) |tex| c.SDL_DestroyTexture(tex);
 
-    const basename_texture = c.SDL_CreateTextureFromSurface(renderer, basename_surface) orelse return;
-    defer c.SDL_DestroyTexture(basename_texture);
+        const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
+        defer c.SDL_DestroySurface(basename_surface);
 
-    var basename_width_f: f32 = 0;
-    var basename_height_f: f32 = 0;
-    _ = c.SDL_GetTextureSize(basename_texture, &basename_width_f, &basename_height_f);
+        const basename_texture = c.SDL_CreateTextureFromSurface(renderer, basename_surface) orelse return;
 
-    const basename_width: c_int = @intFromFloat(basename_width_f);
-    const text_height: c_int = @intFromFloat(basename_height_f);
+        var basename_width_f: f32 = 0;
+        var basename_height_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(basename_texture, &basename_width_f, &basename_height_f);
+
+        session.cwd_basename_tex = basename_texture;
+        session.cwd_basename_w = @intFromFloat(basename_width_f);
+        session.cwd_basename_h = @intFromFloat(basename_height_f);
+    }
+
+    const basename_texture = session.cwd_basename_tex orelse return;
+    const basename_width: c_int = session.cwd_basename_w;
+    const text_height: c_int = session.cwd_basename_h;
+    const basename_width_f: f32 = @floatFromInt(basename_width);
+    const basename_height_f: f32 = @floatFromInt(text_height);
 
     const basename_x = bar_rect.x + bar_rect.w - basename_width - CWD_PADDING;
     const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
@@ -844,17 +854,28 @@ fn renderCwdBar(
         }
     };
 
-    const parent_surface = c.TTF_RenderText_Blended(cwd_font, parent_path.ptr, parent_path.len, text_color) orelse return;
-    defer c.SDL_DestroySurface(parent_surface);
+    if (session.cwd_parent_tex == null or session.cwd_parent_w == 0 or session.cwd_dirty) {
+        if (session.cwd_parent_tex) |tex| c.SDL_DestroyTexture(tex);
 
-    const parent_texture = c.SDL_CreateTextureFromSurface(renderer, parent_surface) orelse return;
-    defer c.SDL_DestroyTexture(parent_texture);
+        const parent_surface = c.TTF_RenderText_Blended(cwd_font, parent_path.ptr, parent_path.len, text_color) orelse return;
+        defer c.SDL_DestroySurface(parent_surface);
 
-    var parent_width_f: f32 = 0;
-    var parent_height_f: f32 = 0;
-    _ = c.SDL_GetTextureSize(parent_texture, &parent_width_f, &parent_height_f);
+        const parent_texture = c.SDL_CreateTextureFromSurface(renderer, parent_surface) orelse return;
 
-    const parent_width: c_int = @intFromFloat(parent_width_f);
+        var parent_width_f: f32 = 0;
+        var parent_height_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(parent_texture, &parent_width_f, &parent_height_f);
+
+        session.cwd_parent_tex = parent_texture;
+        session.cwd_parent_w = @intFromFloat(parent_width_f);
+        session.cwd_parent_h = @intFromFloat(parent_height_f);
+    }
+
+    const parent_texture = session.cwd_parent_tex orelse return;
+    const parent_width: c_int = session.cwd_parent_w;
+    const parent_height: c_int = session.cwd_parent_h;
+    const parent_width_f: f32 = @floatFromInt(parent_width);
+    const parent_height_f: f32 = @floatFromInt(parent_height);
 
     const available_width = basename_x - bar_rect.x - CWD_PADDING;
     if (available_width <= 0) return;
@@ -920,6 +941,8 @@ fn renderCwdBar(
             renderFadeGradient(renderer, fade_rect, false);
         }
     }
+
+    session.cwd_dirty = false;
 }
 
 fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool) void {
