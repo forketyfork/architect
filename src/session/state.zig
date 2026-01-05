@@ -27,6 +27,9 @@ pub const SessionState = struct {
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
     cache_h: c_int = 0,
+    restart_button_texture: ?*c.SDL_Texture = null,
+    restart_button_w: c_int = 0,
+    restart_button_h: c_int = 0,
     spawned: bool = false,
     dead: bool = false,
     shell_path: []const u8,
@@ -113,6 +116,9 @@ pub const SessionState = struct {
         if (self.cache_texture) |tex| {
             c.SDL_DestroyTexture(tex);
         }
+        if (self.restart_button_texture) |tex| {
+            c.SDL_DestroyTexture(tex);
+        }
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();
@@ -149,6 +155,10 @@ pub const SessionState = struct {
             if (result > 0) {
                 self.dead = true;
                 self.dirty = true;
+                if (self.restart_button_texture) |tex| {
+                    c.SDL_DestroyTexture(tex);
+                    self.restart_button_texture = null;
+                }
                 log.info("session {d} process exited", .{self.id});
             }
         }
@@ -170,6 +180,11 @@ pub const SessionState = struct {
                 shell.deinit();
                 self.shell = null;
             }
+        }
+
+        if (self.restart_button_texture) |tex| {
+            c.SDL_DestroyTexture(tex);
+            self.restart_button_texture = null;
         }
 
         self.spawned = false;

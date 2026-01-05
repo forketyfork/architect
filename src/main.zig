@@ -384,8 +384,7 @@ pub fn main() !void {
                     const mouse_y: c_int = @intFromFloat(event.button.y);
 
                     const help_rect = help_button.getRect(now, window_width, window_height);
-                    const clicked_help = mouse_x >= help_rect.x and mouse_x < help_rect.x + help_rect.w and
-                        mouse_y >= help_rect.y and mouse_y < help_rect.y + help_rect.h;
+                    const clicked_help = renderer_mod.isPointInRect(mouse_x, mouse_y, help_rect);
 
                     if (clicked_help) {
                         if (help_button.state == .Closed) {
@@ -413,8 +412,7 @@ pub fn main() !void {
                         var clicked_restart = false;
                         if (sessions[clicked_session].dead) {
                             const restart_rect = renderer_mod.getRestartButtonRect(cell_rect);
-                            clicked_restart = mouse_x >= restart_rect.x and mouse_x < restart_rect.x + restart_rect.w and
-                                mouse_y >= restart_rect.y and mouse_y < restart_rect.y + restart_rect.h;
+                            clicked_restart = renderer_mod.isPointInRect(mouse_x, mouse_y, restart_rect);
                         }
 
                         if (clicked_restart) {
