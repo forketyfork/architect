@@ -1,11 +1,12 @@
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
 const app_state = @import("../app/app_state.zig");
 const c = @import("../c.zig");
-const cwd_mod = @import("../cwd.zig");
+const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 
 const log = std.log.scoped(.session_state);
 
@@ -40,9 +41,10 @@ pub const SessionState = struct {
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
     cwd_path: ?[]const u8 = null,
+    /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
+    /// When cwd_path is freed, this becomes invalid and must not be used.
     cwd_basename: ?[]const u8 = null,
     cwd_last_check: i64 = 0,
-    cwd_marquee_offset: f32 = 0,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -222,6 +224,8 @@ pub const SessionState = struct {
     }
 
     pub fn updateCwd(self: *SessionState, current_time: i64) void {
+        if (builtin.os.tag != .macos) return;
+
         if (!self.spawned or self.dead) return;
 
         const shell = self.shell orelse return;
@@ -244,7 +248,6 @@ pub const SessionState = struct {
 
         self.cwd_path = new_path;
         self.cwd_basename = cwd_mod.getBasename(new_path);
-        self.cwd_marquee_offset = 0;
         self.dirty = true;
     }
 };

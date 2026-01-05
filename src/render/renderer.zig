@@ -786,7 +786,13 @@ fn renderCwdBar(
         if (std.mem.eql(u8, cwd_basename, "/")) {
             break :blk cwd_basename;
         }
-        if (cwd_basename.len + 1 > basename_with_slash_buf.len) return;
+        if (cwd_basename.len + 1 > basename_with_slash_buf.len) {
+            log.warn("CWD basename too long for buffer (len={}, max_without_slash={}); skipping CWD bar rendering", .{
+                cwd_basename.len,
+                basename_with_slash_buf.len - 1,
+            });
+            return;
+        }
         @memcpy(basename_with_slash_buf[0..cwd_basename.len], cwd_basename);
         basename_with_slash_buf[cwd_basename.len] = '/';
         break :blk basename_with_slash_buf[0 .. cwd_basename.len + 1];
@@ -825,7 +831,13 @@ fn renderCwdBar(
         if (parent_without_slash[parent_without_slash.len - 1] == '/') {
             break :blk parent_without_slash;
         } else {
-            if (parent_without_slash.len + 1 > parent_path_buf.len) return;
+            if (parent_without_slash.len + 1 > parent_path_buf.len) {
+                log.warn(
+                    "render: parent path too long (required={} bytes, buffer size={}), skipping parent path rendering",
+                    .{ parent_without_slash.len + 1, parent_path_buf.len },
+                );
+                return;
+            }
             @memcpy(parent_path_buf[0..parent_without_slash.len], parent_without_slash);
             parent_path_buf[parent_without_slash.len] = '/';
             break :blk parent_path_buf[0 .. parent_without_slash.len + 1];
@@ -868,17 +880,33 @@ fn renderCwdBar(
         const scroll_range_f: f32 = @floatFromInt(scroll_range);
         const idle_ms: f32 = 1000.0;
         const scroll_ms: f32 = scroll_range_f / MARQUEE_SPEED * 1000.0;
-        const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
+        const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms * 2.0;
         const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
         const elapsed_ms: f32 = @floatFromInt(@mod(current_time, cycle_ms_i64));
 
         const scroll_offset: c_int = blk: {
+            // Phase 1: initial idle at start (offset = 0)
             if (elapsed_ms < idle_ms) break :blk 0;
-            if (elapsed_ms < idle_ms + scroll_ms) {
-                const progress = (elapsed_ms - idle_ms) / scroll_ms;
+
+            // Phase 2: forward scroll from 0 to scroll_range
+            const forward_start = idle_ms;
+            const forward_end = idle_ms + scroll_ms;
+            if (elapsed_ms < forward_end) {
+                const progress = (elapsed_ms - forward_start) / scroll_ms;
                 break :blk @intFromFloat(progress * scroll_range_f);
             }
-            break :blk scroll_range;
+
+            // Phase 3: idle at end (offset = scroll_range)
+            const end_idle_start = forward_end;
+            const end_idle_end = end_idle_start + idle_ms;
+            if (elapsed_ms < end_idle_end) {
+                break :blk scroll_range;
+            }
+
+            // Phase 4: backward scroll from scroll_range back to 0
+            const backward_start = end_idle_end;
+            const progress = (elapsed_ms - backward_start) / scroll_ms;
+            break :blk @intFromFloat((1.0 - progress) * scroll_range_f);
         };
 
         const parent_x = basename_x - parent_width + scroll_offset;
@@ -891,8 +919,8 @@ fn renderCwdBar(
 
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
-        const fade_left = scroll_offset < scroll_range;
-        const fade_right = scroll_offset > 0;
+        const fade_left = scroll_offset > 0;
+        const fade_right = scroll_offset < scroll_range;
 
         if (fade_left) {
             renderFadeGradient(renderer, bar_rect, true);

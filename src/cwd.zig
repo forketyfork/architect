@@ -1,7 +1,14 @@
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 
 const log = std.log.scoped(.cwd);
+
+comptime {
+    if (builtin.os.tag != .macos) {
+        @compileError("cwd.zig: proc_pidinfo API is macOS-specific. This module should only be compiled on macOS.");
+    }
+}
 
 pub const CwdError = error{
     ProcessNotFound,
