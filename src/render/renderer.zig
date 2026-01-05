@@ -729,6 +729,13 @@ pub fn renderEscapeIndicator(
 
         const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(arc_segments));
 
+        const fcolor = c.SDL_FColor{
+            .r = @as(f32, @floatFromInt(color.r)) / 255.0,
+            .g = @as(f32, @floatFromInt(color.g)) / 255.0,
+            .b = @as(f32, @floatFromInt(color.b)) / 255.0,
+            .a = @as(f32, @floatFromInt(color.a)) / 255.0,
+        };
+
         var i: usize = 0;
         while (i < arc_segments) : (i += 1) {
             const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
@@ -751,10 +758,10 @@ pub fn renderEscapeIndicator(
             const y2_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle2);
 
             const vertices = [_]c.SDL_Vertex{
-                .{ .position = .{ .x = x1_inner, .y = y1_inner }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x1_outer, .y = y1_outer }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x2_outer, .y = y2_outer }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x2_inner, .y = y2_inner }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x1_inner, .y = y1_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x1_outer, .y = y1_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_outer, .y = y2_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
+                .{ .position = .{ .x = x2_inner, .y = y2_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
             };
 
             const indices = [_]c_int{ 0, 1, 2, 0, 2, 3 };
