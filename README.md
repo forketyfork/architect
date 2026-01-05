@@ -109,6 +109,8 @@ zig build -Doptimize=ReleaseFast
 
 Run the application:
 ```bash
+just run
+# or
 zig build run
 ```
 
