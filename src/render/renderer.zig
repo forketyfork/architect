@@ -799,7 +799,12 @@ fn renderCwdBar(
     };
 
     if (session.cwd_basename_tex == null or session.cwd_basename_w == 0 or session.cwd_dirty) {
-        if (session.cwd_basename_tex) |tex| c.SDL_DestroyTexture(tex);
+        if (session.cwd_basename_tex) |tex| {
+            c.SDL_DestroyTexture(tex);
+            session.cwd_basename_tex = null;
+        }
+        session.cwd_basename_w = 0;
+        session.cwd_basename_h = 0;
 
         const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
         defer c.SDL_DestroySurface(basename_surface);
@@ -855,7 +860,12 @@ fn renderCwdBar(
     };
 
     if (session.cwd_parent_tex == null or session.cwd_parent_w == 0 or session.cwd_dirty) {
-        if (session.cwd_parent_tex) |tex| c.SDL_DestroyTexture(tex);
+        if (session.cwd_parent_tex) |tex| {
+            c.SDL_DestroyTexture(tex);
+            session.cwd_parent_tex = null;
+        }
+        session.cwd_parent_w = 0;
+        session.cwd_parent_h = 0;
 
         const parent_surface = c.TTF_RenderText_Blended(cwd_font, parent_path.ptr, parent_path.len, text_color) orelse return;
         defer c.SDL_DestroySurface(parent_surface);

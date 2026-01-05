@@ -34,10 +34,6 @@ pub const SessionState = struct {
     cwd_basename_h: c_int = 0,
     cwd_parent_w: c_int = 0,
     cwd_parent_h: c_int = 0,
-    cwd_basename_w_f: f32 = 0,
-    cwd_basename_h_f: f32 = 0,
-    cwd_parent_w_f: f32 = 0,
-    cwd_parent_h_f: f32 = 0,
     cwd_dirty: bool = true,
     spawned: bool = false,
     dead: bool = false,
@@ -147,12 +143,6 @@ pub const SessionState = struct {
             c.SDL_DestroyTexture(tex);
             self.cwd_parent_tex = null;
         }
-        if (self.cwd_basename_tex) |tex| {
-            c.SDL_DestroyTexture(tex);
-        }
-        if (self.cwd_parent_tex) |tex| {
-            c.SDL_DestroyTexture(tex);
-        }
         if (self.cwd_font) |font| {
             c.TTF_CloseFont(font);
         }
@@ -249,7 +239,7 @@ pub const SessionState = struct {
             try stream.nextSlice(self.output_buf[0..n]);
             self.dirty = true;
 
-            // Keep draining until the PTY would block to avoid frame-bound
+            // Keep draining until the PTY would block to avoid frame-bounded
             // throttling of bursty output (e.g. startup logos).
         }
     }
