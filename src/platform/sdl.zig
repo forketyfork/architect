@@ -16,7 +16,13 @@ pub const Platform = struct {
     vsync_enabled: bool,
 };
 
-pub fn init(title: [*:0]const u8, width: c_int, height: c_int, position: ?WindowPosition) InitError!Platform {
+pub fn init(
+    title: [*:0]const u8,
+    width: c_int,
+    height: c_int,
+    position: ?WindowPosition,
+    vsync_requested: bool,
+) InitError!Platform {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.SDLInitFailed;
@@ -36,18 +42,20 @@ pub fn init(title: [*:0]const u8, width: c_int, height: c_int, position: ?Window
         _ = c.SDL_SetWindowPosition(window, pos.x, pos.y);
     }
 
+    // SDL3's CreateRenderer no longer takes flags in this version; rely on the
+    // default driver selection and optionally enable vsync below.
     const renderer = c.SDL_CreateRenderer(window, null) orelse {
         std.debug.print("SDL_CreateRenderer Error: {s}\n", .{c.SDL_GetError()});
         return error.RendererCreationFailed;
     };
 
     const vsync_enabled = blk: {
-        const success = c.SDL_SetRenderVSync(renderer, 1);
-        if (!success) {
+        const success = c.SDL_SetRenderVSync(renderer, if (vsync_requested) 1 else 0);
+        if (!success and vsync_requested) {
             std.debug.print("Warning: failed to enable vsync: {s}\n", .{c.SDL_GetError()});
             break :blk false;
         }
-        break :blk true;
+        break :blk vsync_requested and success;
     };
 
     return Platform{

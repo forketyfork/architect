@@ -19,6 +19,9 @@ test:
 run:
     zig build run
 
+run-release:
+    zig build run -Doptimize=ReleaseFast
+
 lint:
     zig fmt --check src/
 

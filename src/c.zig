@@ -25,6 +25,14 @@ pub const SDL_SetRenderTarget = c_import.SDL_SetRenderTarget;
 pub const SDL_SetTextureBlendMode = c_import.SDL_SetTextureBlendMode;
 pub const SDL_SetRenderVSync = c_import.SDL_SetRenderVSync;
 pub const SDL_RenderTexture = c_import.SDL_RenderTexture;
+pub const SDL_RENDERER_ACCELERATED: c_import.Uint32 = if (@hasDecl(c_import, "SDL_RENDERER_ACCELERATED"))
+    c_import.SDL_RENDERER_ACCELERATED
+else
+    0x0000_0002;
+pub const SDL_RENDERER_PRESENTVSYNC: c_import.Uint32 = if (@hasDecl(c_import, "SDL_RENDERER_PRESENTVSYNC"))
+    c_import.SDL_RENDERER_PRESENTVSYNC
+else
+    0x0000_0004;
 pub const SDL_SetRenderDrawBlendMode = c_import.SDL_SetRenderDrawBlendMode;
 pub const SDL_SetRenderClipRect = c_import.SDL_SetRenderClipRect;
 pub const SDL_GetTextureSize = c_import.SDL_GetTextureSize;
