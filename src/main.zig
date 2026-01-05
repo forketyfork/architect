@@ -1,6 +1,7 @@
 // Main application entry: wires SDL2 rendering, ghostty-vt terminals, PTY-backed
 // shells, and the grid/animation system that drives the 3×3 terminal wall UI.
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const app_state = @import("app/app_state.zig");
 const notify = @import("session/notify.zig");
@@ -306,26 +307,7 @@ pub fn main() !void {
                         } else {
                             const focused = &sessions[anim_state.focused_session];
                             if (focused.spawned and !focused.dead) {
-                                if (focused.is_scrolled) {
-                                    if (focused.terminal) |*terminal| {
-                                        terminal.screens.active.pages.scroll(.{ .active = {} });
-                                        focused.is_scrolled = false;
-                                    }
-                                }
-                                var buf: [8]u8 = undefined;
-                                const n = input.encodeKeyWithMod(key, mod, &buf);
-                                if (n > 0) {
-                                    if (focused.shell) |*shell| {
-                                        _ = try shell.write(buf[0..n]);
-                                    }
-                                } else if (is_repeat) {
-                                    if (input.keyToChar(key, mod)) |ch| {
-                                        buf[0] = ch;
-                                        if (focused.shell) |*shell| {
-                                            _ = try shell.write(buf[0..1]);
-                                        }
-                                    }
-                                }
+                                try handleKeyInput(focused, key, mod, is_repeat);
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
@@ -357,26 +339,7 @@ pub fn main() !void {
                     } else {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead) {
-                            if (focused.is_scrolled) {
-                                if (focused.terminal) |*terminal| {
-                                    terminal.screens.active.pages.scroll(.{ .active = {} });
-                                    focused.is_scrolled = false;
-                                }
-                            }
-                            var buf: [8]u8 = undefined;
-                            const n = input.encodeKeyWithMod(key, mod, &buf);
-                            if (n > 0) {
-                                if (focused.shell) |*shell| {
-                                    _ = try shell.write(buf[0..n]);
-                                }
-                            } else if (is_repeat) {
-                                if (input.keyToChar(key, mod)) |ch| {
-                                    buf[0] = ch;
-                                    if (focused.shell) |*shell| {
-                                        _ = try shell.write(buf[0..1]);
-                                    }
-                                }
-                            }
+                            try handleKeyInput(focused, key, mod, is_repeat);
                         }
                     }
                 },
@@ -648,6 +611,29 @@ fn applyTerminalResize(
                 };
             }
             session.dirty = true;
+        }
+    }
+}
+
+fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
+    if (focused.is_scrolled) {
+        if (focused.terminal) |*terminal| {
+            terminal.screens.active.pages.scroll(.{ .active = {} });
+            focused.is_scrolled = false;
+        }
+    }
+    var buf: [8]u8 = undefined;
+    const n = input.encodeKeyWithMod(key, mod, &buf);
+    if (n > 0) {
+        if (focused.shell) |*shell| {
+            _ = try shell.write(buf[0..n]);
+        }
+    } else if (is_repeat and builtin.os.tag == .macos) {
+        if (input.keyToChar(key, mod)) |ch| {
+            buf[0] = ch;
+            if (focused.shell) |*shell| {
+                _ = try shell.write(buf[0..1]);
+            }
         }
     }
 }

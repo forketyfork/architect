@@ -66,39 +66,21 @@ pub fn keyToChar(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
         return '0' + base;
     }
 
-    if (!shift) {
-        return switch (key) {
-            c.SDLK_SPACE => ' ',
-            c.SDLK_MINUS => '-',
-            c.SDLK_EQUALS => '=',
-            c.SDLK_LEFTBRACKET => '[',
-            c.SDLK_RIGHTBRACKET => ']',
-            c.SDLK_BACKSLASH => '\\',
-            c.SDLK_SEMICOLON => ';',
-            c.SDLK_APOSTROPHE => '\'',
-            c.SDLK_GRAVE => '`',
-            c.SDLK_COMMA => ',',
-            c.SDLK_PERIOD => '.',
-            c.SDLK_SLASH => '/',
-            else => null,
-        };
-    } else {
-        return switch (key) {
-            c.SDLK_SPACE => ' ',
-            c.SDLK_MINUS => '_',
-            c.SDLK_EQUALS => '+',
-            c.SDLK_LEFTBRACKET => '{',
-            c.SDLK_RIGHTBRACKET => '}',
-            c.SDLK_BACKSLASH => '|',
-            c.SDLK_SEMICOLON => ':',
-            c.SDLK_APOSTROPHE => '"',
-            c.SDLK_GRAVE => '~',
-            c.SDLK_COMMA => '<',
-            c.SDLK_PERIOD => '>',
-            c.SDLK_SLASH => '?',
-            else => null,
-        };
-    }
+    return switch (key) {
+        c.SDLK_SPACE => ' ',
+        c.SDLK_MINUS => if (shift) '_' else '-',
+        c.SDLK_EQUALS => if (shift) '+' else '=',
+        c.SDLK_LEFTBRACKET => if (shift) '{' else '[',
+        c.SDLK_RIGHTBRACKET => if (shift) '}' else ']',
+        c.SDLK_BACKSLASH => if (shift) '|' else '\\',
+        c.SDLK_SEMICOLON => if (shift) ':' else ';',
+        c.SDLK_APOSTROPHE => if (shift) '"' else '\'',
+        c.SDLK_GRAVE => if (shift) '~' else '`',
+        c.SDLK_COMMA => if (shift) '<' else ',',
+        c.SDLK_PERIOD => if (shift) '>' else '.',
+        c.SDLK_SLASH => if (shift) '?' else '/',
+        else => null,
+    };
 }
 
 pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize {
