@@ -616,6 +616,8 @@ fn applyTerminalResize(
 }
 
 fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
+    if (key == c.SDLK_ESCAPE) return;
+
     if (focused.is_scrolled) {
         if (focused.terminal) |*terminal| {
             terminal.screens.active.pages.scroll(.{ .active = {} });
