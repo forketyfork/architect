@@ -384,9 +384,10 @@ pub fn main() !void {
                     const key = event.key.key;
                     if (key == c.SDLK_ESCAPE) {
                         const was_complete = escape_indicator.isComplete(now);
+                        const was_consumed = escape_indicator.consumed;
                         escape_indicator.stop();
 
-                        if (!was_complete and input.canHandleEscapePress(anim_state.mode)) {
+                        if (!was_complete and !was_consumed and input.canHandleEscapePress(anim_state.mode)) {
                             const focused = &sessions[anim_state.focused_session];
                             if (focused.spawned and !focused.dead and focused.shell != null) {
                                 const esc_byte: [1]u8 = .{27};
@@ -394,7 +395,7 @@ pub fn main() !void {
                             }
                             std.debug.print("Escape released quickly, sent to terminal\n", .{});
                         } else {
-                            std.debug.print("Escape released after hold\n", .{});
+                            std.debug.print("Escape released after hold or consumed by UI\n", .{});
                         }
                     }
                 },
@@ -500,6 +501,7 @@ pub fn main() !void {
             anim_state.start_time = now;
             anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             anim_state.target_rect = target_rect;
+            escape_indicator.consume();
             std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
         }
 

@@ -170,14 +170,21 @@ pub const ESC_INDICATOR_RADIUS: c_int = 30;
 pub const EscapeIndicator = struct {
     active: bool = false,
     start_time: i64 = 0,
+    consumed: bool = false,
 
     pub fn start(self: *EscapeIndicator, current_time: i64) void {
         self.active = true;
         self.start_time = current_time;
+        self.consumed = false;
     }
 
     pub fn stop(self: *EscapeIndicator) void {
         self.active = false;
+        self.consumed = false;
+    }
+
+    pub fn consume(self: *EscapeIndicator) void {
+        self.consumed = true;
     }
 
     pub fn getCompletedArcs(self: *const EscapeIndicator, current_time: i64) usize {
