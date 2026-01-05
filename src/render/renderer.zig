@@ -880,33 +880,17 @@ fn renderCwdBar(
         const scroll_range_f: f32 = @floatFromInt(scroll_range);
         const idle_ms: f32 = 1000.0;
         const scroll_ms: f32 = scroll_range_f / MARQUEE_SPEED * 1000.0;
-        const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms * 2.0;
+        const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
         const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
         const elapsed_ms: f32 = @floatFromInt(@mod(current_time, cycle_ms_i64));
 
         const scroll_offset: c_int = blk: {
-            // Phase 1: initial idle at start (offset = 0)
             if (elapsed_ms < idle_ms) break :blk 0;
-
-            // Phase 2: forward scroll from 0 to scroll_range
-            const forward_start = idle_ms;
-            const forward_end = idle_ms + scroll_ms;
-            if (elapsed_ms < forward_end) {
-                const progress = (elapsed_ms - forward_start) / scroll_ms;
+            if (elapsed_ms < idle_ms + scroll_ms) {
+                const progress = (elapsed_ms - idle_ms) / scroll_ms;
                 break :blk @intFromFloat(progress * scroll_range_f);
             }
-
-            // Phase 3: idle at end (offset = scroll_range)
-            const end_idle_start = forward_end;
-            const end_idle_end = end_idle_start + idle_ms;
-            if (elapsed_ms < end_idle_end) {
-                break :blk scroll_range;
-            }
-
-            // Phase 4: backward scroll from scroll_range back to 0
-            const backward_start = end_idle_end;
-            const progress = (elapsed_ms - backward_start) / scroll_ms;
-            break :blk @intFromFloat((1.0 - progress) * scroll_range_f);
+            break :blk scroll_range;
         };
 
         const parent_x = basename_x - parent_width + scroll_offset;
