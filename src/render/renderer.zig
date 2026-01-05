@@ -19,8 +19,27 @@ const NOTIFICATION_FONT_SIZE: c_int = 36;
 const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
 const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
 const ATTENTION_THICKNESS: c_int = 16;
+pub const TERMINAL_PADDING: c_int = 8;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
+
+pub fn getRestartButtonRect(rect: Rect) Rect {
+    const icon_font_size: c_int = 16;
+    const char_width: c_int = icon_font_size * 3 / 4;
+    const text_width: c_int = char_width * 7;
+    const text_height: c_int = icon_font_size;
+    const padding: c_int = 12;
+    const button_w = text_width + padding * 2;
+    const button_h = text_height + padding * 2;
+    const button_x = rect.x + rect.w - button_w - 8;
+    const button_y = rect.y + rect.h - button_h - 8;
+    return Rect{
+        .x = button_x,
+        .y = button_y,
+        .w = button_w,
+        .h = button_h,
+    };
+}
 
 pub fn render(
     renderer: *c.SDL_Renderer,
@@ -168,7 +187,7 @@ fn renderSessionContent(
     const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
     const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
 
-    const padding: c_int = 8;
+    const padding: c_int = TERMINAL_PADDING;
     const drawable_w: c_int = rect.w - padding * 2;
     const drawable_h: c_int = rect.h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return;
@@ -199,8 +218,8 @@ fn renderSessionContent(
             const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
 
-            if (x < rect.x or x >= rect.x + rect.w) continue;
-            if (y < rect.y or y >= rect.y + rect.h) continue;
+            if (x + cell_width_actual <= rect.x or x >= rect.x + rect.w) continue;
+            if (y + cell_height_actual <= rect.y or y >= rect.y + rect.h) continue;
 
             const style = list_cell.style();
             const fg_color = getCellColor(style.fg_color, default_fg);
@@ -209,7 +228,7 @@ fn renderSessionContent(
         }
     }
 
-    if (!session.is_scrolled and is_focused) {
+    if (!session.is_scrolled and is_focused and !session.dead) {
         const cursor = screen.cursor;
         const cursor_col = cursor.x;
         const cursor_row = cursor.y;
@@ -218,8 +237,8 @@ fn renderSessionContent(
             const cursor_x: c_int = origin_x + @as(c_int, @intCast(cursor_col)) * cell_width_actual;
             const cursor_y: c_int = origin_y + @as(c_int, @intCast(cursor_row)) * cell_height_actual;
 
-            if (cursor_x >= rect.x and cursor_x < rect.x + rect.w and
-                cursor_y >= rect.y and cursor_y < rect.y + rect.h)
+            if (cursor_x + cell_width_actual > rect.x and cursor_x < rect.x + rect.w and
+                cursor_y + cell_height_actual > rect.y and cursor_y < rect.y + rect.h)
             {
                 _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
                 const cursor_rect = c.SDL_FRect{
@@ -229,6 +248,24 @@ fn renderSessionContent(
                     .h = @floatFromInt(cell_height_actual),
                 };
                 _ = c.SDL_RenderFillRect(renderer, &cursor_rect);
+            }
+        }
+    }
+
+    if (session.dead) {
+        const message = "[Process completed]";
+        const cursor = screen.cursor;
+        const message_row: usize = @intCast(cursor.y);
+
+        if (message_row < visible_rows) {
+            const message_x: c_int = origin_x;
+            const message_y: c_int = origin_y + @as(c_int, @intCast(message_row)) * cell_height_actual;
+            const fg_color = c.SDL_Color{ .r = 150, .g = 150, .b = 150, .a = 255 };
+
+            var offset_x = message_x;
+            for (message) |ch| {
+                try font.renderGlyph(ch, offset_x, message_y, cell_width_actual, cell_height_actual, fg_color);
+                offset_x += cell_width_actual;
             }
         }
     }
@@ -298,6 +335,64 @@ fn renderSessionOverlays(
             .h = @floatFromInt(rect.h),
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
+    }
+
+    if (is_grid_view and session.spawned and session.dead) {
+        const icon_font_size: c_int = 16;
+        const icon_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(icon_font_size)) orelse return;
+        defer c.TTF_CloseFont(icon_font);
+
+        const restart_text = "Restart";
+        const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+        const surface = c.TTF_RenderText_Blended(icon_font, restart_text, restart_text.len, fg_color) orelse return;
+        defer c.SDL_DestroySurface(surface);
+
+        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
+        defer c.SDL_DestroyTexture(texture);
+
+        var text_width_f: f32 = 0;
+        var text_height_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
+
+        const text_width: c_int = @intFromFloat(text_width_f);
+        const text_height: c_int = @intFromFloat(text_height_f);
+        const padding: c_int = 12;
+        const button_w = text_width + padding * 2;
+        const button_h = text_height + padding * 2;
+        const button_x = rect.x + rect.w - button_w - 8;
+        const button_y = rect.y + rect.h - button_h - 8;
+
+        const button_rect = Rect{
+            .x = button_x,
+            .y = button_y,
+            .w = button_w,
+            .h = button_h,
+        };
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
+        const bg_rect = c.SDL_FRect{
+            .x = @floatFromInt(button_x),
+            .y = @floatFromInt(button_y),
+            .w = @floatFromInt(button_w),
+            .h = @floatFromInt(button_h),
+        };
+        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+
+        const radius: c_int = 8;
+        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+        drawRoundedBorder(renderer, button_rect, radius);
+
+        const text_x = button_x + padding;
+        const text_y = button_y + padding;
+
+        const dest_rect = c.SDL_FRect{
+            .x = @floatFromInt(text_x),
+            .y = @floatFromInt(text_y),
+            .w = text_width_f,
+            .h = text_height_f,
+        };
+        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 }
 

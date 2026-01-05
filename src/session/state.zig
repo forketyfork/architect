@@ -28,6 +28,7 @@ pub const SessionState = struct {
     cache_w: c_int = 0,
     cache_h: c_int = 0,
     spawned: bool = false,
+    dead: bool = false,
     shell_path: []const u8,
     pty_size: pty_mod.winsize,
     session_id_z: [16:0]u8,
@@ -139,8 +140,45 @@ pub const SessionState = struct {
         StyleSetOutOfMemory,
     };
 
+    pub fn checkAlive(self: *SessionState) void {
+        if (!self.spawned or self.dead) return;
+
+        if (self.shell) |shell| {
+            var status: c_int = 0;
+            const result = std.c.waitpid(shell.child_pid, &status, std.c.W.NOHANG);
+            if (result > 0) {
+                self.dead = true;
+                self.dirty = true;
+                log.info("session {d} process exited", .{self.id});
+            }
+        }
+    }
+
+    pub fn restart(self: *SessionState) InitError!void {
+        if (self.spawned and !self.dead) return;
+
+        if (self.spawned) {
+            if (self.stream) |*stream| {
+                stream.deinit();
+                self.stream = null;
+            }
+            if (self.terminal) |*terminal| {
+                terminal.deinit(self.allocator);
+                self.terminal = null;
+            }
+            if (self.shell) |*shell| {
+                shell.deinit();
+                self.shell = null;
+            }
+        }
+
+        self.spawned = false;
+        self.dead = false;
+        try self.ensureSpawned();
+    }
+
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
-        if (!self.spawned) return;
+        if (!self.spawned or self.dead) return;
 
         const shell = &(self.shell orelse return);
         const stream = &(self.stream orelse return);

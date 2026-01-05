@@ -107,11 +107,14 @@ pub fn main() !void {
     var cell_width_pixels = @divFloor(window_width, GRID_COLS);
     var cell_height_pixels = @divFloor(window_height, GRID_ROWS);
 
+    const usable_width = @max(0, window_width - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_height = @max(0, window_height - renderer_mod.TERMINAL_PADDING * 2);
+
     const size = pty_mod.winsize{
         .ws_row = full_rows,
         .ws_col = full_cols,
-        .ws_xpixel = @intCast(window_width),
-        .ws_ypixel = @intCast(window_height),
+        .ws_xpixel = @intCast(usable_width),
+        .ws_ypixel = @intCast(usable_height),
     };
 
     var sessions: [GRID_ROWS * GRID_COLS]SessionState = undefined;
@@ -192,7 +195,7 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    if (focused.spawned) {
+                    if (focused.spawned and !focused.dead) {
                         if (focused.is_scrolled) {
                             if (focused.terminal) |*terminal| {
                                 terminal.screens.active.pages.scroll(.{ .active = {} });
@@ -302,7 +305,7 @@ pub fn main() !void {
                             }
                         } else {
                             const focused = &sessions[anim_state.focused_session];
-                            if (focused.spawned) {
+                            if (focused.spawned and !focused.dead) {
                                 if (focused.is_scrolled) {
                                     if (focused.terminal) |*terminal| {
                                         terminal.screens.active.pages.scroll(.{ .active = {} });
@@ -343,7 +346,7 @@ pub fn main() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
                         const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned and focused.shell != null) {
+                        if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
                             _ = focused.shell.?.write(&esc_byte) catch {};
                         }
@@ -352,7 +355,7 @@ pub fn main() !void {
                         std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned) {
+                        if (focused.spawned and !focused.dead) {
                             if (focused.is_scrolled) {
                                 if (focused.terminal) |*terminal| {
                                     terminal.screens.active.pages.scroll(.{ .active = {} });
@@ -400,25 +403,38 @@ pub fn main() !void {
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
 
-                        try sessions[clicked_session].ensureSpawned();
-
-                        sessions[clicked_session].status = .running;
-                        sessions[clicked_session].attention = false;
-
-                        const start_rect = Rect{
+                        const cell_rect = Rect{
                             .x = @as(c_int, @intCast(grid_col)) * cell_width_pixels,
                             .y = @as(c_int, @intCast(grid_row)) * cell_height_pixels,
                             .w = cell_width_pixels,
                             .h = cell_height_pixels,
                         };
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
 
-                        anim_state.mode = .Expanding;
-                        anim_state.focused_session = clicked_session;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = start_rect;
-                        anim_state.target_rect = target_rect;
-                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                        var clicked_restart = false;
+                        if (sessions[clicked_session].dead) {
+                            const restart_rect = renderer_mod.getRestartButtonRect(cell_rect);
+                            clicked_restart = mouse_x >= restart_rect.x and mouse_x < restart_rect.x + restart_rect.w and
+                                mouse_y >= restart_rect.y and mouse_y < restart_rect.y + restart_rect.h;
+                        }
+
+                        if (clicked_restart) {
+                            try sessions[clicked_session].restart();
+                            std.debug.print("Restarted session: {d}\n", .{clicked_session});
+                        } else {
+                            try sessions[clicked_session].ensureSpawned();
+
+                            sessions[clicked_session].status = .running;
+                            sessions[clicked_session].attention = false;
+
+                            const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+
+                            anim_state.mode = .Expanding;
+                            anim_state.focused_session = clicked_session;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = cell_rect;
+                            anim_state.target_rect = target_rect;
+                            std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                        }
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
@@ -448,6 +464,7 @@ pub fn main() !void {
         }
 
         for (&sessions) |*session| {
+            session.checkAlive();
             try session.processOutput();
         }
 
@@ -568,8 +585,11 @@ fn scrollSession(session: *SessionState, delta: isize) void {
 }
 
 fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
-    const cols = @max(1, @divFloor(window_width, font.cell_width));
-    const rows = @max(1, @divFloor(window_height, font.cell_height));
+    const padding = renderer_mod.TERMINAL_PADDING * 2;
+    const usable_w = @max(0, window_width - padding);
+    const usable_h = @max(0, window_height - padding);
+    const cols = @max(1, @divFloor(usable_w, font.cell_width));
+    const rows = @max(1, @divFloor(usable_h, font.cell_height));
     return .{
         .cols = @intCast(cols),
         .rows = @intCast(rows),
@@ -584,11 +604,14 @@ fn applyTerminalResize(
     window_width: c_int,
     window_height: c_int,
 ) void {
+    const usable_width = @max(0, window_width - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_height = @max(0, window_height - renderer_mod.TERMINAL_PADDING * 2);
+
     const new_size = pty_mod.winsize{
         .ws_row = rows,
         .ws_col = cols,
-        .ws_xpixel = @intCast(window_width),
-        .ws_ypixel = @intCast(window_height),
+        .ws_xpixel = @intCast(usable_width),
+        .ws_ypixel = @intCast(usable_height),
     };
 
     for (sessions) |*session| {
