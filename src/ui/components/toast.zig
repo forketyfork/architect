@@ -106,6 +106,7 @@ pub const ToastComponent = struct {
         _ = c.SDL_RenderRect(renderer, &bg_rect);
 
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetTextureAlphaMod(texture, alpha);
         const dest_rect = c.SDL_FRect{
             .x = @floatFromInt(x),
             .y = @floatFromInt(y),

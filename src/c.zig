@@ -23,6 +23,7 @@ pub const SDL_RenderGeometry = c_import.SDL_RenderGeometry;
 pub const SDL_CreateTexture = c_import.SDL_CreateTexture;
 pub const SDL_SetRenderTarget = c_import.SDL_SetRenderTarget;
 pub const SDL_SetTextureBlendMode = c_import.SDL_SetTextureBlendMode;
+pub const SDL_SetTextureAlphaMod = c_import.SDL_SetTextureAlphaMod;
 pub const SDL_SetRenderVSync = c_import.SDL_SetRenderVSync;
 pub const SDL_RenderTexture = c_import.SDL_RenderTexture;
 pub const SDL_RENDERER_ACCELERATED: c_import.Uint32 = if (@hasDecl(c_import, "SDL_RENDERER_ACCELERATED"))
