@@ -13,7 +13,8 @@ pub const RestartButtonsComponent = struct {
     tex_h: c_int = 0,
 
     const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-    const RESTART_BUTTON_FONT_SIZE: c_int = 16;
+    const RESTART_BUTTON_FONT_SIZE: c_int = 20;
+    const RESTART_BUTTON_HEIGHT: c_int = 40;
     const RESTART_BUTTON_PADDING: c_int = 12;
     const RESTART_BUTTON_MARGIN: c_int = 8;
     const RESTART_BUTTON_RADIUS: c_int = 8;
@@ -100,7 +101,7 @@ pub const RestartButtonsComponent = struct {
         const text_width = self.tex_w;
         const text_height = self.tex_h;
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = text_height + RESTART_BUTTON_PADDING * 2;
+        const button_h = RESTART_BUTTON_HEIGHT;
         const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
         const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
 
@@ -125,7 +126,7 @@ pub const RestartButtonsComponent = struct {
         primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
 
         const text_x = button_x + RESTART_BUTTON_PADDING;
-        const text_y = button_y + RESTART_BUTTON_PADDING;
+        const text_y = button_y + @divFloor(button_h - text_height, 2);
 
         const dest_rect = c.SDL_FRect{
             .x = @floatFromInt(text_x),
@@ -139,9 +140,8 @@ pub const RestartButtonsComponent = struct {
     fn restartButtonRect(self: *RestartButtonsComponent, rect: geom.Rect) geom.Rect {
         self.ensureTexture(null) catch {};
         const text_width = self.tex_w;
-        const text_height = self.tex_h;
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = text_height + RESTART_BUTTON_PADDING * 2;
+        const button_h = RESTART_BUTTON_HEIGHT;
         const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
         const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
         return geom.Rect{
