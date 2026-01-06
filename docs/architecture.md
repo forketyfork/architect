@@ -13,6 +13,7 @@ Architect is organized around three layers: platform input/output, scene renderi
 
 ## Key Modules
 - `src/ui/components/`: individual overlay pieces (`help_overlay`, `toast`, `escape_hold`, `restart_buttons`).
+- `src/ui/components/marquee_label.zig`: reusable scrolling label renderer; wrap text here instead of ad-hoc marquee math.
 - `src/ui/gestures/`: reusable input gestures (`hold`).
 - `src/gfx/primitives.zig`: shared rounded/thick border drawing helpers.
 - `src/geom.zig`: shared `Rect` + hit-testing.
