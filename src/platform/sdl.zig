@@ -53,7 +53,14 @@ pub fn init(
     }
 
     // Force Metal renderer; fail if unavailable (no fallback to other drivers).
-    _ = c.SDL_SetHint("SDL_RENDER_DRIVER", "metal");
+    const metal_hint_ok = c.SDL_SetHint("SDL_RENDER_DRIVER", "metal");
+    if (!metal_hint_ok) {
+        std.debug.print(
+            "SDL_SetHint Error: failed to set SDL_RENDER_DRIVER to 'metal'; Metal renderer may be unavailable.\n",
+            .{},
+        );
+        return error.RendererCreationFailed;
+    }
     const renderer = c.SDL_CreateRenderer(window, "metal") orelse {
         std.debug.print("SDL_CreateRenderer Error: {s}\n", .{c.SDL_GetError()});
         return error.RendererCreationFailed;

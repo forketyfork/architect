@@ -5,6 +5,7 @@ const easing = @import("../../anim/easing.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
+const dpi = @import("../scale.zig");
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -99,7 +100,7 @@ pub const HelpOverlayComponent = struct {
     }
 
     fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
-        const font_size = scale(ui_scale, @max(16, @min(32, @divFloor(rect.h * 3, 4))));
+        const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
         const question_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_size)) orelse return;
         defer c.TTF_CloseFont(question_font);
 
@@ -129,10 +130,10 @@ pub const HelpOverlayComponent = struct {
 
     fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
         _ = self;
-        const title_font_size: c_int = scale(ui_scale, 20);
-        const key_font_size: c_int = scale(ui_scale, 16);
-        const padding: c_int = scale(ui_scale, 20);
-        const line_height: c_int = scale(ui_scale, 28);
+        const title_font_size: c_int = dpi.scale(20, ui_scale);
+        const key_font_size: c_int = dpi.scale(16, ui_scale);
+        const padding: c_int = dpi.scale(20, ui_scale);
+        const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
         const title_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(title_font_size)) orelse return;
@@ -236,7 +237,7 @@ pub const HelpOverlayComponent = struct {
 
     fn getRect(self: *HelpOverlayComponent, now: i64, window_width: c_int, window_height: c_int, ui_scale: f32) geom.Rect {
         _ = window_height;
-        const margin = scaled(HELP_BUTTON_MARGIN, ui_scale);
+        const margin = dpi.scale(HELP_BUTTON_MARGIN, ui_scale);
         const size = self.getCurrentSize(now, ui_scale);
         const x = window_width - margin - size;
         const y = margin;
@@ -249,15 +250,7 @@ pub const HelpOverlayComponent = struct {
         const eased = easing.easeInOutCubic(progress);
         const size_diff = self.target_size - self.start_size;
         const unscaled = self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
-        return scaled(unscaled, ui_scale);
-    }
-
-    fn scaled(value: c_int, ui_scale: f32) c_int {
-        return @max(1, @as(c_int, @intFromFloat(std.math.round(@as(f32, @floatFromInt(value)) * ui_scale))));
-    }
-
-    fn scale(ui_scale: f32, value: c_int) c_int {
-        return scaled(value, ui_scale);
+        return dpi.scale(unscaled, ui_scale);
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {

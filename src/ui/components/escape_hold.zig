@@ -5,6 +5,7 @@ const font_mod = @import("../../font.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const HoldGesture = @import("../gestures/hold.zig").HoldGesture;
+const dpi = @import("../scale.zig");
 
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
@@ -81,15 +82,16 @@ pub const EscapeHoldComponent = struct {
 
         const elapsed = host.now_ms - self.gesture.start_ms;
         const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
-        const margin = scale(host.ui_scale, ESC_INDICATOR_MARGIN);
-        const radius = scale(host.ui_scale, ESC_INDICATOR_RADIUS);
-        const ring_half_thickness = scale(host.ui_scale, 4);
-        const center_x = margin + radius + 10;
-        const center_y = margin + radius + 10;
+        const margin = dpi.scale(ESC_INDICATOR_MARGIN, host.ui_scale);
+        const radius = dpi.scale(ESC_INDICATOR_RADIUS, host.ui_scale);
+        const ring_half_thickness = dpi.scale(4, host.ui_scale);
+        const center_offset = dpi.scale(10, host.ui_scale);
+        const center_x = margin + radius + center_offset;
+        const center_y = margin + radius + center_offset;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(scale(host.ui_scale, 20)));
+        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(dpi.scale(20, host.ui_scale)));
         const backdrop_segments: usize = 64;
 
         var r: f32 = backdrop_radius;
@@ -210,10 +212,6 @@ pub const EscapeHoldComponent = struct {
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
         self.destroy(renderer);
-    }
-
-    fn scale(ui_scale: f32, value: c_int) c_int {
-        return @max(1, @as(c_int, @intFromFloat(std.math.round(@as(f32, @floatFromInt(value)) * ui_scale))));
     }
 
     const vtable = UiComponent.VTable{

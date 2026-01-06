@@ -7,6 +7,7 @@ const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
 const session_state = @import("../session/state.zig");
 const primitives = @import("../gfx/primitives.zig");
+const dpi = @import("../ui/scale.zig");
 
 const log = std.log.scoped(.render);
 
@@ -24,10 +25,6 @@ const MARQUEE_SPEED: f32 = 30.0;
 const FADE_WIDTH: c_int = 20;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
-
-fn scaleUi(ui_scale: f32, value: c_int) c_int {
-    return @max(1, @as(c_int, @intFromFloat(std.math.round(@as(f32, @floatFromInt(value)) * ui_scale))));
-}
 
 pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
     return geom.containsPoint(rect, x, y);
@@ -435,9 +432,9 @@ fn renderCwdBar(
     const cwd_path = session.cwd_path orelse return;
     const cwd_basename = session.cwd_basename orelse return;
 
-    const bar_height = scaleUi(ui_scale, CWD_BAR_HEIGHT);
-    const padding = scaleUi(ui_scale, CWD_PADDING);
-    const fade_width = scaleUi(ui_scale, FADE_WIDTH);
+    const bar_height = dpi.scale(CWD_BAR_HEIGHT, ui_scale);
+    const padding = dpi.scale(CWD_PADDING, ui_scale);
+    const fade_width = dpi.scale(FADE_WIDTH, ui_scale);
 
     const bar_rect = Rect{
         .x = rect.x,
@@ -456,7 +453,7 @@ fn renderCwdBar(
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-    const font_px = scaleUi(ui_scale, CWD_FONT_SIZE);
+    const font_px = dpi.scale(CWD_FONT_SIZE, ui_scale);
     if (session.cwd_font == null or session.cwd_font_size != font_px) {
         if (session.cwd_font) |font| {
             c.TTF_CloseFont(font);
