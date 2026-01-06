@@ -747,3 +747,14 @@ test "get256Color - grayscale" {
     try std.testing.expectEqual(gray.r, gray.g);
     try std.testing.expectEqual(gray.g, gray.b);
 }
+
+test "colorsEqual" {
+    const red = c.SDL_Color{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    const also_red = c.SDL_Color{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    const blue = c.SDL_Color{ .r = 0, .g = 0, .b = 255, .a = 255 };
+    const transparent_red = c.SDL_Color{ .r = 255, .g = 0, .b = 0, .a = 128 };
+
+    try std.testing.expect(colorsEqual(red, also_red));
+    try std.testing.expect(!colorsEqual(red, blue));
+    try std.testing.expect(!colorsEqual(red, transparent_red));
+}
