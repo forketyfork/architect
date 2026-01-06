@@ -5,6 +5,7 @@ const font_mod = @import("../../font.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const HoldGesture = @import("../gestures/hold.zig").HoldGesture;
+const dpi = @import("../scale.zig");
 
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
@@ -81,13 +82,16 @@ pub const EscapeHoldComponent = struct {
 
         const elapsed = host.now_ms - self.gesture.start_ms;
         const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
-        const center_x = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
-        const center_y = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
-        const radius = ESC_INDICATOR_RADIUS;
+        const margin = dpi.scale(ESC_INDICATOR_MARGIN, host.ui_scale);
+        const radius = dpi.scale(ESC_INDICATOR_RADIUS, host.ui_scale);
+        const ring_half_thickness = dpi.scale(4, host.ui_scale);
+        const center_offset = dpi.scale(10, host.ui_scale);
+        const center_x = margin + radius + center_offset;
+        const center_y = margin + radius + center_offset;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-        const backdrop_radius = @as(f32, @floatFromInt(radius)) + 20.0;
+        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(dpi.scale(20, host.ui_scale)));
         const backdrop_segments: usize = 64;
 
         var r: f32 = backdrop_radius;
@@ -177,8 +181,8 @@ pub const EscapeHoldComponent = struct {
                 const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
                 const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
 
-                const base_inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
-                const base_outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
+                const base_inner_radius = @as(f32, @floatFromInt(radius - ring_half_thickness));
+                const base_outer_radius = @as(f32, @floatFromInt(radius + ring_half_thickness));
 
                 const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
                 const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;

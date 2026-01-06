@@ -5,6 +5,7 @@ const easing = @import("../../anim/easing.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
+const dpi = @import("../scale.zig");
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -43,7 +44,7 @@ pub const HelpOverlayComponent = struct {
 
         const mouse_x: c_int = @intFromFloat(event.button.x);
         const mouse_y: c_int = @intFromFloat(event.button.y);
-        const rect = self.getRect(host.now_ms, host.window_w, host.window_h);
+        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const inside = geom.containsPoint(rect, mouse_x, mouse_y);
 
         if (inside) {
@@ -76,7 +77,7 @@ pub const HelpOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        const rect = self.getRect(host.now_ms, host.window_w, host.window_h);
+        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -93,13 +94,13 @@ pub const HelpOverlayComponent = struct {
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         switch (self.state) {
-            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect),
-            .Open => self.renderHelpOverlay(renderer, rect),
+            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale),
+            .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale),
         }
     }
 
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect) void {
-        const font_size = @max(16, @min(32, @divFloor(rect.h * 3, 4)));
+    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
+        const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
         const question_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_size)) orelse return;
         defer c.TTF_CloseFont(question_font);
 
@@ -127,12 +128,12 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect) void {
+    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
         _ = self;
-        const title_font_size: c_int = 20;
-        const key_font_size: c_int = 16;
-        const padding: c_int = 20;
-        const line_height: c_int = 28;
+        const title_font_size: c_int = dpi.scale(20, ui_scale);
+        const key_font_size: c_int = dpi.scale(16, ui_scale);
+        const padding: c_int = dpi.scale(20, ui_scale);
+        const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
         const title_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(title_font_size)) orelse return;
@@ -234,20 +235,22 @@ pub const HelpOverlayComponent = struct {
         return elapsed >= HELP_BUTTON_ANIMATION_DURATION_MS;
     }
 
-    fn getRect(self: *HelpOverlayComponent, now: i64, window_width: c_int, window_height: c_int) geom.Rect {
+    fn getRect(self: *HelpOverlayComponent, now: i64, window_width: c_int, window_height: c_int, ui_scale: f32) geom.Rect {
         _ = window_height;
-        const size = self.getCurrentSize(now);
-        const x = window_width - HELP_BUTTON_MARGIN - size;
-        const y = HELP_BUTTON_MARGIN;
+        const margin = dpi.scale(HELP_BUTTON_MARGIN, ui_scale);
+        const size = self.getCurrentSize(now, ui_scale);
+        const x = window_width - margin - size;
+        const y = margin;
         return geom.Rect{ .x = x, .y = y, .w = size, .h = size };
     }
 
-    fn getCurrentSize(self: *HelpOverlayComponent, now: i64) c_int {
+    fn getCurrentSize(self: *HelpOverlayComponent, now: i64, ui_scale: f32) c_int {
         const elapsed = now - self.start_time;
         const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, HELP_BUTTON_ANIMATION_DURATION_MS));
         const eased = easing.easeInOutCubic(progress);
         const size_diff = self.target_size - self.start_size;
-        return self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
+        const unscaled = self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
+        return dpi.scale(unscaled, ui_scale);
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
