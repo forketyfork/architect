@@ -197,6 +197,7 @@ fn renderSessionContent(
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
     const default_fg = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const active_selection = screen.selection;
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
@@ -239,6 +240,26 @@ fn renderSessionContent(
                     .h = @floatFromInt(cell_height_actual),
                 };
                 _ = c.SDL_RenderFillRect(renderer, &cell_rect);
+            }
+
+            if (active_selection) |sel| {
+                const point_tag = if (session.is_scrolled)
+                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
+                else
+                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
+                if (pages.pin(point_tag)) |pin| {
+                    if (sel.contains(screen, pin)) {
+                        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                        _ = c.SDL_SetRenderDrawColor(renderer, 70, 120, 190, 160);
+                        const sel_rect = c.SDL_FRect{
+                            .x = @floatFromInt(x),
+                            .y = @floatFromInt(y),
+                            .w = @floatFromInt(cell_width_actual * glyph_width_cells),
+                            .h = @floatFromInt(cell_height_actual),
+                        };
+                        _ = c.SDL_RenderFillRect(renderer, &sel_rect);
+                    }
+                }
             }
 
             if (cp != 0 and cp != ' ' and !style.flags.invisible) {

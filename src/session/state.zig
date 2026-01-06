@@ -50,6 +50,9 @@ pub const SessionState = struct {
     last_scroll_time: i64 = 0,
     /// Whether custom inertia should be applied after the most recent scroll event.
     scroll_inertia_allowed: bool = true,
+    /// Selection anchor for in-progress drags.
+    selection_anchor: ?ghostty_vt.Pin = null,
+    selection_dragging: bool = false,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -193,6 +196,7 @@ pub const SessionState = struct {
     pub fn restart(self: *SessionState) InitError!void {
         if (self.spawned and !self.dead) return;
 
+        self.clearSelection();
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();
@@ -214,6 +218,16 @@ pub const SessionState = struct {
         self.scroll_remainder = 0.0;
         self.last_scroll_time = 0;
         try self.ensureSpawned();
+    }
+
+    pub fn clearSelection(self: *SessionState) void {
+        self.selection_anchor = null;
+        self.selection_dragging = false;
+        if (!self.spawned) return;
+        if (self.terminal) |*terminal| {
+            terminal.screens.active.clearSelection();
+            self.dirty = true;
+        }
     }
 
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {

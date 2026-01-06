@@ -317,6 +317,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
+- Text selection in full view with clipboard copy/paste (drag, ⌘⇧C / ⌘⇧V)
 
 ## Known Limitations
 

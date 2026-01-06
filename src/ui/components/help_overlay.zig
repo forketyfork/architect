@@ -170,6 +170,9 @@ pub const HelpOverlayComponent = struct {
             .{ .key = "⌘⇧[ / ⌘⇧]", .desc = "Switch terminals" },
             .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
             .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
+            .{ .key = "Drag (full view)", .desc = "Select text" },
+            .{ .key = "⌘⇧C", .desc = "Copy selection to clipboard" },
+            .{ .key = "⌘⇧V", .desc = "Paste clipboard into terminal" },
             .{ .key = "Mouse wheel", .desc = "Scroll history" },
         };
 
