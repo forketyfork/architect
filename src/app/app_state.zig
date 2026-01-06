@@ -20,13 +20,6 @@ pub const ViewMode = enum {
     PanningRight,
 };
 
-pub const HelpButtonState = enum {
-    Closed,
-    Expanding,
-    Open,
-    Collapsing,
-};
-
 pub const Rect = geom.Rect;
 
 pub const AnimationState = struct {
@@ -62,60 +55,6 @@ pub const AnimationState = struct {
         return elapsed >= ANIMATION_DURATION_MS;
     }
 };
-
-pub const HELP_BUTTON_SIZE_SMALL: c_int = 40;
-pub const HELP_BUTTON_SIZE_LARGE: c_int = 400;
-pub const HELP_BUTTON_MARGIN: c_int = 20;
-pub const HELP_BUTTON_ANIMATION_DURATION_MS: i64 = 200;
-
-pub const HelpButtonAnimation = struct {
-    state: HelpButtonState = .Closed,
-    start_time: i64 = 0,
-    start_size: c_int = HELP_BUTTON_SIZE_SMALL,
-    target_size: c_int = HELP_BUTTON_SIZE_SMALL,
-
-    pub fn startExpanding(self: *HelpButtonAnimation, current_time: i64) void {
-        self.state = .Expanding;
-        self.start_time = current_time;
-        self.start_size = HELP_BUTTON_SIZE_SMALL;
-        self.target_size = HELP_BUTTON_SIZE_LARGE;
-    }
-
-    pub fn startCollapsing(self: *HelpButtonAnimation, current_time: i64) void {
-        self.state = .Collapsing;
-        self.start_time = current_time;
-        self.start_size = HELP_BUTTON_SIZE_LARGE;
-        self.target_size = HELP_BUTTON_SIZE_SMALL;
-    }
-
-    pub fn getCurrentSize(self: *const HelpButtonAnimation, current_time: i64) c_int {
-        const elapsed = current_time - self.start_time;
-        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, HELP_BUTTON_ANIMATION_DURATION_MS));
-        const eased = AnimationState.easeInOutCubic(progress);
-        const size_diff = self.target_size - self.start_size;
-        return self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
-    }
-
-    pub fn isAnimating(self: *const HelpButtonAnimation) bool {
-        return self.state == .Expanding or self.state == .Collapsing;
-    }
-
-    pub fn isComplete(self: *const HelpButtonAnimation, current_time: i64) bool {
-        const elapsed = current_time - self.start_time;
-        return elapsed >= HELP_BUTTON_ANIMATION_DURATION_MS;
-    }
-
-    pub fn getRect(self: *const HelpButtonAnimation, current_time: i64, window_width: c_int, window_height: c_int) Rect {
-        _ = window_height;
-        const size = self.getCurrentSize(current_time);
-        const x = window_width - HELP_BUTTON_MARGIN - size;
-        const y = HELP_BUTTON_MARGIN;
-        return Rect{ .x = x, .y = y, .w = size, .h = size };
-    }
-};
-
-pub const ESC_INDICATOR_MARGIN: c_int = 40;
-pub const ESC_INDICATOR_RADIUS: c_int = 30;
 
 test "AnimationState.easeInOutCubic" {
     try std.testing.expectEqual(@as(f32, 0.0), AnimationState.easeInOutCubic(0.0));

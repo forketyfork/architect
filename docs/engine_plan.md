@@ -427,7 +427,7 @@ Acceptance checks:
 
 ## 8) Cleanup passes
 
-### 8.1 Remove UI types from `app_state.zig`
+### 8.1 Remove UI types from `app_state.zig` ✅
 
 Delete or relocate:
 
@@ -440,7 +440,7 @@ Keep in `app_state.zig`:
 
 * view/animation state for the scene (`AnimationState`, `ViewMode`, etc)
 
-### 8.2 Remove UI render functions from `renderer.zig`
+### 8.2 Remove UI render functions from `renderer.zig` ✅
 
 Delete:
 
