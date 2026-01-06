@@ -22,7 +22,8 @@ const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const SCROLL_LINES_PER_TICK: isize = 3;
+const SCROLL_LINES_PER_TICK: isize = 2;
+const MAX_SCROLL_VELOCITY: f32 = 30.0;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
@@ -191,11 +192,17 @@ pub fn main() !void {
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
-    var previous_frame_ns: i128 = std.time.nanoTimestamp();
+    var previous_frame_ns: i128 = undefined;
+    var first_frame: bool = true;
     while (running) {
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
-        const delta_time_s: f32 = @as(f32, @floatFromInt(frame_start_ns - previous_frame_ns)) / 1_000_000_000.0;
+        var delta_time_s: f32 = 0.0;
+        if (first_frame) {
+            first_frame = false;
+        } else {
+            delta_time_s = @as(f32, @floatFromInt(frame_start_ns - previous_frame_ns)) / 1_000_000_000.0;
+        }
         previous_frame_ns = frame_start_ns;
 
         var event: c.SDL_Event = undefined;
@@ -468,6 +475,12 @@ pub fn main() !void {
                         const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         if (scroll_delta != 0) {
                             scrollSession(&sessions[session_idx], scroll_delta, now);
+                            // If the wheel event originates from a touch/trackpad
+                            // contact (SDL_TOUCH_MOUSEID), keep inertia suppressed
+                            // until the contact is released.
+                            if (scaled_event.wheel.which == c.SDL_TOUCH_MOUSEID) {
+                                sessions[session_idx].scroll_inertia_allowed = false;
+                            }
                         }
                     }
                 },
@@ -479,7 +492,7 @@ pub fn main() !void {
             session.checkAlive();
             try session.processOutput();
             session.updateCwd(now);
-            updateScrollInertia(session, delta_time_s, now);
+            updateScrollInertia(session, delta_time_s);
         }
 
         var notifications = notify_queue.drainAll();
@@ -690,6 +703,7 @@ fn scrollSession(session: *SessionState, delta: isize, now: i64) void {
 
     session.last_scroll_time = now;
     session.scroll_remainder = 0.0;
+    session.scroll_inertia_allowed = true;
 
     if (session.terminal) |*terminal| {
         var pages = &terminal.screens.active.pages;
@@ -698,26 +712,20 @@ fn scrollSession(session: *SessionState, delta: isize, now: i64) void {
         session.dirty = true;
     }
 
-    const sensitivity: f32 = 0.15;
+    const sensitivity: f32 = 0.08;
     session.scroll_velocity += @as(f32, @floatFromInt(delta)) * sensitivity;
+    session.scroll_velocity = std.math.clamp(session.scroll_velocity, -MAX_SCROLL_VELOCITY, MAX_SCROLL_VELOCITY);
 }
 
-fn updateScrollInertia(session: *SessionState, delta_time_s: f32, now: i64) void {
+fn updateScrollInertia(session: *SessionState, delta_time_s: f32) void {
     if (!session.spawned) return;
+    if (!session.scroll_inertia_allowed) return;
     if (session.scroll_velocity == 0.0) return;
     if (session.last_scroll_time == 0) return;
 
-    const inertia_delay_ms: i64 = 100;
-    const time_since_scroll = now - session.last_scroll_time;
-
-    if (time_since_scroll < inertia_delay_ms) {
-        return;
-    }
-
-    // Match the previous feel (~0.92 per 1/60s frame) but make it framerate independent.
-    const decay_constant: f32 = 5.62; // solves exp(-c * (1/60)) ~= 0.92
+    const decay_constant: f32 = 7.5;
     const decay_factor = std.math.exp(-decay_constant * delta_time_s);
-    const velocity_threshold: f32 = 0.1;
+    const velocity_threshold: f32 = 0.12;
 
     if (@abs(session.scroll_velocity) < velocity_threshold) {
         session.scroll_velocity = 0.0;
@@ -725,8 +733,10 @@ fn updateScrollInertia(session: *SessionState, delta_time_s: f32, now: i64) void
         return;
     }
 
+    const reference_fps: f32 = 60.0;
+
     if (session.terminal) |*terminal| {
-        const scroll_amount = session.scroll_velocity * delta_time_s * 60.0 + session.scroll_remainder;
+        const scroll_amount = session.scroll_velocity * delta_time_s * reference_fps + session.scroll_remainder;
         const scroll_lines: isize = @intFromFloat(scroll_amount);
 
         if (scroll_lines != 0) {

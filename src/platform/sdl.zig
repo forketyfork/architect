@@ -32,6 +32,9 @@ pub fn init(
     position: ?WindowPosition,
     vsync_requested: bool,
 ) InitError!Platform {
+    // Let macOS provide native scroll momentum instead of synthesizing it.
+    _ = c.SDL_SetHint("SDL_MAC_SCROLL_MOMENTUM", "1");
+
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.SDLInitFailed;
