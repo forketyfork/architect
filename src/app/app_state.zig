@@ -63,10 +63,6 @@ pub const AnimationState = struct {
     }
 };
 
-pub const ESC_HOLD_TOTAL_MS: i64 = 700;
-pub const ESC_ARC_COUNT: usize = 5;
-pub const ESC_ARC_SEGMENT_MS: i64 = ESC_HOLD_TOTAL_MS / ESC_ARC_COUNT;
-
 pub const HELP_BUTTON_SIZE_SMALL: c_int = 40;
 pub const HELP_BUTTON_SIZE_LARGE: c_int = 400;
 pub const HELP_BUTTON_MARGIN: c_int = 20;
@@ -120,41 +116,6 @@ pub const HelpButtonAnimation = struct {
 
 pub const ESC_INDICATOR_MARGIN: c_int = 40;
 pub const ESC_INDICATOR_RADIUS: c_int = 30;
-
-pub const EscapeIndicator = struct {
-    active: bool = false,
-    start_time: i64 = 0,
-    consumed: bool = false,
-
-    pub fn start(self: *EscapeIndicator, current_time: i64) void {
-        self.active = true;
-        self.start_time = current_time;
-        self.consumed = false;
-    }
-
-    pub fn stop(self: *EscapeIndicator) void {
-        self.active = false;
-        self.consumed = false;
-    }
-
-    pub fn consume(self: *EscapeIndicator) void {
-        self.consumed = true;
-    }
-
-    pub fn getCompletedArcs(self: *const EscapeIndicator, current_time: i64) usize {
-        if (!self.active) return 0;
-        const elapsed = current_time - self.start_time;
-        if (elapsed < 0) return 0;
-        return @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
-    }
-
-    pub fn isComplete(self: *const EscapeIndicator, current_time: i64) bool {
-        if (!self.active) return false;
-        const elapsed = current_time - self.start_time;
-        if (elapsed < 0) return false;
-        return elapsed >= ESC_HOLD_TOTAL_MS;
-    }
-};
 
 test "AnimationState.easeInOutCubic" {
     try std.testing.expectEqual(@as(f32, 0.0), AnimationState.easeInOutCubic(0.0));

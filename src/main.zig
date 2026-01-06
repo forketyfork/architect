@@ -33,7 +33,6 @@ const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
-const EscapeIndicator = app_state.EscapeIndicator;
 const NotificationQueue = notify.NotificationQueue;
 const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
@@ -112,6 +111,7 @@ pub fn main() !void {
 
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
+    ui.assets.ui_font = &ui_font;
 
     var window_width: c_int = config.window_width;
     var window_height: c_int = config.window_height;
@@ -174,12 +174,12 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
-    var escape_indicator = EscapeIndicator{};
-
     const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
     try ui.register(help_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
+    const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
+    try ui.register(escape_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -373,9 +373,6 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
-                        escape_indicator.start(now);
-                        std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead) {
@@ -385,21 +382,13 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = event.key.key;
-                    if (key == c.SDLK_ESCAPE) {
-                        const was_complete = escape_indicator.isComplete(now);
-                        const was_consumed = escape_indicator.consumed;
-                        escape_indicator.stop();
-
-                        if (!was_complete and !was_consumed and input.canHandleEscapePress(anim_state.mode)) {
-                            const focused = &sessions[anim_state.focused_session];
-                            if (focused.spawned and !focused.dead and focused.shell != null) {
-                                const esc_byte: [1]u8 = .{27};
-                                _ = focused.shell.?.write(&esc_byte) catch {};
-                            }
-                            std.debug.print("Escape released quickly, sent to terminal\n", .{});
-                        } else {
-                            std.debug.print("Escape released after hold or consumed by UI\n", .{});
+                    if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
+                        const focused = &sessions[anim_state.focused_session];
+                        if (focused.spawned and !focused.dead and focused.shell != null) {
+                            const esc_byte: [1]u8 = .{27};
+                            _ = focused.shell.?.write(&esc_byte) catch {};
                         }
+                        std.debug.print("Escape released, sent to terminal\n", .{});
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -476,12 +465,6 @@ pub fn main() !void {
             session.updateCwd(now);
         }
 
-        if (escape_indicator.isComplete(now) and anim_state.mode == .Full) {
-            startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
-            escape_indicator.consume();
-            std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
-        }
-
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
         for (notifications.items) |note| {
@@ -521,7 +504,6 @@ pub fn main() !void {
                     startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
-                escape_indicator.consume();
             },
         };
 
@@ -529,21 +511,16 @@ pub fn main() !void {
             anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
         {
             if (anim_state.isComplete(now)) {
-                const prev_mode = anim_state.mode;
                 anim_state.mode = switch (anim_state.mode) {
                     .Expanding, .PanningLeft, .PanningRight => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
-                if (prev_mode == .Collapsing and anim_state.mode == .Grid) {
-                    escape_indicator.stop();
-                }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
         }
 
         try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
-        renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(
             now,

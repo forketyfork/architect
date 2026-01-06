@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const app_state = @import("../app/app_state.zig");
+const font_mod = @import("../font.zig");
 
 pub const SessionUiInfo = struct {
     dead: bool,
@@ -29,7 +30,9 @@ pub const UiAction = union(enum) {
     RequestCollapseFocused: void,
 };
 
-pub const UiAssets = struct {};
+pub const UiAssets = struct {
+    ui_font: ?*font_mod.Font = null,
+};
 
 pub const UiActionQueue = struct {
     allocator: std.mem.Allocator,

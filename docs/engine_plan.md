@@ -316,7 +316,7 @@ Acceptance checks:
 
 ---
 
-## 6) Port ESC long-hold indicator into a reusable “hold gesture” component
+## 6) Port ESC long-hold indicator into a reusable “hold gesture” component ✅
 
 Add:
 
