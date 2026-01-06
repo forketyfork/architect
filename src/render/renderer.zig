@@ -18,10 +18,6 @@ const HelpButtonAnimation = app_state.HelpButtonAnimation;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
-const RESTART_BUTTON_FONT_SIZE: c_int = 16;
-const RESTART_BUTTON_PADDING: c_int = 12;
-const RESTART_BUTTON_MARGIN: c_int = 8;
-const RESTART_BUTTON_RADIUS: c_int = 8;
 const CWD_BAR_HEIGHT: c_int = 24;
 const CWD_FONT_SIZE: c_int = 12;
 const CWD_PADDING: c_int = 8;
@@ -35,19 +31,11 @@ pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
 }
 
 pub fn getRestartButtonRect(rect: Rect) Rect {
-    const char_width: c_int = RESTART_BUTTON_FONT_SIZE * 3 / 4;
-    const text_width: c_int = char_width * 7;
-    const text_height: c_int = RESTART_BUTTON_FONT_SIZE;
-    const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-    const button_h = text_height + RESTART_BUTTON_PADDING * 2;
-    const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-    const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
-    return Rect{
-        .x = button_x,
-        .y = button_y,
-        .w = button_w,
-        .h = button_h,
-    };
+    const button_w = 100;
+    const button_h = 40;
+    const button_x = rect.x + rect.w - button_w - 8;
+    const button_y = rect.y + rect.h - button_h - 8;
+    return Rect{ .x = button_x, .y = button_y, .w = button_w, .h = button_h };
 }
 
 pub fn render(
@@ -347,66 +335,6 @@ fn renderSessionOverlays(
             .h = @floatFromInt(rect.h),
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
-    }
-
-    if (is_grid_view and session.spawned and session.dead) {
-        if (session.restart_button_texture == null) {
-            const icon_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(RESTART_BUTTON_FONT_SIZE)) orelse return;
-            defer c.TTF_CloseFont(icon_font);
-
-            const restart_text = "Restart";
-            const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-            const surface = c.TTF_RenderText_Blended(icon_font, restart_text, restart_text.len, fg_color) orelse return;
-            defer c.SDL_DestroySurface(surface);
-
-            const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-
-            var text_width_f: f32 = 0;
-            var text_height_f: f32 = 0;
-            _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-            session.restart_button_texture = texture;
-            session.restart_button_w = @intFromFloat(text_width_f);
-            session.restart_button_h = @intFromFloat(text_height_f);
-        }
-
-        const text_width = session.restart_button_w;
-        const text_height = session.restart_button_h;
-        const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = text_height + RESTART_BUTTON_PADDING * 2;
-        const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-        const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
-
-        const button_rect = Rect{
-            .x = button_x,
-            .y = button_y,
-            .w = button_w,
-            .h = button_h,
-        };
-
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
-        const bg_rect = c.SDL_FRect{
-            .x = @floatFromInt(button_x),
-            .y = @floatFromInt(button_y),
-            .w = @floatFromInt(button_w),
-            .h = @floatFromInt(button_h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-        primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
-
-        const text_x = button_x + RESTART_BUTTON_PADDING;
-        const text_y = button_y + RESTART_BUTTON_PADDING;
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = @floatFromInt(text_width),
-            .h = @floatFromInt(text_height),
-        };
-        _ = c.SDL_RenderTexture(renderer, session.restart_button_texture.?, null, &dest_rect);
     }
 }
 

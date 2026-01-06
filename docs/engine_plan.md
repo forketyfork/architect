@@ -368,7 +368,7 @@ Acceptance checks:
 
 ---
 
-## 7) Port “Restart” as a UI component (drawing + hit testing)
+## 7) Port “Restart” as a UI component (drawing + hit testing) ✅
 
 Add:
 

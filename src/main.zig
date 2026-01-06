@@ -180,6 +180,8 @@ pub fn main() !void {
     try ui.register(toast_component.asComponent());
     const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
     try ui.register(escape_component.asComponent());
+    const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
+    try ui.register(restart_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -407,30 +409,19 @@ pub fn main() !void {
                             .h = cell_height_pixels,
                         };
 
-                        var clicked_restart = false;
-                        if (sessions[clicked_session].dead) {
-                            const restart_rect = renderer_mod.getRestartButtonRect(cell_rect);
-                            clicked_restart = renderer_mod.isPointInRect(mouse_x, mouse_y, restart_rect);
-                        }
+                        try sessions[clicked_session].ensureSpawned();
 
-                        if (clicked_restart) {
-                            try sessions[clicked_session].restart();
-                            std.debug.print("Restarted session: {d}\n", .{clicked_session});
-                        } else {
-                            try sessions[clicked_session].ensureSpawned();
+                        sessions[clicked_session].status = .running;
+                        sessions[clicked_session].attention = false;
 
-                            sessions[clicked_session].status = .running;
-                            sessions[clicked_session].attention = false;
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
 
-                            const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-
-                            anim_state.mode = .Expanding;
-                            anim_state.focused_session = clicked_session;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = cell_rect;
-                            anim_state.target_rect = target_rect;
-                            std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                        }
+                        anim_state.mode = .Expanding;
+                        anim_state.focused_session = clicked_session;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = cell_rect;
+                        anim_state.target_rect = target_rect;
+                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
