@@ -103,22 +103,28 @@ pub fn main() !void {
     const vsync_enabled = sdl.vsync_enabled;
 
     var font_size: c_int = config.font_size;
-    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, font_size);
+    var window_width_points: c_int = sdl.window_w;
+    var window_height_points: c_int = sdl.window_h;
+    var render_width: c_int = sdl.render_w;
+    var render_height: c_int = sdl.render_h;
+    var scale_x = sdl.scale_x;
+    var scale_y = sdl.scale_y;
+    var ui_scale: f32 = @max(scale_x, scale_y);
+
+    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(font_size, ui_scale));
     defer font.deinit();
 
-    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, UI_FONT_SIZE);
+    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
 
-    var window_width: c_int = config.window_width;
-    var window_height: c_int = config.window_height;
     var window_x: c_int = config.window_x;
     var window_y: c_int = config.window_y;
 
-    const initial_term_size = calculateTerminalSize(&font, window_width, window_height);
+    const initial_term_size = calculateTerminalSize(&font, render_width, render_height);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -127,11 +133,11 @@ pub fn main() !void {
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
 
-    var cell_width_pixels = @divFloor(window_width, GRID_COLS);
-    var cell_height_pixels = @divFloor(window_height, GRID_ROWS);
+    var cell_width_pixels = @divFloor(render_width, GRID_COLS);
+    var cell_height_pixels = @divFloor(render_height, GRID_ROWS);
 
-    const usable_width = @max(0, window_width - renderer_mod.TERMINAL_PADDING * 2);
-    const usable_height = @max(0, window_height - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
@@ -191,11 +197,13 @@ pub fn main() !void {
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
+            var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
             var session_ui_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
             const ui_host = makeUiHost(
                 now,
-                window_width,
-                window_height,
+                render_width,
+                render_height,
+                ui_scale,
                 cell_width_pixels,
                 cell_height_pixels,
                 &anim_state,
@@ -203,32 +211,44 @@ pub fn main() !void {
                 &session_ui_info,
             );
 
-            const ui_consumed = ui.handleEvent(&ui_host, &event);
+            const ui_consumed = ui.handleEvent(&ui_host, &scaled_event);
             if (ui_consumed) continue;
 
-            switch (event.type) {
+            switch (scaled_event.type) {
                 c.SDL_EVENT_QUIT => running = false,
                 c.SDL_EVENT_WINDOW_MOVED => {
-                    window_x = event.window.data1;
-                    window_y = event.window.data2;
+                    window_x = scaled_event.window.data1;
+                    window_y = scaled_event.window.data2;
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
-                    window_width = @intCast(event.window.data1);
-                    window_height = @intCast(event.window.data2);
-                    cell_width_pixels = @divFloor(window_width, GRID_COLS);
-                    cell_height_pixels = @divFloor(window_height, GRID_ROWS);
+                    updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
+                    const prev_scale = ui_scale;
+                    ui_scale = @max(scale_x, scale_y);
+                    if (ui_scale != prev_scale) {
+                        font.deinit();
+                        ui_font.deinit();
+                        font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(font_size, ui_scale));
+                        ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
+                        ui.assets.ui_font = &ui_font;
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        full_cols = new_term_size.cols;
+                        full_rows = new_term_size.rows;
+                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                    } else {
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        full_cols = new_term_size.cols;
+                        full_rows = new_term_size.rows;
+                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                    }
+                    cell_width_pixels = @divFloor(render_width, GRID_COLS);
+                    cell_height_pixels = @divFloor(render_height, GRID_ROWS);
 
-                    const new_term_size = calculateTerminalSize(&font, window_width, window_height);
-                    full_cols = new_term_size.cols;
-                    full_rows = new_term_size.rows;
-                    applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
-
-                    std.debug.print("Window resized to: {d}x{d}, terminal size: {d}x{d}\n", .{ window_width, window_height, full_cols, full_rows });
+                    std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
                     const updated_config = config_mod.Config{
                         .font_size = font_size,
-                        .window_width = window_width,
-                        .window_height = window_height,
+                        .window_width = window_width_points,
+                        .window_height = window_height_points,
                         .window_x = window_x,
                         .window_y = window_y,
                     };
@@ -245,37 +265,37 @@ pub fn main() !void {
                                 focused.is_scrolled = false;
                             }
                         }
-                        const text = std.mem.sliceTo(event.text.text, 0);
+                        const text = std.mem.sliceTo(scaled_event.text.text, 0);
                         if (focused.shell) |*shell| {
                             _ = try shell.write(text);
                         }
                     }
                 },
                 c.SDL_EVENT_KEY_DOWN => {
-                    const key = event.key.key;
-                    const mod = event.key.mod;
-                    const is_repeat = event.key.repeat;
+                    const key = scaled_event.key.key;
+                    const mod = scaled_event.key.mod;
+                    const is_repeat = scaled_event.key.repeat;
 
                     if (input.fontSizeShortcut(key, mod)) |direction| {
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
                         if (target_size != font_size) {
-                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, target_size);
+                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(target_size, ui_scale));
                             font.deinit();
                             font = new_font;
                             font_size = target_size;
 
-                            const term_size = calculateTerminalSize(&font, window_width, window_height);
+                            const term_size = calculateTerminalSize(&font, render_width, render_height);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
-                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, window_width, window_height);
+                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             const updated_config = config_mod.Config{
                                 .font_size = font_size,
-                                .window_width = window_width,
-                                .window_height = window_height,
+                                .window_width = window_width_points,
+                                .window_height = window_height_points,
                                 .window_x = window_x,
                                 .window_y = window_y,
                             };
@@ -367,7 +387,7 @@ pub fn main() !void {
                             .w = cell_width_pixels,
                             .h = cell_height_pixels,
                         };
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
                         anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
@@ -383,7 +403,7 @@ pub fn main() !void {
                     }
                 },
                 c.SDL_EVENT_KEY_UP => {
-                    const key = event.key.key;
+                    const key = scaled_event.key.key;
                     if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
@@ -394,8 +414,8 @@ pub fn main() !void {
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    const mouse_x: c_int = @intFromFloat(event.button.x);
-                    const mouse_y: c_int = @intFromFloat(event.button.y);
+                    const mouse_x: c_int = @intFromFloat(scaled_event.button.x);
+                    const mouse_y: c_int = @intFromFloat(scaled_event.button.y);
 
                     if (anim_state.mode == .Grid) {
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
@@ -414,7 +434,7 @@ pub fn main() !void {
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
 
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
                         anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
@@ -425,8 +445,8 @@ pub fn main() !void {
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
-                    const mouse_x: c_int = @intFromFloat(event.wheel.mouse_x);
-                    const mouse_y: c_int = @intFromFloat(event.wheel.mouse_y);
+                    const mouse_x: c_int = @intFromFloat(scaled_event.wheel.mouse_x);
+                    const mouse_y: c_int = @intFromFloat(scaled_event.wheel.mouse_y);
 
                     const hovered_session = calculateHoveredSession(
                         mouse_x,
@@ -434,12 +454,12 @@ pub fn main() !void {
                         &anim_state,
                         cell_width_pixels,
                         cell_height_pixels,
-                        window_width,
-                        window_height,
+                        render_width,
+                        render_height,
                     );
 
                     if (hovered_session) |session_idx| {
-                        const raw_delta = event.wheel.y;
+                        const raw_delta = scaled_event.wheel.y;
                         const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         if (scroll_delta != 0) {
                             scrollSession(&sessions[session_idx], scroll_delta);
@@ -473,8 +493,9 @@ pub fn main() !void {
         var ui_update_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_update_host = makeUiHost(
             now,
-            window_width,
-            window_height,
+            render_width,
+            render_height,
+            ui_scale,
             cell_width_pixels,
             cell_height_pixels,
             &anim_state,
@@ -492,7 +513,7 @@ pub fn main() !void {
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
-                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
+                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height);
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
             },
@@ -511,12 +532,13 @@ pub fn main() !void {
             }
         }
 
-        try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
+        try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(
             now,
-            window_width,
-            window_height,
+            render_width,
+            render_height,
+            ui_scale,
             cell_width_pixels,
             cell_height_pixels,
             &anim_state,
@@ -542,8 +564,8 @@ fn startCollapseToGrid(
     now: i64,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
-    window_width: c_int,
-    window_height: c_int,
+    render_width: c_int,
+    render_height: c_int,
 ) void {
     const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
     const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
@@ -556,14 +578,46 @@ fn startCollapseToGrid(
 
     anim_state.mode = .Collapsing;
     anim_state.start_time = now;
-    anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+    anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
     anim_state.target_rect = target_rect;
+}
+
+fn updateRenderSizes(
+    window: *c.SDL_Window,
+    window_w: *c_int,
+    window_h: *c_int,
+    render_w: *c_int,
+    render_h: *c_int,
+    scale_x: *f32,
+    scale_y: *f32,
+) void {
+    _ = c.SDL_GetWindowSize(window, window_w, window_h);
+    _ = c.SDL_GetWindowSizeInPixels(window, render_w, render_h);
+    scale_x.* = if (window_w.* != 0) @as(f32, @floatFromInt(render_w.*)) / @as(f32, @floatFromInt(window_w.*)) else 1.0;
+    scale_y.* = if (window_h.* != 0) @as(f32, @floatFromInt(render_h.*)) / @as(f32, @floatFromInt(window_h.*)) else 1.0;
+}
+
+fn scaleEventToRender(event: *const c.SDL_Event, scale_x: f32, scale_y: f32) c.SDL_Event {
+    var e = event.*;
+    switch (e.type) {
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+            e.button.x *= scale_x;
+            e.button.y *= scale_y;
+        },
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            e.wheel.mouse_x *= scale_x;
+            e.wheel.mouse_y *= scale_y;
+        },
+        else => {},
+    }
+    return e;
 }
 
 fn makeUiHost(
     now: i64,
-    window_width: c_int,
-    window_height: c_int,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
     anim_state: *const AnimationState,
@@ -579,8 +633,9 @@ fn makeUiHost(
 
     return .{
         .now_ms = now,
-        .window_w = window_width,
-        .window_h = window_height,
+        .window_w = render_width,
+        .window_h = render_height,
+        .ui_scale = ui_scale,
         .grid_cols = GRID_COLS,
         .grid_rows = GRID_ROWS,
         .cell_w = cell_width_pixels,
@@ -597,13 +652,13 @@ fn calculateHoveredSession(
     anim_state: *const AnimationState,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
-    window_width: c_int,
-    window_height: c_int,
+    render_width: c_int,
+    render_height: c_int,
 ) ?usize {
     return switch (anim_state.mode) {
         .Grid => {
-            if (mouse_x < 0 or mouse_x >= window_width or
-                mouse_y < 0 or mouse_y >= window_height) return null;
+            if (mouse_x < 0 or mouse_x >= render_width or
+                mouse_y < 0 or mouse_y >= render_height) return null;
 
             const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
             const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
@@ -645,16 +700,21 @@ fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window
     };
 }
 
+fn scaledFontSize(points: c_int, scale: f32) c_int {
+    const scaled = std.math.round(@as(f32, @floatFromInt(points)) * scale);
+    return @max(1, @as(c_int, @intFromFloat(scaled)));
+}
+
 fn applyTerminalResize(
     sessions: []SessionState,
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
-    window_width: c_int,
-    window_height: c_int,
+    render_width: c_int,
+    render_height: c_int,
 ) void {
-    const usable_width = @max(0, window_width - renderer_mod.TERMINAL_PADDING * 2);
-    const usable_height = @max(0, window_height - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
 
     const new_size = pty_mod.winsize{
         .ws_row = rows,

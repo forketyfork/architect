@@ -31,6 +31,7 @@ pub const SessionState = struct {
     cwd_basename_h: c_int = 0,
     cwd_parent_w: c_int = 0,
     cwd_parent_h: c_int = 0,
+    cwd_font_size: c_int = 0,
     cwd_dirty: bool = true,
     spawned: bool = false,
     dead: bool = false,

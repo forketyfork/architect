@@ -81,13 +81,15 @@ pub const EscapeHoldComponent = struct {
 
         const elapsed = host.now_ms - self.gesture.start_ms;
         const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
-        const center_x = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
-        const center_y = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
-        const radius = ESC_INDICATOR_RADIUS;
+        const margin = scale(host.ui_scale, ESC_INDICATOR_MARGIN);
+        const radius = scale(host.ui_scale, ESC_INDICATOR_RADIUS);
+        const ring_half_thickness = scale(host.ui_scale, 4);
+        const center_x = margin + radius + 10;
+        const center_y = margin + radius + 10;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-        const backdrop_radius = @as(f32, @floatFromInt(radius)) + 20.0;
+        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(scale(host.ui_scale, 20)));
         const backdrop_segments: usize = 64;
 
         var r: f32 = backdrop_radius;
@@ -177,8 +179,8 @@ pub const EscapeHoldComponent = struct {
                 const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
                 const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
 
-                const base_inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
-                const base_outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
+                const base_inner_radius = @as(f32, @floatFromInt(radius - ring_half_thickness));
+                const base_outer_radius = @as(f32, @floatFromInt(radius + ring_half_thickness));
 
                 const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
                 const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;
@@ -208,6 +210,10 @@ pub const EscapeHoldComponent = struct {
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
         self.destroy(renderer);
+    }
+
+    fn scale(ui_scale: f32, value: c_int) c_int {
+        return @max(1, @as(c_int, @intFromFloat(std.math.round(@as(f32, @floatFromInt(value)) * ui_scale))));
     }
 
     const vtable = UiComponent.VTable{

@@ -25,6 +25,10 @@ const FADE_WIDTH: c_int = 20;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
+fn scaleUi(ui_scale: f32, value: c_int) c_int {
+    return @max(1, @as(c_int, @intFromFloat(std.math.round(@as(f32, @floatFromInt(value)) * ui_scale))));
+}
+
 pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
     return geom.containsPoint(rect, x, y);
 }
@@ -42,6 +46,7 @@ pub fn render(
     term_rows: u16,
     window_width: c_int,
     window_height: c_int,
+    ui_scale: f32,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -61,12 +66,12 @@ pub fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time);
+                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -77,14 +82,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
             else
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -108,12 +113,12 @@ pub fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time);
+                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale);
         },
     }
 }
@@ -130,10 +135,11 @@ fn renderSession(
     term_rows: u16,
     current_time_ms: i64,
     is_grid_view: bool,
+    ui_scale: f32,
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
     if (is_grid_view) {
-        renderCwdBar(renderer, session, rect, current_time_ms);
+        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale);
     }
     renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
 }
@@ -363,6 +369,7 @@ fn renderGridSessionCached(
     term_cols: u16,
     term_rows: u16,
     current_time_ms: i64,
+    ui_scale: f32,
 ) RenderError!void {
     const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
 
@@ -387,13 +394,13 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            renderCwdBar(renderer, session, rect, current_time_ms);
+            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale);
             renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
             return;
         }
     }
 
-    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true);
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
@@ -423,15 +430,20 @@ fn renderCwdBar(
     session: *SessionState,
     rect: Rect,
     current_time: i64,
+    ui_scale: f32,
 ) void {
     const cwd_path = session.cwd_path orelse return;
     const cwd_basename = session.cwd_basename orelse return;
 
+    const bar_height = scaleUi(ui_scale, CWD_BAR_HEIGHT);
+    const padding = scaleUi(ui_scale, CWD_PADDING);
+    const fade_width = scaleUi(ui_scale, FADE_WIDTH);
+
     const bar_rect = Rect{
         .x = rect.x,
-        .y = rect.y + rect.h - CWD_BAR_HEIGHT,
+        .y = rect.y + rect.h - bar_height,
         .w = rect.w,
-        .h = CWD_BAR_HEIGHT,
+        .h = bar_height,
     };
 
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -444,8 +456,13 @@ fn renderCwdBar(
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-    if (session.cwd_font == null) {
-        session.cwd_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(CWD_FONT_SIZE));
+    const font_px = scaleUi(ui_scale, CWD_FONT_SIZE);
+    if (session.cwd_font == null or session.cwd_font_size != font_px) {
+        if (session.cwd_font) |font| {
+            c.TTF_CloseFont(font);
+        }
+        session.cwd_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_px));
+        session.cwd_font_size = font_px;
     }
     const cwd_font = session.cwd_font orelse return;
 
@@ -496,7 +513,7 @@ fn renderCwdBar(
     const basename_width_f: f32 = @floatFromInt(basename_width);
     const basename_height_f: f32 = @floatFromInt(text_height);
 
-    const basename_x = bar_rect.x + bar_rect.w - basename_width - CWD_PADDING;
+    const basename_x = bar_rect.x + bar_rect.w - basename_width - padding;
     const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
 
     _ = c.SDL_RenderTexture(renderer, basename_texture, null, &c.SDL_FRect{
@@ -557,7 +574,7 @@ fn renderCwdBar(
     const parent_width_f: f32 = @floatFromInt(parent_width);
     const parent_height_f: f32 = @floatFromInt(parent_height);
 
-    const available_width = basename_x - bar_rect.x - CWD_PADDING;
+    const available_width = basename_x - bar_rect.x - padding;
     if (available_width <= 0) return;
 
     if (parent_width <= available_width) {
@@ -570,7 +587,7 @@ fn renderCwdBar(
         });
     } else {
         const clip_rect = c.SDL_Rect{
-            .x = bar_rect.x + CWD_PADDING,
+            .x = bar_rect.x + padding,
             .y = bar_rect.y,
             .w = available_width,
             .h = bar_rect.h,
@@ -608,31 +625,31 @@ fn renderCwdBar(
         const fade_right = scroll_offset > 0;
 
         if (fade_left) {
-            renderFadeGradient(renderer, bar_rect, true);
+            renderFadeGradient(renderer, bar_rect, true, fade_width, padding);
         }
         if (fade_right) {
-            const visible_end_x = bar_rect.x + CWD_PADDING + available_width;
+            const visible_end_x = bar_rect.x + padding + available_width;
             const fade_rect = Rect{
                 .x = bar_rect.x,
                 .y = bar_rect.y,
                 .w = visible_end_x - bar_rect.x,
                 .h = bar_rect.h,
             };
-            renderFadeGradient(renderer, fade_rect, false);
+            renderFadeGradient(renderer, fade_rect, false, fade_width, padding);
         }
     }
 
     session.cwd_dirty = false;
 }
 
-fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool) void {
+fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, fade_width: c_int, padding: c_int) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-    const fade_x = if (is_left) bar_rect.x + CWD_PADDING else bar_rect.x + bar_rect.w - FADE_WIDTH;
+    const fade_x = if (is_left) bar_rect.x + padding else bar_rect.x + bar_rect.w - fade_width;
 
     var i: c_int = 0;
-    while (i < FADE_WIDTH) : (i += 1) {
-        const alpha_progress = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(FADE_WIDTH));
+    while (i < fade_width) : (i += 1) {
+        const alpha_progress = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(fade_width));
         const alpha = if (is_left)
             @as(u8, @intFromFloat(230.0 * (1.0 - alpha_progress)))
         else
