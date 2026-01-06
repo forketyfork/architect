@@ -2,13 +2,16 @@ const std = @import("std");
 const c = @import("../c.zig");
 const ghostty_vt = @import("ghostty-vt");
 const app_state = @import("../app/app_state.zig");
+const geom = @import("../geom.zig");
+const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
 const session_state = @import("../session/state.zig");
+const primitives = @import("../gfx/primitives.zig");
 
 const log = std.log.scoped(.render);
 
 const SessionState = session_state.SessionState;
-const Rect = app_state.Rect;
+const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
 const ToastNotification = app_state.ToastNotification;
 const HelpButtonAnimation = app_state.HelpButtonAnimation;
@@ -33,8 +36,7 @@ const FADE_WIDTH: c_int = 20;
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
 pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
-    return x >= rect.x and x < rect.x + rect.w and
-        y >= rect.y and y < rect.y + rect.h;
+    return geom.containsPoint(rect, x, y);
 }
 
 pub fn getRestartButtonRect(rect: Rect) Rect {
@@ -95,7 +97,7 @@ pub fn render(
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
             const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
-            const eased = AnimationState.easeInOutCubic(progress);
+            const eased = easing.easeInOutCubic(progress);
 
             const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_width)) * eased));
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
@@ -114,7 +116,7 @@ pub fn render(
             const animating_rect = anim_state.getCurrentRect(current_time);
             const elapsed = current_time - anim_state.start_time;
             const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
-            const eased = AnimationState.easeInOutCubic(progress);
+            const eased = easing.easeInOutCubic(progress);
             const anim_scale = if (anim_state.mode == .Expanding)
                 grid_scale + (1.0 - grid_scale) * eased
             else
@@ -334,7 +336,7 @@ fn renderSessionOverlays(
             .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 230 },
             else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 230 },
         };
-        drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
+        primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
 
         const tint_color = switch (session.status) {
             .awaiting_approval => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
@@ -398,7 +400,7 @@ fn renderSessionOverlays(
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-        drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
+        primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
 
         const text_x = button_x + RESTART_BUTTON_PADDING;
         const text_y = button_y + RESTART_BUTTON_PADDING;
@@ -499,54 +501,7 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
         c.SDL_Color{ .r = 80, .g = 80, .b = 90, .a = 170 };
 
     _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
-    drawRoundedBorder(renderer, rect, radius);
-}
-
-fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {
-    const fx = @as(f32, @floatFromInt(rect.x));
-    const fy = @as(f32, @floatFromInt(rect.y));
-    const fw = @as(f32, @floatFromInt(rect.w));
-    const fh = @as(f32, @floatFromInt(rect.h));
-    const frad = @as(f32, @floatFromInt(radius));
-
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy, fx + fw - frad - 1.0, fy);
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy + fh - 1.0, fx + fw - frad - 1.0, fy + fh - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx, fy + frad, fx, fy + fh - frad - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx + fw - 1.0, fy + frad, fx + fw - 1.0, fy + fh - frad - 1.0);
-
-    var angle: f32 = 0.0;
-    const step: f32 = std.math.pi / 64.0;
-    while (angle <= std.math.pi / 2.0) : (angle += step) {
-        const rx = frad * std.math.cos(angle);
-        const ry = frad * std.math.sin(angle);
-
-        const centers = [_]struct { x: f32, y: f32, sx: f32, sy: f32 }{
-            .{ .x = fx + frad, .y = fy + frad, .sx = -1.0, .sy = -1.0 },
-            .{ .x = fx + fw - frad - 1.0, .y = fy + frad, .sx = 1.0, .sy = -1.0 },
-            .{ .x = fx + frad, .y = fy + fh - frad - 1.0, .sx = -1.0, .sy = 1.0 },
-            .{ .x = fx + fw - frad - 1.0, .y = fy + fh - frad - 1.0, .sx = 1.0, .sy = 1.0 },
-        };
-
-        for (centers) |cinfo| {
-            _ = c.SDL_RenderPoint(renderer, cinfo.x + cinfo.sx * rx, cinfo.y + cinfo.sy * ry);
-        }
-    }
-}
-
-fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, color: c.SDL_Color) void {
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    const radius: c_int = 12;
-    var i: c_int = 0;
-    while (i < thickness) : (i += 1) {
-        const r = Rect{
-            .x = rect.x + i,
-            .y = rect.y + i,
-            .w = rect.w - i * 2,
-            .h = rect.h - i * 2,
-        };
-        drawRoundedBorder(renderer, r, radius);
-    }
+    primitives.drawRoundedBorder(renderer, rect, radius);
 }
 
 pub fn renderToastNotification(
@@ -632,7 +587,7 @@ pub fn renderHelpButton(
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
     _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-    drawRoundedBorder(renderer, rect, radius);
+    primitives.drawRoundedBorder(renderer, rect, radius);
 
     if (help_button.state == .Closed or help_button.state == .Collapsing or help_button.state == .Expanding) {
         const font_size = @max(16, @min(32, @divFloor(rect.h * 3, 4)));

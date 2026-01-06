@@ -161,6 +161,12 @@ Format code:
 zig fmt src/
 ```
 
+### UI/Rendering helpers
+
+- Geometry + hit testing helpers live in `src/geom.zig`.
+- Shared easing functions live in `src/anim/easing.zig`.
+- Rounded/thick border drawing helpers live in `src/gfx/primitives.zig`; use these instead of redefining SDL primitives in new UI components.
+
 ## Claude Code Integration
 
 - **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` (Unix domain socket, mode 0600, where `<pid>` is the process ID).

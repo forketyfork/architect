@@ -27,6 +27,7 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 - Architect is a Zig app using the ghostty-vt path dependency located under `ghostty/`; do not break this linkage.
 - User config lives in `~/.config/architect/config.json`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
+- Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.

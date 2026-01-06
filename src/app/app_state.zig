@@ -1,5 +1,6 @@
 const std = @import("std");
-const c = @import("../c.zig");
+const geom = @import("../geom.zig");
+const easing = @import("../anim/easing.zig");
 
 pub const ANIMATION_DURATION_MS: i64 = 300;
 
@@ -26,12 +27,7 @@ pub const HelpButtonState = enum {
     Collapsing,
 };
 
-pub const Rect = struct {
-    x: c_int,
-    y: c_int,
-    w: c_int,
-    h: c_int,
-};
+pub const Rect = geom.Rect;
 
 pub const AnimationState = struct {
     mode: ViewMode,
@@ -42,12 +38,7 @@ pub const AnimationState = struct {
     target_rect: Rect,
 
     pub fn easeInOutCubic(t: f32) f32 {
-        if (t < 0.5) {
-            return 4 * t * t * t;
-        } else {
-            const p = 2 * t - 2;
-            return 1 + p * p * p / 2;
-        }
+        return easing.easeInOutCubic(t);
     }
 
     pub fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {
