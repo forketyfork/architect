@@ -30,6 +30,7 @@ const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const UI_FONT_SIZE: c_int = 18;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
+const EMOJI_FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/Apple Color Emoji.ttc";
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -112,10 +113,10 @@ pub fn main() !void {
     var scale_y = sdl.scale_y;
     var ui_scale: f32 = @max(scale_x, scale_y);
 
-    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(font_size, ui_scale));
+    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(font_size, ui_scale));
     defer font.deinit();
 
-    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
+    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
@@ -237,8 +238,8 @@ pub fn main() !void {
                     if (ui_scale != prev_scale) {
                         font.deinit();
                         ui_font.deinit();
-                        font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(font_size, ui_scale));
-                        ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
+                        font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(font_size, ui_scale));
+                        ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
                         ui.assets.ui_font = &ui_font;
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
@@ -293,7 +294,7 @@ pub fn main() !void {
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
                         if (target_size != font_size) {
-                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, scaledFontSize(target_size, ui_scale));
+                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(target_size, ui_scale));
                             font.deinit();
                             font = new_font;
                             font_size = target_size;

@@ -209,6 +209,10 @@ fn renderSessionContent(
 
             const cell = list_cell.cell;
             const cp = cell.content.codepoint;
+            const glyph_width_cells: c_int = switch (cell.wide) {
+                .wide => 2,
+                else => 1,
+            };
 
             const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
@@ -238,7 +242,23 @@ fn renderSessionContent(
             }
 
             if (cp != 0 and cp != ' ' and !style.flags.invisible) {
-                try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
+                var cluster_buf: [16]u21 = undefined;
+                var cluster_len: usize = 0;
+                cluster_buf[cluster_len] = cp;
+                cluster_len += 1;
+
+                if (cell.hasGrapheme()) {
+                    if (list_cell.node.data.lookupGrapheme(list_cell.cell)) |extra| {
+                        for (extra) |gcp| {
+                            if (cluster_len >= cluster_buf.len) break;
+                            cluster_buf[cluster_len] = gcp;
+                            cluster_len += 1;
+                        }
+                    }
+                }
+
+                const draw_width = cell_width_actual * glyph_width_cells;
+                try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
             }
         }
     }
