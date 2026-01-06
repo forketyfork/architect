@@ -176,8 +176,8 @@ zig fmt src/
 - **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
 - **Protocol**: Send a single-line JSON object to the socket:
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
-  - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid.
-  - `{"session":0,"state":"done"}` shows a solid yellow border in the grid.
+  - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid (request).
+  - `{"session":0,"state":"done"}` shows a solid green border in the grid (completion).
 - **Example from inside a terminal session**:
   ```bash
   python - <<'PY'

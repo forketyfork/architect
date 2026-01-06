@@ -7,8 +7,8 @@ inside an Architect terminal session.
 
 Usage:
     architect_notify.py start              # Clear highlight, mark running
-    architect_notify.py awaiting_approval  # Show pulsing yellow border
-    architect_notify.py done               # Show solid yellow border
+    architect_notify.py awaiting_approval  # Show pulsing yellow border (request)
+    architect_notify.py done               # Show solid green border (completion)
 """
 
 import json
