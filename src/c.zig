@@ -64,6 +64,7 @@ pub const SDL_EVENT_MOUSE_BUTTON_DOWN = c_import.SDL_EVENT_MOUSE_BUTTON_DOWN;
 pub const SDL_EVENT_MOUSE_WHEEL = c_import.SDL_EVENT_MOUSE_WHEEL;
 pub const SDL_EVENT_WINDOW_RESIZED = c_import.SDL_EVENT_WINDOW_RESIZED;
 pub const SDL_EVENT_WINDOW_MOVED = c_import.SDL_EVENT_WINDOW_MOVED;
+pub const SDL_TOUCH_MOUSEID = c_import.SDL_TOUCH_MOUSEID;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;

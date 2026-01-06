@@ -48,6 +48,8 @@ pub const SessionState = struct {
     scroll_velocity: f32 = 0.0,
     scroll_remainder: f32 = 0.0,
     last_scroll_time: i64 = 0,
+    /// Whether custom inertia should be applied after the most recent scroll event.
+    scroll_inertia_allowed: bool = true,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
