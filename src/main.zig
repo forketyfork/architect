@@ -34,7 +34,6 @@ const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const ToastNotification = app_state.ToastNotification;
-const HelpButtonAnimation = app_state.HelpButtonAnimation;
 const EscapeIndicator = app_state.EscapeIndicator;
 const NotificationQueue = notify.NotificationQueue;
 const Notification = notify.Notification;
@@ -177,8 +176,10 @@ pub fn main() !void {
     };
 
     var toast_notification = ToastNotification{};
-    var help_button = HelpButtonAnimation{};
     var escape_indicator = EscapeIndicator{};
+
+    const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
+    try ui.register(help_component);
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -405,21 +406,7 @@ pub fn main() !void {
                     const mouse_x: c_int = @intFromFloat(event.button.x);
                     const mouse_y: c_int = @intFromFloat(event.button.y);
 
-                    const help_rect = help_button.getRect(now, window_width, window_height);
-                    const clicked_help = renderer_mod.isPointInRect(mouse_x, mouse_y, help_rect);
-
-                    if (clicked_help) {
-                        if (help_button.state == .Closed) {
-                            help_button.startExpanding(now);
-                            std.debug.print("Opening help overlay\n", .{});
-                        } else if (help_button.state == .Open) {
-                            help_button.startCollapsing(now);
-                            std.debug.print("Closing help overlay\n", .{});
-                        }
-                    } else if (help_button.state == .Open and !clicked_help) {
-                        help_button.startCollapsing(now);
-                        std.debug.print("Closing help overlay (clicked outside)\n", .{});
-                    } else if (anim_state.mode == .Grid) {
+                    if (anim_state.mode == .Grid) {
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
@@ -555,18 +542,8 @@ pub fn main() !void {
             }
         }
 
-        if (help_button.isAnimating() and help_button.isComplete(now)) {
-            help_button.state = switch (help_button.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => help_button.state,
-            };
-            std.debug.print("Help button animation complete, new state: {s}\n", .{@tagName(help_button.state)});
-        }
-
         try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
         renderer_mod.renderToastNotification(renderer, &toast_notification, now, window_width);
-        renderer_mod.renderHelpButton(renderer, &help_button, now, window_width, window_height);
         renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(
