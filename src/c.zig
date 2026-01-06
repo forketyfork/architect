@@ -114,9 +114,10 @@ pub const TTF_Init = c_import.TTF_Init;
 pub const TTF_Quit = c_import.TTF_Quit;
 pub const TTF_OpenFont = c_import.TTF_OpenFont;
 pub const TTF_CloseFont = c_import.TTF_CloseFont;
-pub const TTF_RenderText_Blended = c_import.TTF_RenderText_Blended;
 pub const TTF_RenderGlyph_Blended = c_import.TTF_RenderGlyph_Blended;
 pub const TTF_GetStringSize = c_import.TTF_GetStringSize;
+pub const TTF_RenderText_Blended = c_import.TTF_RenderText_Blended;
+pub const TTF_FontHasGlyph = c_import.TTF_FontHasGlyph;
 
 pub const SDL_Event = c_import.SDL_Event;
 pub const SDL_FRect = c_import.SDL_FRect;

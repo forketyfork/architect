@@ -320,8 +320,8 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 
 ## Known Limitations
 
-The following features are not yet implemented:
-- **No emoji support**: Unicode emojis may not render correctly
+The following features are not yet fully implemented:
+- **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **No font selection**: Hardcoded to SF Mono font (though size is adjustable)
 - **Limited configurability**: Grid size, colors, and keybindings are hardcoded
 - **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
