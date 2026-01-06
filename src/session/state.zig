@@ -53,6 +53,8 @@ pub const SessionState = struct {
     /// Selection anchor for in-progress drags.
     selection_anchor: ?ghostty_vt.Pin = null,
     selection_dragging: bool = false,
+    /// True while the primary button is held down and we're waiting to see if it turns into a drag.
+    selection_pending: bool = false,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -223,6 +225,7 @@ pub const SessionState = struct {
     pub fn clearSelection(self: *SessionState) void {
         self.selection_anchor = null;
         self.selection_dragging = false;
+        self.selection_pending = false;
         if (!self.spawned) return;
         if (self.terminal) |*terminal| {
             terminal.screens.active.clearSelection();

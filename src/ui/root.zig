@@ -48,6 +48,20 @@ pub const UiRoot = struct {
         return false;
     }
 
+    pub fn hitTest(self: *UiRoot, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        var i: usize = self.components.items.len;
+        while (i > 0) {
+            i -= 1;
+            const comp = self.components.items[i];
+            if (comp.vtable.hitTest) |hit_fn| {
+                if (hit_fn(comp.ptr, host, x, y)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     pub fn update(self: *UiRoot, host: *const types.UiHost) void {
         for (self.components.items) |comp| {
             if (comp.vtable.update) |update_fn| {

@@ -44,6 +44,7 @@ const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
 const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
+const CursorKind = enum { arrow, ibeam };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -104,6 +105,15 @@ pub fn main() !void {
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
+
+    const arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
+    defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    const ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
+    defer if (ibeam_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    var current_cursor: CursorKind = .arrow;
+    if (arrow_cursor) |cursor| {
+        _ = c.SDL_SetCursor(cursor);
+    }
 
     const renderer = sdl.renderer;
     const vsync_enabled = sdl.vsync_enabled;
@@ -273,19 +283,17 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    if (focused.spawned and !focused.dead) {
-                        if (focused.is_scrolled) {
-                            if (focused.terminal) |*terminal| {
-                                terminal.screens.active.pages.scroll(.{ .active = {} });
-                                focused.is_scrolled = false;
-                                focused.scroll_velocity = 0.0;
-                                focused.scroll_remainder = 0.0;
-                            }
-                        }
-                        const text = std.mem.sliceTo(scaled_event.text.text, 0);
-                        if (focused.shell) |*shell| {
-                            _ = try shell.write(text);
-                        }
+                    handleTextInput(focused, scaled_event.text.text) catch |err| {
+                        std.debug.print("Text input failed: {}\n", .{err});
+                    };
+                },
+                c.SDL_EVENT_TEXT_EDITING => {
+                    const focused = &sessions[anim_state.focused_session];
+                    // Some macOS input methods (emoji picker) may deliver committed text via TEXT_EDITING.
+                    if (scaled_event.edit.text != null and scaled_event.edit.length == 0) {
+                        handleTextInput(focused, scaled_event.edit.text) catch |err| {
+                            std.debug.print("Edit input failed: {}\n", .{err});
+                        };
                     }
                 },
                 c.SDL_EVENT_KEY_DOWN => {
@@ -294,11 +302,14 @@ pub fn main() !void {
                     const is_repeat = scaled_event.key.repeat;
                     const focused = &sessions[anim_state.focused_session];
 
-                    if (key == c.SDLK_C and (mod & c.SDL_KMOD_GUI) != 0 and (mod & c.SDL_KMOD_SHIFT) != 0) {
+                    const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                    const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+
+                    if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         copySelectionToClipboard(focused, allocator, toast_component, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
-                    } else if (key == c.SDLK_V and (mod & c.SDL_KMOD_GUI) != 0 and (mod & c.SDL_KMOD_SHIFT) != 0) {
+                    } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
                         pasteClipboardIntoSession(focused, allocator, toast_component, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
@@ -485,14 +496,44 @@ pub fn main() !void {
                     }
                 },
                 c.SDL_EVENT_MOUSE_MOTION => {
+                    const mouse_x: c_int = @intFromFloat(scaled_event.motion.x);
+                    const mouse_y: c_int = @intFromFloat(scaled_event.motion.y);
+                    const over_ui = ui.hitTest(&ui_host, mouse_x, mouse_y);
+                    var desired_cursor: CursorKind = .arrow;
+
                     if (anim_state.mode == .Full) {
                         const focused = &sessions[anim_state.focused_session];
+                        const pin = fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows);
+
                         if (focused.selection_dragging) {
-                            const mouse_x: c_int = @intFromFloat(scaled_event.motion.x);
-                            const mouse_y: c_int = @intFromFloat(scaled_event.motion.y);
-                            if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                updateSelectionDrag(focused, pin);
+                            if (pin) |p| {
+                                updateSelectionDrag(focused, p);
                             }
+                        } else if (focused.selection_pending) {
+                            if (focused.selection_anchor) |anchor| {
+                                if (pin) |p| {
+                                    if (!pinsEqual(anchor, p)) {
+                                        startSelectionDrag(focused, p);
+                                    }
+                                }
+                            } else {
+                                focused.selection_pending = false;
+                            }
+                        }
+
+                        if (!over_ui and pin != null) {
+                            desired_cursor = .ibeam;
+                        }
+                    }
+
+                    if (desired_cursor != current_cursor) {
+                        const target_cursor = switch (desired_cursor) {
+                            .arrow => arrow_cursor,
+                            .ibeam => ibeam_cursor,
+                        };
+                        if (target_cursor) |cursor| {
+                            _ = c.SDL_SetCursor(cursor);
+                            current_cursor = desired_cursor;
                         }
                     }
                 },
@@ -921,10 +962,22 @@ fn fullViewPinFromMouse(
 
 fn beginSelection(session: *SessionState, pin: ghostty_vt.Pin) void {
     const terminal = session.terminal orelse return;
-    session.clearSelection();
+    terminal.screens.active.clearSelection();
     session.selection_anchor = pin;
+    session.selection_pending = true;
+    session.selection_dragging = false;
+    session.dirty = true;
+}
+
+fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
+    const terminal = session.terminal orelse return;
+    const anchor = session.selection_anchor orelse return;
+
     session.selection_dragging = true;
-    terminal.screens.active.select(ghostty_vt.Selection.init(pin, pin, false)) catch {};
+    session.selection_pending = false;
+
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
     session.dirty = true;
 }
 
@@ -938,6 +991,33 @@ fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
 
 fn endSelection(session: *SessionState) void {
     session.selection_dragging = false;
+    session.selection_pending = false;
+    session.selection_anchor = null;
+}
+
+fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
+    return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
+    if (!session.spawned or session.dead) return;
+    if (text_ptr == null) return;
+
+    const text = std.mem.sliceTo(text_ptr, 0);
+    if (text.len == 0) return;
+
+    if (session.is_scrolled) {
+        if (session.terminal) |*terminal| {
+            terminal.screens.active.pages.scroll(.{ .active = {} });
+            session.is_scrolled = false;
+            session.scroll_velocity = 0.0;
+            session.scroll_remainder = 0.0;
+        }
+    }
+
+    if (session.shell) |*shell| {
+        _ = try shell.write(text);
+    }
 }
 
 fn copySelectionToClipboard(

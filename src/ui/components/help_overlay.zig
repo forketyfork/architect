@@ -64,6 +64,12 @@ pub const HelpOverlayComponent = struct {
         return false;
     }
 
+    fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+        return geom.containsPoint(rect, x, y);
+    }
+
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
         if (self.isAnimating() and self.isComplete(host.now_ms)) {
@@ -171,8 +177,8 @@ pub const HelpOverlayComponent = struct {
             .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
             .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
             .{ .key = "Drag (full view)", .desc = "Select text" },
-            .{ .key = "⌘⇧C", .desc = "Copy selection to clipboard" },
-            .{ .key = "⌘⇧V", .desc = "Paste clipboard into terminal" },
+            .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
+            .{ .key = "⌘V", .desc = "Paste clipboard into terminal" },
             .{ .key = "Mouse wheel", .desc = "Scroll history" },
         };
 
@@ -263,6 +269,7 @@ pub const HelpOverlayComponent = struct {
 
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
+        .hitTest = hitTest,
         .update = update,
         .render = render,
         .deinit = deinitComp,

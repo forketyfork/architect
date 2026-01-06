@@ -76,6 +76,28 @@ pub const RestartButtonsComponent = struct {
         return true;
     }
 
+    fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
+        if (host.view_mode != .Grid) return false;
+
+        const grid_col = @min(@as(usize, @intCast(@divFloor(x, host.cell_w))), host.grid_cols - 1);
+        const grid_row = @min(@as(usize, @intCast(@divFloor(y, host.cell_h))), host.grid_rows - 1);
+        const session_idx: usize = grid_row * @as(usize, host.grid_cols) + grid_col;
+        if (session_idx >= host.sessions.len) return false;
+
+        const session_info = host.sessions[session_idx];
+        if (!session_info.dead) return false;
+
+        const cell_rect = geom.Rect{
+            .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
+            .y = @as(c_int, @intCast(grid_row)) * host.cell_h,
+            .w = host.cell_w,
+            .h = host.cell_h,
+        };
+        const button_rect = self.restartButtonRect(cell_rect);
+        return geom.containsPoint(button_rect, x, y);
+    }
+
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
@@ -190,6 +212,7 @@ pub const RestartButtonsComponent = struct {
 
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
+        .hitTest = hitTest,
         .update = update,
         .render = render,
         .deinit = deinitComp,
