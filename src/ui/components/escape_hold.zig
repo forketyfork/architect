@@ -98,7 +98,7 @@ pub const EscapeHoldComponent = struct {
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(dpi.scale(20, host.ui_scale)));
+        const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(dpi.scale(40, host.ui_scale)));
         const backdrop_segments: usize = 64;
 
         var r: f32 = backdrop_radius;
