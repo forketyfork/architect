@@ -31,7 +31,10 @@ const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const UI_FONT_SIZE: c_int = 18;
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-const EMOJI_FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/Apple Color Emoji.ttc";
+const EMOJI_FONT_PATH: ?[*:0]const u8 = switch (builtin.os.tag) {
+    .macos => "/System/Library/Fonts/Apple Color Emoji.ttc",
+    else => null,
+};
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -956,7 +959,11 @@ fn copySelectionToClipboard(
     const text = try screen.selectionString(allocator, .{ .sel = sel, .trim = true });
     defer allocator.free(text);
 
-    if (!c.SDL_SetClipboardText(text.ptr)) {
+    const clipboard_text = try allocator.allocSentinel(u8, text.len, 0);
+    defer allocator.free(clipboard_text);
+    @memcpy(clipboard_text[0..text.len], text);
+
+    if (!c.SDL_SetClipboardText(clipboard_text.ptr)) {
         toast.show("Failed to copy selection", now);
         return;
     }
@@ -980,11 +987,11 @@ fn pasteClipboardIntoSession(
     };
 
     const clip_ptr = c.SDL_GetClipboardText();
+    defer c.SDL_free(clip_ptr);
     if (clip_ptr == null) {
         toast.show("Clipboard empty", now);
         return;
     }
-    defer c.SDL_free(clip_ptr);
     const clip = std.mem.sliceTo(clip_ptr, 0);
     if (clip.len == 0) {
         toast.show("Clipboard empty", now);
