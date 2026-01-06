@@ -2,28 +2,21 @@ const std = @import("std");
 const c = @import("../c.zig");
 const ghostty_vt = @import("ghostty-vt");
 const app_state = @import("../app/app_state.zig");
+const geom = @import("../geom.zig");
+const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
 const session_state = @import("../session/state.zig");
+const primitives = @import("../gfx/primitives.zig");
 
 const log = std.log.scoped(.render);
 
 const SessionState = session_state.SessionState;
-const Rect = app_state.Rect;
+const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
-const ToastNotification = app_state.ToastNotification;
-const HelpButtonAnimation = app_state.HelpButtonAnimation;
-const EscapeIndicator = app_state.EscapeIndicator;
 
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-const NOTIFICATION_FONT_SIZE: c_int = 36;
-const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
-const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
-const RESTART_BUTTON_FONT_SIZE: c_int = 16;
-const RESTART_BUTTON_PADDING: c_int = 12;
-const RESTART_BUTTON_MARGIN: c_int = 8;
-const RESTART_BUTTON_RADIUS: c_int = 8;
 const CWD_BAR_HEIGHT: c_int = 24;
 const CWD_FONT_SIZE: c_int = 12;
 const CWD_PADDING: c_int = 8;
@@ -33,24 +26,7 @@ const FADE_WIDTH: c_int = 20;
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
 pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
-    return x >= rect.x and x < rect.x + rect.w and
-        y >= rect.y and y < rect.y + rect.h;
-}
-
-pub fn getRestartButtonRect(rect: Rect) Rect {
-    const char_width: c_int = RESTART_BUTTON_FONT_SIZE * 3 / 4;
-    const text_width: c_int = char_width * 7;
-    const text_height: c_int = RESTART_BUTTON_FONT_SIZE;
-    const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-    const button_h = text_height + RESTART_BUTTON_PADDING * 2;
-    const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-    const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
-    return Rect{
-        .x = button_x,
-        .y = button_y,
-        .w = button_w,
-        .h = button_h,
-    };
+    return geom.containsPoint(rect, x, y);
 }
 
 pub fn render(
@@ -95,7 +71,7 @@ pub fn render(
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
             const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
-            const eased = AnimationState.easeInOutCubic(progress);
+            const eased = easing.easeInOutCubic(progress);
 
             const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_width)) * eased));
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
@@ -114,7 +90,7 @@ pub fn render(
             const animating_rect = anim_state.getCurrentRect(current_time);
             const elapsed = current_time - anim_state.start_time;
             const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
-            const eased = AnimationState.easeInOutCubic(progress);
+            const eased = easing.easeInOutCubic(progress);
             const anim_scale = if (anim_state.mode == .Expanding)
                 grid_scale + (1.0 - grid_scale) * eased
             else
@@ -334,7 +310,7 @@ fn renderSessionOverlays(
             .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 230 },
             else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 230 },
         };
-        drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
+        primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
 
         const tint_color = switch (session.status) {
             .awaiting_approval => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
@@ -350,66 +326,6 @@ fn renderSessionOverlays(
             .h = @floatFromInt(rect.h),
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
-    }
-
-    if (is_grid_view and session.spawned and session.dead) {
-        if (session.restart_button_texture == null) {
-            const icon_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(RESTART_BUTTON_FONT_SIZE)) orelse return;
-            defer c.TTF_CloseFont(icon_font);
-
-            const restart_text = "Restart";
-            const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-            const surface = c.TTF_RenderText_Blended(icon_font, restart_text, restart_text.len, fg_color) orelse return;
-            defer c.SDL_DestroySurface(surface);
-
-            const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-
-            var text_width_f: f32 = 0;
-            var text_height_f: f32 = 0;
-            _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-            session.restart_button_texture = texture;
-            session.restart_button_w = @intFromFloat(text_width_f);
-            session.restart_button_h = @intFromFloat(text_height_f);
-        }
-
-        const text_width = session.restart_button_w;
-        const text_height = session.restart_button_h;
-        const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = text_height + RESTART_BUTTON_PADDING * 2;
-        const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-        const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
-
-        const button_rect = Rect{
-            .x = button_x,
-            .y = button_y,
-            .w = button_w,
-            .h = button_h,
-        };
-
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
-        const bg_rect = c.SDL_FRect{
-            .x = @floatFromInt(button_x),
-            .y = @floatFromInt(button_y),
-            .w = @floatFromInt(button_w),
-            .h = @floatFromInt(button_h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-        drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
-
-        const text_x = button_x + RESTART_BUTTON_PADDING;
-        const text_y = button_y + RESTART_BUTTON_PADDING;
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = @floatFromInt(text_width),
-            .h = @floatFromInt(text_height),
-        };
-        _ = c.SDL_RenderTexture(renderer, session.restart_button_texture.?, null, &dest_rect);
     }
 }
 
@@ -499,253 +415,7 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
         c.SDL_Color{ .r = 80, .g = 80, .b = 90, .a = 170 };
 
     _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
-    drawRoundedBorder(renderer, rect, radius);
-}
-
-fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {
-    const fx = @as(f32, @floatFromInt(rect.x));
-    const fy = @as(f32, @floatFromInt(rect.y));
-    const fw = @as(f32, @floatFromInt(rect.w));
-    const fh = @as(f32, @floatFromInt(rect.h));
-    const frad = @as(f32, @floatFromInt(radius));
-
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy, fx + fw - frad - 1.0, fy);
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy + fh - 1.0, fx + fw - frad - 1.0, fy + fh - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx, fy + frad, fx, fy + fh - frad - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx + fw - 1.0, fy + frad, fx + fw - 1.0, fy + fh - frad - 1.0);
-
-    var angle: f32 = 0.0;
-    const step: f32 = std.math.pi / 64.0;
-    while (angle <= std.math.pi / 2.0) : (angle += step) {
-        const rx = frad * std.math.cos(angle);
-        const ry = frad * std.math.sin(angle);
-
-        const centers = [_]struct { x: f32, y: f32, sx: f32, sy: f32 }{
-            .{ .x = fx + frad, .y = fy + frad, .sx = -1.0, .sy = -1.0 },
-            .{ .x = fx + fw - frad - 1.0, .y = fy + frad, .sx = 1.0, .sy = -1.0 },
-            .{ .x = fx + frad, .y = fy + fh - frad - 1.0, .sx = -1.0, .sy = 1.0 },
-            .{ .x = fx + fw - frad - 1.0, .y = fy + fh - frad - 1.0, .sx = 1.0, .sy = 1.0 },
-        };
-
-        for (centers) |cinfo| {
-            _ = c.SDL_RenderPoint(renderer, cinfo.x + cinfo.sx * rx, cinfo.y + cinfo.sy * ry);
-        }
-    }
-}
-
-fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, color: c.SDL_Color) void {
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    const radius: c_int = 12;
-    var i: c_int = 0;
-    while (i < thickness) : (i += 1) {
-        const r = Rect{
-            .x = rect.x + i,
-            .y = rect.y + i,
-            .w = rect.w - i * 2,
-            .h = rect.h - i * 2,
-        };
-        drawRoundedBorder(renderer, r, radius);
-    }
-}
-
-pub fn renderToastNotification(
-    renderer: *c.SDL_Renderer,
-    notification: *const ToastNotification,
-    current_time: i64,
-    window_width: c_int,
-) void {
-    if (!notification.isVisible(current_time)) return;
-
-    const alpha = notification.getAlpha(current_time);
-    if (alpha == 0) return;
-
-    const notification_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(NOTIFICATION_FONT_SIZE)) orelse return;
-    defer c.TTF_CloseFont(notification_font);
-
-    const message_z = @as([*:0]const u8, @ptrCast(&notification.message));
-    const fg_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = alpha };
-    const surface = c.TTF_RenderText_Blended(notification_font, message_z, notification.message_len, fg_color) orelse return;
-    defer c.SDL_DestroySurface(surface);
-
-    const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-    defer c.SDL_DestroyTexture(texture);
-
-    _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
-
-    var text_width_f: f32 = 0;
-    var text_height_f: f32 = 0;
-    _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-    const text_width: c_int = @intFromFloat(text_width_f);
-    const text_height: c_int = @intFromFloat(text_height_f);
-
-    const padding: c_int = 30;
-    const bg_padding: c_int = 20;
-    const x = @divFloor(window_width - text_width, 2);
-    const y = padding;
-
-    const bg_rect = c.SDL_FRect{
-        .x = @as(f32, @floatFromInt(x - bg_padding)),
-        .y = @as(f32, @floatFromInt(y - bg_padding)),
-        .w = @as(f32, @floatFromInt(text_width + bg_padding * 2)),
-        .h = @as(f32, @floatFromInt(text_height + bg_padding * 2)),
-    };
-
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
-    _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, bg_alpha);
-    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-    const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
-    _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, border_alpha);
-    _ = c.SDL_RenderRect(renderer, &bg_rect);
-
-    const dest_rect = c.SDL_FRect{
-        .x = @floatFromInt(x),
-        .y = @floatFromInt(y),
-        .w = text_width_f,
-        .h = text_height_f,
-    };
-
-    _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
-}
-
-pub fn renderHelpButton(
-    renderer: *c.SDL_Renderer,
-    help_button: *const HelpButtonAnimation,
-    current_time: i64,
-    window_width: c_int,
-    window_height: c_int,
-) void {
-    const rect = help_button.getRect(current_time, window_width, window_height);
-    const radius: c_int = 8;
-
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
-    const bg_rect = c.SDL_FRect{
-        .x = @floatFromInt(rect.x),
-        .y = @floatFromInt(rect.y),
-        .w = @floatFromInt(rect.w),
-        .h = @floatFromInt(rect.h),
-    };
-    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-    _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
-    drawRoundedBorder(renderer, rect, radius);
-
-    if (help_button.state == .Closed or help_button.state == .Collapsing or help_button.state == .Expanding) {
-        const font_size = @max(16, @min(32, @divFloor(rect.h * 3, 4)));
-        const question_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_size)) orelse return;
-        defer c.TTF_CloseFont(question_font);
-
-        const question_mark: [2]u8 = .{ '?', 0 };
-        const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(question_font, &question_mark, 1, fg_color) orelse return;
-        defer c.SDL_DestroySurface(surface);
-
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        var text_width_f: f32 = 0;
-        var text_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-        const text_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(text_width_f)), 2);
-        const text_y = rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(text_height_f)), 2);
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = text_width_f,
-            .h = text_height_f,
-        };
-        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
-    } else if (help_button.state == .Open) {
-        const title_font_size: c_int = 20;
-        const key_font_size: c_int = 16;
-        const padding: c_int = 20;
-        const line_height: c_int = 28;
-        var y_offset: c_int = rect.y + padding;
-
-        const title_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(title_font_size)) orelse return;
-        defer c.TTF_CloseFont(title_font);
-
-        const key_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(key_font_size)) orelse return;
-        defer c.TTF_CloseFont(key_font);
-
-        const title_text = "Keyboard Shortcuts";
-        const title_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-        const title_surface = c.TTF_RenderText_Blended(title_font, title_text, title_text.len, title_color) orelse return;
-        defer c.SDL_DestroySurface(title_surface);
-
-        const title_texture = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return;
-        defer c.SDL_DestroyTexture(title_texture);
-
-        var title_width_f: f32 = 0;
-        var title_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(title_texture, &title_width_f, &title_height_f);
-
-        const title_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(title_width_f)), 2);
-        _ = c.SDL_RenderTexture(renderer, title_texture, null, &c.SDL_FRect{
-            .x = @floatFromInt(title_x),
-            .y = @floatFromInt(y_offset),
-            .w = title_width_f,
-            .h = title_height_f,
-        });
-
-        y_offset += @as(c_int, @intFromFloat(title_height_f)) + line_height;
-
-        const shortcuts = [_]struct { key: []const u8, desc: []const u8 }{
-            .{ .key = "Click terminal", .desc = "Expand to full screen" },
-            .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
-            .{ .key = "⌘⇧[ / ⌘⇧]", .desc = "Switch terminals" },
-            .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
-            .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
-            .{ .key = "Mouse wheel", .desc = "Scroll history" },
-        };
-
-        const key_color = c.SDL_Color{ .r = 120, .g = 170, .b = 255, .a = 255 };
-        const desc_color = c.SDL_Color{ .r = 180, .g = 180, .b = 180, .a = 255 };
-
-        for (shortcuts) |shortcut| {
-            const key_surface = c.TTF_RenderText_Blended(key_font, shortcut.key.ptr, shortcut.key.len, key_color) orelse continue;
-            defer c.SDL_DestroySurface(key_surface);
-
-            const key_texture = c.SDL_CreateTextureFromSurface(renderer, key_surface) orelse continue;
-            defer c.SDL_DestroyTexture(key_texture);
-
-            var key_width_f: f32 = 0;
-            var key_height_f: f32 = 0;
-            _ = c.SDL_GetTextureSize(key_texture, &key_width_f, &key_height_f);
-
-            _ = c.SDL_RenderTexture(renderer, key_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding),
-                .y = @floatFromInt(y_offset),
-                .w = key_width_f,
-                .h = key_height_f,
-            });
-
-            const desc_surface = c.TTF_RenderText_Blended(key_font, shortcut.desc.ptr, shortcut.desc.len, desc_color) orelse continue;
-            defer c.SDL_DestroySurface(desc_surface);
-
-            const desc_texture = c.SDL_CreateTextureFromSurface(renderer, desc_surface) orelse continue;
-            defer c.SDL_DestroyTexture(desc_texture);
-
-            var desc_width_f: f32 = 0;
-            var desc_height_f: f32 = 0;
-            _ = c.SDL_GetTextureSize(desc_texture, &desc_width_f, &desc_height_f);
-
-            _ = c.SDL_RenderTexture(renderer, desc_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - @as(c_int, @intFromFloat(desc_width_f))),
-                .y = @floatFromInt(y_offset),
-                .w = desc_width_f,
-                .h = desc_height_f,
-            });
-
-            y_offset += line_height;
-        }
-    }
+    primitives.drawRoundedBorder(renderer, rect, radius);
 }
 
 fn renderCwdBar(
@@ -971,142 +641,6 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool) 
         _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, alpha);
         const line_x = fade_x + i;
         _ = c.SDL_RenderLine(renderer, @floatFromInt(line_x), @floatFromInt(bar_rect.y), @floatFromInt(line_x), @floatFromInt(bar_rect.y + bar_rect.h));
-    }
-}
-
-pub fn renderEscapeIndicator(
-    renderer: *c.SDL_Renderer,
-    indicator: *const EscapeIndicator,
-    current_time: i64,
-    font: *font_mod.Font,
-) void {
-    if (!indicator.active) return;
-
-    const center_x = app_state.ESC_INDICATOR_MARGIN;
-    const center_y = app_state.ESC_INDICATOR_MARGIN;
-    const radius = app_state.ESC_INDICATOR_RADIUS;
-
-    const completed_arcs = indicator.getCompletedArcs(current_time);
-
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-
-    const backdrop_radius = @as(f32, @floatFromInt(radius)) + 20.0;
-    const backdrop_segments: usize = 64;
-
-    var r: f32 = backdrop_radius;
-    while (r > 0) : (r -= 0.5) {
-        const dist_factor = r / backdrop_radius;
-        const alpha: u8 = @intFromFloat(100.0 * (1.0 - dist_factor));
-
-        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, alpha);
-
-        var seg: usize = 0;
-        while (seg < backdrop_segments) : (seg += 1) {
-            const angle1 = @as(f32, @floatFromInt(seg)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
-            const angle2 = @as(f32, @floatFromInt(seg + 1)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
-
-            const x1 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle1);
-            const y1 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle1);
-            const x2 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle2);
-            const y2 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle2);
-
-            _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
-        }
-    }
-
-    const esc_text = "Esc";
-    const text_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-
-    const text_width = font.cell_width * @as(c_int, @intCast(esc_text.len));
-    const text_height = font.cell_height;
-
-    var x = center_x - @divFloor(text_width, 2);
-    const y = center_y - @divFloor(text_height, 2);
-
-    for (esc_text) |ch| {
-        font.renderGlyph(ch, x, y, font.cell_width, font.cell_height, text_color) catch continue;
-        x += font.cell_width;
-    }
-
-    const arc_segments: usize = 32;
-    const degrees_per_arc: f32 = 360.0 / @as(f32, @floatFromInt(app_state.ESC_ARC_COUNT));
-    const gap_degrees: f32 = 8.0;
-
-    const all_complete = completed_arcs >= app_state.ESC_ARC_COUNT;
-    var flash_brightness: f32 = 1.0;
-    var flash_scale: f32 = 1.0;
-
-    if (all_complete and indicator.active) {
-        const elapsed_since_complete = current_time - (indicator.start_time + app_state.ESC_HOLD_TOTAL_MS);
-        if (elapsed_since_complete >= 0) {
-            const flash_duration_ms: i64 = 200;
-            const flash_progress = @min(1.0, @as(f32, @floatFromInt(elapsed_since_complete)) / @as(f32, @floatFromInt(flash_duration_ms)));
-            const pulse = std.math.sin(flash_progress * std.math.pi);
-            flash_brightness = 1.0 + 1.0 * pulse;
-            flash_scale = 1.0 + 0.15 * pulse;
-        }
-    }
-
-    var arc: usize = 0;
-    while (arc < app_state.ESC_ARC_COUNT) : (arc += 1) {
-        const is_completed = arc < completed_arcs;
-        var color = if (is_completed)
-            c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 255 }
-        else
-            c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 255 };
-
-        if (is_completed and all_complete) {
-            color.r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.r)) * flash_brightness));
-            color.g = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.g)) * flash_brightness));
-            color.b = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.b)) * flash_brightness));
-        }
-
-        _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-
-        const start_angle = (@as(f32, @floatFromInt(arc)) * degrees_per_arc - 90.0 + gap_degrees / 2.0) * std.math.pi / 180.0;
-        const end_angle = (@as(f32, @floatFromInt(arc + 1)) * degrees_per_arc - 90.0 - gap_degrees / 2.0) * std.math.pi / 180.0;
-
-        const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(arc_segments));
-
-        const fcolor = c.SDL_FColor{
-            .r = @as(f32, @floatFromInt(color.r)) / 255.0,
-            .g = @as(f32, @floatFromInt(color.g)) / 255.0,
-            .b = @as(f32, @floatFromInt(color.b)) / 255.0,
-            .a = @as(f32, @floatFromInt(color.a)) / 255.0,
-        };
-
-        var i: usize = 0;
-        while (i < arc_segments) : (i += 1) {
-            const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
-            const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
-
-            const base_inner_radius = @as(f32, @floatFromInt(radius)) - 4.0;
-            const base_outer_radius = @as(f32, @floatFromInt(radius)) + 4.0;
-
-            const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
-            const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;
-
-            const x1_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle1);
-            const y1_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle1);
-            const x1_outer = @as(f32, @floatFromInt(center_x)) + outer_radius * std.math.cos(angle1);
-            const y1_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle1);
-
-            const x2_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle2);
-            const y2_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle2);
-            const x2_outer = @as(f32, @floatFromInt(center_x)) + outer_radius * std.math.cos(angle2);
-            const y2_outer = @as(f32, @floatFromInt(center_y)) + outer_radius * std.math.sin(angle2);
-
-            const vertices = [_]c.SDL_Vertex{
-                .{ .position = .{ .x = x1_inner, .y = y1_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x1_outer, .y = y1_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x2_outer, .y = y2_outer }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
-                .{ .position = .{ .x = x2_inner, .y = y2_inner }, .color = fcolor, .tex_coord = .{ .x = 0, .y = 0 } },
-            };
-
-            const indices = [_]c_int{ 0, 1, 2, 0, 2, 3 };
-
-            _ = c.SDL_RenderGeometry(renderer, null, &vertices, vertices.len, &indices, indices.len);
-        }
     }
 }
 

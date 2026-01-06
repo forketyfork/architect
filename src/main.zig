@@ -13,6 +13,7 @@ const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
 const config_mod = @import("config.zig");
+const ui_mod = @import("ui/mod.zig");
 const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
@@ -32,9 +33,6 @@ const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
-const ToastNotification = app_state.ToastNotification;
-const HelpButtonAnimation = app_state.HelpButtonAnimation;
-const EscapeIndicator = app_state.EscapeIndicator;
 const NotificationQueue = notify.NotificationQueue;
 const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
@@ -111,6 +109,10 @@ pub fn main() !void {
     var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, UI_FONT_SIZE);
     defer ui_font.deinit();
 
+    var ui = ui_mod.UiRoot.init(allocator);
+    defer ui.deinit(renderer);
+    ui.assets.ui_font = &ui_font;
+
     var window_width: c_int = config.window_width;
     var window_height: c_int = config.window_height;
     var window_x: c_int = config.window_x;
@@ -172,9 +174,14 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
-    var toast_notification = ToastNotification{};
-    var help_button = HelpButtonAnimation{};
-    var escape_indicator = EscapeIndicator{};
+    const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
+    try ui.register(help_component);
+    const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
+    try ui.register(toast_component.asComponent());
+    const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
+    try ui.register(escape_component.asComponent());
+    const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
+    try ui.register(restart_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -184,6 +191,21 @@ pub fn main() !void {
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
+            var session_ui_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+            const ui_host = makeUiHost(
+                now,
+                window_width,
+                window_height,
+                cell_width_pixels,
+                cell_height_pixels,
+                &anim_state,
+                &sessions,
+                &session_ui_info,
+            );
+
+            const ui_consumed = ui.handleEvent(&ui_host, &event);
+            if (ui_consumed) continue;
+
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
                 c.SDL_EVENT_WINDOW_MOVED => {
@@ -265,7 +287,7 @@ pub fn main() !void {
                         var notification_buf: [64]u8 = undefined;
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
-                        toast_notification.show(notification_msg, now);
+                        toast_component.show(notification_msg, now);
                     } else if (input.isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
@@ -285,7 +307,7 @@ pub fn main() !void {
                             var notification_buf: [64]u8 = undefined;
                             const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
                             const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
-                            toast_notification.show(notification_msg, now);
+                            toast_component.show(notification_msg, now);
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -353,9 +375,6 @@ pub fn main() !void {
                         anim_state.start_rect = start_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode) and !is_repeat) {
-                        escape_indicator.start(now);
-                        std.debug.print("Escape pressed at {d}\n", .{now});
                     } else {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead) {
@@ -365,42 +384,20 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = event.key.key;
-                    if (key == c.SDLK_ESCAPE) {
-                        const was_complete = escape_indicator.isComplete(now);
-                        const was_consumed = escape_indicator.consumed;
-                        escape_indicator.stop();
-
-                        if (!was_complete and !was_consumed and input.canHandleEscapePress(anim_state.mode)) {
-                            const focused = &sessions[anim_state.focused_session];
-                            if (focused.spawned and !focused.dead and focused.shell != null) {
-                                const esc_byte: [1]u8 = .{27};
-                                _ = focused.shell.?.write(&esc_byte) catch {};
-                            }
-                            std.debug.print("Escape released quickly, sent to terminal\n", .{});
-                        } else {
-                            std.debug.print("Escape released after hold or consumed by UI\n", .{});
+                    if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
+                        const focused = &sessions[anim_state.focused_session];
+                        if (focused.spawned and !focused.dead and focused.shell != null) {
+                            const esc_byte: [1]u8 = .{27};
+                            _ = focused.shell.?.write(&esc_byte) catch {};
                         }
+                        std.debug.print("Escape released, sent to terminal\n", .{});
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     const mouse_x: c_int = @intFromFloat(event.button.x);
                     const mouse_y: c_int = @intFromFloat(event.button.y);
 
-                    const help_rect = help_button.getRect(now, window_width, window_height);
-                    const clicked_help = renderer_mod.isPointInRect(mouse_x, mouse_y, help_rect);
-
-                    if (clicked_help) {
-                        if (help_button.state == .Closed) {
-                            help_button.startExpanding(now);
-                            std.debug.print("Opening help overlay\n", .{});
-                        } else if (help_button.state == .Open) {
-                            help_button.startCollapsing(now);
-                            std.debug.print("Closing help overlay\n", .{});
-                        }
-                    } else if (help_button.state == .Open and !clicked_help) {
-                        help_button.startCollapsing(now);
-                        std.debug.print("Closing help overlay (clicked outside)\n", .{});
-                    } else if (anim_state.mode == .Grid) {
+                    if (anim_state.mode == .Grid) {
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
@@ -412,30 +409,19 @@ pub fn main() !void {
                             .h = cell_height_pixels,
                         };
 
-                        var clicked_restart = false;
-                        if (sessions[clicked_session].dead) {
-                            const restart_rect = renderer_mod.getRestartButtonRect(cell_rect);
-                            clicked_restart = renderer_mod.isPointInRect(mouse_x, mouse_y, restart_rect);
-                        }
+                        try sessions[clicked_session].ensureSpawned();
 
-                        if (clicked_restart) {
-                            try sessions[clicked_session].restart();
-                            std.debug.print("Restarted session: {d}\n", .{clicked_session});
-                        } else {
-                            try sessions[clicked_session].ensureSpawned();
+                        sessions[clicked_session].status = .running;
+                        sessions[clicked_session].attention = false;
 
-                            sessions[clicked_session].status = .running;
-                            sessions[clicked_session].attention = false;
+                        const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
 
-                            const target_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-
-                            anim_state.mode = .Expanding;
-                            anim_state.focused_session = clicked_session;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = cell_rect;
-                            anim_state.target_rect = target_rect;
-                            std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                        }
+                        anim_state.mode = .Expanding;
+                        anim_state.focused_session = clicked_session;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = cell_rect;
+                        anim_state.target_rect = target_rect;
+                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
@@ -470,24 +456,6 @@ pub fn main() !void {
             session.updateCwd(now);
         }
 
-        if (escape_indicator.isComplete(now) and anim_state.mode == .Full) {
-            const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
-            const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
-            const target_rect = Rect{
-                .x = grid_col * cell_width_pixels,
-                .y = grid_row * cell_height_pixels,
-                .w = cell_width_pixels,
-                .h = cell_height_pixels,
-            };
-
-            anim_state.mode = .Collapsing;
-            anim_state.start_time = now;
-            anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            anim_state.target_rect = target_rect;
-            escape_indicator.consume();
-            std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
-        }
-
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
         for (notifications.items) |note| {
@@ -502,36 +470,60 @@ pub fn main() !void {
             }
         }
 
+        var ui_update_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_update_host = makeUiHost(
+            now,
+            window_width,
+            window_height,
+            cell_width_pixels,
+            cell_height_pixels,
+            &anim_state,
+            &sessions,
+            &ui_update_info,
+        );
+        ui.update(&ui_update_host);
+
+        while (ui.popAction()) |action| switch (action) {
+            .RestartSession => |idx| {
+                if (idx < sessions.len) {
+                    try sessions[idx].restart();
+                    std.debug.print("UI requested restart: {d}\n", .{idx});
+                }
+            },
+            .RequestCollapseFocused => {
+                if (anim_state.mode == .Full) {
+                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
+                    std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
+                }
+            },
+        };
+
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
             anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
         {
             if (anim_state.isComplete(now)) {
-                const prev_mode = anim_state.mode;
                 anim_state.mode = switch (anim_state.mode) {
                     .Expanding, .PanningLeft, .PanningRight => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
-                if (prev_mode == .Collapsing and anim_state.mode == .Grid) {
-                    escape_indicator.stop();
-                }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
         }
 
-        if (help_button.isAnimating() and help_button.isComplete(now)) {
-            help_button.state = switch (help_button.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => help_button.state,
-            };
-            std.debug.print("Help button animation complete, new state: {s}\n", .{@tagName(help_button.state)});
-        }
-
         try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
-        renderer_mod.renderToastNotification(renderer, &toast_notification, now, window_width);
-        renderer_mod.renderHelpButton(renderer, &help_button, now, window_width, window_height);
-        renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
+        var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_render_host = makeUiHost(
+            now,
+            window_width,
+            window_height,
+            cell_width_pixels,
+            cell_height_pixels,
+            &anim_state,
+            &sessions,
+            &ui_render_info,
+        );
+        ui.render(&ui_render_host, renderer);
         _ = c.SDL_RenderPresent(renderer);
 
         if (!vsync_enabled) {
@@ -543,6 +535,60 @@ pub fn main() !void {
             }
         }
     }
+}
+
+fn startCollapseToGrid(
+    anim_state: *AnimationState,
+    now: i64,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    window_width: c_int,
+    window_height: c_int,
+) void {
+    const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
+    const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+    const target_rect = Rect{
+        .x = grid_col * cell_width_pixels,
+        .y = grid_row * cell_height_pixels,
+        .w = cell_width_pixels,
+        .h = cell_height_pixels,
+    };
+
+    anim_state.mode = .Collapsing;
+    anim_state.start_time = now;
+    anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+    anim_state.target_rect = target_rect;
+}
+
+fn makeUiHost(
+    now: i64,
+    window_width: c_int,
+    window_height: c_int,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    anim_state: *const AnimationState,
+    sessions: []const SessionState,
+    buffer: []ui_mod.SessionUiInfo,
+) ui_mod.UiHost {
+    for (sessions, 0..) |session, i| {
+        buffer[i] = .{
+            .dead = session.dead,
+            .spawned = session.spawned,
+        };
+    }
+
+    return .{
+        .now_ms = now,
+        .window_w = window_width,
+        .window_h = window_height,
+        .grid_cols = GRID_COLS,
+        .grid_rows = GRID_ROWS,
+        .cell_w = cell_width_pixels,
+        .cell_h = cell_height_pixels,
+        .view_mode = anim_state.mode,
+        .focused_session = anim_state.focused_session,
+        .sessions = buffer[0..sessions.len],
+    };
 }
 
 fn calculateHoveredSession(

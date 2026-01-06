@@ -12,3 +12,5 @@ zig-out/
 
 # ghostty dependency (cloned locally)
 ghostty/
+
+.DS_Store
