@@ -12,6 +12,8 @@ const GlyphKey = struct {
     len: u8,
 };
 
+const WHITE: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+
 pub const Font = struct {
     font: *c.TTF_Font,
     fallback_font: ?*c.TTF_Font,
@@ -86,6 +88,7 @@ pub const Font = struct {
         GlyphRenderFailed,
         TextureCreationFailed,
         InvalidCodepoint,
+        BufferTooSmall,
     } || std.mem.Allocator.Error;
 
     pub fn renderGlyph(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) RenderGlyphError!void {
@@ -111,7 +114,7 @@ pub const Font = struct {
             var local: [4]u8 = undefined;
             const encoded_len = std.unicode.utf8Encode(cp, &local) catch return error.InvalidCodepoint;
             if (utf8_len + encoded_len > utf8_buf.len) {
-                return error.InvalidCodepoint;
+                return error.BufferTooSmall;
             }
             @memcpy(utf8_buf[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
             utf8_len += encoded_len;
@@ -153,7 +156,7 @@ pub const Font = struct {
     fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, use_fallback: bool) RenderGlyphError!*c.SDL_Texture {
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
-            .color = packColor(if (use_fallback) c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 } else fg_color),
+            .color = packColor(if (use_fallback) WHITE else fg_color),
             .fallback = use_fallback,
             .len = @intCast(utf8.len),
         };
@@ -163,10 +166,7 @@ pub const Font = struct {
         }
 
         const render_font = if (use_fallback) self.fallback_font orelse self.font else self.font;
-        const render_color = if (use_fallback)
-            c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }
-        else
-            fg_color;
+        const render_color = if (use_fallback) WHITE else fg_color;
 
         const surface = c.TTF_RenderText_Blended(render_font, @ptrCast(utf8.ptr), @intCast(utf8.len), render_color) orelse {
             log.debug("TTF_RenderText_Blended failed: {s}", .{c.SDL_GetError()});
@@ -193,6 +193,7 @@ pub const Font = struct {
         if (self.fallback_font == null) return false;
         for (codepoints) |cp| {
             if (c.TTF_FontHasGlyph(self.font, @intCast(cp))) continue;
+            // First glyph missing in primary but present in fallback → enable fallback for the whole cluster.
             if (c.TTF_FontHasGlyph(self.fallback_font.?, @intCast(cp))) return true;
         }
         return false;
