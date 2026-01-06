@@ -71,6 +71,7 @@ pub const EscapeHoldComponent = struct {
         if (self.gesture.isComplete(host.now_ms) and !self.gesture.consumed) {
             self.gesture.consumed = true;
             actions.append(.RequestCollapseFocused) catch {};
+            self.gesture.stop();
         }
     }
 
@@ -81,7 +82,7 @@ pub const EscapeHoldComponent = struct {
         const elapsed = host.now_ms - self.gesture.start_ms;
         const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
         const center_x = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
-        const center_y = host.window_h - ESC_INDICATOR_MARGIN;
+        const center_y = ESC_INDICATOR_MARGIN + ESC_INDICATOR_RADIUS + 10;
         const radius = ESC_INDICATOR_RADIUS;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
