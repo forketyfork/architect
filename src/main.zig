@@ -13,6 +13,7 @@ const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
 const config_mod = @import("config.zig");
+const ui_mod = @import("ui/mod.zig");
 const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
@@ -111,6 +112,9 @@ pub fn main() !void {
     var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, UI_FONT_SIZE);
     defer ui_font.deinit();
 
+    var ui = ui_mod.UiRoot.init(allocator);
+    defer ui.deinit(renderer);
+
     var window_width: c_int = config.window_width;
     var window_height: c_int = config.window_height;
     var window_x: c_int = config.window_x;
@@ -184,6 +188,21 @@ pub fn main() !void {
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
+            var session_ui_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+            const ui_host = makeUiHost(
+                now,
+                window_width,
+                window_height,
+                cell_width_pixels,
+                cell_height_pixels,
+                &anim_state,
+                &sessions,
+                &session_ui_info,
+            );
+
+            const ui_consumed = ui.handleEvent(&ui_host, &event);
+            if (ui_consumed) continue;
+
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
                 c.SDL_EVENT_WINDOW_MOVED => {
@@ -471,19 +490,7 @@ pub fn main() !void {
         }
 
         if (escape_indicator.isComplete(now) and anim_state.mode == .Full) {
-            const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
-            const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
-            const target_rect = Rect{
-                .x = grid_col * cell_width_pixels,
-                .y = grid_row * cell_height_pixels,
-                .w = cell_width_pixels,
-                .h = cell_height_pixels,
-            };
-
-            anim_state.mode = .Collapsing;
-            anim_state.start_time = now;
-            anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            anim_state.target_rect = target_rect;
+            startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
             escape_indicator.consume();
             std.debug.print("Escape hold complete, collapsing session: {d}\n", .{anim_state.focused_session});
         }
@@ -501,6 +508,35 @@ pub fn main() !void {
                 std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
             }
         }
+
+        var ui_update_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_update_host = makeUiHost(
+            now,
+            window_width,
+            window_height,
+            cell_width_pixels,
+            cell_height_pixels,
+            &anim_state,
+            &sessions,
+            &ui_update_info,
+        );
+        ui.update(&ui_update_host);
+
+        while (ui.popAction()) |action| switch (action) {
+            .RestartSession => |idx| {
+                if (idx < sessions.len) {
+                    try sessions[idx].restart();
+                    std.debug.print("UI requested restart: {d}\n", .{idx});
+                }
+            },
+            .RequestCollapseFocused => {
+                if (anim_state.mode == .Full) {
+                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, window_width, window_height);
+                    std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
+                }
+                escape_indicator.consume();
+            },
+        };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
             anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
@@ -532,6 +568,18 @@ pub fn main() !void {
         renderer_mod.renderToastNotification(renderer, &toast_notification, now, window_width);
         renderer_mod.renderHelpButton(renderer, &help_button, now, window_width, window_height);
         renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
+        var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_render_host = makeUiHost(
+            now,
+            window_width,
+            window_height,
+            cell_width_pixels,
+            cell_height_pixels,
+            &anim_state,
+            &sessions,
+            &ui_render_info,
+        );
+        ui.render(&ui_render_host, renderer);
         _ = c.SDL_RenderPresent(renderer);
 
         if (!vsync_enabled) {
@@ -543,6 +591,60 @@ pub fn main() !void {
             }
         }
     }
+}
+
+fn startCollapseToGrid(
+    anim_state: *AnimationState,
+    now: i64,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    window_width: c_int,
+    window_height: c_int,
+) void {
+    const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
+    const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+    const target_rect = Rect{
+        .x = grid_col * cell_width_pixels,
+        .y = grid_row * cell_height_pixels,
+        .w = cell_width_pixels,
+        .h = cell_height_pixels,
+    };
+
+    anim_state.mode = .Collapsing;
+    anim_state.start_time = now;
+    anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
+    anim_state.target_rect = target_rect;
+}
+
+fn makeUiHost(
+    now: i64,
+    window_width: c_int,
+    window_height: c_int,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    anim_state: *const AnimationState,
+    sessions: []const SessionState,
+    buffer: []ui_mod.SessionUiInfo,
+) ui_mod.UiHost {
+    for (sessions, 0..) |session, i| {
+        buffer[i] = .{
+            .dead = session.dead,
+            .spawned = session.spawned,
+        };
+    }
+
+    return .{
+        .now_ms = now,
+        .window_w = window_width,
+        .window_h = window_height,
+        .grid_cols = GRID_COLS,
+        .grid_rows = GRID_ROWS,
+        .cell_w = cell_width_pixels,
+        .cell_h = cell_height_pixels,
+        .view_mode = anim_state.mode,
+        .focused_session = anim_state.focused_session,
+        .sessions = buffer[0..sessions.len],
+    };
 }
 
 fn calculateHoveredSession(

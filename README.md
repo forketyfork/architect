@@ -166,6 +166,7 @@ zig fmt src/
 - Geometry + hit testing helpers live in `src/geom.zig`.
 - Shared easing functions live in `src/anim/easing.zig`.
 - Rounded/thick border drawing helpers live in `src/gfx/primitives.zig`; use these instead of redefining SDL primitives in new UI components.
+- The UI framework entrypoint is `src/ui/`: `UiRoot` handles event dispatch, per-frame updates, and overlay rendering for registered UI components.
 
 ## Claude Code Integration
 
