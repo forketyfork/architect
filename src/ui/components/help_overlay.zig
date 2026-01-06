@@ -165,16 +165,20 @@ pub const HelpOverlayComponent = struct {
 
         const shortcuts = [_]struct { key: []const u8, desc: []const u8 }{
             .{ .key = "Click terminal", .desc = "Expand to full screen" },
-            .{ .key = "ESC", .desc = "Collapse to grid" },
-            .{ .key = "Mouse wheel", .desc = "Scrollback (hover terminal)" },
-            .{ .key = "⌘+Plus / ⌘+Minus", .desc = "Change font size" },
-            .{ .key = "⌘⇧] / ⌘⇧[", .desc = "Switch terminals in full view" },
+            .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
+            .{ .key = "⌘⇧[ / ⌘⇧]", .desc = "Switch terminals" },
+            .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
+            .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
+            .{ .key = "Mouse wheel", .desc = "Scroll history" },
         };
 
+        const key_color = c.SDL_Color{ .r = 120, .g = 170, .b = 255, .a = 255 };
+        const desc_color = c.SDL_Color{ .r = 180, .g = 180, .b = 180, .a = 255 };
+
         for (shortcuts) |shortcut| {
-            const key_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.key.ptr), shortcut.key.len, title_color) orelse continue;
+            const key_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.key.ptr), shortcut.key.len, key_color) orelse continue;
             defer c.SDL_DestroySurface(key_surface);
-            const desc_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.desc.ptr), shortcut.desc.len, title_color) orelse continue;
+            const desc_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.desc.ptr), shortcut.desc.len, desc_color) orelse continue;
             defer c.SDL_DestroySurface(desc_surface);
 
             const key_texture = c.SDL_CreateTextureFromSurface(renderer, key_surface) orelse continue;
@@ -189,21 +193,19 @@ pub const HelpOverlayComponent = struct {
             var desc_h: f32 = 0;
             _ = c.SDL_GetTextureSize(desc_texture, &desc_w, &desc_h);
 
-            const key_rect = c.SDL_FRect{
+            _ = c.SDL_RenderTexture(renderer, key_texture, null, &c.SDL_FRect{
                 .x = @floatFromInt(rect.x + padding),
                 .y = @floatFromInt(y_offset),
                 .w = key_w,
                 .h = key_h,
-            };
-            const desc_rect = c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding + 150),
+            });
+
+            _ = c.SDL_RenderTexture(renderer, desc_texture, null, &c.SDL_FRect{
+                .x = @floatFromInt(rect.x + rect.w - padding - @as(c_int, @intFromFloat(desc_w))),
                 .y = @floatFromInt(y_offset),
                 .w = desc_w,
                 .h = desc_h,
-            };
-
-            _ = c.SDL_RenderTexture(renderer, key_texture, null, &key_rect);
-            _ = c.SDL_RenderTexture(renderer, desc_texture, null, &desc_rect);
+            });
 
             y_offset += line_height;
         }
