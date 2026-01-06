@@ -33,7 +33,6 @@ const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
-const ToastNotification = app_state.ToastNotification;
 const EscapeIndicator = app_state.EscapeIndicator;
 const NotificationQueue = notify.NotificationQueue;
 const Notification = notify.Notification;
@@ -175,11 +174,12 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
-    var toast_notification = ToastNotification{};
     var escape_indicator = EscapeIndicator{};
 
     const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
     try ui.register(help_component);
+    const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
+    try ui.register(toast_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -285,7 +285,7 @@ pub fn main() !void {
                         var notification_buf: [64]u8 = undefined;
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
-                        toast_notification.show(notification_msg, now);
+                        toast_component.show(notification_msg, now);
                     } else if (input.isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
@@ -305,7 +305,7 @@ pub fn main() !void {
                             var notification_buf: [64]u8 = undefined;
                             const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
                             const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
-                            toast_notification.show(notification_msg, now);
+                            toast_component.show(notification_msg, now);
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -543,7 +543,6 @@ pub fn main() !void {
         }
 
         try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, window_width, window_height);
-        renderer_mod.renderToastNotification(renderer, &toast_notification, now, window_width);
         renderer_mod.renderEscapeIndicator(renderer, &escape_indicator, now, &ui_font);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(

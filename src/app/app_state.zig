@@ -63,43 +63,6 @@ pub const AnimationState = struct {
     }
 };
 
-pub const ToastNotification = struct {
-    message: [256]u8 = undefined,
-    message_len: usize = 0,
-    start_time: i64 = 0,
-    active: bool = false,
-
-    pub fn show(self: *ToastNotification, message: []const u8, current_time: i64) void {
-        const len = @min(message.len, self.message.len - 1);
-        @memcpy(self.message[0..len], message[0..len]);
-        self.message[len] = 0;
-        self.message_len = len;
-        self.start_time = current_time;
-        self.active = true;
-    }
-
-    pub fn isVisible(self: *const ToastNotification, current_time: i64) bool {
-        if (!self.active) return false;
-        const elapsed = current_time - self.start_time;
-        return elapsed < NOTIFICATION_DURATION_MS;
-    }
-
-    pub fn getAlpha(self: *const ToastNotification, current_time: i64) u8 {
-        if (!self.isVisible(current_time)) return 0;
-        const elapsed = current_time - self.start_time;
-        if (elapsed < NOTIFICATION_FADE_START_MS) {
-            return 255;
-        }
-        const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
-            @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
-        const eased_progress = fade_progress * fade_progress * (3.0 - 2.0 * fade_progress);
-        const alpha = 255.0 * (1.0 - eased_progress);
-        return @intFromFloat(@max(0, @min(255, alpha)));
-    }
-};
-
-pub const NOTIFICATION_DURATION_MS: i64 = 2500;
-pub const NOTIFICATION_FADE_START_MS: i64 = 1500;
 pub const ESC_HOLD_TOTAL_MS: i64 = 700;
 pub const ESC_ARC_COUNT: usize = 5;
 pub const ESC_ARC_SEGMENT_MS: i64 = ESC_HOLD_TOTAL_MS / ESC_ARC_COUNT;

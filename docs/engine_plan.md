@@ -281,7 +281,7 @@ Acceptance checks:
 
 ---
 
-## 5) Port toast notifications into a component (and fix the per-frame TTF cost)
+## 5) Port toast notifications into a component (and fix the per-frame TTF cost) ✅
 
 Add:
 

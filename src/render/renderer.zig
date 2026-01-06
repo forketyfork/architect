@@ -13,14 +13,10 @@ const log = std.log.scoped(.render);
 const SessionState = session_state.SessionState;
 const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
-const ToastNotification = app_state.ToastNotification;
 const HelpButtonAnimation = app_state.HelpButtonAnimation;
 const EscapeIndicator = app_state.EscapeIndicator;
 
 const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-const NOTIFICATION_FONT_SIZE: c_int = 36;
-const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
-const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
 const RESTART_BUTTON_FONT_SIZE: c_int = 16;
@@ -502,68 +498,6 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
 
     _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
     primitives.drawRoundedBorder(renderer, rect, radius);
-}
-
-pub fn renderToastNotification(
-    renderer: *c.SDL_Renderer,
-    notification: *const ToastNotification,
-    current_time: i64,
-    window_width: c_int,
-) void {
-    if (!notification.isVisible(current_time)) return;
-
-    const alpha = notification.getAlpha(current_time);
-    if (alpha == 0) return;
-
-    const notification_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(NOTIFICATION_FONT_SIZE)) orelse return;
-    defer c.TTF_CloseFont(notification_font);
-
-    const message_z = @as([*:0]const u8, @ptrCast(&notification.message));
-    const fg_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = alpha };
-    const surface = c.TTF_RenderText_Blended(notification_font, message_z, notification.message_len, fg_color) orelse return;
-    defer c.SDL_DestroySurface(surface);
-
-    const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-    defer c.SDL_DestroyTexture(texture);
-
-    _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
-
-    var text_width_f: f32 = 0;
-    var text_height_f: f32 = 0;
-    _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-    const text_width: c_int = @intFromFloat(text_width_f);
-    const text_height: c_int = @intFromFloat(text_height_f);
-
-    const padding: c_int = 30;
-    const bg_padding: c_int = 20;
-    const x = @divFloor(window_width - text_width, 2);
-    const y = padding;
-
-    const bg_rect = c.SDL_FRect{
-        .x = @as(f32, @floatFromInt(x - bg_padding)),
-        .y = @as(f32, @floatFromInt(y - bg_padding)),
-        .w = @as(f32, @floatFromInt(text_width + bg_padding * 2)),
-        .h = @as(f32, @floatFromInt(text_height + bg_padding * 2)),
-    };
-
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
-    _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, bg_alpha);
-    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-    const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
-    _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, border_alpha);
-    _ = c.SDL_RenderRect(renderer, &bg_rect);
-
-    const dest_rect = c.SDL_FRect{
-        .x = @floatFromInt(x),
-        .y = @floatFromInt(y),
-        .w = text_width_f,
-        .h = text_height_f,
-    };
-
-    _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
 }
 
 pub fn renderHelpButton(
