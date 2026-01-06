@@ -191,9 +191,12 @@ pub fn main() !void {
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
+    var previous_frame_ns: i128 = std.time.nanoTimestamp();
     while (running) {
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
+        const delta_time_s: f32 = @as(f32, @floatFromInt(frame_start_ns - previous_frame_ns)) / 1_000_000_000.0;
+        previous_frame_ns = frame_start_ns;
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
@@ -263,6 +266,8 @@ pub fn main() !void {
                             if (focused.terminal) |*terminal| {
                                 terminal.screens.active.pages.scroll(.{ .active = {} });
                                 focused.is_scrolled = false;
+                                focused.scroll_velocity = 0.0;
+                                focused.scroll_remainder = 0.0;
                             }
                         }
                         const text = std.mem.sliceTo(scaled_event.text.text, 0);
@@ -462,7 +467,7 @@ pub fn main() !void {
                         const raw_delta = scaled_event.wheel.y;
                         const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         if (scroll_delta != 0) {
-                            scrollSession(&sessions[session_idx], scroll_delta);
+                            scrollSession(&sessions[session_idx], scroll_delta, now);
                         }
                     }
                 },
@@ -474,6 +479,7 @@ pub fn main() !void {
             session.checkAlive();
             try session.processOutput();
             session.updateCwd(now);
+            updateScrollInertia(session, delta_time_s, now);
         }
 
         var notifications = notify_queue.drainAll();
@@ -482,10 +488,12 @@ pub fn main() !void {
             if (note.session < sessions.len) {
                 var session = &sessions[note.session];
                 session.status = note.state;
-                session.attention = switch (note.state) {
+                const wants_attention = switch (note.state) {
                     .awaiting_approval, .done => true,
                     else => false,
                 };
+                const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == note.session;
+                session.attention = if (is_focused_full) false else wants_attention;
                 std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
             }
         }
@@ -677,15 +685,61 @@ fn calculateHoveredSession(
     };
 }
 
-fn scrollSession(session: *SessionState, delta: isize) void {
+fn scrollSession(session: *SessionState, delta: isize, now: i64) void {
     if (!session.spawned) return;
+
+    session.last_scroll_time = now;
+    session.scroll_remainder = 0.0;
+
     if (session.terminal) |*terminal| {
         var pages = &terminal.screens.active.pages;
         pages.scroll(.{ .delta_row = delta });
-
         session.is_scrolled = (pages.viewport != .active);
         session.dirty = true;
     }
+
+    const sensitivity: f32 = 0.15;
+    session.scroll_velocity += @as(f32, @floatFromInt(delta)) * sensitivity;
+}
+
+fn updateScrollInertia(session: *SessionState, delta_time_s: f32, now: i64) void {
+    if (!session.spawned) return;
+    if (session.scroll_velocity == 0.0) return;
+    if (session.last_scroll_time == 0) return;
+
+    const inertia_delay_ms: i64 = 100;
+    const time_since_scroll = now - session.last_scroll_time;
+
+    if (time_since_scroll < inertia_delay_ms) {
+        return;
+    }
+
+    // Match the previous feel (~0.92 per 1/60s frame) but make it framerate independent.
+    const decay_constant: f32 = 5.62; // solves exp(-c * (1/60)) ~= 0.92
+    const decay_factor = std.math.exp(-decay_constant * delta_time_s);
+    const velocity_threshold: f32 = 0.1;
+
+    if (@abs(session.scroll_velocity) < velocity_threshold) {
+        session.scroll_velocity = 0.0;
+        session.scroll_remainder = 0.0;
+        return;
+    }
+
+    if (session.terminal) |*terminal| {
+        const scroll_amount = session.scroll_velocity * delta_time_s * 60.0 + session.scroll_remainder;
+        const scroll_lines: isize = @intFromFloat(scroll_amount);
+
+        if (scroll_lines != 0) {
+            var pages = &terminal.screens.active.pages;
+            pages.scroll(.{ .delta_row = scroll_lines });
+            session.is_scrolled = (pages.viewport != .active);
+            session.dirty = true;
+        }
+
+        session.scroll_remainder = scroll_amount - @as(f32, @floatFromInt(scroll_lines));
+    }
+
+    session.scroll_velocity *= decay_factor;
 }
 
 fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
@@ -748,6 +802,8 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod,
         if (focused.terminal) |*terminal| {
             terminal.screens.active.pages.scroll(.{ .active = {} });
             focused.is_scrolled = false;
+            focused.scroll_velocity = 0.0;
+            focused.scroll_remainder = 0.0;
         }
     }
     var buf: [8]u8 = undefined;

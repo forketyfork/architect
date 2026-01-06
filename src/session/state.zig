@@ -45,6 +45,9 @@ pub const SessionState = struct {
     /// When cwd_path is freed, this becomes invalid and must not be used.
     cwd_basename: ?[]const u8 = null,
     cwd_last_check: i64 = 0,
+    scroll_velocity: f32 = 0.0,
+    scroll_remainder: f32 = 0.0,
+    last_scroll_time: i64 = 0,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -205,6 +208,9 @@ pub const SessionState = struct {
 
         self.spawned = false;
         self.dead = false;
+        self.scroll_velocity = 0.0;
+        self.scroll_remainder = 0.0;
+        self.last_scroll_time = 0;
         try self.ensureSpawned();
     }
 

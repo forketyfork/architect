@@ -72,7 +72,14 @@ pub const EscapeHoldComponent = struct {
         if (self.gesture.isComplete(host.now_ms) and !self.gesture.consumed) {
             self.gesture.consumed = true;
             actions.append(.RequestCollapseFocused) catch {};
-            self.gesture.stop();
+        }
+
+        if (self.gesture.consumed) {
+            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + ESC_HOLD_TOTAL_MS);
+            const flash_duration_ms: i64 = 200;
+            if (elapsed_since_complete >= flash_duration_ms) {
+                self.gesture.stop();
+            }
         }
     }
 

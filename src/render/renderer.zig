@@ -151,13 +151,14 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
-    if (!session.spawned) {
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    } else if (is_focused) {
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 60, 255);
-    } else {
-        _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, 255);
-    }
+    const session_bg_color = if (!session.spawned)
+        c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 }
+    else if (is_focused)
+        c.SDL_Color{ .r = 40, .g = 40, .b = 60, .a = 255 }
+    else
+        c.SDL_Color{ .r = 30, .g = 30, .b = 40, .a = 255 };
+
+    _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
         .x = @floatFromInt(rect.x),
         .y = @floatFromInt(rect.y),
@@ -173,6 +174,7 @@ fn renderSessionContent(
         return;
     };
     const screen = terminal.screens.active;
+    const cursor_visible = terminal.modes.get(.cursor_visible);
     const pages = screen.pages;
 
     const base_cell_width = font.cell_width;
@@ -207,7 +209,6 @@ fn renderSessionContent(
 
             const cell = list_cell.cell;
             const cp = cell.content.codepoint;
-            if (cp == 0 or cp == ' ') continue;
 
             const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
@@ -216,13 +217,33 @@ fn renderSessionContent(
             if (y + cell_height_actual <= rect.y or y >= rect.y + rect.h) continue;
 
             const style = list_cell.style();
-            const fg_color = getCellColor(style.fg_color, default_fg);
+            var fg_color = getCellColor(style.fg_color, default_fg);
+            var bg_color = getCellColor(style.bg_color, session_bg_color);
 
-            try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
+            if (style.flags.inverse) {
+                const tmp = fg_color;
+                fg_color = bg_color;
+                bg_color = tmp;
+            }
+
+            if (!colorsEqual(bg_color, session_bg_color)) {
+                _ = c.SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, 255);
+                const cell_rect = c.SDL_FRect{
+                    .x = @floatFromInt(x),
+                    .y = @floatFromInt(y),
+                    .w = @floatFromInt(cell_width_actual),
+                    .h = @floatFromInt(cell_height_actual),
+                };
+                _ = c.SDL_RenderFillRect(renderer, &cell_rect);
+            }
+
+            if (cp != 0 and cp != ' ' and !style.flags.invisible) {
+                try font.renderGlyph(cp, x, y, cell_width_actual, cell_height_actual, fg_color);
+            }
         }
     }
 
-    if (!session.is_scrolled and is_focused and !session.dead) {
+    if (!session.is_scrolled and is_focused and !session.dead and cursor_visible) {
         const cursor = screen.cursor;
         const cursor_col = cursor.x;
         const cursor_row = cursor.y;
@@ -715,6 +736,10 @@ test "get256Color - basic ANSI colors" {
     try std.testing.expectEqual(@as(u8, 255), white.r);
     try std.testing.expectEqual(@as(u8, 255), white.g);
     try std.testing.expectEqual(@as(u8, 255), white.b);
+}
+
+fn colorsEqual(a: c.SDL_Color, b: c.SDL_Color) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
 test "get256Color - grayscale" {
