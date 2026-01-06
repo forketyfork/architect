@@ -104,9 +104,9 @@ pub const EscapeHoldComponent = struct {
         var r: f32 = backdrop_radius;
         while (r > 0) : (r -= 0.5) {
             const dist_factor = r / backdrop_radius;
-            const alpha: u8 = @intFromFloat(100.0 * (1.0 - dist_factor));
+            const alpha: u8 = @intFromFloat(220.0 * (1.0 - dist_factor));
 
-            _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, alpha);
+            _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, alpha);
 
             var seg: usize = 0;
             while (seg < backdrop_segments) : (seg += 1) {
