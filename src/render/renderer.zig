@@ -274,15 +274,6 @@ fn renderSessionContent(
                 }
             }
 
-            const is_box_line = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, cell_width_actual, cell_height_actual, fg_color);
-            if (is_box_line) {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
-                run_len = 0;
-                run_cells = 0;
-                run_width_cells = 0;
-                continue;
-            }
-
             const is_fill_glyph = cp != 0 and cp != ' ' and !style.flags.invisible and isFullCellGlyph(cp);
 
             if (is_fill_glyph) {
@@ -862,65 +853,6 @@ fn isFullCellGlyph(cp: u21) bool {
     return (cp >= 0x2500 and cp <= 0x259F) // box drawing and block elements
     or (cp >= 0xE0B0 and cp <= 0xE0C8) // powerline symbols
     or (cp == 0x2588); // full block explicit
-}
-
-fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {
-    const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(@min(w, h))) / 7.0);
-    const half_t: f32 = thickness * 0.5;
-    const xf: f32 = @floatFromInt(x);
-    const yf: f32 = @floatFromInt(y);
-    const wf: f32 = @floatFromInt(w);
-    const hf: f32 = @floatFromInt(h);
-
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-
-    switch (cp) {
-        // ─
-        0x2500 => {
-            const rect = c.SDL_FRect{ .x = xf, .y = yf + hf * 0.5 - half_t, .w = wf, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
-            return true;
-        },
-        // │
-        0x2502 => {
-            const rect = c.SDL_FRect{ .x = xf + wf * 0.5 - half_t, .y = yf, .w = thickness, .h = hf };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
-            return true;
-        },
-        // ╭
-        0x256D => {
-            const vert = c.SDL_FRect{ .x = xf, .y = yf + hf * 0.5 - half_t, .w = thickness, .h = hf * 0.5 + half_t };
-            const horiz = c.SDL_FRect{ .x = xf, .y = yf, .w = wf * 0.5 + half_t, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        // ╮
-        0x256E => {
-            const vert = c.SDL_FRect{ .x = xf + wf - thickness, .y = yf + hf * 0.5 - half_t, .w = thickness, .h = hf * 0.5 + half_t };
-            const horiz = c.SDL_FRect{ .x = xf + wf * 0.5 - half_t, .y = yf, .w = wf * 0.5 + half_t, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        // ╰
-        0x2570 => {
-            const vert = c.SDL_FRect{ .x = xf, .y = yf, .w = thickness, .h = hf * 0.5 + half_t };
-            const horiz = c.SDL_FRect{ .x = xf, .y = yf + hf - thickness, .w = wf * 0.5 + half_t, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        // ╯
-        0x256F => {
-            const vert = c.SDL_FRect{ .x = xf + wf - thickness, .y = yf, .w = thickness, .h = hf * 0.5 + half_t };
-            const horiz = c.SDL_FRect{ .x = xf + wf * 0.5 - half_t, .y = yf + hf - thickness, .w = wf * 0.5 + half_t, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        else => return false,
-    }
 }
 
 fn get256Color(idx: u8) c.SDL_Color {
