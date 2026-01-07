@@ -137,9 +137,9 @@ done
 
 echo ""
 echo "Verifying final dependencies..."
-if otool -L "$MACOS_DIR/architect" | grep -q '/nix/store'; then
+if otool -L "$MACOS_DIR/architect.bin" | grep -q '/nix/store'; then
     echo "Warning: Nix store references remain in architect binary"
-    otool -L "$MACOS_DIR/architect" | grep '/nix/store'
+    otool -L "$MACOS_DIR/architect.bin" | grep '/nix/store'
 fi
 
 remaining=0
