@@ -170,9 +170,9 @@ pub const EscapeHoldComponent = struct {
         while (arc < ESC_ARC_COUNT) : (arc += 1) {
             const is_completed = arc < completed_arcs;
             var color = if (is_completed)
-                c.SDL_Color{ .r = 152, .g = 195, .b = 121, .a = 255 }
+                c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 } // bright blue accent
             else
-                c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
+                c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 }; // warm gold pending
 
             if (is_completed and all_complete) {
                 color.r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.r)) * flash_brightness));
