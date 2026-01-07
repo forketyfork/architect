@@ -41,7 +41,7 @@ pub fn render(
     ui_scale: f32,
     font_path: [:0]const u8,
 ) RenderError!void {
-    _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
     _ = c.SDL_RenderClear(renderer);
 
     const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_cols));
@@ -148,12 +148,8 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
-    const session_bg_color = if (!session.spawned)
-        c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 }
-    else if (is_focused)
-        c.SDL_Color{ .r = 40, .g = 40, .b = 60, .a = 255 }
-    else
-        c.SDL_Color{ .r = 30, .g = 30, .b = 40, .a = 255 };
+    const base_bg = c.SDL_Color{ .r = 14, .g = 17, .b = 22, .a = 255 };
+    const session_bg_color = base_bg;
 
     _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
@@ -193,7 +189,7 @@ fn renderSessionContent(
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
-    const default_fg = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const default_fg = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
     const active_selection = screen.selection;
 
     var row: usize = 0;
@@ -258,7 +254,7 @@ fn renderSessionContent(
                 if (pages.pin(point_tag)) |pin| {
                     if (sel.contains(screen, pin)) {
                         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, 70, 120, 190, 160);
+                        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 255);
                         const sel_rect = c.SDL_FRect{
                             .x = @floatFromInt(x),
                             .y = @floatFromInt(y),
@@ -393,7 +389,7 @@ fn renderSessionContent(
             if (cursor_x + cell_width_actual > rect.x and cursor_x < rect.x + rect.w and
                 cursor_y + cell_height_actual > rect.y and cursor_y < rect.y + rect.h)
             {
-                _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+                _ = c.SDL_SetRenderDrawColor(renderer, 215, 186, 125, 255);
                 const cursor_rect = c.SDL_FRect{
                     .x = @floatFromInt(cursor_x),
                     .y = @floatFromInt(cursor_y),
@@ -413,7 +409,7 @@ fn renderSessionContent(
         if (message_row < visible_rows) {
             const message_x: c_int = origin_x;
             const message_y: c_int = origin_y + @as(c_int, @intCast(message_row)) * cell_height_actual;
-            const fg_color = c.SDL_Color{ .r = 150, .g = 150, .b = 150, .a = 255 };
+            const fg_color = c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 255 };
 
             var offset_x = message_x;
             for (message) |ch| {
@@ -437,9 +433,9 @@ fn renderSessionOverlays(
         applyTvOverlay(renderer, rect, is_focused);
     } else if (is_grid_view) {
         if (is_focused) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+            _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
         } else {
-            _ = c.SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+            _ = c.SDL_SetRenderDrawColor(renderer, 92, 99, 112, 255);
         }
         const border_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
@@ -451,7 +447,7 @@ fn renderSessionOverlays(
     }
 
     if (is_grid_view and session.is_scrolled) {
-        _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 100, 200);
+        _ = c.SDL_SetRenderDrawColor(renderer, 215, 186, 125, 220);
         const indicator_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y + rect.h - 4),
@@ -467,17 +463,17 @@ fn renderSessionOverlays(
                 const phase_ms: f32 = @floatFromInt(@mod(current_time_ms, @as(i64, 1000)));
                 const pulse = 0.5 + 0.5 * std.math.sin(phase_ms / 1000.0 * 2.0 * std.math.pi);
                 const base_alpha: u8 = @intFromFloat(170 + 70 * pulse);
-                break :blk c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = base_alpha };
+                break :blk c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = base_alpha };
             },
-            .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 230 },
-            else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 230 },
+            .done => c.SDL_Color{ .r = 152, .g = 195, .b = 121, .a = 230 },
+            else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 230 },
         };
         primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
 
         const tint_color = switch (session.status) {
-            .awaiting_approval => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
-            .done => c.SDL_Color{ .r = 35, .g = 209, .b = 139, .a = 30 },
-            else => c.SDL_Color{ .r = 255, .g = 212, .b = 71, .a = 25 },
+            .awaiting_approval => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
+            .done => c.SDL_Color{ .r = 152, .g = 195, .b = 121, .a = 30 },
+            else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
         };
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, tint_color.r, tint_color.g, tint_color.b, tint_color.a);
@@ -536,7 +532,7 @@ fn renderGridSessionCached(
                 log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
                 _ = c.SDL_SetRenderTarget(renderer, tex);
                 _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
-                _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows);
@@ -563,7 +559,7 @@ fn renderGridSessionCached(
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-    _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 60);
+    _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 60);
     _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
         .x = @floatFromInt(rect.x),
         .y = @floatFromInt(rect.y),
@@ -574,9 +570,9 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
     const radius: c_int = 12;
 
     const border_color = if (is_focused)
-        c.SDL_Color{ .r = 120, .g = 170, .b = 255, .a = 190 }
+        c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 190 }
     else
-        c.SDL_Color{ .r = 80, .g = 80, .b = 90, .a = 170 };
+        c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 170 };
 
     _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
     primitives.drawRoundedBorder(renderer, rect, radius);
@@ -605,7 +601,7 @@ fn renderCwdBar(
     };
 
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, 230);
+    _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 230);
     const bg_rect = c.SDL_FRect{
         .x = @floatFromInt(bar_rect.x),
         .y = @floatFromInt(bar_rect.y),
@@ -624,7 +620,7 @@ fn renderCwdBar(
     }
     const cwd_font = session.cwd_font orelse return;
 
-    const text_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const text_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
 
     var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
     const basename_with_slash = blk: {
@@ -813,7 +809,7 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, 
         else
             @as(u8, @intFromFloat(230.0 * alpha_progress));
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 30, 30, 40, alpha);
+        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, alpha);
         const line_x = fade_x + i;
         _ = c.SDL_RenderLine(renderer, @floatFromInt(line_x), @floatFromInt(bar_rect.y), @floatFromInt(line_x), @floatFromInt(bar_rect.y + bar_rect.h));
     }
@@ -953,22 +949,24 @@ fn get256Color(idx: u8) c.SDL_Color {
 }
 
 const ansi_colors = [_]c.SDL_Color{
-    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    .{ .r = 205, .g = 49, .b = 49, .a = 255 },
-    .{ .r = 13, .g = 188, .b = 121, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 16, .a = 255 },
-    .{ .r = 36, .g = 114, .b = 200, .a = 255 },
-    .{ .r = 188, .g = 63, .b = 188, .a = 255 },
-    .{ .r = 17, .g = 168, .b = 205, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 229, .a = 255 },
-    .{ .r = 102, .g = 102, .b = 102, .a = 255 },
-    .{ .r = 241, .g = 76, .b = 76, .a = 255 },
-    .{ .r = 35, .g = 209, .b = 139, .a = 255 },
-    .{ .r = 245, .g = 245, .b = 67, .a = 255 },
-    .{ .r = 59, .g = 142, .b = 234, .a = 255 },
-    .{ .r = 214, .g = 112, .b = 214, .a = 255 },
-    .{ .r = 41, .g = 184, .b = 219, .a = 255 },
-    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    // Normal
+    .{ .r = 14, .g = 17, .b = 22, .a = 255 }, // Black
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // Red
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // Green
+    .{ .r = 209, .g = 154, .b = 102, .a = 255 }, // Yellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // Blue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // Magenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // Cyan
+    .{ .r = 171, .g = 178, .b = 191, .a = 255 }, // White
+    // Bright
+    .{ .r = 92, .g = 99, .b = 112, .a = 255 }, // BrightBlack
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // BrightRed
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // BrightGreen
+    .{ .r = 229, .g = 192, .b = 123, .a = 255 }, // BrightYellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // BrightBlue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // BrightMagenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // BrightCyan
+    .{ .r = 205, .g = 214, .b = 224, .a = 255 }, // BrightWhite
 };
 
 test "get256Color - basic ANSI colors" {

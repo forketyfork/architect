@@ -58,6 +58,7 @@ pub const SessionState = struct {
     /// Hovered link range (for underlining).
     hovered_link_start: ?ghostty_vt.Pin = null,
     hovered_link_end: ?ghostty_vt.Pin = null,
+    pending_write: std.ArrayListUnmanaged(u8) = .empty,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -143,6 +144,7 @@ pub const SessionState = struct {
         if (self.cache_texture) |tex| {
             c.SDL_DestroyTexture(tex);
         }
+        self.pending_write.deinit(allocator);
         if (self.cwd_basename_tex) |tex| {
             c.SDL_DestroyTexture(tex);
             self.cwd_basename_tex = null;
@@ -202,6 +204,7 @@ pub const SessionState = struct {
         if (self.spawned and !self.dead) return;
 
         self.clearSelection();
+        self.pending_write.clearAndFree(self.allocator);
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();
@@ -255,6 +258,40 @@ pub const SessionState = struct {
 
             // Keep draining until the PTY would block to avoid frame-bounded
             // throttling of bursty output (e.g. startup logos).
+        }
+    }
+
+    /// Try to flush any queued stdin data; preserves ordering relative to new input.
+    pub fn flushPendingWrites(self: *SessionState) !void {
+        if (self.pending_write.items.len == 0) return;
+        const shell = &(self.shell orelse return);
+        const buf = self.pending_write.items[0..self.pending_write.items.len];
+        const wrote = shell.write(buf) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
+        if (wrote == buf.len) {
+            self.pending_write.clearRetainingCapacity();
+            return;
+        }
+        if (wrote > 0) {
+            const remaining = buf[wrote..];
+            std.mem.copyForwards(u8, self.pending_write.items[0..remaining.len], remaining);
+            self.pending_write.items.len = remaining.len;
+        }
+        // If wrote == 0 and WouldBlock, keep buffer as-is for next frame.
+    }
+
+    pub fn sendInput(self: *SessionState, data: []const u8) !void {
+        if (!self.spawned or self.dead) return;
+        try self.flushPendingWrites();
+        const shell = &(self.shell orelse return);
+        const wrote = shell.write(data) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
+        if (wrote < data.len) {
+            try self.pending_write.appendSlice(self.allocator, data[wrote..]);
         }
     }
 

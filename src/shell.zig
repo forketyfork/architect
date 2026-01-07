@@ -72,7 +72,30 @@ pub const Shell = struct {
     }
 
     pub fn write(self: *Shell, data: []const u8) !usize {
-        return posix.write(self.pty.master, data);
+        var written: usize = 0;
+        var waited_ns: u64 = 0;
+        const max_wait_ns: u64 = 50 * std.time.ns_per_ms;
+        const backoff_ns: u64 = 1 * std.time.ns_per_ms;
+
+        while (written < data.len) {
+            const n = posix.write(self.pty.master, data[written..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    // PTY is full; retry for a short bounded window so pastes
+                    // complete, but avoid indefinitely stalling the UI thread.
+                    if (waited_ns >= max_wait_ns) {
+                        return if (written > 0) written else err;
+                    }
+                    std.Thread.sleep(backoff_ns);
+                    waited_ns += backoff_ns;
+                    continue;
+                },
+                else => return err,
+            };
+            if (n == 0) return error.WouldBlock;
+            written += n;
+        }
+
+        return data.len;
     }
 
     pub fn wait(self: *Shell) !void {

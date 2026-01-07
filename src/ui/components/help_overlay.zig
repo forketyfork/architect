@@ -137,7 +137,7 @@ pub const HelpOverlayComponent = struct {
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
+        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 220);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y),
@@ -146,7 +146,7 @@ pub const HelpOverlayComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         switch (self.state) {
@@ -162,7 +162,7 @@ pub const HelpOverlayComponent = struct {
         defer closeFontWithFallbacks(fonts);
 
         const question_mark: [2]u8 = .{ '?', 0 };
-        const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.main, &question_mark, 1, fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
@@ -201,7 +201,7 @@ pub const HelpOverlayComponent = struct {
         defer closeFontWithFallbacks(key_fonts);
 
         const title_text = "Keyboard Shortcuts";
-        const title_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+        const title_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
         const title_surface = c.TTF_RenderText_Blended(title_fonts.main, title_text, title_text.len, title_color) orelse return;
         defer c.SDL_DestroySurface(title_surface);
 
@@ -234,8 +234,8 @@ pub const HelpOverlayComponent = struct {
             .{ .key = "Mouse wheel", .desc = "Scroll history" },
         };
 
-        const key_color = c.SDL_Color{ .r = 120, .g = 170, .b = 255, .a = 255 };
-        const desc_color = c.SDL_Color{ .r = 180, .g = 180, .b = 180, .a = 255 };
+        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
+        const desc_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
 
         for (shortcuts) |shortcut| {
             const key_surface = c.TTF_RenderText_Blended(key_fonts.main, @ptrCast(shortcut.key.ptr), shortcut.key.len, key_color) orelse continue;

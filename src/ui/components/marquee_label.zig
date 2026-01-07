@@ -47,7 +47,7 @@ pub const MarqueeLabel = struct {
     ) void {
         const font = assets.ui_font orelse return;
         if (self.texture == null) {
-            const fg_color = c.SDL_Color{ .r = 220, .g = 220, .b = 220, .a = 255 };
+            const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
             const surface = c.TTF_RenderText_Blended(font.font, @ptrCast(self.text.ptr), self.text.len, fg_color) orelse return;
             defer c.SDL_DestroySurface(surface);
             const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;

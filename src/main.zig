@@ -340,7 +340,10 @@ pub fn main() !void {
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
-                    if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                    if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
+                        clearTerminal(focused);
+                        ui.showToast("Cleared terminal", now);
+                    } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
@@ -656,6 +659,7 @@ pub fn main() !void {
         for (&sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
+            try session.flushPendingWrites();
             session.updateCwd(now);
             updateScrollInertia(session, delta_time_s);
         }
@@ -992,15 +996,11 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod,
     var buf: [8]u8 = undefined;
     const n = input.encodeKeyWithMod(key, mod, &buf);
     if (n > 0) {
-        if (focused.shell) |*shell| {
-            _ = try shell.write(buf[0..n]);
-        }
+        try focused.sendInput(buf[0..n]);
     } else if (is_repeat and builtin.os.tag == .macos) {
         if (input.keyToChar(key, mod)) |ch| {
             buf[0] = ch;
-            if (focused.shell) |*shell| {
-                _ = try shell.write(buf[0..1]);
-            }
+            try focused.sendInput(buf[0..1]);
         }
     }
 }
@@ -1263,9 +1263,23 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
         }
     }
 
-    if (session.shell) |*shell| {
-        _ = try shell.write(text);
-    }
+    try session.sendInput(text);
+}
+
+fn clearTerminal(session: *SessionState) void {
+    const terminal_ptr = session.terminal orelse return;
+    var terminal = terminal_ptr;
+
+    // Match Ghostty behavior: avoid clearing alt screen to not disrupt full-screen apps.
+    if (terminal.screens.active_key == .alternate) return;
+
+    terminal.screens.active.clearSelection();
+    terminal.eraseDisplay(ghostty_vt.EraseDisplay.scrollback, false);
+    terminal.eraseDisplay(ghostty_vt.EraseDisplay.complete, false);
+    session.dirty = true;
+
+    // Trigger shell redraw like Ghostty (FF) so the prompt is repainted at top.
+    session.sendInput(&[_]u8{0x0C}) catch {};
 }
 
 fn copySelectionToClipboard(
@@ -1309,10 +1323,10 @@ fn pasteClipboardIntoSession(
         ui.showToast("No terminal to paste into", now);
         return;
     };
-    const shell_ptr = if (session.shell) |*s| s else {
+    if (session.shell == null) {
         ui.showToast("Shell not available", now);
         return;
-    };
+    }
 
     const clip_ptr = c.SDL_GetClipboardText();
     defer c.SDL_free(clip_ptr);
@@ -1333,29 +1347,31 @@ fn pasteClipboardIntoSession(
 
     for (slices) |part| {
         if (part.len == 0) continue;
-        _ = try shell_ptr.write(part);
+        try session.sendInput(part);
     }
 
     ui.showToast("Pasted clipboard", now);
 }
 
 const ansi_colors = [_]c.SDL_Color{
-    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    .{ .r = 205, .g = 49, .b = 49, .a = 255 },
-    .{ .r = 13, .g = 188, .b = 121, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 16, .a = 255 },
-    .{ .r = 36, .g = 114, .b = 200, .a = 255 },
-    .{ .r = 188, .g = 63, .b = 188, .a = 255 },
-    .{ .r = 17, .g = 168, .b = 205, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 229, .a = 255 },
-    .{ .r = 102, .g = 102, .b = 102, .a = 255 },
-    .{ .r = 241, .g = 76, .b = 76, .a = 255 },
-    .{ .r = 35, .g = 209, .b = 139, .a = 255 },
-    .{ .r = 245, .g = 245, .b = 67, .a = 255 },
-    .{ .r = 59, .g = 142, .b = 234, .a = 255 },
-    .{ .r = 214, .g = 112, .b = 214, .a = 255 },
-    .{ .r = 41, .g = 184, .b = 219, .a = 255 },
-    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    // Normal
+    .{ .r = 14, .g = 17, .b = 22, .a = 255 }, // Black
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // Red
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // Green
+    .{ .r = 209, .g = 154, .b = 102, .a = 255 }, // Yellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // Blue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // Magenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // Cyan
+    .{ .r = 171, .g = 178, .b = 191, .a = 255 }, // White
+    // Bright
+    .{ .r = 92, .g = 99, .b = 112, .a = 255 }, // BrightBlack
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // BrightRed
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // BrightGreen
+    .{ .r = 229, .g = 192, .b = 123, .a = 255 }, // BrightYellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // BrightBlue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // BrightMagenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // BrightCyan
+    .{ .r = 205, .g = 214, .b = 224, .a = 255 }, // BrightWhite
 };
 
 fn get256Color(idx: u8) c.SDL_Color {
