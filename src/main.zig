@@ -1133,13 +1133,65 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     }) catch return null;
     defer allocator.free(row_text);
 
-    const col_offset = (pin.y - start_y) * page.size.cols + pin.x;
-    const url_match = url_matcher.findUrlMatchAtPosition(row_text, col_offset) orelse return null;
+    var cell_to_byte: std.ArrayList(usize) = .empty;
+    defer cell_to_byte.deinit(allocator);
 
-    const start_row = start_y + @as(u16, @intCast(url_match.start / page.size.cols));
-    const start_col: u16 = @intCast(url_match.start % page.size.cols);
-    const end_row = start_y + @as(u16, @intCast((url_match.end - 1) / page.size.cols));
-    const end_col: u16 = @intCast((url_match.end - 1) % page.size.cols);
+    var byte_pos: usize = 0;
+    var cell_idx: usize = 0;
+    var y = start_y;
+    while (y <= end_y) : (y += 1) {
+        var x: u16 = 0;
+        while (x < page.size.cols) : (x += 1) {
+            const point = ghostty_vt.point.Point{ .active = .{ .x = x, .y = y } };
+            const list_cell = terminal.screens.active.pages.getCell(point) orelse {
+                cell_to_byte.append(allocator, byte_pos) catch return null;
+                cell_idx += 1;
+                continue;
+            };
+
+            cell_to_byte.append(allocator, byte_pos) catch return null;
+
+            const cp = list_cell.cell.content.codepoint;
+            if (cp != 0 and cp != ' ') {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                byte_pos += len;
+            } else {
+                byte_pos += 1;
+            }
+            cell_idx += 1;
+        }
+        if (y < end_y) {
+            byte_pos += 1;
+        }
+    }
+
+    const click_cell_idx = (pin.y - start_y) * page.size.cols + pin.x;
+    if (click_cell_idx >= cell_to_byte.items.len) return null;
+    const click_byte_pos = cell_to_byte.items[click_cell_idx];
+
+    const url_match = url_matcher.findUrlMatchAtPosition(row_text, click_byte_pos) orelse return null;
+
+    var start_cell_idx: usize = 0;
+    for (cell_to_byte.items, 0..) |byte, idx| {
+        if (byte >= url_match.start) {
+            start_cell_idx = idx;
+            break;
+        }
+    }
+
+    var end_cell_idx: usize = cell_to_byte.items.len - 1;
+    for (cell_to_byte.items, 0..) |byte, idx| {
+        if (byte >= url_match.end) {
+            end_cell_idx = if (idx > 0) idx - 1 else 0;
+            break;
+        }
+    }
+
+    const start_row = start_y + @as(u16, @intCast(start_cell_idx / page.size.cols));
+    const start_col: u16 = @intCast(start_cell_idx % page.size.cols);
+    const end_row = start_y + @as(u16, @intCast(end_cell_idx / page.size.cols));
+    const end_col: u16 = @intCast(end_cell_idx % page.size.cols);
 
     const link_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = start_col, .y = start_row } }) orelse return null;
     const link_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = end_col, .y = end_row } }) orelse return null;
