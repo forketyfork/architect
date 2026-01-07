@@ -416,7 +416,7 @@ fn renderSessionOverlays(
 ) void {
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused);
-    } else {
+    } else if (is_grid_view) {
         if (is_focused) {
             _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
         } else {

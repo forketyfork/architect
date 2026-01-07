@@ -100,25 +100,36 @@ pub const EscapeHoldComponent = struct {
 
         const backdrop_radius = @as(f32, @floatFromInt(radius)) + @as(f32, @floatFromInt(dpi.scale(40, host.ui_scale)));
         const backdrop_segments: usize = 64;
+        const shadow_layers: usize = 30;
 
-        var r: f32 = backdrop_radius;
-        while (r > 0) : (r -= 0.5) {
-            const dist_factor = r / backdrop_radius;
-            const alpha: u8 = @intFromFloat(220.0 * (1.0 - dist_factor));
+        const center_x_f = @as(f32, @floatFromInt(center_x));
+        const center_y_f = @as(f32, @floatFromInt(center_y));
 
-            _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, alpha);
+        var layer: usize = 0;
+        while (layer < shadow_layers) : (layer += 1) {
+            const layer_progress = @as(f32, @floatFromInt(layer)) / @as(f32, @floatFromInt(shadow_layers));
+            const layer_radius = backdrop_radius * (1.0 - layer_progress);
+            const alpha: u8 = @intFromFloat(180.0 * layer_progress);
+
+            const base_color = c.SDL_FColor{ .r = 40.0 / 255.0, .g = 40.0 / 255.0, .b = 50.0 / 255.0, .a = @as(f32, @floatFromInt(alpha)) / 255.0 };
 
             var seg: usize = 0;
             while (seg < backdrop_segments) : (seg += 1) {
                 const angle1 = @as(f32, @floatFromInt(seg)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
                 const angle2 = @as(f32, @floatFromInt(seg + 1)) * 2.0 * std.math.pi / @as(f32, @floatFromInt(backdrop_segments));
 
-                const x1 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle1);
-                const y1 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle1);
-                const x2 = @as(f32, @floatFromInt(center_x)) + r * std.math.cos(angle2);
-                const y2 = @as(f32, @floatFromInt(center_y)) + r * std.math.sin(angle2);
+                const x1 = center_x_f + layer_radius * std.math.cos(angle1);
+                const y1 = center_y_f + layer_radius * std.math.sin(angle1);
+                const x2 = center_x_f + layer_radius * std.math.cos(angle2);
+                const y2 = center_y_f + layer_radius * std.math.sin(angle2);
 
-                _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
+                const verts = [_]c.SDL_Vertex{
+                    .{ .position = .{ .x = center_x_f, .y = center_y_f }, .color = base_color },
+                    .{ .position = .{ .x = x1, .y = y1 }, .color = base_color },
+                    .{ .position = .{ .x = x2, .y = y2 }, .color = base_color },
+                };
+                const indices = [_]c_int{ 0, 1, 2 };
+                _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
             }
         }
 
