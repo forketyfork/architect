@@ -581,13 +581,30 @@ pub fn main() !void {
                             const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                             if (cmd_held) {
-                                if (getLinkAtPin(allocator, &focused.terminal.?, pin.?)) |_| {
+                                if (getLinkMatchAtPin(allocator, &focused.terminal.?, pin.?)) |link_match| {
                                     desired_cursor = .pointer;
+                                    focused.hovered_link_start = link_match.start_pin;
+                                    focused.hovered_link_end = link_match.end_pin;
+                                    focused.dirty = true;
                                 } else {
                                     desired_cursor = .ibeam;
+                                    focused.hovered_link_start = null;
+                                    focused.hovered_link_end = null;
+                                    focused.dirty = true;
                                 }
                             } else {
                                 desired_cursor = .ibeam;
+                                if (focused.hovered_link_start != null) {
+                                    focused.hovered_link_start = null;
+                                    focused.hovered_link_end = null;
+                                    focused.dirty = true;
+                                }
+                            }
+                        } else {
+                            if (focused.hovered_link_start != null) {
+                                focused.hovered_link_start = null;
+                                focused.hovered_link_end = null;
+                                focused.dirty = true;
                             }
                         }
                     }
@@ -1066,6 +1083,74 @@ fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
 }
 
+const LinkMatch = struct {
+    url: []const u8,
+    start_pin: ghostty_vt.Pin,
+    end_pin: ghostty_vt.Pin,
+};
+
+fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?LinkMatch {
+    const page = &pin.node.data;
+    const row_and_cell = pin.rowAndCell();
+    const cell = row_and_cell.cell;
+
+    if (page.lookupHyperlink(cell)) |hyperlink_id| {
+        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+        return LinkMatch{
+            .url = entry.uri.slice(page.memory),
+            .start_pin = pin,
+            .end_pin = pin,
+        };
+    }
+
+    var start_y = pin.y;
+    var current_row = row_and_cell.row;
+
+    while (current_row.wrap_continuation and start_y > 0) {
+        start_y -= 1;
+        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
+        current_row = prev_pin.rowAndCell().row;
+    }
+
+    var end_y = pin.y;
+    current_row = row_and_cell.row;
+    const max_y: u16 = @intCast(page.size.rows - 1);
+
+    while (current_row.wrap and end_y < max_y) {
+        end_y += 1;
+        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
+        current_row = next_pin.rowAndCell().row;
+    }
+
+    const max_x: u16 = @intCast(page.size.cols - 1);
+    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
+    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
+
+    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
+    const row_text = terminal.screens.active.selectionString(allocator, .{
+        .sel = selection,
+        .trim = false,
+    }) catch return null;
+    defer allocator.free(row_text);
+
+    const col_offset = (pin.y - start_y) * page.size.cols + pin.x;
+    const url_match = url_matcher.findUrlMatchAtPosition(row_text, col_offset) orelse return null;
+
+    const start_row = start_y + @as(u16, @intCast(url_match.start / page.size.cols));
+    const start_col: u16 = @intCast(url_match.start % page.size.cols);
+    const end_row = start_y + @as(u16, @intCast((url_match.end - 1) / page.size.cols));
+    const end_col: u16 = @intCast((url_match.end - 1) % page.size.cols);
+
+    const link_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = start_col, .y = start_row } }) orelse return null;
+    const link_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = end_col, .y = end_row } }) orelse return null;
+
+    return LinkMatch{
+        .url = url_match.url,
+        .start_pin = link_start_pin,
+        .end_pin = link_end_pin,
+    };
+}
+
 fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]const u8 {
     const page = &pin.node.data;
     const row_and_cell = pin.rowAndCell();
@@ -1076,11 +1161,28 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
         return entry.uri.slice(page.memory);
     }
 
-    const col = pin.x;
-    const row_y = pin.y;
-    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = row_y } }) orelse return null;
+    var start_y = pin.y;
+    var current_row = row_and_cell.row;
+
+    while (current_row.wrap_continuation and start_y > 0) {
+        start_y -= 1;
+        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
+        current_row = prev_pin.rowAndCell().row;
+    }
+
+    var end_y = pin.y;
+    current_row = row_and_cell.row;
+    const max_y: u16 = @intCast(page.size.rows - 1);
+
+    while (current_row.wrap and end_y < max_y) {
+        end_y += 1;
+        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
+        current_row = next_pin.rowAndCell().row;
+    }
+
     const max_x: u16 = @intCast(page.size.cols - 1);
-    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = row_y } }) orelse return null;
+    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
+    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
 
     const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
     const row_text = terminal.screens.active.selectionString(allocator, .{
@@ -1089,7 +1191,8 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
     }) catch return null;
     defer allocator.free(row_text);
 
-    return url_matcher.findUrlAtPosition(row_text, col);
+    const col_offset = (pin.y - start_y) * page.size.cols + pin.x;
+    return url_matcher.findUrlAtPosition(row_text, col_offset);
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {

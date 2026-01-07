@@ -55,6 +55,9 @@ pub const SessionState = struct {
     selection_dragging: bool = false,
     /// True while the primary button is held down and we're waiting to see if it turns into a drag.
     selection_pending: bool = false,
+    /// Hovered link range (for underlining).
+    hovered_link_start: ?ghostty_vt.Pin = null,
+    hovered_link_end: ?ghostty_vt.Pin = null,
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,

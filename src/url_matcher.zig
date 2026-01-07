@@ -17,6 +17,12 @@ const url_schemes = [_][]const u8{
     "news:",
 };
 
+pub const UrlMatch = struct {
+    url: []const u8,
+    start: usize,
+    end: usize,
+};
+
 pub fn findUrlAtPosition(text: []const u8, col: usize) ?[]const u8 {
     if (text.len == 0 or col >= text.len) return null;
 
@@ -39,6 +45,36 @@ pub fn findUrlAtPosition(text: []const u8, col: usize) ?[]const u8 {
                 start_pos = url_start;
                 end_pos = url_end;
                 return text[start_pos..end_pos];
+            }
+
+            search_start = scheme_pos + 1;
+        }
+    }
+
+    return null;
+}
+
+pub fn findUrlMatchAtPosition(text: []const u8, col: usize) ?UrlMatch {
+    if (text.len == 0 or col >= text.len) return null;
+
+    for (url_schemes) |scheme| {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, text, search_start, scheme)) |scheme_pos| {
+            const url_start = scheme_pos;
+            var url_end = scheme_pos + scheme.len;
+
+            while (url_end < text.len and isUrlChar(text[url_end])) {
+                url_end += 1;
+            }
+
+            url_end = trimUrlEnd(text[url_start..url_end]).len + url_start;
+
+            if (col >= url_start and col < url_end) {
+                return UrlMatch{
+                    .url = text[url_start..url_end],
+                    .start = url_start,
+                    .end = url_end,
+                };
             }
 
             search_start = scheme_pos + 1;
