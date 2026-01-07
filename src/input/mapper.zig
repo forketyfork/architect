@@ -183,6 +183,10 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             buf[0] = 5;
             break :blk 1;
         },
+        c.SDLK_DELETE => blk: {
+            @memcpy(buf[0..4], "\x1b[3~");
+            break :blk 4;
+        },
         else => 0,
     };
 }

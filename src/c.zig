@@ -92,6 +92,7 @@ pub const SDLK_LEFT = c_import.SDLK_LEFT;
 pub const SDLK_RIGHT = c_import.SDLK_RIGHT;
 pub const SDLK_HOME = c_import.SDLK_HOME;
 pub const SDLK_END = c_import.SDLK_END;
+pub const SDLK_DELETE = c_import.SDLK_DELETE;
 pub const SDLK_EQUALS = c_import.SDLK_EQUALS;
 pub const SDLK_MINUS = c_import.SDLK_MINUS;
 pub const SDLK_KP_PLUS = c_import.SDLK_KP_PLUS;
