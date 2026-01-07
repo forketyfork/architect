@@ -12,6 +12,8 @@ pub const ToastComponent = struct {
     message_len: usize = 0,
 
     font: ?*c.TTF_Font = null,
+    symbol_fallback: ?*c.TTF_Font = null,
+    emoji_fallback: ?*c.TTF_Font = null,
     texture: ?*c.SDL_Texture = null,
     tex_w: c_int = 0,
     tex_h: c_int = 0,
@@ -51,6 +53,14 @@ pub const ToastComponent = struct {
         if (self.texture) |tex| {
             c.SDL_DestroyTexture(tex);
             self.texture = null;
+        }
+        if (self.emoji_fallback) |f| {
+            c.TTF_CloseFont(f);
+            self.emoji_fallback = null;
+        }
+        if (self.symbol_fallback) |f| {
+            c.TTF_CloseFont(f);
+            self.symbol_fallback = null;
         }
         if (self.font) |f| {
             c.TTF_CloseFont(f);
@@ -124,6 +134,26 @@ pub const ToastComponent = struct {
         if (self.font == null) {
             self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
             if (self.font == null) return error.FontUnavailable;
+
+            if (assets.symbol_fallback_path) |symbol_path| {
+                self.symbol_fallback = c.TTF_OpenFont(symbol_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
+                if (self.symbol_fallback) |s| {
+                    if (!c.TTF_AddFallbackFont(self.font.?, s)) {
+                        c.TTF_CloseFont(s);
+                        self.symbol_fallback = null;
+                    }
+                }
+            }
+
+            if (assets.emoji_fallback_path) |emoji_path| {
+                self.emoji_fallback = c.TTF_OpenFont(emoji_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
+                if (self.emoji_fallback) |e| {
+                    if (!c.TTF_AddFallbackFont(self.font.?, e)) {
+                        c.TTF_CloseFont(e);
+                        self.emoji_fallback = null;
+                    }
+                }
+            }
         }
         const toast_font = self.font.?;
 
