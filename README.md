@@ -25,20 +25,20 @@ Download the latest release from the [releases page](https://github.com/forketyf
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
 tar -xzf architect-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine .
-./architect
+xattr -dr com.apple.quarantine Architect.app
+open Architect.app
 ```
 
 **For Intel Macs:**
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
 tar -xzf architect-macos-x86_64.tar.gz
-xattr -dr com.apple.quarantine .
-./architect
+xattr -dr com.apple.quarantine Architect.app
+open Architect.app
 ```
 
 **Note**:
-- The archive contains a small launcher `architect`, the main binary `architect.bin`, and a `lib/` directory with required dynamic libraries. Keep all of them in the same location.
+- The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. Keep the bundle contents intact.
 - Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
 ### Build from Source

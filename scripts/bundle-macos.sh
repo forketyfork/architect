@@ -8,23 +8,58 @@ fi
 
 EXECUTABLE="$1"
 OUTPUT_DIR="$2"
+APP_NAME="Architect"
+APP_DIR="$OUTPUT_DIR/${APP_NAME}.app"
+CONTENTS_DIR="$APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+LIB_DIR="$MACOS_DIR/lib"
+ICON_SOURCE="assets/macos/${APP_NAME}.icns"
 
-echo "Bundling macOS application: $EXECUTABLE -> $OUTPUT_DIR"
+echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 
-mkdir -p "$OUTPUT_DIR/lib"
+mkdir -p "$LIB_DIR" "$RESOURCES_DIR"
+
+cat > "$CONTENTS_DIR/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleName</key>
+    <string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key>
+    <string>${APP_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.forketyfork.architect</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>architect</string>
+    <key>CFBundleIconFile</key>
+    <string>${APP_NAME}</string>
+  </dict>
+</plist>
+EOF
+
+if [ -f "$ICON_SOURCE" ]; then
+    cp "$ICON_SOURCE" "$RESOURCES_DIR/${APP_NAME}.icns"
+    echo "Added app icon: $ICON_SOURCE"
+else
+    echo "Icon not found at $ICON_SOURCE (add an .icns file there to bundle it)"
+fi
 
 # Keep the real binary as architect.bin and provide a wrapper that sets env vars
-cp "$EXECUTABLE" "$OUTPUT_DIR/architect.bin"
-chmod +x "$OUTPUT_DIR/architect.bin"
+cp "$EXECUTABLE" "$MACOS_DIR/architect.bin"
+chmod +x "$MACOS_DIR/architect.bin"
 
-cat > "$OUTPUT_DIR/architect" <<'EOS'
+cat > "$MACOS_DIR/architect" <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 export DYLD_FALLBACK_LIBRARY_PATH="${SCRIPT_DIR}/lib:${DYLD_FALLBACK_LIBRARY_PATH:-/lib:/usr/lib}"
 exec "${SCRIPT_DIR}/architect.bin" "$@"
 EOS
-chmod +x "$OUTPUT_DIR/architect"
+chmod +x "$MACOS_DIR/architect"
 
 seen_list=""
 queue=""
@@ -75,7 +110,7 @@ while [ -n "$queue" ]; do
     queue=$(printf '%s\n' "$queue" | tail -n +2)
 
     lib_name=$(basename "$lib_path")
-    dest="$OUTPUT_DIR/lib/$lib_name"
+    dest="$LIB_DIR/$lib_name"
 
     if [ ! -f "$dest" ]; then
         echo "Copying $lib_name..."
@@ -97,18 +132,18 @@ done
 for original in $seen_list; do
     [ -z "$original" ] && continue
     name=$(basename "$original")
-    install_name_tool -change "$original" "@executable_path/lib/$name" "$OUTPUT_DIR/architect.bin" || true
+    install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect.bin" || true
 done
 
 echo ""
 echo "Verifying final dependencies..."
-if otool -L "$OUTPUT_DIR/architect" | grep -q '/nix/store'; then
+if otool -L "$MACOS_DIR/architect.bin" | grep -q '/nix/store'; then
     echo "Warning: Nix store references remain in architect binary"
-    otool -L "$OUTPUT_DIR/architect" | grep '/nix/store'
+    otool -L "$MACOS_DIR/architect.bin" | grep '/nix/store'
 fi
 
 remaining=0
-for file in "$OUTPUT_DIR"/lib/*.dylib; do
+for file in "$LIB_DIR"/*.dylib; do
     if otool -L "$file" | grep -q '/nix/store'; then
         echo "Warning: Nix store references remain in $file"
         otool -L "$file" | grep '/nix/store'
@@ -126,4 +161,4 @@ find "$OUTPUT_DIR" -type f
 
 echo ""
 echo "To distribute, package the entire directory:"
-echo "  cd $OUTPUT_DIR && tar -czf architect-macos.tar.gz *"
+echo "  cd $OUTPUT_DIR && tar -czf architect-macos.tar.gz ${APP_NAME}.app"
