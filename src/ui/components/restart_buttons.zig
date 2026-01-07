@@ -164,8 +164,21 @@ pub const RestartButtonsComponent = struct {
     }
 
     fn restartButtonRect(self: *RestartButtonsComponent, rect: geom.Rect) geom.Rect {
-        self.ensureTexture(null) catch {};
-        const text_width = self.tex_w;
+        const text_width = if (self.tex_w > 0) self.tex_w else blk: {
+            if (self.font_path) |path| {
+                if (self.font == null) {
+                    self.font = c.TTF_OpenFont(path.ptr, @floatFromInt(RESTART_BUTTON_FONT_SIZE));
+                }
+                if (self.font) |font| {
+                    const restart_text = "Restart";
+                    var w: c_int = 0;
+                    var h: c_int = 0;
+                    _ = c.TTF_GetStringSize(font, restart_text.ptr, restart_text.len, &w, &h);
+                    break :blk w;
+                }
+            }
+            break :blk 80;
+        };
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
         const button_h = RESTART_BUTTON_HEIGHT;
         const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;

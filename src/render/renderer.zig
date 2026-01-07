@@ -25,10 +25,6 @@ const FADE_WIDTH: c_int = 20;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
-pub fn isPointInRect(x: c_int, y: c_int, rect: Rect) bool {
-    return geom.containsPoint(rect, x, y);
-}
-
 pub fn render(
     renderer: *c.SDL_Renderer,
     sessions: []SessionState,

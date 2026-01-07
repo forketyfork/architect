@@ -9,6 +9,7 @@ pub const UiRoot = struct {
     components: std.ArrayList(UiComponent),
     actions: types.UiActionQueue,
     assets: types.UiAssets,
+    toast_component: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator) UiRoot {
         return .{
@@ -80,6 +81,14 @@ pub const UiRoot = struct {
 
     pub fn popAction(self: *UiRoot) ?types.UiAction {
         return self.actions.pop();
+    }
+
+    pub fn showToast(self: *UiRoot, message: []const u8, now_ms: i64) void {
+        if (self.toast_component) |toast_ptr| {
+            const toast = @import("components/toast.zig");
+            const comp: *toast.ToastComponent = @ptrCast(@alignCast(toast_ptr));
+            comp.show(message, now_ms);
+        }
     }
 };
 

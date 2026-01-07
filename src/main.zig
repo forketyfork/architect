@@ -216,6 +216,7 @@ pub fn main() !void {
     try ui.register(help_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
+    ui.toast_component = toast_component;
     const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
     try ui.register(escape_component.asComponent());
     const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
@@ -336,11 +337,11 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
-                        copySelectionToClipboard(focused, allocator, toast_component, now) catch |err| {
+                        copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
-                        pasteClipboardIntoSession(focused, allocator, toast_component, now) catch |err| {
+                        pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
@@ -381,7 +382,7 @@ pub fn main() !void {
                         var notification_buf: [64]u8 = undefined;
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
-                        toast_component.show(notification_msg, now);
+                        ui.showToast(notification_msg, now);
                     } else if (input.isSwitchTerminalShortcut(key, mod)) |is_next| {
                         if (anim_state.mode == .Full) {
                             const total_sessions = GRID_ROWS * GRID_COLS;
@@ -403,7 +404,7 @@ pub fn main() !void {
                             var notification_buf: [64]u8 = undefined;
                             const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
                             const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
-                            toast_component.show(notification_msg, now);
+                            ui.showToast(notification_msg, now);
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -493,8 +494,8 @@ pub fn main() !void {
 
                     if (anim_state.mode == .Grid) {
                         sessions[anim_state.focused_session].clearSelection();
-                        const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
-                        const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
+                        const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), @as(usize, GRID_COLS - 1));
+                        const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), @as(usize, GRID_ROWS - 1));
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
 
                         const cell_rect = Rect{
@@ -807,8 +808,8 @@ fn calculateHoveredSession(
             if (mouse_x < 0 or mouse_x >= render_width or
                 mouse_y < 0 or mouse_y >= render_height) return null;
 
-            const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
-            const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
+            const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), @as(usize, GRID_COLS - 1));
+            const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), @as(usize, GRID_ROWS - 1));
             return grid_row * GRID_COLS + grid_col;
         },
         .Full, .PanningLeft, .PanningRight => anim_state.focused_session,
@@ -1060,16 +1061,16 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
 fn copySelectionToClipboard(
     session: *SessionState,
     allocator: std.mem.Allocator,
-    toast: *ui_mod.toast.ToastComponent,
+    ui: *ui_mod.UiRoot,
     now: i64,
 ) !void {
     const terminal = session.terminal orelse {
-        toast.show("No terminal to copy from", now);
+        ui.showToast("No terminal to copy from", now);
         return;
     };
     const screen = terminal.screens.active;
     const sel = screen.selection orelse {
-        toast.show("No selection", now);
+        ui.showToast("No selection", now);
         return;
     };
 
@@ -1081,42 +1082,42 @@ fn copySelectionToClipboard(
     @memcpy(clipboard_text[0..text.len], text);
 
     if (!c.SDL_SetClipboardText(clipboard_text.ptr)) {
-        toast.show("Failed to copy selection", now);
+        ui.showToast("Failed to copy selection", now);
         return;
     }
 
-    toast.show("Copied selection", now);
+    ui.showToast("Copied selection", now);
 }
 
 fn pasteClipboardIntoSession(
     session: *SessionState,
     allocator: std.mem.Allocator,
-    toast: *ui_mod.toast.ToastComponent,
+    ui: *ui_mod.UiRoot,
     now: i64,
 ) !void {
     const terminal = session.terminal orelse {
-        toast.show("No terminal to paste into", now);
+        ui.showToast("No terminal to paste into", now);
         return;
     };
     const shell_ptr = if (session.shell) |*s| s else {
-        toast.show("Shell not available", now);
+        ui.showToast("Shell not available", now);
         return;
     };
 
     const clip_ptr = c.SDL_GetClipboardText();
     defer c.SDL_free(clip_ptr);
     if (clip_ptr == null) {
-        toast.show("Clipboard empty", now);
+        ui.showToast("Clipboard empty", now);
         return;
     }
     const clip = std.mem.sliceTo(clip_ptr, 0);
     if (clip.len == 0) {
-        toast.show("Clipboard empty", now);
+        ui.showToast("Clipboard empty", now);
         return;
     }
 
     if (!ghostty_vt.input.isSafePaste(clip)) {
-        toast.show("Clipboard blocked (unsafe paste)", now);
+        ui.showToast("Clipboard blocked (unsafe paste)", now);
         return;
     }
 
@@ -1130,7 +1131,7 @@ fn pasteClipboardIntoSession(
         _ = try shell_ptr.write(part);
     }
 
-    toast.show("Pasted clipboard", now);
+    ui.showToast("Pasted clipboard", now);
 }
 
 const ansi_colors = [_]c.SDL_Color{
