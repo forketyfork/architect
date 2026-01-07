@@ -107,11 +107,11 @@ pub const ToastComponent = struct {
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
-        _ = c.SDL_SetRenderDrawColor(renderer, 20, 20, 30, bg_alpha);
+        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, border_alpha);
+        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, border_alpha);
         _ = c.SDL_RenderRect(renderer, &bg_rect);
 
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
@@ -157,7 +157,7 @@ pub const ToastComponent = struct {
         }
         const toast_font = self.font.?;
 
-        const fg_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
         const message_z = @as([*:0]const u8, @ptrCast(&self.message));
         const surface = c.TTF_RenderText_Blended(toast_font, message_z, self.message_len, fg_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(surface);

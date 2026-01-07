@@ -139,7 +139,7 @@ pub const RestartButtonsComponent = struct {
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 40, 50, 220);
+        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 220);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(button_x),
             .y = @floatFromInt(button_y),
@@ -148,7 +148,7 @@ pub const RestartButtonsComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 100, 150, 255, 255);
+        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
         primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
 
         const text_x = button_x + RESTART_BUTTON_PADDING;
@@ -188,7 +188,7 @@ pub const RestartButtonsComponent = struct {
         const icon_font = self.font.?;
 
         const restart_text = "Restart";
-        const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
         const surface = c.TTF_RenderText_Blended(icon_font, restart_text, restart_text.len, fg_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(surface);
 
