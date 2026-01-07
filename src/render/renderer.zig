@@ -202,6 +202,13 @@ fn renderSessionContent(
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
+        var run_buf: [512]u21 = undefined;
+        var run_len: usize = 0;
+        var run_cells: c_int = 0;
+        var run_x: c_int = 0;
+        var run_fg: c.SDL_Color = undefined;
+        var run_fallback: font_mod.Fallback = .primary;
+
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
             const list_cell = pages.getCell(if (session.is_scrolled)
@@ -279,10 +286,42 @@ fn renderSessionContent(
                     }
                 }
 
-                const draw_width = cell_width_actual * glyph_width_cells;
-                try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
+                const fallback_choice = font.classifyFallback(cluster_buf[0..cluster_len]);
+
+                if (run_len == 0) {
+                    run_x = x;
+                    run_fg = fg_color;
+                    run_fallback = fallback_choice;
+                }
+
+                if (!colorsEqual(run_fg, fg_color) or run_fallback != fallback_choice or run_len + cluster_len > run_buf.len) {
+                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                    run_x = x;
+                    run_fg = fg_color;
+                    run_fallback = fallback_choice;
+                    run_len = 0;
+                    run_cells = 0;
+                }
+
+                if (cluster_len > run_buf.len) {
+                    const draw_width = cell_width_actual * glyph_width_cells;
+                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
+                    run_len = 0;
+                    run_cells = 0;
+                    continue;
+                }
+
+                @memcpy(run_buf[run_len .. run_len + cluster_len], cluster_buf[0..cluster_len]);
+                run_len += cluster_len;
+                run_cells += glyph_width_cells;
+            } else {
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                run_len = 0;
+                run_cells = 0;
             }
         }
+
+        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg);
     }
 
     if (!session.is_scrolled and is_focused and !session.dead and cursor_visible) {
@@ -734,6 +773,22 @@ fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color) c.SDL_Color
             .a = 255,
         },
     };
+}
+
+fn flushRun(
+    font: *font_mod.Font,
+    buffer: []const u21,
+    len: usize,
+    x: c_int,
+    y: c_int,
+    cells: c_int,
+    cell_width_actual: c_int,
+    cell_height_actual: c_int,
+    fg: c.SDL_Color,
+) RenderError!void {
+    if (len == 0 or cells == 0) return;
+    const draw_width = cell_width_actual * cells;
+    try font.renderCluster(buffer[0..len], x, y, draw_width, cell_height_actual, fg);
 }
 
 fn get256Color(idx: u8) c.SDL_Color {

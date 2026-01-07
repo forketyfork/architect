@@ -5,7 +5,7 @@ const c = @import("c.zig");
 
 const log = std.log.scoped(.font);
 
-const FallbackChoice = enum {
+pub const Fallback = enum {
     primary,
     symbol,
     emoji,
@@ -14,8 +14,8 @@ const FallbackChoice = enum {
 const GlyphKey = struct {
     hash: u64,
     color: u32,
-    fallback: FallbackChoice,
-    len: u8,
+    fallback: Fallback,
+    len: u16,
 };
 
 const WHITE: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
@@ -108,7 +108,6 @@ pub const Font = struct {
         GlyphRenderFailed,
         TextureCreationFailed,
         InvalidCodepoint,
-        BufferTooSmall,
     } || std.mem.Allocator.Error;
 
     pub fn renderGlyph(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) RenderGlyphError!void {
@@ -128,21 +127,29 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
-        var utf8_buf: [128]u8 = undefined;
+        var total_bytes: usize = 0;
+        for (codepoints) |cp| {
+            total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
+        }
+
+        var stack_buf: [512]u8 = undefined;
+        const use_heap = total_bytes > stack_buf.len;
+        const utf8_slice = if (use_heap)
+            try self.allocator.alloc(u8, total_bytes)
+        else
+            stack_buf[0..total_bytes];
+        defer if (use_heap) self.allocator.free(utf8_slice);
+
         var utf8_len: usize = 0;
         for (codepoints) |cp| {
             var local: [4]u8 = undefined;
             const encoded_len = std.unicode.utf8Encode(cp, &local) catch return error.InvalidCodepoint;
-            if (utf8_len + encoded_len > utf8_buf.len) {
-                return error.BufferTooSmall;
-            }
-            @memcpy(utf8_buf[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
+            @memcpy(utf8_slice[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
             utf8_len += encoded_len;
         }
-        const utf8_slice = utf8_buf[0..utf8_len];
 
-        const fallback_choice = self.chooseFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice, fg_color, fallback_choice) catch |err| {
+        const fallback_choice = self.classifyFallback(codepoints);
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -173,7 +180,46 @@ pub const Font = struct {
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
     }
 
-    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: FallbackChoice) RenderGlyphError!*c.SDL_Texture {
+    pub fn classifyFallback(self: *Font, codepoints: []const u21) Fallback {
+        const has_all = blk: {
+            for (codepoints) |cp| {
+                if (!c.TTF_FontHasGlyph(self.font, @intCast(cp))) {
+                    break :blk false;
+                }
+            }
+            break :blk true;
+        };
+        if (has_all) return .primary;
+
+        const has_emoji = blk: {
+            for (codepoints) |cp| {
+                if (cp >= 0x1F000) break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (has_emoji and self.emoji_fallback != null) {
+            return .emoji;
+        }
+
+        if (self.symbol_fallback) |fallback_font| {
+            const has_in_symbol = blk: {
+                for (codepoints) |cp| {
+                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
+                        break :blk false;
+                    }
+                }
+                break :blk true;
+            };
+            if (has_in_symbol) return .symbol;
+        }
+
+        if (self.emoji_fallback != null) return .emoji;
+
+        return .primary;
+    }
+
+    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback) RenderGlyphError!*c.SDL_Texture {
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
             .color = packColor(if (fallback == .emoji) WHITE else fg_color),
@@ -211,44 +257,5 @@ pub const Font = struct {
 
     fn packColor(color: c.SDL_Color) u32 {
         return (@as(u32, color.r)) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16) | (@as(u32, color.a) << 24);
-    }
-
-    fn chooseFallback(self: *Font, codepoints: []const u21) FallbackChoice {
-        const has_all = blk: {
-            for (codepoints) |cp| {
-                if (!c.TTF_FontHasGlyph(self.font, @intCast(cp))) {
-                    break :blk false;
-                }
-            }
-            break :blk true;
-        };
-        if (has_all) return .primary;
-
-        const has_emoji = blk: {
-            for (codepoints) |cp| {
-                if (cp >= 0x1F000) break :blk true;
-            }
-            break :blk false;
-        };
-
-        if (has_emoji and self.emoji_fallback != null) {
-            return .emoji;
-        }
-
-        if (self.symbol_fallback) |fallback| {
-            const has_in_symbol = blk: {
-                for (codepoints) |cp| {
-                    if (!c.TTF_FontHasGlyph(fallback, @intCast(cp))) {
-                        break :blk false;
-                    }
-                }
-                break :blk true;
-            };
-            if (has_in_symbol) return .symbol;
-        }
-
-        if (self.emoji_fallback != null) return .emoji;
-
-        return .primary;
     }
 };
