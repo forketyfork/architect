@@ -1267,15 +1267,23 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
 }
 
 fn clearTerminal(session: *SessionState) void {
-    const terminal = session.terminal orelse return;
+    const terminal_ptr = session.terminal orelse return;
+    var terminal = terminal_ptr;
 
     // Match Ghostty behavior: avoid clearing alt screen to not disrupt full-screen apps.
     if (terminal.screens.active_key == .alternate) return;
 
-    session.terminal.?.screens.active.clearSelection();
-    session.terminal.?.eraseDisplay(ghostty_vt.EraseDisplay.scrollback, false);
-    session.terminal.?.eraseDisplay(ghostty_vt.EraseDisplay.complete, false);
+    const at_prompt = terminal.cursorIsAtPrompt();
+
+    terminal.screens.active.clearSelection();
+    terminal.eraseDisplay(ghostty_vt.EraseDisplay.scrollback, false);
+    terminal.eraseDisplay(ghostty_vt.EraseDisplay.complete, false);
     session.dirty = true;
+
+    // Ghostty sends a form-feed when clearing at a prompt so the shell redraws.
+    if (at_prompt) {
+        session.sendInput(&[_]u8{0x0C}) catch {};
+    }
 }
 
 fn copySelectionToClipboard(
