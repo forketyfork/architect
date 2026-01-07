@@ -148,12 +148,8 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
-    const session_bg_color = if (!session.spawned)
-        c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 }
-    else if (is_focused)
-        c.SDL_Color{ .r = 40, .g = 40, .b = 60, .a = 255 }
-    else
-        c.SDL_Color{ .r = 30, .g = 30, .b = 40, .a = 255 };
+    const base_bg = c.SDL_Color{ .r = 14, .g = 17, .b = 22, .a = 255 };
+    const session_bg_color = base_bg;
 
     _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
@@ -193,7 +189,7 @@ fn renderSessionContent(
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
-    const default_fg = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const default_fg = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
     const active_selection = screen.selection;
 
     var row: usize = 0;
@@ -258,7 +254,7 @@ fn renderSessionContent(
                 if (pages.pin(point_tag)) |pin| {
                     if (sel.contains(screen, pin)) {
                         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, 70, 120, 190, 160);
+                        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 255);
                         const sel_rect = c.SDL_FRect{
                             .x = @floatFromInt(x),
                             .y = @floatFromInt(y),
@@ -393,7 +389,7 @@ fn renderSessionContent(
             if (cursor_x + cell_width_actual > rect.x and cursor_x < rect.x + rect.w and
                 cursor_y + cell_height_actual > rect.y and cursor_y < rect.y + rect.h)
             {
-                _ = c.SDL_SetRenderDrawColor(renderer, 200, 200, 200, 255);
+                _ = c.SDL_SetRenderDrawColor(renderer, 215, 186, 125, 255);
                 const cursor_rect = c.SDL_FRect{
                     .x = @floatFromInt(cursor_x),
                     .y = @floatFromInt(cursor_y),
@@ -953,22 +949,24 @@ fn get256Color(idx: u8) c.SDL_Color {
 }
 
 const ansi_colors = [_]c.SDL_Color{
-    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    .{ .r = 205, .g = 49, .b = 49, .a = 255 },
-    .{ .r = 13, .g = 188, .b = 121, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 16, .a = 255 },
-    .{ .r = 36, .g = 114, .b = 200, .a = 255 },
-    .{ .r = 188, .g = 63, .b = 188, .a = 255 },
-    .{ .r = 17, .g = 168, .b = 205, .a = 255 },
-    .{ .r = 229, .g = 229, .b = 229, .a = 255 },
-    .{ .r = 102, .g = 102, .b = 102, .a = 255 },
-    .{ .r = 241, .g = 76, .b = 76, .a = 255 },
-    .{ .r = 35, .g = 209, .b = 139, .a = 255 },
-    .{ .r = 245, .g = 245, .b = 67, .a = 255 },
-    .{ .r = 59, .g = 142, .b = 234, .a = 255 },
-    .{ .r = 214, .g = 112, .b = 214, .a = 255 },
-    .{ .r = 41, .g = 184, .b = 219, .a = 255 },
-    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    // Normal
+    .{ .r = 14, .g = 17, .b = 22, .a = 255 }, // Black
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // Red
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // Green
+    .{ .r = 209, .g = 154, .b = 102, .a = 255 }, // Yellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // Blue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // Magenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // Cyan
+    .{ .r = 171, .g = 178, .b = 191, .a = 255 }, // White
+    // Bright
+    .{ .r = 92, .g = 99, .b = 112, .a = 255 }, // BrightBlack
+    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // BrightRed
+    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // BrightGreen
+    .{ .r = 229, .g = 192, .b = 123, .a = 255 }, // BrightYellow
+    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // BrightBlue
+    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // BrightMagenta
+    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // BrightCyan
+    .{ .r = 205, .g = 214, .b = 224, .a = 255 }, // BrightWhite
 };
 
 test "get256Color - basic ANSI colors" {
