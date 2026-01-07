@@ -70,12 +70,11 @@ See [Setup](#setup) section below for building from source.
 
 ## Setup
 
-1. Clone the ghostty dependency:
+1. (Optional) Pre-fetch the ghostty dependency to speed up the first build:
    ```bash
    just setup
    ```
-
-   This will clone `ghostty-org/ghostty` into the `ghostty/` directory.
+   `just setup` caches the `ghostty` source tarball; the regular build will fetch it automatically if you skip this step.
 
 2. Update the Nix flake and enter the development shell:
    ```bash
@@ -281,10 +280,8 @@ Download the latest release from the [releases page](https://github.com/forketyf
 
 ## Dependencies
 
-- **ghostty-vt**: Terminal emulation library from `ghostty-org/ghostty` (path dependency)
+- **ghostty-vt**: Terminal emulation library from `ghostty-org/ghostty`, fetched as a pinned tarball via Zig package manager (see `build.zig.zon`)
   - Provides terminal state machine and ANSI escape sequence parsing
-  - Cloned locally into `ghostty/` directory (gitignored)
-  - Configured in `build.zig.zon` to point to the local ghostty clone
 - **SDL3**: Window management and rendering backend (via Nix)
 - **SDL3_ttf**: Font rendering library (via Nix)
 - **Victor Mono Nerd Font**: Bundled monospace font with programming ligatures

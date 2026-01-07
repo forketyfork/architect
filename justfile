@@ -3,12 +3,13 @@ default:
 
 setup:
     #!/usr/bin/env bash
-    if [ ! -d "ghostty" ]; then
-        echo "Cloning ghostty-org/ghostty..."
-        git clone https://github.com/ghostty-org/ghostty.git ghostty
-    else
-        echo "ghostty directory already exists"
+    # Pre-fetch ghostty tarball into the Zig cache (no checkout needed)
+    url=$(sed -n 's/.*\.url *= *"\(.*\)".*/\1/p' build.zig.zon | head -1)
+    if [ -z "$url" ]; then
+        echo "ghostty URL not found in build.zig.zon" >&2
+        exit 1
     fi
+    zig fetch --global-cache-dir .zig-cache "$url"
 
 build:
     zig build

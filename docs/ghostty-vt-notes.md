@@ -39,15 +39,13 @@
 
 ### Adding as Dependency
 
-In `build.zig.zon`:
+In `build.zig.zon` (URL + hash; tarball fetched automatically):
 
 ```zig
 .dependencies = .{
     .ghostty = .{
-        .path = "../../ghostty-org/ghostty",
-        // Or use URL-based dependency:
-        // .url = "https://github.com/ghostty-org/ghostty/archive/COMMIT.tar.gz",
-        // .hash = "...",
+        .url = "https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz",
+        .hash = "122022d77cfd6d901de978a2667797a18d82f7ce2fd6c40d4028d6db603499dc9679",
     },
 },
 ```
@@ -204,10 +202,11 @@ Rendering considerations:
 
 ## Testing
 
-Run tests in the ghostty repository:
+Run upstream tests (requires cloning ghostty separately):
 
 ```bash
-cd ../../ghostty-org/ghostty
+git clone https://github.com/ghostty-org/ghostty.git
+cd ghostty
 zig build test-lib-vt
 ```
 
@@ -220,7 +219,7 @@ zig build test-lib-vt -Dsimd=true
 
 ## Example Code Locations
 
-In ghostty repository:
+In the ghostty repository (clone separately):
 - `example/zig-vt/`: Basic terminal creation and text output
 - `example/zig-vt-stream/`: Escape sequence parsing via streams
 - `example/c-vt/`: C API examples (for future C bindings)
