@@ -14,11 +14,14 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LIB_DIR="$MACOS_DIR/lib"
+SHARE_DIR="$CONTENTS_DIR/share/architect"
+FONT_DEST_DIR="$SHARE_DIR/fonts"
 ICON_SOURCE="assets/macos/${APP_NAME}.icns"
+FONT_SOURCE_DIR="assets/fonts"
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 
-mkdir -p "$LIB_DIR" "$RESOURCES_DIR"
+mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$FONT_DEST_DIR"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,6 +49,21 @@ if [ -f "$ICON_SOURCE" ]; then
     echo "Added app icon: $ICON_SOURCE"
 else
     echo "Icon not found at $ICON_SOURCE (add an .icns file there to bundle it)"
+fi
+
+if [ -d "$FONT_SOURCE_DIR" ]; then
+    echo "Bundling fonts from $FONT_SOURCE_DIR"
+    if compgen -G "$FONT_SOURCE_DIR"/*.ttf > /dev/null; then
+        cp "$FONT_SOURCE_DIR"/*.ttf "$FONT_DEST_DIR"/
+    else
+        echo "No .ttf font files found in $FONT_SOURCE_DIR; skipping font copy"
+    fi
+    if [ -f "$FONT_SOURCE_DIR/LICENSE" ]; then
+        cp "$FONT_SOURCE_DIR/LICENSE" "$FONT_DEST_DIR"/LICENSE
+    fi
+else
+    echo "Font source directory not found at $FONT_SOURCE_DIR"
+    exit 1
 fi
 
 # Keep the real binary as architect.bin and provide a wrapper that sets env vars

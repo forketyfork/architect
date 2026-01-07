@@ -164,8 +164,7 @@ pub const RestartButtonsComponent = struct {
     }
 
     fn restartButtonRect(self: *RestartButtonsComponent, rect: geom.Rect) geom.Rect {
-        self.ensureTexture(null) catch {};
-        const text_width = self.tex_w;
+        const text_width = if (self.tex_w > 0) self.tex_w else 80;
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
         const button_h = RESTART_BUTTON_HEIGHT;
         const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;

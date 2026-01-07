@@ -15,6 +15,32 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 
+## Zig Language Gotchas
+
+### Type Inference with Builtin Functions
+**Problem:** Zig's builtin functions like `@min`, `@max`, and `@clamp` infer result types from their operands. When using comptime constants, this can produce unexpectedly narrow types that cause silent integer wrapping.
+
+**Example Bug:**
+```zig
+// WRONG: @min infers u2 (2-bit type) from the constant 2, wrapping at 4
+const grid_col = @min(@as(usize, col_index), GRID_COLS - 1);  // if GRID_COLS=3
+const result = row * GRID_COLS + grid_col;  // 1*3+1 = 4, wraps to 0 in u2!
+```
+
+**Solution:** Explicitly cast comptime constants to the desired type:
+```zig
+// CORRECT: Both operands are usize, result is usize
+const grid_col: usize = @min(@as(usize, col_index), @as(usize, GRID_COLS - 1));
+const result = row * GRID_COLS + grid_col;  // Works correctly
+```
+
+**When to be careful:**
+- Using `@min`, `@max`, `@clamp` with comptime integer literals or constants
+- Arithmetic operations where the result might exceed the inferred type's range
+- Index calculations, especially for grids or arrays (values 0-3 fit in u2, but 4+ wrap)
+
+**General rule:** When working with indices, sizes, or any value that might grow, explicitly annotate or cast to `usize` or an appropriate sized type.
+
 ## Build and Test (required after every task)
 - Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.
 - Report the results in your summary; if you must skip tests, state the reason explicitly.
