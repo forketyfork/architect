@@ -341,8 +341,9 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
-                        // Clear screen + scrollback (matches Ghostty Cmd+K).
-                        try focused.sendInput("\x1b[3J\x1b[H\x1b[2J");
+                        // Clear scrollback + screen (Ghostty Cmd+K behavior). Include RIS for
+                        // terminals that ignore the 3J/2J combo when in alternate screen.
+                        try focused.sendInput("\x1b[3J\x1b[H\x1b[2J\x1bc");
                         ui.showToast("Cleared terminal", now);
                     } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
