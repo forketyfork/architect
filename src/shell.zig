@@ -72,7 +72,22 @@ pub const Shell = struct {
     }
 
     pub fn write(self: *Shell, data: []const u8) !usize {
-        return posix.write(self.pty.master, data);
+        var written: usize = 0;
+        while (written < data.len) {
+            const n = posix.write(self.pty.master, data[written..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    // PTY master is non-blocking; wait briefly for space rather than
+                    // dropping the remainder of a large paste.
+                    std.Thread.sleep(50 * std.time.ns_per_ms);
+                    continue;
+                },
+                else => return err,
+            };
+            if (n == 0) return error.WouldBlock;
+            written += n;
+        }
+
+        return data.len;
     }
 
     pub fn wait(self: *Shell) !void {
