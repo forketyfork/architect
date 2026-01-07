@@ -89,7 +89,7 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
             return 1;
         }
-        return switch (key) {
+        const ctrl_result: usize = switch (key) {
             c.SDLK_LEFTBRACKET => blk: {
                 buf[0] = 27;
                 break :blk 1;
@@ -104,6 +104,7 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             },
             else => 0,
         };
+        if (ctrl_result > 0) return ctrl_result;
     }
 
     if (mod & c.SDL_KMOD_GUI != 0) {
@@ -176,12 +177,12 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             break :blk 3;
         },
         c.SDLK_HOME => blk: {
-            buf[0] = 1;
-            break :blk 1;
+            @memcpy(buf[0..3], "\x1b[H");
+            break :blk 3;
         },
         c.SDLK_END => blk: {
-            buf[0] = 5;
-            break :blk 1;
+            @memcpy(buf[0..3], "\x1b[F");
+            break :blk 3;
         },
         c.SDLK_DELETE => blk: {
             @memcpy(buf[0..4], "\x1b[3~");
