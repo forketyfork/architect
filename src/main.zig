@@ -18,6 +18,7 @@ const ui_mod = @import("ui/mod.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const open_url = @import("os/open.zig");
+const url_matcher = @import("url_matcher.zig");
 
 const log = std.log.scoped(.main);
 
@@ -523,13 +524,13 @@ pub fn main() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
                         const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned) {
+                        if (focused.spawned and focused.terminal != null) {
                             if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
                                 const mod = c.SDL_GetModState();
                                 const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                                 if (cmd_held) {
-                                    if (getLinkAtPin(pin)) |uri| {
+                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin)) |uri| {
                                         open_url.openUrl(allocator, uri) catch |err| {
                                             log.err("Failed to open URL: {}", .{err});
                                         };
@@ -575,12 +576,12 @@ pub fn main() !void {
                             }
                         }
 
-                        if (!over_ui and pin != null) {
+                        if (!over_ui and pin != null and focused.terminal != null) {
                             const mod = c.SDL_GetModState();
                             const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                             if (cmd_held) {
-                                if (getLinkAtPin(pin.?)) |_| {
+                                if (getLinkAtPin(allocator, &focused.terminal.?, pin.?)) |_| {
                                     desired_cursor = .pointer;
                                 } else {
                                     desired_cursor = .ibeam;
@@ -1065,14 +1066,30 @@ fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
 }
 
-fn getLinkAtPin(pin: ghostty_vt.Pin) ?[]const u8 {
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]const u8 {
     const page = &pin.node.data;
     const row_and_cell = pin.rowAndCell();
     const cell = row_and_cell.cell;
 
-    const hyperlink_id = page.lookupHyperlink(cell) orelse return null;
-    const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
-    return entry.uri.slice(page.memory);
+    if (page.lookupHyperlink(cell)) |hyperlink_id| {
+        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+        return entry.uri.slice(page.memory);
+    }
+
+    const col = pin.x;
+    const row_y = pin.y;
+    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = row_y } }) orelse return null;
+    const max_x: u16 = @intCast(page.size.cols - 1);
+    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = row_y } }) orelse return null;
+
+    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
+    const row_text = terminal.screens.active.selectionString(allocator, .{
+        .sel = selection,
+        .trim = false,
+    }) catch return null;
+    defer allocator.free(row_text);
+
+    return url_matcher.findUrlAtPosition(row_text, col);
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
