@@ -656,6 +656,7 @@ pub fn main() !void {
         for (&sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
+            try session.flushPendingWrites();
             session.updateCwd(now);
             updateScrollInertia(session, delta_time_s);
         }
@@ -992,15 +993,11 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod,
     var buf: [8]u8 = undefined;
     const n = input.encodeKeyWithMod(key, mod, &buf);
     if (n > 0) {
-        if (focused.shell) |*shell| {
-            _ = try shell.write(buf[0..n]);
-        }
+        try focused.sendInput(buf[0..n]);
     } else if (is_repeat and builtin.os.tag == .macos) {
         if (input.keyToChar(key, mod)) |ch| {
             buf[0] = ch;
-            if (focused.shell) |*shell| {
-                _ = try shell.write(buf[0..1]);
-            }
+            try focused.sendInput(buf[0..1]);
         }
     }
 }
@@ -1263,9 +1260,7 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
         }
     }
 
-    if (session.shell) |*shell| {
-        _ = try shell.write(text);
-    }
+    try session.sendInput(text);
 }
 
 fn copySelectionToClipboard(
@@ -1309,10 +1304,10 @@ fn pasteClipboardIntoSession(
         ui.showToast("No terminal to paste into", now);
         return;
     };
-    const shell_ptr = if (session.shell) |*s| s else {
+    if (session.shell == null) {
         ui.showToast("Shell not available", now);
         return;
-    };
+    }
 
     const clip_ptr = c.SDL_GetClipboardText();
     defer c.SDL_free(clip_ptr);
@@ -1333,7 +1328,7 @@ fn pasteClipboardIntoSession(
 
     for (slices) |part| {
         if (part.len == 0) continue;
-        _ = try shell_ptr.write(part);
+        try session.sendInput(part);
     }
 
     ui.showToast("Pasted clipboard", now);
