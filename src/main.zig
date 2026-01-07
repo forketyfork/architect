@@ -17,6 +17,7 @@ const config_mod = @import("config.zig");
 const ui_mod = @import("ui/mod.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
+const open_url = @import("os/open.zig");
 
 const log = std.log.scoped(.main);
 
@@ -40,7 +41,7 @@ const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
 const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
-const CursorKind = enum { arrow, ibeam };
+const CursorKind = enum { arrow, ibeam, pointer };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -106,6 +107,8 @@ pub fn main() !void {
     defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
     const ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
     defer if (ibeam_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    const pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    defer if (pointer_cursor) |cursor| c.SDL_DestroyCursor(cursor);
     var current_cursor: CursorKind = .arrow;
     if (arrow_cursor) |cursor| {
         _ = c.SDL_SetCursor(cursor);
@@ -522,7 +525,20 @@ pub fn main() !void {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned) {
                             if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                beginSelection(focused, pin);
+                                const mod = c.SDL_GetModState();
+                                const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                                if (cmd_held) {
+                                    if (getLinkAtPin(pin)) |uri| {
+                                        open_url.openUrl(allocator, uri) catch |err| {
+                                            log.err("Failed to open URL: {}", .{err});
+                                        };
+                                    } else {
+                                        beginSelection(focused, pin);
+                                    }
+                                } else {
+                                    beginSelection(focused, pin);
+                                }
                             }
                         }
                     }
@@ -560,7 +576,18 @@ pub fn main() !void {
                         }
 
                         if (!over_ui and pin != null) {
-                            desired_cursor = .ibeam;
+                            const mod = c.SDL_GetModState();
+                            const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                            if (cmd_held) {
+                                if (getLinkAtPin(pin.?)) |_| {
+                                    desired_cursor = .pointer;
+                                } else {
+                                    desired_cursor = .ibeam;
+                                }
+                            } else {
+                                desired_cursor = .ibeam;
+                            }
                         }
                     }
 
@@ -568,6 +595,7 @@ pub fn main() !void {
                         const target_cursor = switch (desired_cursor) {
                             .arrow => arrow_cursor,
                             .ibeam => ibeam_cursor,
+                            .pointer => pointer_cursor,
                         };
                         if (target_cursor) |cursor| {
                             _ = c.SDL_SetCursor(cursor);
@@ -1035,6 +1063,16 @@ fn endSelection(session: *SessionState) void {
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+fn getLinkAtPin(pin: ghostty_vt.Pin) ?[]const u8 {
+    const page = &pin.node.data;
+    const row_and_cell = pin.rowAndCell();
+    const cell = row_and_cell.cell;
+
+    const hyperlink_id = page.lookupHyperlink(cell) orelse return null;
+    const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+    return entry.uri.slice(page.memory);
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
