@@ -5,10 +5,16 @@ const c = @import("c.zig");
 
 const log = std.log.scoped(.font);
 
+const FallbackChoice = enum {
+    primary,
+    symbol,
+    emoji,
+};
+
 const GlyphKey = struct {
     hash: u64,
     color: u32,
-    fallback: bool,
+    fallback: FallbackChoice,
     len: u8,
 };
 
@@ -16,7 +22,8 @@ const WHITE: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
 
 pub const Font = struct {
     font: *c.TTF_Font,
-    fallback_font: ?*c.TTF_Font,
+    symbol_fallback: ?*c.TTF_Font,
+    emoji_fallback: ?*c.TTF_Font,
     renderer: *c.SDL_Renderer,
     glyph_cache: std.AutoHashMap(GlyphKey, *c.SDL_Texture),
     allocator: std.mem.Allocator,
@@ -31,31 +38,44 @@ pub const Font = struct {
         allocator: std.mem.Allocator,
         renderer: *c.SDL_Renderer,
         font_path: [*:0]const u8,
-        fallback_path: ?[*:0]const u8,
+        symbol_fallback_path: ?[*:0]const u8,
+        emoji_fallback_path: ?[*:0]const u8,
         size: c_int,
     ) InitError!Font {
         const font = c.TTF_OpenFont(font_path, @floatFromInt(size)) orelse {
             log.err("TTF_OpenFont failed: {s}", .{c.SDL_GetError()});
             return error.FontLoadFailed;
         };
+        errdefer c.TTF_CloseFont(font);
 
-        const fallback_font = fallback_path orelse blk: {
-            log.debug("No fallback font configured", .{});
-            break :blk null;
-        };
-        const opened_fallback = if (fallback_font) |path| blk: {
-            break :blk c.TTF_OpenFont(path, @floatFromInt(size));
+        _ = c.TTF_SetFontDirection(font, c.TTF_DIRECTION_LTR);
+
+        const symbol_fallback = if (symbol_fallback_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open symbol fallback font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
         } else null;
-        if (fallback_font != null and opened_fallback == null) {
-            log.warn("Failed to open fallback font: {s}", .{c.SDL_GetError()});
-        }
+        errdefer if (symbol_fallback) |f| c.TTF_CloseFont(f);
+
+        const emoji_fallback = if (emoji_fallback_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open emoji fallback font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
+        } else null;
+        errdefer if (emoji_fallback) |f| c.TTF_CloseFont(f);
 
         var cell_width: c_int = 0;
         var cell_height: c_int = 0;
         if (!c.TTF_GetStringSize(font, "M", 1, &cell_width, &cell_height)) {
             log.err("TTF_GetStringSize failed: {s}", .{c.SDL_GetError()});
-            c.TTF_CloseFont(font);
-            if (opened_fallback) |ff| c.TTF_CloseFont(ff);
             return error.FontLoadFailed;
         }
 
@@ -63,7 +83,8 @@ pub const Font = struct {
 
         return Font{
             .font = font,
-            .fallback_font = opened_fallback,
+            .symbol_fallback = symbol_fallback,
+            .emoji_fallback = emoji_fallback,
             .renderer = renderer,
             .glyph_cache = std.AutoHashMap(GlyphKey, *c.SDL_Texture).init(allocator),
             .allocator = allocator,
@@ -79,9 +100,8 @@ pub const Font = struct {
         }
         self.glyph_cache.deinit();
         c.TTF_CloseFont(self.font);
-        if (self.fallback_font) |f| {
-            c.TTF_CloseFont(f);
-        }
+        if (self.symbol_fallback) |f| c.TTF_CloseFont(f);
+        if (self.emoji_fallback) |f| c.TTF_CloseFont(f);
     }
 
     pub const RenderGlyphError = error{
@@ -121,8 +141,8 @@ pub const Font = struct {
         }
         const utf8_slice = utf8_buf[0..utf8_len];
 
-        const use_fallback = self.shouldUseFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice, fg_color, use_fallback) catch |err| {
+        const fallback_choice = self.chooseFallback(codepoints);
+        const texture = self.getGlyphTexture(utf8_slice, fg_color, fallback_choice) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -153,11 +173,11 @@ pub const Font = struct {
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
     }
 
-    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, use_fallback: bool) RenderGlyphError!*c.SDL_Texture {
+    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: FallbackChoice) RenderGlyphError!*c.SDL_Texture {
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
-            .color = packColor(if (use_fallback) WHITE else fg_color),
-            .fallback = use_fallback,
+            .color = packColor(if (fallback == .emoji) WHITE else fg_color),
+            .fallback = fallback,
             .len = @intCast(utf8.len),
         };
 
@@ -165,8 +185,12 @@ pub const Font = struct {
             return texture;
         }
 
-        const render_font = if (use_fallback) self.fallback_font orelse self.font else self.font;
-        const render_color = if (use_fallback) WHITE else fg_color;
+        const render_font = switch (fallback) {
+            .primary => self.font,
+            .symbol => self.symbol_fallback orelse self.font,
+            .emoji => self.emoji_fallback orelse self.font,
+        };
+        const render_color = if (fallback == .emoji) WHITE else fg_color;
 
         const surface = c.TTF_RenderText_Blended(render_font, @ptrCast(utf8.ptr), @intCast(utf8.len), render_color) orelse {
             log.debug("TTF_RenderText_Blended failed: {s}", .{c.SDL_GetError()});
@@ -189,13 +213,42 @@ pub const Font = struct {
         return (@as(u32, color.r)) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16) | (@as(u32, color.a) << 24);
     }
 
-    fn shouldUseFallback(self: *Font, codepoints: []const u21) bool {
-        if (self.fallback_font == null) return false;
-        for (codepoints) |cp| {
-            if (c.TTF_FontHasGlyph(self.font, @intCast(cp))) continue;
-            // First glyph missing in primary but present in fallback → enable fallback for the whole cluster.
-            if (c.TTF_FontHasGlyph(self.fallback_font.?, @intCast(cp))) return true;
+    fn chooseFallback(self: *Font, codepoints: []const u21) FallbackChoice {
+        const has_all = blk: {
+            for (codepoints) |cp| {
+                if (!c.TTF_FontHasGlyph(self.font, @intCast(cp))) {
+                    break :blk false;
+                }
+            }
+            break :blk true;
+        };
+        if (has_all) return .primary;
+
+        const has_emoji = blk: {
+            for (codepoints) |cp| {
+                if (cp >= 0x1F000) break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (has_emoji and self.emoji_fallback != null) {
+            return .emoji;
         }
-        return false;
+
+        if (self.symbol_fallback) |fallback| {
+            const has_in_symbol = blk: {
+                for (codepoints) |cp| {
+                    if (!c.TTF_FontHasGlyph(fallback, @intCast(cp))) {
+                        break :blk false;
+                    }
+                }
+                break :blk true;
+            };
+            if (has_in_symbol) return .symbol;
+        }
+
+        if (self.emoji_fallback != null) return .emoji;
+
+        return .primary;
     }
 };

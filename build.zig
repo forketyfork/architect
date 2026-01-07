@@ -54,6 +54,13 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const install_fonts = b.addInstallDirectory(.{
+        .source_dir = b.path("assets/fonts"),
+        .install_dir = .{ .custom = "share/architect" },
+        .install_subdir = "fonts",
+    });
+    b.getInstallStep().dependOn(&install_fonts.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 

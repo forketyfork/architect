@@ -17,7 +17,6 @@ pub const ToastComponent = struct {
     tex_h: c_int = 0,
     dirty: bool = true,
 
-    const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
     const NOTIFICATION_FONT_SIZE: c_int = 36;
     const NOTIFICATION_DURATION_MS: i64 = 2500;
     const NOTIFICATION_FADE_START_MS: i64 = 1500;
@@ -67,14 +66,14 @@ pub const ToastComponent = struct {
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
-    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
+    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.isVisible(host.now_ms)) return;
 
         const alpha = self.getAlpha(host.now_ms);
         if (alpha == 0) return;
 
-        self.ensureTexture(renderer) catch return;
+        self.ensureTexture(renderer, assets) catch return;
         const texture = self.texture orelse return;
 
         var text_width_f: f32 = 0;
@@ -117,12 +116,13 @@ pub const ToastComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer) !void {
+    fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer, assets: *types.UiAssets) !void {
         if (!self.active) return;
         if (!self.dirty and self.texture != null) return;
 
+        const font_path = assets.font_path orelse return error.FontPathNotSet;
         if (self.font == null) {
-            self.font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(NOTIFICATION_FONT_SIZE));
+            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
             if (self.font == null) return error.FontUnavailable;
         }
         const toast_font = self.font.?;

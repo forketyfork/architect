@@ -14,7 +14,6 @@ pub const HelpOverlayComponent = struct {
     start_size: c_int = HELP_BUTTON_SIZE_SMALL,
     target_size: c_int = HELP_BUTTON_SIZE_SMALL,
 
-    const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
     const HELP_BUTTON_SIZE_SMALL: c_int = 40;
     const HELP_BUTTON_SIZE_LARGE: c_int = 400;
     const HELP_BUTTON_MARGIN: c_int = 20;
@@ -81,7 +80,7 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
+    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
         const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const radius: c_int = 8;
@@ -100,14 +99,15 @@ pub const HelpOverlayComponent = struct {
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         switch (self.state) {
-            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale),
-            .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale),
+            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets),
+            .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets),
         }
     }
 
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
+    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
+        const font_path = assets.font_path orelse return;
         const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
-        const question_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_size)) orelse return;
+        const question_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(font_size)) orelse return;
         defer c.TTF_CloseFont(question_font);
 
         const question_mark: [2]u8 = .{ '?', 0 };
@@ -134,18 +134,19 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32) void {
+    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
         _ = self;
+        const font_path = assets.font_path orelse return;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const key_font_size: c_int = dpi.scale(16, ui_scale);
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
-        const title_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(title_font_size)) orelse return;
+        const title_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(title_font_size)) orelse return;
         defer c.TTF_CloseFont(title_font);
 
-        const key_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(key_font_size)) orelse return;
+        const key_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(key_font_size)) orelse return;
         defer c.TTF_CloseFont(key_font);
 
         const title_text = "Keyboard Shortcuts";

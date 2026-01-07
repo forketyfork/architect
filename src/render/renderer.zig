@@ -15,7 +15,6 @@ const SessionState = session_state.SessionState;
 const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
 
-const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
 const CWD_BAR_HEIGHT: c_int = 24;
@@ -44,6 +43,7 @@ pub fn render(
     window_width: c_int,
     window_height: c_int,
     ui_scale: f32,
+    font_path: [:0]const u8,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -63,12 +63,12 @@ pub fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale);
+                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -79,14 +79,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
             else
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -110,12 +110,12 @@ pub fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale);
+                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
         },
     }
 }
@@ -133,10 +133,11 @@ fn renderSession(
     current_time_ms: i64,
     is_grid_view: bool,
     ui_scale: f32,
+    font_path: [:0]const u8,
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
     if (is_grid_view) {
-        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale);
+        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
     }
     renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
 }
@@ -429,6 +430,7 @@ fn renderGridSessionCached(
     term_rows: u16,
     current_time_ms: i64,
     ui_scale: f32,
+    font_path: [:0]const u8,
 ) RenderError!void {
     const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
 
@@ -453,13 +455,13 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale);
+            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
             renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
             return;
         }
     }
 
-    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale);
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
@@ -490,6 +492,7 @@ fn renderCwdBar(
     rect: Rect,
     current_time: i64,
     ui_scale: f32,
+    font_path: [:0]const u8,
 ) void {
     const cwd_path = session.cwd_path orelse return;
     const cwd_basename = session.cwd_basename orelse return;
@@ -520,7 +523,7 @@ fn renderCwdBar(
         if (session.cwd_font) |font| {
             c.TTF_CloseFont(font);
         }
-        session.cwd_font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(font_px));
+        session.cwd_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(font_px));
         session.cwd_font_size = font_px;
     }
     const cwd_font = session.cwd_font orelse return;

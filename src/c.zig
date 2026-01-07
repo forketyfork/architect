@@ -132,6 +132,12 @@ pub const TTF_RenderGlyph_Blended = c_import.TTF_RenderGlyph_Blended;
 pub const TTF_GetStringSize = c_import.TTF_GetStringSize;
 pub const TTF_RenderText_Blended = c_import.TTF_RenderText_Blended;
 pub const TTF_FontHasGlyph = c_import.TTF_FontHasGlyph;
+pub const TTF_SetFontDirection = c_import.TTF_SetFontDirection;
+pub const TTF_Direction = c_import.TTF_Direction;
+pub const TTF_DIRECTION_LTR = c_import.TTF_DIRECTION_LTR;
+pub const TTF_DIRECTION_RTL = c_import.TTF_DIRECTION_RTL;
+pub const TTF_DIRECTION_TTB = c_import.TTF_DIRECTION_TTB;
+pub const TTF_DIRECTION_BTT = c_import.TTF_DIRECTION_BTT;
 
 pub const SDL_Event = c_import.SDL_Event;
 pub const SDL_FRect = c_import.SDL_FRect;

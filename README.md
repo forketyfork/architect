@@ -58,7 +58,7 @@ See [Setup](#setup) section below for building from source.
   - Press ESC to collapse back to grid view
   - Type in the focused terminal
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **High-Quality Rendering**: SDL_ttf font rendering with bundled Victor Mono Nerd Font, glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus to adjust font size (saved automatically)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
@@ -267,8 +267,10 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
+- `src/font_paths.zig` - Font path resolution for bundled fonts
 - `src/config.zig` - Configuration persistence (saves font size, window size, and position)
 - `src/c.zig` - C library bindings for SDL3
+- `assets/fonts/` - Bundled Victor Mono Nerd Font files (installed to share/architect/fonts)
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
 - `docs/` - Documentation and implementation plans
@@ -284,6 +286,9 @@ Download the latest release from the [releases page](https://github.com/forketyf
   - Configured in `build.zig.zon` to point to the local ghostty clone
 - **SDL3**: Window management and rendering backend (via Nix)
 - **SDL3_ttf**: Font rendering library (via Nix)
+- **Victor Mono Nerd Font**: Bundled monospace font with programming ligatures
+  - Licensed under SIL Open Font License 1.1 (see `assets/fonts/LICENSE`)
+  - Includes Nerd Font icons for enhanced terminal experience
 
 ## Architecture
 
@@ -323,7 +328,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
-- **No font selection**: Hardcoded to SF Mono font (though size is adjustable)
+- **No font selection**: Victor Mono font is bundled with the application (though size is adjustable)
 - **Limited configurability**: Grid size, colors, and keybindings are hardcoded
 - **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
 
