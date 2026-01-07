@@ -78,6 +78,8 @@ pub const SDL_TOUCH_MOUSEID = c_import.SDL_TOUCH_MOUSEID;
 pub const SDL_BUTTON_LEFT: c_import.Uint8 = c_import.SDL_BUTTON_LEFT;
 pub const SDL_SYSTEM_CURSOR_DEFAULT = c_import.SDL_SYSTEM_CURSOR_DEFAULT;
 pub const SDL_SYSTEM_CURSOR_TEXT = c_import.SDL_SYSTEM_CURSOR_TEXT;
+pub const SDL_SYSTEM_CURSOR_POINTER = c_import.SDL_SYSTEM_CURSOR_POINTER;
+pub const SDL_GetModState = c_import.SDL_GetModState;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;

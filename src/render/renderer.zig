@@ -270,6 +270,25 @@ fn renderSessionContent(
                 }
             }
 
+            if (session.hovered_link_start) |link_start| {
+                if (session.hovered_link_end) |link_end| {
+                    const point_tag = if (session.is_scrolled)
+                        ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
+                    else
+                        ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
+                    if (pages.pin(point_tag)) |pin| {
+                        const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
+                        if (link_sel.contains(screen, pin)) {
+                            _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
+                            const underline_y: f32 = @floatFromInt(y + cell_height_actual - 1);
+                            const x_start: f32 = @floatFromInt(x);
+                            const x_end: f32 = @floatFromInt(x + cell_width_actual * glyph_width_cells - 1);
+                            _ = c.SDL_RenderLine(renderer, x_start, underline_y, x_end, underline_y);
+                        }
+                    }
+                }
+            }
+
             const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, cell_width_actual, cell_height_actual, fg_color);
             if (is_box_drawing) {
                 try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);

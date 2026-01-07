@@ -61,6 +61,7 @@ See [Setup](#setup) section below for building from source.
 - **High-Quality Rendering**: SDL_ttf font rendering with bundled Victor Mono Nerd Font (ligatures enabled), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus to adjust font size (saved automatically)
+- **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 
 ## Prerequisites
@@ -323,6 +324,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
 - Text selection in full view with clipboard copy/paste (drag, ⌘C / ⌘V)
+- Cmd+Click to open hyperlinks (OSC 8) in your default browser
 
 ## Known Limitations
 

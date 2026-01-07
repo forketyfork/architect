@@ -17,6 +17,8 @@ const config_mod = @import("config.zig");
 const ui_mod = @import("ui/mod.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
+const open_url = @import("os/open.zig");
+const url_matcher = @import("url_matcher.zig");
 
 const log = std.log.scoped(.main);
 
@@ -40,7 +42,7 @@ const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
 const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
-const CursorKind = enum { arrow, ibeam };
+const CursorKind = enum { arrow, ibeam, pointer };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -106,6 +108,8 @@ pub fn main() !void {
     defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
     const ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
     defer if (ibeam_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    const pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    defer if (pointer_cursor) |cursor| c.SDL_DestroyCursor(cursor);
     var current_cursor: CursorKind = .arrow;
     if (arrow_cursor) |cursor| {
         _ = c.SDL_SetCursor(cursor);
@@ -520,9 +524,22 @@ pub fn main() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
                         const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned) {
+                        if (focused.spawned and focused.terminal != null) {
                             if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                beginSelection(focused, pin);
+                                const mod = c.SDL_GetModState();
+                                const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                                if (cmd_held) {
+                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin)) |uri| {
+                                        open_url.openUrl(allocator, uri) catch |err| {
+                                            log.err("Failed to open URL: {}", .{err});
+                                        };
+                                    } else {
+                                        beginSelection(focused, pin);
+                                    }
+                                } else {
+                                    beginSelection(focused, pin);
+                                }
                             }
                         }
                     }
@@ -559,8 +576,36 @@ pub fn main() !void {
                             }
                         }
 
-                        if (!over_ui and pin != null) {
-                            desired_cursor = .ibeam;
+                        if (!over_ui and pin != null and focused.terminal != null) {
+                            const mod = c.SDL_GetModState();
+                            const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                            if (cmd_held) {
+                                if (getLinkMatchAtPin(allocator, &focused.terminal.?, pin.?)) |link_match| {
+                                    desired_cursor = .pointer;
+                                    focused.hovered_link_start = link_match.start_pin;
+                                    focused.hovered_link_end = link_match.end_pin;
+                                    focused.dirty = true;
+                                } else {
+                                    desired_cursor = .ibeam;
+                                    focused.hovered_link_start = null;
+                                    focused.hovered_link_end = null;
+                                    focused.dirty = true;
+                                }
+                            } else {
+                                desired_cursor = .ibeam;
+                                if (focused.hovered_link_start != null) {
+                                    focused.hovered_link_start = null;
+                                    focused.hovered_link_end = null;
+                                    focused.dirty = true;
+                                }
+                            }
+                        } else {
+                            if (focused.hovered_link_start != null) {
+                                focused.hovered_link_start = null;
+                                focused.hovered_link_end = null;
+                                focused.dirty = true;
+                            }
                         }
                     }
 
@@ -568,6 +613,7 @@ pub fn main() !void {
                         const target_cursor = switch (desired_cursor) {
                             .arrow => arrow_cursor,
                             .ibeam => ibeam_cursor,
+                            .pointer => pointer_cursor,
                         };
                         if (target_cursor) |cursor| {
                             _ = c.SDL_SetCursor(cursor);
@@ -1035,6 +1081,170 @@ fn endSelection(session: *SessionState) void {
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+const LinkMatch = struct {
+    url: []const u8,
+    start_pin: ghostty_vt.Pin,
+    end_pin: ghostty_vt.Pin,
+};
+
+fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?LinkMatch {
+    const page = &pin.node.data;
+    const row_and_cell = pin.rowAndCell();
+    const cell = row_and_cell.cell;
+
+    if (page.lookupHyperlink(cell)) |hyperlink_id| {
+        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+        return LinkMatch{
+            .url = entry.uri.slice(page.memory),
+            .start_pin = pin,
+            .end_pin = pin,
+        };
+    }
+
+    var start_y = pin.y;
+    var current_row = row_and_cell.row;
+
+    while (current_row.wrap_continuation and start_y > 0) {
+        start_y -= 1;
+        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
+        current_row = prev_pin.rowAndCell().row;
+    }
+
+    var end_y = pin.y;
+    current_row = row_and_cell.row;
+    const max_y: u16 = @intCast(page.size.rows - 1);
+
+    while (current_row.wrap and end_y < max_y) {
+        end_y += 1;
+        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
+        current_row = next_pin.rowAndCell().row;
+    }
+
+    const max_x: u16 = @intCast(page.size.cols - 1);
+    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
+    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
+
+    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
+    const row_text = terminal.screens.active.selectionString(allocator, .{
+        .sel = selection,
+        .trim = false,
+    }) catch return null;
+    defer allocator.free(row_text);
+
+    var cell_to_byte: std.ArrayList(usize) = .empty;
+    defer cell_to_byte.deinit(allocator);
+
+    var byte_pos: usize = 0;
+    var cell_idx: usize = 0;
+    var y = start_y;
+    while (y <= end_y) : (y += 1) {
+        var x: u16 = 0;
+        while (x < page.size.cols) : (x += 1) {
+            const point = ghostty_vt.point.Point{ .active = .{ .x = x, .y = y } };
+            const list_cell = terminal.screens.active.pages.getCell(point) orelse {
+                cell_to_byte.append(allocator, byte_pos) catch return null;
+                cell_idx += 1;
+                continue;
+            };
+
+            cell_to_byte.append(allocator, byte_pos) catch return null;
+
+            const cp = list_cell.cell.content.codepoint;
+            if (cp != 0 and cp != ' ') {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                byte_pos += len;
+            } else {
+                byte_pos += 1;
+            }
+            cell_idx += 1;
+        }
+        if (y < end_y) {
+            byte_pos += 1;
+        }
+    }
+
+    const click_cell_idx = (pin.y - start_y) * page.size.cols + pin.x;
+    if (click_cell_idx >= cell_to_byte.items.len) return null;
+    const click_byte_pos = cell_to_byte.items[click_cell_idx];
+
+    const url_match = url_matcher.findUrlMatchAtPosition(row_text, click_byte_pos) orelse return null;
+
+    var start_cell_idx: usize = 0;
+    for (cell_to_byte.items, 0..) |byte, idx| {
+        if (byte >= url_match.start) {
+            start_cell_idx = idx;
+            break;
+        }
+    }
+
+    var end_cell_idx: usize = cell_to_byte.items.len - 1;
+    for (cell_to_byte.items, 0..) |byte, idx| {
+        if (byte >= url_match.end) {
+            end_cell_idx = if (idx > 0) idx - 1 else 0;
+            break;
+        }
+    }
+
+    const start_row = start_y + @as(u16, @intCast(start_cell_idx / page.size.cols));
+    const start_col: u16 = @intCast(start_cell_idx % page.size.cols);
+    const end_row = start_y + @as(u16, @intCast(end_cell_idx / page.size.cols));
+    const end_col: u16 = @intCast(end_cell_idx % page.size.cols);
+
+    const link_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = start_col, .y = start_row } }) orelse return null;
+    const link_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = end_col, .y = end_row } }) orelse return null;
+
+    return LinkMatch{
+        .url = url_match.url,
+        .start_pin = link_start_pin,
+        .end_pin = link_end_pin,
+    };
+}
+
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]const u8 {
+    const page = &pin.node.data;
+    const row_and_cell = pin.rowAndCell();
+    const cell = row_and_cell.cell;
+
+    if (page.lookupHyperlink(cell)) |hyperlink_id| {
+        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+        return entry.uri.slice(page.memory);
+    }
+
+    var start_y = pin.y;
+    var current_row = row_and_cell.row;
+
+    while (current_row.wrap_continuation and start_y > 0) {
+        start_y -= 1;
+        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
+        current_row = prev_pin.rowAndCell().row;
+    }
+
+    var end_y = pin.y;
+    current_row = row_and_cell.row;
+    const max_y: u16 = @intCast(page.size.rows - 1);
+
+    while (current_row.wrap and end_y < max_y) {
+        end_y += 1;
+        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
+        current_row = next_pin.rowAndCell().row;
+    }
+
+    const max_x: u16 = @intCast(page.size.cols - 1);
+    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
+    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
+
+    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
+    const row_text = terminal.screens.active.selectionString(allocator, .{
+        .sel = selection,
+        .trim = false,
+    }) catch return null;
+    defer allocator.free(row_text);
+
+    const col_offset = (pin.y - start_y) * page.size.cols + pin.x;
+    return url_matcher.findUrlAtPosition(row_text, col_offset);
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
