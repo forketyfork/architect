@@ -53,7 +53,11 @@ fi
 
 if [ -d "$FONT_SOURCE_DIR" ]; then
     echo "Bundling fonts from $FONT_SOURCE_DIR"
-    cp "$FONT_SOURCE_DIR"/*.ttf "$FONT_DEST_DIR"/
+    if compgen -G "$FONT_SOURCE_DIR"/*.ttf > /dev/null; then
+        cp "$FONT_SOURCE_DIR"/*.ttf "$FONT_DEST_DIR"/
+    else
+        echo "No .ttf font files found in $FONT_SOURCE_DIR; skipping font copy"
+    fi
     if [ -f "$FONT_SOURCE_DIR/LICENSE" ]; then
         cp "$FONT_SOURCE_DIR/LICENSE" "$FONT_DEST_DIR"/LICENSE
     fi

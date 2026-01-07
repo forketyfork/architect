@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const types = @import("types.zig");
+const toast = @import("components/toast.zig");
 
 const UiComponent = @import("component.zig").UiComponent;
 
@@ -9,7 +10,7 @@ pub const UiRoot = struct {
     components: std.ArrayList(UiComponent),
     actions: types.UiActionQueue,
     assets: types.UiAssets,
-    toast_component: ?*anyopaque = null,
+    toast_component: ?*toast.ToastComponent = null,
 
     pub fn init(allocator: std.mem.Allocator) UiRoot {
         return .{
@@ -84,9 +85,7 @@ pub const UiRoot = struct {
     }
 
     pub fn showToast(self: *UiRoot, message: []const u8, now_ms: i64) void {
-        if (self.toast_component) |toast_ptr| {
-            const toast = @import("components/toast.zig");
-            const comp: *toast.ToastComponent = @ptrCast(@alignCast(toast_ptr));
+        if (self.toast_component) |comp| {
             comp.show(message, now_ms);
         }
     }
