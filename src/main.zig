@@ -1116,11 +1116,6 @@ fn pasteClipboardIntoSession(
         return;
     }
 
-    if (!ghostty_vt.input.isSafePaste(clip)) {
-        ui.showToast("Clipboard blocked (unsafe paste)", now);
-        return;
-    }
-
     const opts = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
     const clip_buf = try allocator.dupe(u8, clip);
     defer allocator.free(clip_buf);

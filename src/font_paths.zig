@@ -53,7 +53,7 @@ pub const FontPaths = struct {
         }
 
         if (builtin.os.tag == .macos) {
-            paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/SFNSMono.ttf");
+            paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
             paths.emoji_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Apple Color Emoji.ttc");
         } else {
             paths.symbol_fallback = null;
