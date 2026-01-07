@@ -1,10 +1,16 @@
+GHOSTTY_URL := `sed -n 's/.*\\.url = "\\(.*\\)".*/\\1/p' build.zig.zon | head -1`
+
 default:
     @just --list
 
 setup:
     #!/usr/bin/env bash
     # Pre-fetch ghostty tarball into the Zig cache (no checkout needed)
-    zig fetch --global-cache-dir .zig-cache https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz
+    if [ -z "{{GHOSTTY_URL}}" ]; then
+        echo "ghostty URL not found in build.zig.zon" >&2
+        exit 1
+    fi
+    zig fetch --global-cache-dir .zig-cache "{{GHOSTTY_URL}}"
 
 build:
     zig build
