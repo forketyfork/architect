@@ -1,4 +1,5 @@
 .stepcat/
+.architect/
 
 .direnv/
 .envrc.cache

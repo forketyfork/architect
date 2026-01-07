@@ -11,8 +11,8 @@ pub const RestartButtonsComponent = struct {
     texture: ?*c.SDL_Texture = null,
     tex_w: c_int = 0,
     tex_h: c_int = 0,
+    font_path: ?[:0]const u8 = null,
 
-    const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
     const RESTART_BUTTON_FONT_SIZE: c_int = 20;
     const RESTART_BUTTON_HEIGHT: c_int = 40;
     const RESTART_BUTTON_PADDING: c_int = 12;
@@ -76,11 +76,37 @@ pub const RestartButtonsComponent = struct {
         return true;
     }
 
+    fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
+        if (host.view_mode != .Grid) return false;
+
+        const grid_col = @min(@as(usize, @intCast(@divFloor(x, host.cell_w))), host.grid_cols - 1);
+        const grid_row = @min(@as(usize, @intCast(@divFloor(y, host.cell_h))), host.grid_rows - 1);
+        const session_idx: usize = grid_row * @as(usize, host.grid_cols) + grid_col;
+        if (session_idx >= host.sessions.len) return false;
+
+        const session_info = host.sessions[session_idx];
+        if (!session_info.dead) return false;
+
+        const cell_rect = geom.Rect{
+            .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
+            .y = @as(c_int, @intCast(grid_row)) * host.cell_h,
+            .w = host.cell_w,
+            .h = host.cell_h,
+        };
+        const button_rect = self.restartButtonRect(cell_rect);
+        return geom.containsPoint(button_rect, x, y);
+    }
+
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
-    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
+    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
         if (host.view_mode != .Grid) return;
+
+        if (assets.font_path) |path| {
+            self.font_path = path;
+        }
 
         for (host.sessions, 0..) |info, i| {
             if (!info.dead) continue;
@@ -155,8 +181,9 @@ pub const RestartButtonsComponent = struct {
     fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
+        const font_path = self.font_path orelse return error.FontPathNotSet;
         if (self.font == null) {
-            self.font = c.TTF_OpenFont(FONT_PATH, @floatFromInt(RESTART_BUTTON_FONT_SIZE));
+            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(RESTART_BUTTON_FONT_SIZE));
             if (self.font == null) return error.FontUnavailable;
         }
         const icon_font = self.font.?;
@@ -190,6 +217,7 @@ pub const RestartButtonsComponent = struct {
 
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
+        .hitTest = hitTest,
         .update = update,
         .render = render,
         .deinit = deinitComp,

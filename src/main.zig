@@ -12,8 +12,10 @@ const renderer_mod = @import("render/renderer.zig");
 const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
+const font_paths_mod = @import("font_paths.zig");
 const config_mod = @import("config.zig");
 const ui_mod = @import("ui/mod.zig");
+const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 
 const log = std.log.scoped(.main);
@@ -29,8 +31,6 @@ const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const UI_FONT_SIZE: c_int = 18;
-const FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/SFNSMono.ttf";
-const EMOJI_FONT_PATH: [*:0]const u8 = "/System/Library/Fonts/Apple Color Emoji.ttc";
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -40,6 +40,7 @@ const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
 const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
+const CursorKind = enum { arrow, ibeam };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -101,6 +102,15 @@ pub fn main() !void {
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
 
+    const arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
+    defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    const ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
+    defer if (ibeam_cursor) |cursor| c.SDL_DestroyCursor(cursor);
+    var current_cursor: CursorKind = .arrow;
+    if (arrow_cursor) |cursor| {
+        _ = c.SDL_SetCursor(cursor);
+    }
+
     const renderer = sdl.renderer;
     const vsync_enabled = sdl.vsync_enabled;
 
@@ -113,15 +123,33 @@ pub fn main() !void {
     var scale_y = sdl.scale_y;
     var ui_scale: f32 = @max(scale_x, scale_y);
 
-    var font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(font_size, ui_scale));
+    var font_paths = try font_paths_mod.FontPaths.init(allocator);
+    defer font_paths.deinit();
+
+    var font = try font_mod.Font.init(
+        allocator,
+        renderer,
+        font_paths.regular.ptr,
+        if (font_paths.symbol_fallback) |f| f.ptr else null,
+        if (font_paths.emoji_fallback) |f| f.ptr else null,
+        scaledFontSize(font_size, ui_scale),
+    );
     defer font.deinit();
 
-    var ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
+    var ui_font = try font_mod.Font.init(
+        allocator,
+        renderer,
+        font_paths.regular.ptr,
+        if (font_paths.symbol_fallback) |f| f.ptr else null,
+        if (font_paths.emoji_fallback) |f| f.ptr else null,
+        scaledFontSize(UI_FONT_SIZE, ui_scale),
+    );
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
+    ui.assets.font_path = font_paths.regular;
 
     var window_x: c_int = config.window_x;
     var window_y: c_int = config.window_y;
@@ -238,8 +266,22 @@ pub fn main() !void {
                     if (ui_scale != prev_scale) {
                         font.deinit();
                         ui_font.deinit();
-                        font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(font_size, ui_scale));
-                        ui_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(UI_FONT_SIZE, ui_scale));
+                        font = try font_mod.Font.init(
+                            allocator,
+                            renderer,
+                            font_paths.regular.ptr,
+                            if (font_paths.symbol_fallback) |f| f.ptr else null,
+                            if (font_paths.emoji_fallback) |f| f.ptr else null,
+                            scaledFontSize(font_size, ui_scale),
+                        );
+                        ui_font = try font_mod.Font.init(
+                            allocator,
+                            renderer,
+                            font_paths.regular.ptr,
+                            if (font_paths.symbol_fallback) |f| f.ptr else null,
+                            if (font_paths.emoji_fallback) |f| f.ptr else null,
+                            scaledFontSize(UI_FONT_SIZE, ui_scale),
+                        );
                         ui.assets.ui_font = &ui_font;
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
@@ -269,32 +311,49 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    if (focused.spawned and !focused.dead) {
-                        if (focused.is_scrolled) {
-                            if (focused.terminal) |*terminal| {
-                                terminal.screens.active.pages.scroll(.{ .active = {} });
-                                focused.is_scrolled = false;
-                                focused.scroll_velocity = 0.0;
-                                focused.scroll_remainder = 0.0;
-                            }
-                        }
-                        const text = std.mem.sliceTo(scaled_event.text.text, 0);
-                        if (focused.shell) |*shell| {
-                            _ = try shell.write(text);
-                        }
+                    handleTextInput(focused, scaled_event.text.text) catch |err| {
+                        std.debug.print("Text input failed: {}\n", .{err});
+                    };
+                },
+                c.SDL_EVENT_TEXT_EDITING => {
+                    const focused = &sessions[anim_state.focused_session];
+                    // Some macOS input methods (emoji picker) may deliver committed text via TEXT_EDITING.
+                    if (scaled_event.edit.text != null and scaled_event.edit.length == 0) {
+                        handleTextInput(focused, scaled_event.edit.text) catch |err| {
+                            std.debug.print("Edit input failed: {}\n", .{err});
+                        };
                     }
                 },
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = scaled_event.key.key;
                     const mod = scaled_event.key.mod;
                     const is_repeat = scaled_event.key.repeat;
+                    const focused = &sessions[anim_state.focused_session];
 
-                    if (input.fontSizeShortcut(key, mod)) |direction| {
+                    const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                    const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+
+                    if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                        copySelectionToClipboard(focused, allocator, toast_component, now) catch |err| {
+                            std.debug.print("Copy failed: {}\n", .{err});
+                        };
+                    } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
+                        pasteClipboardIntoSession(focused, allocator, toast_component, now) catch |err| {
+                            std.debug.print("Paste failed: {}\n", .{err});
+                        };
+                    } else if (input.fontSizeShortcut(key, mod)) |direction| {
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
                         if (target_size != font_size) {
-                            const new_font = try font_mod.Font.init(allocator, renderer, FONT_PATH, EMOJI_FONT_PATH, scaledFontSize(target_size, ui_scale));
+                            const new_font = try font_mod.Font.init(
+                                allocator,
+                                renderer,
+                                font_paths.regular.ptr,
+                                if (font_paths.symbol_fallback) |f| f.ptr else null,
+                                if (font_paths.emoji_fallback) |f| f.ptr else null,
+                                scaledFontSize(target_size, ui_scale),
+                            );
                             font.deinit();
                             font = new_font;
                             font_size = target_size;
@@ -330,6 +389,8 @@ pub fn main() !void {
                                 (anim_state.focused_session + total_sessions - 1) % total_sessions;
 
                             try sessions[new_session].ensureSpawned();
+                            sessions[anim_state.focused_session].clearSelection();
+                            sessions[new_session].clearSelection();
 
                             anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
                             anim_state.previous_session = anim_state.focused_session;
@@ -380,7 +441,6 @@ pub fn main() !void {
                                 std.debug.print("Grid nav to session {d}\n", .{new_session});
                             }
                         } else {
-                            const focused = &sessions[anim_state.focused_session];
                             if (focused.spawned and !focused.dead) {
                                 try handleKeyInput(focused, key, mod, is_repeat);
                             }
@@ -409,7 +469,6 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
-                        const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead) {
                             try handleKeyInput(focused, key, mod, is_repeat);
                         }
@@ -431,6 +490,7 @@ pub fn main() !void {
                     const mouse_y: c_int = @intFromFloat(scaled_event.button.y);
 
                     if (anim_state.mode == .Grid) {
+                        sessions[anim_state.focused_session].clearSelection();
                         const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), GRID_COLS - 1);
                         const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), GRID_ROWS - 1);
                         const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
@@ -455,6 +515,61 @@ pub fn main() !void {
                         anim_state.start_rect = cell_rect;
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                    } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
+                        const focused = &sessions[anim_state.focused_session];
+                        if (focused.spawned) {
+                            if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
+                                beginSelection(focused, pin);
+                            }
+                        }
+                    }
+                },
+                c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                    if (scaled_event.button.button == c.SDL_BUTTON_LEFT and anim_state.mode == .Full) {
+                        const focused = &sessions[anim_state.focused_session];
+                        endSelection(focused);
+                    }
+                },
+                c.SDL_EVENT_MOUSE_MOTION => {
+                    const mouse_x: c_int = @intFromFloat(scaled_event.motion.x);
+                    const mouse_y: c_int = @intFromFloat(scaled_event.motion.y);
+                    const over_ui = ui.hitTest(&ui_host, mouse_x, mouse_y);
+                    var desired_cursor: CursorKind = .arrow;
+
+                    if (anim_state.mode == .Full) {
+                        const focused = &sessions[anim_state.focused_session];
+                        const pin = fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows);
+
+                        if (focused.selection_dragging) {
+                            if (pin) |p| {
+                                updateSelectionDrag(focused, p);
+                            }
+                        } else if (focused.selection_pending) {
+                            if (focused.selection_anchor) |anchor| {
+                                if (pin) |p| {
+                                    if (!pinsEqual(anchor, p)) {
+                                        startSelectionDrag(focused, p);
+                                    }
+                                }
+                            } else {
+                                focused.selection_pending = false;
+                            }
+                        }
+
+                        if (!over_ui and pin != null) {
+                            desired_cursor = .ibeam;
+                        }
+                    }
+
+                    if (desired_cursor != current_cursor) {
+                        const target_cursor = switch (desired_cursor) {
+                            .arrow => arrow_cursor,
+                            .ibeam => ibeam_cursor,
+                        };
+                        if (target_cursor) |cursor| {
+                            _ = c.SDL_SetCursor(cursor);
+                            current_cursor = desired_cursor;
+                        }
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
@@ -554,7 +669,7 @@ pub fn main() !void {
             }
         }
 
-        try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale);
+        try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(
             now,
@@ -625,6 +740,14 @@ fn scaleEventToRender(event: *const c.SDL_Event, scale_x: f32, scale_y: f32) c.S
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
             e.button.x *= scale_x;
             e.button.y *= scale_y;
+        },
+        c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            e.button.x *= scale_x;
+            e.button.y *= scale_y;
+        },
+        c.SDL_EVENT_MOUSE_MOTION => {
+            e.motion.x *= scale_x;
+            e.motion.y *= scale_y;
         },
         c.SDL_EVENT_MOUSE_WHEEL => {
             e.wheel.mouse_x *= scale_x;
@@ -831,6 +954,181 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod,
             }
         }
     }
+}
+
+fn fullViewPinFromMouse(
+    session: *SessionState,
+    mouse_x: c_int,
+    mouse_y: c_int,
+    render_width: c_int,
+    render_height: c_int,
+    font: *const font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+) ?ghostty_vt.Pin {
+    if (!session.spawned or session.terminal == null) return null;
+
+    const padding = renderer_mod.TERMINAL_PADDING;
+    const origin_x: c_int = padding;
+    const origin_y: c_int = padding;
+    const drawable_w: c_int = render_width - padding * 2;
+    const drawable_h: c_int = render_height - padding * 2;
+    if (drawable_w <= 0 or drawable_h <= 0) return null;
+
+    const cell_w: c_int = font.cell_width;
+    const cell_h: c_int = font.cell_height;
+    if (cell_w == 0 or cell_h == 0) return null;
+
+    if (mouse_x < origin_x or mouse_y < origin_y) return null;
+    if (mouse_x >= origin_x + drawable_w or mouse_y >= origin_y + drawable_h) return null;
+
+    const col = @as(u16, @intCast(@divFloor(mouse_x - origin_x, cell_w)));
+    const row = @as(u16, @intCast(@divFloor(mouse_y - origin_y, cell_h)));
+    if (col >= term_cols or row >= term_rows) return null;
+
+    const point = if (session.is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = col, .y = row } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = col, .y = row } };
+
+    const terminal = session.terminal orelse return null;
+    return terminal.screens.active.pages.pin(point);
+}
+
+fn beginSelection(session: *SessionState, pin: ghostty_vt.Pin) void {
+    const terminal = session.terminal orelse return;
+    terminal.screens.active.clearSelection();
+    session.selection_anchor = pin;
+    session.selection_pending = true;
+    session.selection_dragging = false;
+    session.dirty = true;
+}
+
+fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
+    const terminal = session.terminal orelse return;
+    const anchor = session.selection_anchor orelse return;
+
+    session.selection_dragging = true;
+    session.selection_pending = false;
+
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    session.dirty = true;
+}
+
+fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
+    if (!session.selection_dragging) return;
+    const anchor = session.selection_anchor orelse return;
+    const terminal = session.terminal orelse return;
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    session.dirty = true;
+}
+
+fn endSelection(session: *SessionState) void {
+    session.selection_dragging = false;
+    session.selection_pending = false;
+    session.selection_anchor = null;
+}
+
+fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
+    return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
+    if (!session.spawned or session.dead) return;
+    if (text_ptr == null) return;
+
+    const text = std.mem.sliceTo(text_ptr, 0);
+    if (text.len == 0) return;
+
+    if (session.is_scrolled) {
+        if (session.terminal) |*terminal| {
+            terminal.screens.active.pages.scroll(.{ .active = {} });
+            session.is_scrolled = false;
+            session.scroll_velocity = 0.0;
+            session.scroll_remainder = 0.0;
+        }
+    }
+
+    if (session.shell) |*shell| {
+        _ = try shell.write(text);
+    }
+}
+
+fn copySelectionToClipboard(
+    session: *SessionState,
+    allocator: std.mem.Allocator,
+    toast: *ui_mod.toast.ToastComponent,
+    now: i64,
+) !void {
+    const terminal = session.terminal orelse {
+        toast.show("No terminal to copy from", now);
+        return;
+    };
+    const screen = terminal.screens.active;
+    const sel = screen.selection orelse {
+        toast.show("No selection", now);
+        return;
+    };
+
+    const text = try screen.selectionString(allocator, .{ .sel = sel, .trim = true });
+    defer allocator.free(text);
+
+    const clipboard_text = try allocator.allocSentinel(u8, text.len, 0);
+    defer allocator.free(clipboard_text);
+    @memcpy(clipboard_text[0..text.len], text);
+
+    if (!c.SDL_SetClipboardText(clipboard_text.ptr)) {
+        toast.show("Failed to copy selection", now);
+        return;
+    }
+
+    toast.show("Copied selection", now);
+}
+
+fn pasteClipboardIntoSession(
+    session: *SessionState,
+    allocator: std.mem.Allocator,
+    toast: *ui_mod.toast.ToastComponent,
+    now: i64,
+) !void {
+    const terminal = session.terminal orelse {
+        toast.show("No terminal to paste into", now);
+        return;
+    };
+    const shell_ptr = if (session.shell) |*s| s else {
+        toast.show("Shell not available", now);
+        return;
+    };
+
+    const clip_ptr = c.SDL_GetClipboardText();
+    defer c.SDL_free(clip_ptr);
+    if (clip_ptr == null) {
+        toast.show("Clipboard empty", now);
+        return;
+    }
+    const clip = std.mem.sliceTo(clip_ptr, 0);
+    if (clip.len == 0) {
+        toast.show("Clipboard empty", now);
+        return;
+    }
+
+    if (!ghostty_vt.input.isSafePaste(clip)) {
+        toast.show("Clipboard blocked (unsafe paste)", now);
+        return;
+    }
+
+    const opts = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
+    const clip_buf = try allocator.dupe(u8, clip);
+    defer allocator.free(clip_buf);
+    const slices = ghostty_vt.input.encodePaste(clip_buf, opts);
+
+    for (slices) |part| {
+        if (part.len == 0) continue;
+        _ = try shell_ptr.write(part);
+    }
+
+    toast.show("Pasted clipboard", now);
 }
 
 const ansi_colors = [_]c.SDL_Color{
