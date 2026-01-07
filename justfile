@@ -3,12 +3,8 @@ default:
 
 setup:
     #!/usr/bin/env bash
-    if [ ! -d "ghostty" ]; then
-        echo "Cloning ghostty-org/ghostty..."
-        git clone https://github.com/ghostty-org/ghostty.git ghostty
-    else
-        echo "ghostty directory already exists"
-    fi
+    # Pre-fetch ghostty tarball into the Zig cache (no checkout needed)
+    zig fetch --global-cache-dir .zig-cache https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz
 
 build:
     zig build

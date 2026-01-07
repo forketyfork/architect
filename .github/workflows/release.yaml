@@ -24,12 +24,6 @@ jobs:
         with:
           path: architect
 
-      - name: Checkout ghostty dependency
-        uses: actions/checkout@v6
-        with:
-          repository: ghostty-org/ghostty
-          path: architect/ghostty
-
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -51,6 +45,10 @@ jobs:
         with:
           name: forketyfork
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: Prefetch Zig dependencies
+        run: nix develop --command zig fetch --global-cache-dir .zig-cache https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz
+        working-directory: architect
 
       - name: Build release
         run: nix develop --command zig build -Doptimize=ReleaseFast

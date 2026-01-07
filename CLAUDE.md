@@ -4,7 +4,7 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 
 ## Quick Workflow
 1. Read the task and skim `README.md` for expected behavior; avoid duplicating that content here.
-2. Ensure the ghostty dependency is present: run `just setup` once if `ghostty/` is missing.
+2. Ghostty is fetched via Zig package manager; run `just setup` only if you want to pre-cache the tarball before building.
 3. Work inside the dev shell: `nix develop` (or `direnv allow`).
 4. Prefer repo-friendly tools: `rg`/`fd` for search, `fastmod` or `sg` for refactors, `tree` for structure, `date` for timestamps, `gh` for PR/comment context.
 5. For Zig changes, use the `zig-best-practices` skill; if it is not installed, install it via the skill installer before editing.
@@ -50,7 +50,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Keep this `CLAUDE.md` aligned when workflows or automation expectations change.
 
 ## Repo Notes
-- Architect is a Zig app using the ghostty-vt path dependency located under `ghostty/`; do not break this linkage.
+- Architect is a Zig app using the ghostty-vt dependency fetched via the Zig package manager; avoid reintroducing a checked-out `ghostty/` path assumption.
 - User config lives in `~/.config/architect/config.json`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.

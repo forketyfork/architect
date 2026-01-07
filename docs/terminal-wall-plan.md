@@ -11,14 +11,14 @@ just lint
 
 ## Step 1: Audit ghostty-vt Capabilities And Constraints
 ### Status Quo
-The `architect` repository is empty, and the `ghostty-org/ghostty` clone exists at `../../ghostty-org/ghostty`. No documentation on `ghostty-vt` usage is captured for this project.
+The `architect` repository consumes `ghostty-vt` via a pinned tarball dependency; no local `ghostty-org/ghostty` checkout is required. Documentation on `ghostty-vt` usage is captured in this repo.
 
 ### Objectives
 Document the APIs, build requirements, and integration patterns for embedding `ghostty-vt` inside a Zig application.
 
 ### Tech Notes
 - Use `gh pr view ghostty-org/ghostty/8840 --web` or `--json` to review the module introduction, sample code, and build instructions.
-- Traverse the local `ghostty` tree for `vt` examples (`rg --files -g '*vt*'` or similar) to identify reference implementations.
+- Optionally clone `ghostty-org/ghostty` separately to inspect `vt` examples (`rg --files -g '*vt*'`) and reference implementations.
 - Summarize initialization flows: creating a VT instance, wiring to PTY/shell, rendering surfaces, and handling input.
 - Capture any required third-party libraries (e.g., rendering backends, windowing abstractions) and note Zig version compatibility constraints.
 
@@ -34,7 +34,7 @@ Create the base Zig executable project and configure `build.zig` so the app can 
 
 ### Tech Notes
 - Run `zig init-exe` (targeting the latest stable Zig supported by `ghostty-vt`) within the repo.
-- Wire the local `ghostty` checkout as a module/package dependency (e.g., `b.addModule("ghostty_vt", ...)`) pointing to the module's `build.zig.zon` or source tree as required.
+- Add the `ghostty` tarball dependency in `build.zig.zon` and import it via `lazyDependency` (no local checkout expected).
 - Extend the build script with run options (`zig build run`) that launch the prototype binary.
 - Verify compilation by importing `ghostty-vt` in `src/main.zig` and building an empty stub.
 

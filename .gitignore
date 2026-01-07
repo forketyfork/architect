@@ -12,7 +12,5 @@ zig-out/
 .zig-cache/
 .cache/
 
-# ghostty dependency (cloned locally)
-ghostty/
 
 .DS_Store
