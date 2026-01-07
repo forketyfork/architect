@@ -10,6 +10,7 @@ result-*
 zig-cache/
 zig-out/
 .zig-cache/
+.cache/
 
 # ghostty dependency (cloned locally)
 ghostty/
