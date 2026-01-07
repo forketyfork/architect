@@ -274,6 +274,19 @@ fn renderSessionContent(
                 }
             }
 
+            const is_fill_glyph = cp != 0 and cp != ' ' and !style.flags.invisible and isFullCellGlyph(cp);
+
+            if (is_fill_glyph) {
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                run_len = 0;
+                run_cells = 0;
+                run_width_cells = 0;
+
+                const draw_width = cell_width_actual * glyph_width_cells;
+                try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color);
+                continue;
+            }
+
             if (cp != 0 and cp != ' ' and !style.flags.invisible) {
                 var cluster_buf: [16]u21 = undefined;
                 var cluster_len: usize = 0;
@@ -834,6 +847,12 @@ fn shouldFlushRun(
     const would_be_too_wide = (run_cells + new_width_cells) * cell_width_actual > max_pixels;
 
     return color_changed or fallback_changed or width_changed or would_overflow or would_be_too_wide;
+}
+
+fn isFullCellGlyph(cp: u21) bool {
+    return (cp >= 0x2500 and cp <= 0x259F) // box drawing and block elements
+    or (cp >= 0xE0B0 and cp <= 0xE0C8) // powerline symbols
+    or (cp == 0x2588); // full block explicit
 }
 
 fn get256Color(idx: u8) c.SDL_Color {

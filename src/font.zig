@@ -117,6 +117,11 @@ pub const Font = struct {
         return self.renderCluster(&buf, x, y, target_width, target_height, fg_color);
     }
 
+    pub fn renderGlyphFill(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) RenderGlyphError!void {
+        var buf = [_]u21{codepoint};
+        return self.renderClusterFill(&buf, x, y, target_width, target_height, fg_color);
+    }
+
     pub fn renderCluster(
         self: *Font,
         codepoints: []const u21,
@@ -177,6 +182,60 @@ pub const Font = struct {
             .y = base_y + (avail_h - dest_h) * 0.5,
             .w = dest_w,
             .h = dest_h,
+        };
+
+        _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
+    }
+
+    pub fn renderClusterFill(
+        self: *Font,
+        codepoints: []const u21,
+        x: c_int,
+        y: c_int,
+        target_width: c_int,
+        target_height: c_int,
+        fg_color: c.SDL_Color,
+    ) RenderGlyphError!void {
+        if (codepoints.len == 0) return;
+        if (codepoints.len == 1 and codepoints[0] == 0) return;
+
+        var total_bytes: usize = 0;
+        for (codepoints) |cp| {
+            total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
+        }
+
+        var stack_buf: [512]u8 = undefined;
+        const use_heap = total_bytes > stack_buf.len;
+        const utf8_slice = if (use_heap)
+            try self.allocator.alloc(u8, total_bytes)
+        else
+            stack_buf[0..total_bytes];
+        defer if (use_heap) self.allocator.free(utf8_slice);
+
+        var utf8_len: usize = 0;
+        for (codepoints) |cp| {
+            var local: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(cp, &local) catch return error.InvalidCodepoint;
+            @memcpy(utf8_slice[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
+            utf8_len += encoded_len;
+        }
+
+        const fallback_choice = self.classifyFallback(codepoints);
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice) catch |err| {
+            if (err == error.GlyphRenderFailed) return;
+            return err;
+        };
+
+        var tex_w: f32 = 0;
+        var tex_h: f32 = 0;
+        _ = c.SDL_GetTextureSize(texture, &tex_w, &tex_h);
+        if (tex_w == 0 or tex_h == 0) return;
+
+        const dest_rect = c.SDL_FRect{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(target_width),
+            .h = @floatFromInt(target_height),
         };
 
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
