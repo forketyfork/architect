@@ -28,6 +28,7 @@ pub const SDL_RenderRect = c_import.SDL_RenderRect;
 pub const SDL_RenderLine = c_import.SDL_RenderLine;
 pub const SDL_RenderPoint = c_import.SDL_RenderPoint;
 pub const SDL_RenderGeometry = c_import.SDL_RenderGeometry;
+pub const SDL_GetSurfaceClipRect = c_import.SDL_GetSurfaceClipRect;
 pub const SDL_CreateTexture = c_import.SDL_CreateTexture;
 pub const SDL_SetRenderTarget = c_import.SDL_SetRenderTarget;
 pub const SDL_SetTextureBlendMode = c_import.SDL_SetTextureBlendMode;

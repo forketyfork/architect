@@ -309,6 +309,8 @@ fn renderSessionContent(
                     fallback_choice,
                     run_width_cells,
                     glyph_width_cells,
+                    run_cells,
+                    cell_width_actual,
                 )) {
                     try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
                     run_x = x;
@@ -819,6 +821,8 @@ fn shouldFlushRun(
     new_fallback: font_mod.Fallback,
     run_width_cells: c_int,
     new_width_cells: c_int,
+    run_cells: c_int,
+    cell_width_actual: c_int,
 ) bool {
     if (run_len == 0) return false;
 
@@ -826,8 +830,10 @@ fn shouldFlushRun(
     const fallback_changed = run_fallback != new_fallback;
     const width_changed = run_width_cells != new_width_cells;
     const would_overflow = run_len + cluster_len > run_buf_cap;
+    const max_pixels: c_int = 16000;
+    const would_be_too_wide = (run_cells + new_width_cells) * cell_width_actual > max_pixels;
 
-    return color_changed or fallback_changed or width_changed or would_overflow;
+    return color_changed or fallback_changed or width_changed or would_overflow or would_be_too_wide;
 }
 
 fn get256Color(idx: u8) c.SDL_Color {

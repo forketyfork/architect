@@ -244,6 +244,15 @@ pub const Font = struct {
             log.debug("TTF_RenderText_Blended failed: {s}", .{c.SDL_GetError()});
             return error.GlyphRenderFailed;
         };
+
+        var surf_rect: c.SDL_Rect = undefined;
+        _ = c.SDL_GetSurfaceClipRect(surface, &surf_rect);
+        const max_dim: c_int = 16384;
+        if (surf_rect.w > max_dim or surf_rect.h > max_dim) {
+            log.warn("Glyph surface too large ({d}x{d}), skipping render", .{ surf_rect.w, surf_rect.h });
+            c.SDL_DestroySurface(surface);
+            return error.GlyphRenderFailed;
+        }
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(self.renderer, surface) orelse {
