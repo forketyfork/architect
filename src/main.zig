@@ -150,6 +150,8 @@ pub fn main() !void {
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
     ui.assets.font_path = font_paths.regular;
+    ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
+    ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
 
     var window_x: c_int = config.window_x;
     var window_y: c_int = config.window_y;

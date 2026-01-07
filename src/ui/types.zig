@@ -34,6 +34,8 @@ pub const UiAction = union(enum) {
 pub const UiAssets = struct {
     ui_font: ?*font_mod.Font = null,
     font_path: ?[:0]const u8 = null,
+    symbol_fallback_path: ?[:0]const u8 = null,
+    emoji_fallback_path: ?[:0]const u8 = null,
 };
 
 pub const UiActionQueue = struct {

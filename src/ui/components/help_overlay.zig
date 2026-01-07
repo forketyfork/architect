@@ -6,6 +6,57 @@ const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
+const font_mod = @import("../../font.zig");
+
+const FontWithFallbacks = struct {
+    main: *c.TTF_Font,
+    symbol: ?*c.TTF_Font,
+    emoji: ?*c.TTF_Font,
+};
+
+fn openFontWithFallbacks(
+    font_path: [:0]const u8,
+    symbol_path: ?[:0]const u8,
+    emoji_path: ?[:0]const u8,
+    size: c_int,
+) !FontWithFallbacks {
+    const main = c.TTF_OpenFont(font_path.ptr, @floatFromInt(size)) orelse return error.FontUnavailable;
+    errdefer c.TTF_CloseFont(main);
+
+    var symbol: ?*c.TTF_Font = null;
+    if (symbol_path) |path| {
+        symbol = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
+        if (symbol) |s| {
+            if (!c.TTF_AddFallbackFont(main, s)) {
+                c.TTF_CloseFont(s);
+                symbol = null;
+            }
+        }
+    }
+
+    var emoji: ?*c.TTF_Font = null;
+    if (emoji_path) |path| {
+        emoji = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
+        if (emoji) |e| {
+            if (!c.TTF_AddFallbackFont(main, e)) {
+                c.TTF_CloseFont(e);
+                emoji = null;
+            }
+        }
+    }
+
+    return FontWithFallbacks{
+        .main = main,
+        .symbol = symbol,
+        .emoji = emoji,
+    };
+}
+
+fn closeFontWithFallbacks(fonts: FontWithFallbacks) void {
+    if (fonts.symbol) |s| c.TTF_CloseFont(s);
+    if (fonts.emoji) |e| c.TTF_CloseFont(e);
+    c.TTF_CloseFont(fonts.main);
+}
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -107,12 +158,12 @@ pub const HelpOverlayComponent = struct {
     fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
         const font_path = assets.font_path orelse return;
         const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
-        const question_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(font_size)) orelse return;
-        defer c.TTF_CloseFont(question_font);
+        const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
+        defer closeFontWithFallbacks(fonts);
 
         const question_mark: [2]u8 = .{ '?', 0 };
         const fg_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(question_font, &question_mark, 1, fg_color) orelse return;
+        const surface = c.TTF_RenderText_Blended(fonts.main, &question_mark, 1, fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
@@ -143,15 +194,15 @@ pub const HelpOverlayComponent = struct {
         const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
-        const title_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(title_font_size)) orelse return;
-        defer c.TTF_CloseFont(title_font);
+        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch return;
+        defer closeFontWithFallbacks(title_fonts);
 
-        const key_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(key_font_size)) orelse return;
-        defer c.TTF_CloseFont(key_font);
+        const key_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, key_font_size) catch return;
+        defer closeFontWithFallbacks(key_fonts);
 
         const title_text = "Keyboard Shortcuts";
         const title_color = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-        const title_surface = c.TTF_RenderText_Blended(title_font, title_text, title_text.len, title_color) orelse return;
+        const title_surface = c.TTF_RenderText_Blended(title_fonts.main, title_text, title_text.len, title_color) orelse return;
         defer c.SDL_DestroySurface(title_surface);
 
         const title_texture = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return;
@@ -187,9 +238,9 @@ pub const HelpOverlayComponent = struct {
         const desc_color = c.SDL_Color{ .r = 180, .g = 180, .b = 180, .a = 255 };
 
         for (shortcuts) |shortcut| {
-            const key_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.key.ptr), shortcut.key.len, key_color) orelse continue;
+            const key_surface = c.TTF_RenderText_Blended(key_fonts.main, @ptrCast(shortcut.key.ptr), shortcut.key.len, key_color) orelse continue;
             defer c.SDL_DestroySurface(key_surface);
-            const desc_surface = c.TTF_RenderText_Blended(key_font, @ptrCast(shortcut.desc.ptr), shortcut.desc.len, desc_color) orelse continue;
+            const desc_surface = c.TTF_RenderText_Blended(key_fonts.main, @ptrCast(shortcut.desc.ptr), shortcut.desc.len, desc_color) orelse continue;
             defer c.SDL_DestroySurface(desc_surface);
 
             const key_texture = c.SDL_CreateTextureFromSurface(renderer, key_surface) orelse continue;

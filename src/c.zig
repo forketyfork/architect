@@ -28,6 +28,7 @@ pub const SDL_RenderRect = c_import.SDL_RenderRect;
 pub const SDL_RenderLine = c_import.SDL_RenderLine;
 pub const SDL_RenderPoint = c_import.SDL_RenderPoint;
 pub const SDL_RenderGeometry = c_import.SDL_RenderGeometry;
+pub const SDL_GetSurfaceClipRect = c_import.SDL_GetSurfaceClipRect;
 pub const SDL_CreateTexture = c_import.SDL_CreateTexture;
 pub const SDL_SetRenderTarget = c_import.SDL_SetRenderTarget;
 pub const SDL_SetTextureBlendMode = c_import.SDL_SetTextureBlendMode;
@@ -138,6 +139,7 @@ pub const TTF_DIRECTION_LTR = c_import.TTF_DIRECTION_LTR;
 pub const TTF_DIRECTION_RTL = c_import.TTF_DIRECTION_RTL;
 pub const TTF_DIRECTION_TTB = c_import.TTF_DIRECTION_TTB;
 pub const TTF_DIRECTION_BTT = c_import.TTF_DIRECTION_BTT;
+pub const TTF_AddFallbackFont = c_import.TTF_AddFallbackFont;
 
 pub const SDL_Event = c_import.SDL_Event;
 pub const SDL_FRect = c_import.SDL_FRect;

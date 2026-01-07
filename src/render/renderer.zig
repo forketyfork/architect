@@ -202,6 +202,17 @@ fn renderSessionContent(
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
+        // Buffer for a single shaped render run.
+        // 512 codepoints comfortably exceeds typical terminal line widths,
+        // avoids excessive splitting in normal use, and bounds per-run work.
+        var run_buf: [512]u21 = undefined;
+        var run_len: usize = 0;
+        var run_cells: c_int = 0;
+        var run_x: c_int = 0;
+        var run_fg: c.SDL_Color = undefined;
+        var run_fallback: font_mod.Fallback = .primary;
+        var run_width_cells: c_int = 0;
+
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
             const list_cell = pages.getCell(if (session.is_scrolled)
@@ -263,6 +274,28 @@ fn renderSessionContent(
                 }
             }
 
+            const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, cell_width_actual, cell_height_actual, fg_color);
+            if (is_box_drawing) {
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                run_len = 0;
+                run_cells = 0;
+                run_width_cells = 0;
+                continue;
+            }
+
+            const is_fill_glyph = cp != 0 and cp != ' ' and !style.flags.invisible and isFullCellGlyph(cp);
+
+            if (is_fill_glyph) {
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                run_len = 0;
+                run_cells = 0;
+                run_width_cells = 0;
+
+                const draw_width = cell_width_actual * glyph_width_cells;
+                try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color);
+                continue;
+            }
+
             if (cp != 0 and cp != ' ' and !style.flags.invisible) {
                 var cluster_buf: [16]u21 = undefined;
                 var cluster_len: usize = 0;
@@ -279,10 +312,58 @@ fn renderSessionContent(
                     }
                 }
 
-                const draw_width = cell_width_actual * glyph_width_cells;
-                try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
+                const fallback_choice = font.classifyFallback(cluster_buf[0..cluster_len]);
+
+                if (run_len == 0) {
+                    run_x = x;
+                    run_fg = fg_color;
+                    run_fallback = fallback_choice;
+                    run_width_cells = glyph_width_cells;
+                }
+
+                if (shouldFlushRun(
+                    run_len,
+                    run_buf.len,
+                    cluster_len,
+                    run_fg,
+                    fg_color,
+                    run_fallback,
+                    fallback_choice,
+                    run_width_cells,
+                    glyph_width_cells,
+                    run_cells,
+                    cell_width_actual,
+                )) {
+                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                    run_x = x;
+                    run_fg = fg_color;
+                    run_fallback = fallback_choice;
+                    run_len = 0;
+                    run_cells = 0;
+                    run_width_cells = glyph_width_cells;
+                }
+
+                if (cluster_len > run_buf.len) {
+                    const draw_width = cell_width_actual * glyph_width_cells;
+                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
+                    run_len = 0;
+                    run_cells = 0;
+                    run_width_cells = 0;
+                    continue;
+                }
+
+                @memcpy(run_buf[run_len .. run_len + cluster_len], cluster_buf[0..cluster_len]);
+                run_len += cluster_len;
+                run_cells += glyph_width_cells;
+            } else {
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                run_len = 0;
+                run_cells = 0;
+                run_width_cells = 0;
             }
         }
+
+        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg);
     }
 
     if (!session.is_scrolled and is_focused and !session.dead and cursor_visible) {
@@ -734,6 +815,111 @@ fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color) c.SDL_Color
             .a = 255,
         },
     };
+}
+
+fn flushRun(
+    font: *font_mod.Font,
+    buffer: []const u21,
+    len: usize,
+    x: c_int,
+    y: c_int,
+    cells: c_int,
+    cell_width_actual: c_int,
+    cell_height_actual: c_int,
+    fg: c.SDL_Color,
+) RenderError!void {
+    if (len == 0 or cells == 0) return;
+    const draw_width = cell_width_actual * cells;
+    try font.renderCluster(buffer[0..len], x, y, draw_width, cell_height_actual, fg);
+}
+
+fn shouldFlushRun(
+    run_len: usize,
+    run_buf_cap: usize,
+    cluster_len: usize,
+    run_fg: c.SDL_Color,
+    new_fg: c.SDL_Color,
+    run_fallback: font_mod.Fallback,
+    new_fallback: font_mod.Fallback,
+    run_width_cells: c_int,
+    new_width_cells: c_int,
+    run_cells: c_int,
+    cell_width_actual: c_int,
+) bool {
+    if (run_len == 0) return false;
+
+    const color_changed = !colorsEqual(run_fg, new_fg);
+    const fallback_changed = run_fallback != new_fallback;
+    const width_changed = run_width_cells != new_width_cells;
+    const would_overflow = run_len + cluster_len > run_buf_cap;
+    const max_pixels: c_int = 16000;
+    const would_be_too_wide = (run_cells + new_width_cells) * cell_width_actual > max_pixels;
+
+    return color_changed or fallback_changed or width_changed or would_overflow or would_be_too_wide;
+}
+
+fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {
+    const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(@min(w, h))) / 8.0);
+    const half_t: f32 = thickness * 0.5;
+    const xf: f32 = @floatFromInt(x);
+    const yf: f32 = @floatFromInt(y);
+    const wf: f32 = @floatFromInt(w);
+    const hf: f32 = @floatFromInt(h);
+    const mid_x: f32 = xf + wf * 0.5;
+    const mid_y: f32 = yf + hf * 0.5;
+
+    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+
+    switch (cp) {
+        0x2500 => {
+            const rect = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = wf, .h = thickness };
+            _ = c.SDL_RenderFillRect(renderer, &rect);
+            return true;
+        },
+        0x2502 => {
+            const rect = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = hf };
+            _ = c.SDL_RenderFillRect(renderer, &rect);
+            return true;
+        },
+        0x256D => {
+            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = mid_y, .w = thickness, .h = yf + hf - mid_y };
+            const horiz = c.SDL_FRect{ .x = mid_x, .y = mid_y - half_t, .w = xf + wf - mid_x, .h = thickness };
+            _ = c.SDL_RenderFillRect(renderer, &vert);
+            _ = c.SDL_RenderFillRect(renderer, &horiz);
+            return true;
+        },
+        0x256E => {
+            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = mid_y, .w = thickness, .h = yf + hf - mid_y };
+            const horiz = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = mid_x - xf, .h = thickness };
+            _ = c.SDL_RenderFillRect(renderer, &vert);
+            _ = c.SDL_RenderFillRect(renderer, &horiz);
+            return true;
+        },
+        0x2570 => {
+            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = mid_y - yf };
+            const horiz = c.SDL_FRect{ .x = mid_x, .y = mid_y - half_t, .w = xf + wf - mid_x, .h = thickness };
+            _ = c.SDL_RenderFillRect(renderer, &vert);
+            _ = c.SDL_RenderFillRect(renderer, &horiz);
+            return true;
+        },
+        0x256F => {
+            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = mid_y - yf };
+            const horiz = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = mid_x - xf, .h = thickness };
+            _ = c.SDL_RenderFillRect(renderer, &vert);
+            _ = c.SDL_RenderFillRect(renderer, &horiz);
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn isBoxDrawingChar(cp: u21) bool {
+    return cp == 0x2500 or cp == 0x2502 or
+        cp == 0x256D or cp == 0x256E or cp == 0x2570 or cp == 0x256F;
+}
+
+fn isFullCellGlyph(cp: u21) bool {
+    return ((cp >= 0x2500 and cp <= 0x259F) and !isBoxDrawingChar(cp)) or (cp >= 0xE0B0 and cp <= 0xE0C8) or (cp == 0x2588);
 }
 
 fn get256Color(idx: u8) c.SDL_Color {
