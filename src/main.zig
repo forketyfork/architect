@@ -341,9 +341,7 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
-                        // Clear scrollback + screen (Ghostty Cmd+K behavior). Include RIS for
-                        // terminals that ignore the 3J/2J combo when in alternate screen.
-                        try focused.sendInput("\x1b[3J\x1b[H\x1b[2J\x1bc");
+                        clearTerminal(focused);
                         ui.showToast("Cleared terminal", now);
                     } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
@@ -1266,6 +1264,18 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
     }
 
     try session.sendInput(text);
+}
+
+fn clearTerminal(session: *SessionState) void {
+    const terminal = session.terminal orelse return;
+
+    // Match Ghostty behavior: avoid clearing alt screen to not disrupt full-screen apps.
+    if (terminal.screens.active_key == .alternate) return;
+
+    session.terminal.?.screens.active.clearSelection();
+    session.terminal.?.eraseDisplay(ghostty_vt.EraseDisplay.scrollback, false);
+    session.terminal.?.eraseDisplay(ghostty_vt.EraseDisplay.complete, false);
+    session.dirty = true;
 }
 
 fn copySelectionToClipboard(
