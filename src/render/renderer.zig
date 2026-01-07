@@ -202,12 +202,16 @@ fn renderSessionContent(
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
+        // Buffer for a single shaped render run.
+        // 512 codepoints comfortably exceeds typical terminal line widths,
+        // avoids excessive splitting in normal use, and bounds per-run work.
         var run_buf: [512]u21 = undefined;
         var run_len: usize = 0;
         var run_cells: c_int = 0;
         var run_x: c_int = 0;
         var run_fg: c.SDL_Color = undefined;
         var run_fallback: font_mod.Fallback = .primary;
+        var run_width_cells: c_int = 0;
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
@@ -292,15 +296,27 @@ fn renderSessionContent(
                     run_x = x;
                     run_fg = fg_color;
                     run_fallback = fallback_choice;
+                    run_width_cells = glyph_width_cells;
                 }
 
-                if (!colorsEqual(run_fg, fg_color) or run_fallback != fallback_choice or run_len + cluster_len > run_buf.len) {
+                if (shouldFlushRun(
+                    run_len,
+                    run_buf.len,
+                    cluster_len,
+                    run_fg,
+                    fg_color,
+                    run_fallback,
+                    fallback_choice,
+                    run_width_cells,
+                    glyph_width_cells,
+                )) {
                     try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
                     run_x = x;
                     run_fg = fg_color;
                     run_fallback = fallback_choice;
                     run_len = 0;
                     run_cells = 0;
+                    run_width_cells = glyph_width_cells;
                 }
 
                 if (cluster_len > run_buf.len) {
@@ -308,6 +324,7 @@ fn renderSessionContent(
                     try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
                     run_len = 0;
                     run_cells = 0;
+                    run_width_cells = 0;
                     continue;
                 }
 
@@ -318,6 +335,7 @@ fn renderSessionContent(
                 try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
                 run_len = 0;
                 run_cells = 0;
+                run_width_cells = 0;
             }
         }
 
@@ -789,6 +807,27 @@ fn flushRun(
     if (len == 0 or cells == 0) return;
     const draw_width = cell_width_actual * cells;
     try font.renderCluster(buffer[0..len], x, y, draw_width, cell_height_actual, fg);
+}
+
+fn shouldFlushRun(
+    run_len: usize,
+    run_buf_cap: usize,
+    cluster_len: usize,
+    run_fg: c.SDL_Color,
+    new_fg: c.SDL_Color,
+    run_fallback: font_mod.Fallback,
+    new_fallback: font_mod.Fallback,
+    run_width_cells: c_int,
+    new_width_cells: c_int,
+) bool {
+    if (run_len == 0) return false;
+
+    const color_changed = !colorsEqual(run_fg, new_fg);
+    const fallback_changed = run_fallback != new_fallback;
+    const width_changed = run_width_cells != new_width_cells;
+    const would_overflow = run_len + cluster_len > run_buf_cap;
+
+    return color_changed or fallback_changed or width_changed or would_overflow;
 }
 
 fn get256Color(idx: u8) c.SDL_Color {

@@ -15,6 +15,8 @@ const GlyphKey = struct {
     hash: u64,
     color: u32,
     fallback: Fallback,
+    // Cluster length in codepoints. Using u16 provides generous headroom
+    // (up to 65535) while the renderer currently caps runs at 512 codepoints.
     len: u16,
 };
 
