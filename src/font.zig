@@ -231,13 +231,12 @@ pub const Font = struct {
         _ = c.SDL_GetTextureSize(texture, &tex_w, &tex_h);
         if (tex_w == 0 or tex_h == 0) return;
 
-        const pad_x: f32 = @max(1.0, @as(f32, @floatFromInt(target_width)) * 0.20);
-        const pad_y: f32 = @max(1.0, @as(f32, @floatFromInt(target_height)) * 0.20);
+        const pad_px: c_int = @max(1, @divFloor(target_width, 5));
         const dest_rect = c.SDL_FRect{
-            .x = @as(f32, @floatFromInt(x)) - pad_x,
-            .y = @as(f32, @floatFromInt(y)) - pad_y,
-            .w = @as(f32, @floatFromInt(target_width)) + pad_x * 2.0,
-            .h = @as(f32, @floatFromInt(target_height)) + pad_y * 2.0,
+            .x = @floatFromInt(x - pad_px),
+            .y = @floatFromInt(y - pad_px),
+            .w = @floatFromInt(target_width + pad_px * 2),
+            .h = @floatFromInt(target_height + pad_px * 2),
         };
 
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
