@@ -63,19 +63,19 @@ jobs:
           if security find-identity -v -p codesigning >/tmp/codesign-identities.txt 2>/dev/null; then
             IDENTITY=$(awk 'NR==1 {print $2}' /tmp/codesign-identities.txt)
             echo "Signing with identity ${IDENTITY}"
-            for lib in release/lib/*.dylib; do
+            for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
               codesign --force --options runtime --timestamp --sign "$IDENTITY" "$lib"
             done
-            codesign --force --options runtime --timestamp --sign "$IDENTITY" release/architect.bin
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" release/Architect.app/Contents/MacOS/architect.bin
           else
             echo "No Developer ID cert available; applying ad-hoc signature for Gatekeeper"
-            for lib in release/lib/*.dylib; do
+            for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
               codesign --force --sign - "$lib"
             done
-            codesign --force --sign - release/architect.bin
+            codesign --force --sign - release/Architect.app/Contents/MacOS/architect.bin
           fi
           cd release
-          tar -czf architect-macos-${{ matrix.arch }}.tar.gz *
+          tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
         working-directory: architect
 
       - name: Upload artifact
