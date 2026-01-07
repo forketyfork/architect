@@ -139,6 +139,7 @@ pub const TTF_DIRECTION_LTR = c_import.TTF_DIRECTION_LTR;
 pub const TTF_DIRECTION_RTL = c_import.TTF_DIRECTION_RTL;
 pub const TTF_DIRECTION_TTB = c_import.TTF_DIRECTION_TTB;
 pub const TTF_DIRECTION_BTT = c_import.TTF_DIRECTION_BTT;
+pub const TTF_AddFallbackFont = c_import.TTF_AddFallbackFont;
 
 pub const SDL_Event = c_import.SDL_Event;
 pub const SDL_FRect = c_import.SDL_FRect;
