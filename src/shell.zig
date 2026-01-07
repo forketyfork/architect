@@ -76,10 +76,9 @@ pub const Shell = struct {
         while (written < data.len) {
             const n = posix.write(self.pty.master, data[written..]) catch |err| switch (err) {
                 error.WouldBlock => {
-                    // PTY master is non-blocking; wait briefly for space rather than
-                    // dropping the remainder of a large paste.
-                    std.Thread.sleep(50 * std.time.ns_per_ms);
-                    continue;
+                    // PTY is full; avoid blocking the main thread. Return what
+                    // we managed to send so callers can retry or drop the rest.
+                    return if (written > 0) written else err;
                 },
                 else => return err,
             };
