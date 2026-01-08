@@ -62,6 +62,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             nix develop --command just setup && break
+            if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
         working-directory: architect
@@ -70,6 +71,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             nix develop --command zig build -Doptimize=ReleaseFast && break
+            if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
         working-directory: architect
