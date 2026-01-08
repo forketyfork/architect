@@ -18,11 +18,9 @@ class Architect < Formula
   def install
     ENV["ZIG_GLOBAL_CACHE_DIR"] = buildpath/"zig-cache"
 
-    resource("ghostty").stage do |r|
-      system "zig", "fetch",
-             "--global-cache-dir", ENV["ZIG_GLOBAL_CACHE_DIR"],
-             r.cached_download
-    end
+    system "zig", "fetch",
+           "--global-cache-dir", ENV["ZIG_GLOBAL_CACHE_DIR"],
+           resource("ghostty").cached_download
 
     system "zig", "build",
            "-Doptimize=ReleaseFast",
