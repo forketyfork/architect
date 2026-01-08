@@ -12,7 +12,7 @@ class Architect < Formula
 
   resource "ghostty" do
     url "https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz"
-    sha256 "122022d77cfd6d901de978a2667797a18d82f7ce2fd6c40d4028d6db603499dc9679"
+    sha256 "a3588866217e11940a89a4e383955aa97b0dc9ebfd3a8b2fb92107e3fbf69276"
   end
 
   def install
@@ -27,9 +27,6 @@ class Architect < Formula
     system "zig", "build",
            "-Doptimize=ReleaseFast",
            "--prefix", prefix
-
-    bin.install "zig-out/bin/architect"
-    (share/"architect/fonts").install Dir["zig-out/share/architect/fonts/*"]
   end
 
   test do
