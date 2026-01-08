@@ -7,9 +7,9 @@ class Architect < Formula
 
   depends_on "pkg-config" => :build
   depends_on "zig" => :build
+  depends_on xcode: :build
   depends_on "sdl3"
   depends_on "sdl3_ttf"
-  depends_on xcode: :build
 
   def install
     system "zig", "build",
@@ -18,6 +18,6 @@ class Architect < Formula
   end
 
   test do
-    assert_predicate bin/"architect", :exist?
+    assert_path_exists bin/"architect"
   end
 end
