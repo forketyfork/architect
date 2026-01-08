@@ -26,7 +26,7 @@ const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const SCROLL_LINES_PER_TICK: isize = 2;
+const SCROLL_LINES_PER_TICK: isize = 1;
 const MAX_SCROLL_VELOCITY: f32 = 30.0;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
@@ -584,7 +584,7 @@ pub fn main() !void {
                             }
 
                             const edge_threshold: c_int = 50;
-                            const scroll_speed: isize = 3;
+                            const scroll_speed: isize = 1;
 
                             if (mouse_y < edge_threshold) {
                                 scrollSession(focused, -scroll_speed, now);
