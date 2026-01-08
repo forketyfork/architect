@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(fd:*)",
+      "Bash(tree:*)",
+      "Bash(fastmod:*)",
+      "Bash(sg:*)",
+      "Bash(rg:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(xargs:*)",
+      "Bash(find:*)",
+      "WebSearch",
+      "Bash(test:*)",
+      "Bash(zig:*)",
+      "Bash(cat:*)",
+      "Bash(nix:*)",
+      "Bash(echo:*)",
+      "Bash(just:*)",
+      "Skill(zig-best-practices)",
+      "Bash(otool:*)",
+      "Skill(ship)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl:*)",
+      "Bash(tar:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(printf:*)",
+      "Bash(fc-query:*)",
+      "Bash(zig-out/bin/architect:*)",
+      "Bash(fc-list:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "enableAllProjectMcpServers": true
+}
