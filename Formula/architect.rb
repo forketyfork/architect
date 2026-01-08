@@ -9,19 +9,9 @@ class Architect < Formula
   depends_on "zig" => :build
   depends_on "sdl3"
   depends_on "sdl3_ttf"
-
-  resource "ghostty" do
-    url "https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz"
-    sha256 "a3588866217e11940a89a4e383955aa97b0dc9ebfd3a8b2fb92107e3fbf69276"
-  end
+  depends_on xcode: :build
 
   def install
-    ENV["ZIG_GLOBAL_CACHE_DIR"] = buildpath/"zig-cache"
-
-    system "zig", "fetch",
-           "--global-cache-dir", ENV["ZIG_GLOBAL_CACHE_DIR"],
-           resource("ghostty").cached_download
-
     system "zig", "build",
            "-Doptimize=ReleaseFast",
            "--prefix", prefix
