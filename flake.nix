@@ -44,8 +44,17 @@
             export PKG_CONFIG_PATH="${sdl3}/lib/pkgconfig:${sdl3_ttf}/lib/pkgconfig:$PKG_CONFIG_PATH"
             export SDL3_INCLUDE_PATH="${sdl3.dev}/include"
             export SDL3_TTF_INCLUDE_PATH="${sdl3_ttf}/include"
+
+            gwt() {
+              if [ -z "$1" ]; then
+                echo "Usage: gwt <name>"
+                return 1
+              fi
+              git worktree add .architect/"$1" -b forketyfork/"$1" && cd .architect/"$1" && direnv allow
+            }
+
             echo "Architect development environment"
-            echo "Available commands: just --list"
+            echo "Available commands: just --list, gwt <name>"
           ''
           + (pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
             # On macOS, we unset the macOS SDK env vars that Nix sets up because
