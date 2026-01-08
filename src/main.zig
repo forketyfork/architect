@@ -371,6 +371,40 @@ pub fn main() !void {
                         };
                     }
                 },
+                c.SDL_EVENT_DROP_FILE => {
+                    const drop_path_ptr = scaled_event.drop.data;
+                    if (drop_path_ptr == null) continue;
+                    const drop_path = std.mem.sliceTo(drop_path_ptr, 0);
+                    if (drop_path.len == 0) continue;
+
+                    const mouse_x: c_int = @intFromFloat(scaled_event.drop.x);
+                    const mouse_y: c_int = @intFromFloat(scaled_event.drop.y);
+
+                    const hovered_session = calculateHoveredSession(
+                        mouse_x,
+                        mouse_y,
+                        &anim_state,
+                        cell_width_pixels,
+                        cell_height_pixels,
+                        render_width,
+                        render_height,
+                    ) orelse continue;
+
+                    var session = &sessions[hovered_session];
+                    try session.ensureSpawned();
+
+                    const escaped = shellQuotePath(allocator, drop_path) catch |err| {
+                        std.debug.print("Failed to escape dropped path: {}\n", .{err});
+                        continue;
+                    };
+                    defer allocator.free(escaped);
+
+                    pasteText(session, allocator, escaped) catch |err| switch (err) {
+                        error.NoTerminal => ui.showToast("No terminal to paste into", now),
+                        error.NoShell => ui.showToast("Shell not available", now),
+                        else => std.debug.print("Failed to paste dropped path: {}\n", .{err}),
+                    };
+                },
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = scaled_event.key.key;
                     const mod = scaled_event.key.mod;
@@ -930,6 +964,10 @@ fn scaleEventToRender(event: *const c.SDL_Event, scale_x: f32, scale_y: f32) c.S
             e.wheel.mouse_x *= scale_x;
             e.wheel.mouse_y *= scale_y;
         },
+        c.SDL_EVENT_DROP_FILE, c.SDL_EVENT_DROP_TEXT, c.SDL_EVENT_DROP_POSITION => {
+            e.drop.x *= scale_x;
+            e.drop.y *= scale_y;
+        },
         else => {},
     }
     return e;
@@ -1365,6 +1403,51 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
     return null;
 }
 
+fn resetScrollIfNeeded(session: *SessionState) void {
+    if (!session.is_scrolled) return;
+
+    if (session.terminal) |*terminal| {
+        terminal.screens.active.pages.scroll(.{ .active = {} });
+        session.is_scrolled = false;
+        session.scroll_velocity = 0.0;
+        session.scroll_remainder = 0.0;
+    }
+}
+
+fn shellQuotePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.append(allocator, '\'');
+    for (path) |ch| switch (ch) {
+        '\'' => try buf.appendSlice(allocator, "'\"'\"'"),
+        else => try buf.append(allocator, ch),
+    };
+    try buf.append(allocator, '\'');
+    try buf.append(allocator, ' ');
+
+    return buf.toOwnedSlice(allocator);
+}
+
+fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const u8) !void {
+    if (text.len == 0) return;
+
+    resetScrollIfNeeded(session);
+
+    const terminal = session.terminal orelse return error.NoTerminal;
+    if (session.shell == null) return error.NoShell;
+
+    const opts = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
+    const buf = try allocator.dupe(u8, text);
+    defer allocator.free(buf);
+    const slices = ghostty_vt.input.encodePaste(buf, opts);
+
+    for (slices) |part| {
+        if (part.len == 0) continue;
+        try session.sendInput(part);
+    }
+}
+
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
     if (!session.spawned or session.dead) return;
     if (text_ptr == null) return;
@@ -1372,15 +1455,7 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
     const text = std.mem.sliceTo(text_ptr, 0);
     if (text.len == 0) return;
 
-    if (session.is_scrolled) {
-        if (session.terminal) |*terminal| {
-            terminal.screens.active.pages.scroll(.{ .active = {} });
-            session.is_scrolled = false;
-            session.scroll_velocity = 0.0;
-            session.scroll_remainder = 0.0;
-        }
-    }
-
+    resetScrollIfNeeded(session);
     try session.sendInput(text);
 }
 
@@ -1437,15 +1512,6 @@ fn pasteClipboardIntoSession(
     ui: *ui_mod.UiRoot,
     now: i64,
 ) !void {
-    const terminal = session.terminal orelse {
-        ui.showToast("No terminal to paste into", now);
-        return;
-    };
-    if (session.shell == null) {
-        ui.showToast("Shell not available", now);
-        return;
-    }
-
     const clip_ptr = c.SDL_GetClipboardText();
     defer c.SDL_free(clip_ptr);
     if (clip_ptr == null) {
@@ -1458,15 +1524,17 @@ fn pasteClipboardIntoSession(
         return;
     }
 
-    const opts = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
-    const clip_buf = try allocator.dupe(u8, clip);
-    defer allocator.free(clip_buf);
-    const slices = ghostty_vt.input.encodePaste(clip_buf, opts);
-
-    for (slices) |part| {
-        if (part.len == 0) continue;
-        try session.sendInput(part);
-    }
+    pasteText(session, allocator, clip) catch |err| switch (err) {
+        error.NoTerminal => {
+            ui.showToast("No terminal to paste into", now);
+            return;
+        },
+        error.NoShell => {
+            ui.showToast("Shell not available", now);
+            return;
+        },
+        else => return err,
+    };
 
     ui.showToast("Pasted clipboard", now);
 }
