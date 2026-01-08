@@ -21,6 +21,14 @@
         };
         sdl3 = pkgs.sdl3;
         sdl3_ttf = pkgs.sdl3-ttf;
+
+        gw = pkgs.writeShellScriptBin "gw" ''
+          if [ -z "$1" ]; then
+            echo "Usage: gw <name>"
+            exit 1
+          fi
+          git worktree add .architect/"$1" -b forketyfork/"$1" && cd .architect/"$1" && direnv allow
+        '';
       in
       {
         devShells.default = pkgs.mkShell {
@@ -28,6 +36,7 @@
             just
             zig.packages.${system}."0.15.2"
             pkg-config
+            gw
           ];
 
           buildInputs =
@@ -44,17 +53,8 @@
             export PKG_CONFIG_PATH="${sdl3}/lib/pkgconfig:${sdl3_ttf}/lib/pkgconfig:$PKG_CONFIG_PATH"
             export SDL3_INCLUDE_PATH="${sdl3.dev}/include"
             export SDL3_TTF_INCLUDE_PATH="${sdl3_ttf}/include"
-
-            gwt() {
-              if [ -z "$1" ]; then
-                echo "Usage: gwt <name>"
-                return 1
-              fi
-              git worktree add .architect/"$1" -b forketyfork/"$1" && cd .architect/"$1" && direnv allow
-            }
-
             echo "Architect development environment"
-            echo "Available commands: just --list, gwt <name>"
+            echo "Available commands: just --list, gw <name>"
           ''
           + (pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
             # On macOS, we unset the macOS SDK env vars that Nix sets up because
