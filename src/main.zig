@@ -582,6 +582,15 @@ pub fn main() !void {
                             if (pin) |p| {
                                 updateSelectionDrag(focused, p);
                             }
+
+                            const edge_threshold: c_int = 50;
+                            const scroll_speed: isize = 3;
+
+                            if (mouse_y < edge_threshold) {
+                                scrollSession(focused, -scroll_speed, now);
+                            } else if (mouse_y > render_height - edge_threshold) {
+                                scrollSession(focused, scroll_speed, now);
+                            }
                         } else if (focused.selection_pending) {
                             if (focused.selection_anchor) |anchor| {
                                 if (pin) |p| {
