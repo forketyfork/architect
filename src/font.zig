@@ -188,6 +188,8 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
+        const effective_variant = self.effectiveVariant(variant, codepoints);
+
         var total_bytes: usize = 0;
         for (codepoints) |cp| {
             total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
@@ -210,7 +212,7 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, variant) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -254,6 +256,8 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
+        const effective_variant = self.effectiveVariant(variant, codepoints);
+
         var total_bytes: usize = 0;
         for (codepoints) |cp| {
             total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
@@ -276,7 +280,7 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, variant) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -391,7 +395,28 @@ pub const Font = struct {
             .regular => self.font,
             .bold => self.bold_font orelse self.font,
             .italic => self.italic_font orelse self.font,
-            .bold_italic => self.bold_italic_font orelse self.bold_font orelse self.italic_font orelse self.font,
+            .bold_italic => self.bold_italic_font orelse self.bold_font orelse self.font,
         };
+    }
+
+    fn effectiveVariant(self: *Font, variant: Variant, codepoints: []const u21) Variant {
+        if (variant == .regular) return .regular;
+        if (self.variantHasGlyphs(variant, codepoints)) return variant;
+        return .regular;
+    }
+
+    fn variantHasGlyphs(self: *Font, variant: Variant, codepoints: []const u21) bool {
+        const font_ptr = switch (variant) {
+            .regular => return true,
+            .bold => self.bold_font,
+            .italic => self.italic_font,
+            .bold_italic => self.bold_italic_font,
+        } orelse return false;
+        for (codepoints) |cp| {
+            if (!c.TTF_FontHasGlyph(font_ptr, @intCast(cp))) {
+                return false;
+            }
+        }
+        return true;
     }
 };

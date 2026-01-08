@@ -299,7 +299,6 @@ fn renderSessionContent(
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
-                run_variant = .regular;
                 continue;
             }
 
@@ -310,7 +309,6 @@ fn renderSessionContent(
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
-                run_variant = .regular;
 
                 const draw_width = cell_width_actual * glyph_width_cells;
                 try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color, variant);
@@ -385,7 +383,6 @@ fn renderSessionContent(
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
-                run_variant = .regular;
             }
         }
 
@@ -902,9 +899,9 @@ fn applyFaint(color: c.SDL_Color) c.SDL_Color {
     const g: u32 = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor);
     const b: u32 = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor);
     return c.SDL_Color{
-        .r = @intCast(@min(@as(u32, 255), r)),
-        .g = @intCast(@min(@as(u32, 255), g)),
-        .b = @intCast(@min(@as(u32, 255), b)),
+        .r = @intCast(r),
+        .g = @intCast(g),
+        .b = @intCast(b),
         .a = color.a,
     };
 }
