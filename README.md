@@ -82,15 +82,18 @@ See [Setup](#setup) section below for building from source.
 - **Terminal Switching**: Use Cmd+Shift+[ / Cmd+Shift+] to switch between terminals in full-screen mode with smooth horizontal panning animation
 - **Real-Time I/O**: Non-blocking PTY communication with live updates
 - **Interactive Control**:
-  - Click any grid cell to expand
-  - Press ESC to collapse back to grid view
+  - Click any grid cell or press ⌘+Return in grid view to expand
+  - Hold Esc for ~700ms to collapse back to grid; a quick tap is forwarded to the terminal
   - Type in the focused terminal
+- **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with bundled Victor Mono Nerd Font (ligatures enabled), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, window dimensions, and window position
-- **Font Size Adjustment**: Use Cmd+Plus/Minus to adjust font size (saved automatically)
+- **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
+- **Session Recovery**: A `Restart` button appears on any grid tile whose shell exited, letting you respawn that session without quitting the app
+- **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
 
 ## Prerequisites
 
