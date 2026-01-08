@@ -43,6 +43,11 @@ pub const Shell = struct {
                 std.c._exit(1);
             }
 
+            // Change to home directory before spawning shell
+            if (posix.getenv("HOME")) |home| {
+                posix.chdir(home) catch {};
+            }
+
             posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
             posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
             posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);

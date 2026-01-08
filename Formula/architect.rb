@@ -53,7 +53,8 @@ class Architect < Formula
 
     (macos/"architect").write <<~EOS
       #!/bin/bash
-      exec "#{macos}/architect.bin" "$@"
+      SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+      exec "$SCRIPT_DIR/architect.bin" "$@"
     EOS
 
     chmod 0755, macos/"architect"
@@ -73,7 +74,7 @@ class Architect < Formula
         #{prefix}/Architect.app
 
       To add it to your Applications folder (for Spotlight/Launchpad access):
-        ln -sf #{prefix}/Architect.app ~/Applications/
+        cp -r #{prefix}/Architect.app /Applications/
 
       Launch with:
         open -a Architect
