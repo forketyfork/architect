@@ -1,8 +1,8 @@
 class Architect < Formula
   desc "Terminal window manager with AI-powered workspace orchestration"
   homepage "https://github.com/forketyfork/architect"
-  url "https://github.com/forketyfork/architect/archive/refs/tags/v0.11.0.tar.gz"
-  sha256 "559ef8d4a7b9107279eb4e741ca8bdd951c17d37c2180211e5dbc7a5dd19b0ca"
+  url "https://github.com/forketyfork/architect/archive/refs/tags/v0.12.0.tar.gz"
+  sha256 "89a9faf7f60875d36fe136435cbe9631df2779962c835e57a2e5a9f15d2049c5"
   license "MIT"
 
   depends_on "pkg-config" => :build
