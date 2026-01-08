@@ -15,6 +15,15 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 
+## Git Workflow
+When creating a new feature or fix branch:
+1. Always start from an up-to-date `main` branch
+2. Pull the latest changes: `git checkout main && git pull origin main`
+3. Create your branch from main: `git checkout -b <branch-name>`
+4. Never create branches from other feature branches unless explicitly intended
+
+This ensures PRs are based on the latest code and avoids unrelated changes in your PR.
+
 ## SDL3 Usage Notes
 
 ### Adding New SDL3 Key Codes
