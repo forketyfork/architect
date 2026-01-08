@@ -549,6 +549,7 @@ pub fn main() !void {
 
                                 if (cmd_held) {
                                     if (getLinkAtPin(allocator, &focused.terminal.?, pin)) |uri| {
+                                        defer allocator.free(uri);
                                         open_url.openUrl(allocator, uri) catch |err| {
                                             log.err("Failed to open URL: {}", .{err});
                                         };
@@ -612,6 +613,7 @@ pub fn main() !void {
                                     desired_cursor = .pointer;
                                     focused.hovered_link_start = link_match.start_pin;
                                     focused.hovered_link_end = link_match.end_pin;
+                                    allocator.free(link_match.url);
                                     focused.dirty = true;
                                 } else {
                                     desired_cursor = .ibeam;
@@ -1115,7 +1117,7 @@ fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
 }
 
 const LinkMatch = struct {
-    url: []const u8,
+    url: []u8,
     start_pin: ghostty_vt.Pin,
     end_pin: ghostty_vt.Pin,
 };
@@ -1127,8 +1129,9 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
     if (page.lookupHyperlink(cell)) |hyperlink_id| {
         const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
+        const url = allocator.dupe(u8, entry.uri.slice(page.memory)) catch return null;
         return LinkMatch{
-            .url = entry.uri.slice(page.memory),
+            .url = url,
             .start_pin = pin,
             .end_pin = pin,
         };
@@ -1182,13 +1185,34 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
             cell_to_byte.append(allocator, byte_pos) catch return null;
 
-            const cp = list_cell.cell.content.codepoint;
-            if (cp != 0 and cp != ' ') {
-                var utf8_buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
-                byte_pos += len;
+            const list_cell_cell = list_cell.cell;
+            const cp = list_cell_cell.content.codepoint;
+            const encoded_len: usize = blk: {
+                if (cp != 0 and cp != ' ') {
+                    var utf8_buf: [4]u8 = undefined;
+                    break :blk std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                }
+                break :blk 1;
+            };
+
+            if (list_cell_cell.wide == .wide) {
+                // Wide character (takes 2 cells, but emitted as one sequence in text).
+                byte_pos += encoded_len;
+
+                // If possible, handle the second cell of the wide character now
+                // so we map it to the same byte position (start of char).
+                if (x + 1 < page.size.cols) {
+                    x += 1;
+                    // Map the second half to the START of the character.
+                    // The previous append was for the start of the character.
+                    // We need to retrieve that value.
+                    const char_start_pos = cell_to_byte.items[cell_to_byte.items.len - 1];
+                    cell_to_byte.append(allocator, char_start_pos) catch return null;
+                    cell_idx += 1;
+                }
             } else {
-                byte_pos += 1;
+                // Narrow character
+                byte_pos += encoded_len;
             }
             cell_idx += 1;
         }
@@ -1227,55 +1251,20 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     const link_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = start_col, .y = start_row } }) orelse return null;
     const link_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = end_col, .y = end_row } }) orelse return null;
 
+    const url = allocator.dupe(u8, url_match.url) catch return null;
+
     return LinkMatch{
-        .url = url_match.url,
+        .url = url,
         .start_pin = link_start_pin,
         .end_pin = link_end_pin,
     };
 }
 
-fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]const u8 {
-    const page = &pin.node.data;
-    const row_and_cell = pin.rowAndCell();
-    const cell = row_and_cell.cell;
-
-    if (page.lookupHyperlink(cell)) |hyperlink_id| {
-        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
-        return entry.uri.slice(page.memory);
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]u8 {
+    if (getLinkMatchAtPin(allocator, terminal, pin)) |match| {
+        return match.url;
     }
-
-    var start_y = pin.y;
-    var current_row = row_and_cell.row;
-
-    while (current_row.wrap_continuation and start_y > 0) {
-        start_y -= 1;
-        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
-        current_row = prev_pin.rowAndCell().row;
-    }
-
-    var end_y = pin.y;
-    current_row = row_and_cell.row;
-    const max_y: u16 = @intCast(page.size.rows - 1);
-
-    while (current_row.wrap and end_y < max_y) {
-        end_y += 1;
-        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
-        current_row = next_pin.rowAndCell().row;
-    }
-
-    const max_x: u16 = @intCast(page.size.cols - 1);
-    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
-    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
-
-    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
-    const row_text = terminal.screens.active.selectionString(allocator, .{
-        .sel = selection,
-        .trim = false,
-    }) catch return null;
-    defer allocator.free(row_text);
-
-    const col_offset = (pin.y - start_y) * page.size.cols + pin.x;
-    return url_matcher.findUrlAtPosition(row_text, col_offset);
+    return null;
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
