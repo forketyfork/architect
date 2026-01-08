@@ -13,11 +13,74 @@ class Architect < Formula
 
   def install
     system "zig", "build",
-           "-Doptimize=ReleaseFast",
-           "--prefix", prefix
+           "-Doptimize=ReleaseFast"
+
+    app_name = "Architect"
+    app_path = prefix/"#{app_name}.app"
+    contents = app_path/"Contents"
+    macos = contents/"MacOS"
+    resources = contents/"Resources"
+    share = contents/"share/architect"
+
+    macos.mkpath
+    resources.mkpath
+    (share/"fonts").mkpath
+
+    (contents/"Info.plist").write <<~EOS
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+        <dict>
+          <key>CFBundleName</key>
+          <string>#{app_name}</string>
+          <key>CFBundleDisplayName</key>
+          <string>#{app_name}</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.forketyfork.architect</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+          <key>CFBundleExecutable</key>
+          <string>architect</string>
+          <key>CFBundleIconFile</key>
+          <string>#{app_name}</string>
+          <key>CFBundleVersion</key>
+          <string>#{version}</string>
+          <key>CFBundleShortVersionString</key>
+          <string>#{version}</string>
+        </dict>
+      </plist>
+    EOS
+
+    (macos/"architect").write <<~EOS
+      #!/bin/bash
+      exec "#{macos}/architect.bin" "$@"
+    EOS
+
+    chmod 0755, macos/"architect"
+
+    (macos/"architect.bin").write (buildpath/"zig-out/bin/architect").read
+    chmod 0755, macos/"architect.bin"
+
+    (share/"fonts").install Dir["assets/fonts/*.ttf"]
+    (share/"fonts").install "assets/fonts/LICENSE"
+
+    resources.install "assets/macos/#{app_name}.icns"
+  end
+
+  def caveats
+    <<~EOS
+      Architect.app has been installed to:
+        #{prefix}/Architect.app
+
+      To add it to your Applications folder (for Spotlight/Launchpad access):
+        ln -sf #{prefix}/Architect.app ~/Applications/
+
+      Launch with:
+        open -a Architect
+    EOS
   end
 
   test do
-    assert_path_exists bin/"architect"
+    assert_path_exists prefix/"Architect.app/Contents/MacOS/architect"
   end
 end
