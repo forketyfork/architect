@@ -29,6 +29,7 @@ pub const UiHost = struct {
 pub const UiAction = union(enum) {
     RestartSession: usize,
     RequestCollapseFocused: void,
+    ConfirmQuit: void,
 };
 
 pub const UiAssets = struct {

@@ -44,6 +44,28 @@ const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
 const CursorKind = enum { arrow, ibeam, pointer };
 
+fn countForegroundProcesses(sessions: []const SessionState) usize {
+    var total: usize = 0;
+    for (sessions) |*session| {
+        if (session.hasForegroundProcess()) {
+            total += 1;
+        }
+    }
+    return total;
+}
+
+fn handleQuitRequest(
+    sessions: []const SessionState,
+    confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
+) bool {
+    const running_processes = countForegroundProcesses(sessions);
+    if (running_processes > 0) {
+        confirm.show(running_processes);
+        return false;
+    }
+    return true;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -231,6 +253,8 @@ pub fn main() !void {
     try ui.register(escape_component.asComponent());
     const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
     try ui.register(restart_component.asComponent());
+    const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
+    try ui.register(quit_confirm_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -267,7 +291,12 @@ pub fn main() !void {
             if (ui_consumed) continue;
 
             switch (scaled_event.type) {
-                c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_QUIT => {
+                    std.debug.print("SDL_EVENT_QUIT received\n", .{});
+                    if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
+                        running = false;
+                    }
+                },
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = scaled_event.window.data1;
                     window_y = scaled_event.window.data2;
@@ -351,6 +380,13 @@ pub fn main() !void {
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+
+                    if (has_gui and !has_blocking_mod and (key == c.SDLK_Q or key == c.SDLK_W)) {
+                        if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
+                            running = false;
+                        }
+                        continue;
+                    }
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
                         clearTerminal(focused);
@@ -686,6 +722,9 @@ pub fn main() !void {
                     startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height);
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
+            },
+            .ConfirmQuit => {
+                running = false;
             },
         };
 

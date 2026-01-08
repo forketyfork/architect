@@ -8,8 +8,19 @@ const app_state = @import("../app/app_state.zig");
 const c = @import("../c.zig");
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
+const mac = if (builtin.os.tag == .macos)
+    @cImport({
+        @cInclude("sys/types.h");
+        @cInclude("sys/sysctl.h");
+        @cInclude("sys/proc.h");
+    })
+else
+    struct {};
 
 const log = std.log.scoped(.session_state);
+
+extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
+extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
 
 pub const SessionState = struct {
     id: usize,
@@ -323,7 +334,37 @@ pub const SessionState = struct {
         self.cwd_dirty = true;
         self.dirty = true;
     }
+
+    /// Returns true when the PTY's foreground process group differs from the
+    /// shell's PID, indicating that a child process is currently running in
+    /// the terminal.
+    pub fn hasForegroundProcess(self: *const SessionState) bool {
+        if (!self.spawned or self.dead) return false;
+        const shell = self.shell orelse return false;
+        if (getForegroundPgrp(shell.child_pid)) |fg| {
+            return fg != shell.child_pid;
+        }
+        const slave_path_z = ptsname(shell.pty.master) orelse return false;
+        const slave_path = std.mem.sliceTo(slave_path_z, 0);
+        const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
+            return false;
+        };
+        defer posix.close(fd);
+        const fg_pgrp = tcgetpgrp(fd);
+        if (fg_pgrp < 0) return false;
+        return fg_pgrp != shell.child_pid;
+    }
 };
+
+fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, child_pid };
+    var info: mac.kinfo_proc = undefined;
+    var size: usize = @sizeOf(mac.kinfo_proc);
+    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) return null;
+    if (size < @sizeOf(mac.kinfo_proc)) return null;
+    return info.kp_eproc.e_tpgid;
+}
 
 pub const MakeNonBlockingError = posix.FcntlError;
 
