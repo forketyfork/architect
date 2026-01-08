@@ -5,6 +5,7 @@ const app_state = @import("../app/app_state.zig");
 const geom = @import("../geom.zig");
 const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
+const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const dpi = @import("../ui/scale.zig");
@@ -22,6 +23,7 @@ const CWD_FONT_SIZE: c_int = 12;
 const CWD_PADDING: c_int = 8;
 const MARQUEE_SPEED: f32 = 30.0;
 const FADE_WIDTH: c_int = 20;
+const FAINT_FACTOR: f32 = 0.6;
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -204,6 +206,7 @@ fn renderSessionContent(
         var run_fg: c.SDL_Color = undefined;
         var run_fallback: font_mod.Fallback = .primary;
         var run_width_cells: c_int = 0;
+        var run_variant: FontVariant = .regular;
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
@@ -228,11 +231,16 @@ fn renderSessionContent(
             const style = list_cell.style();
             var fg_color = getCellColor(style.fg_color, default_fg);
             var bg_color = getCellColor(style.bg_color, session_bg_color);
+            const variant = chooseVariant(style);
 
             if (style.flags.inverse) {
                 const tmp = fg_color;
                 fg_color = bg_color;
                 bg_color = tmp;
+            }
+
+            if (style.flags.faint) {
+                fg_color = applyFaint(fg_color);
             }
 
             if (!colorsEqual(bg_color, session_bg_color)) {
@@ -287,23 +295,25 @@ fn renderSessionContent(
 
             const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, cell_width_actual, cell_height_actual, fg_color);
             if (is_box_drawing) {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
+                run_variant = .regular;
                 continue;
             }
 
             const is_fill_glyph = cp != 0 and cp != ' ' and !style.flags.invisible and isFullCellGlyph(cp);
 
             if (is_fill_glyph) {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
+                run_variant = .regular;
 
                 const draw_width = cell_width_actual * glyph_width_cells;
-                try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color);
+                try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color, variant);
                 continue;
             }
 
@@ -330,6 +340,7 @@ fn renderSessionContent(
                     run_fg = fg_color;
                     run_fallback = fallback_choice;
                     run_width_cells = glyph_width_cells;
+                    run_variant = variant;
                 }
 
                 if (shouldFlushRun(
@@ -344,19 +355,22 @@ fn renderSessionContent(
                     glyph_width_cells,
                     run_cells,
                     cell_width_actual,
+                    run_variant,
+                    variant,
                 )) {
-                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
                     run_x = x;
                     run_fg = fg_color;
                     run_fallback = fallback_choice;
                     run_len = 0;
                     run_cells = 0;
                     run_width_cells = glyph_width_cells;
+                    run_variant = variant;
                 }
 
                 if (cluster_len > run_buf.len) {
                     const draw_width = cell_width_actual * glyph_width_cells;
-                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color);
+                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color, variant);
                     run_len = 0;
                     run_cells = 0;
                     run_width_cells = 0;
@@ -367,14 +381,15 @@ fn renderSessionContent(
                 run_len += cluster_len;
                 run_cells += glyph_width_cells;
             } else {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
+                run_variant = .regular;
             }
         }
 
-        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg);
+        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
     }
 
     if (!session.is_scrolled and is_focused and !session.dead and cursor_visible) {
@@ -838,10 +853,11 @@ fn flushRun(
     cell_width_actual: c_int,
     cell_height_actual: c_int,
     fg: c.SDL_Color,
+    variant: FontVariant,
 ) RenderError!void {
     if (len == 0 or cells == 0) return;
     const draw_width = cell_width_actual * cells;
-    try font.renderCluster(buffer[0..len], x, y, draw_width, cell_height_actual, fg);
+    try font.renderCluster(buffer[0..len], x, y, draw_width, cell_height_actual, fg, variant);
 }
 
 fn shouldFlushRun(
@@ -856,17 +872,41 @@ fn shouldFlushRun(
     new_width_cells: c_int,
     run_cells: c_int,
     cell_width_actual: c_int,
+    run_variant: FontVariant,
+    new_variant: FontVariant,
 ) bool {
     if (run_len == 0) return false;
 
     const color_changed = !colorsEqual(run_fg, new_fg);
     const fallback_changed = run_fallback != new_fallback;
     const width_changed = run_width_cells != new_width_cells;
+    const variant_changed = run_variant != new_variant;
     const would_overflow = run_len + cluster_len > run_buf_cap;
     const max_pixels: c_int = 16000;
     const would_be_too_wide = (run_cells + new_width_cells) * cell_width_actual > max_pixels;
 
-    return color_changed or fallback_changed or width_changed or would_overflow or would_be_too_wide;
+    return color_changed or fallback_changed or width_changed or variant_changed or would_overflow or would_be_too_wide;
+}
+
+fn chooseVariant(style: ghostty_vt.Style) FontVariant {
+    const flags = style.flags;
+    if (flags.bold and flags.italic) return .bold_italic;
+    if (flags.bold) return .bold;
+    if (flags.italic) return .italic;
+    return .regular;
+}
+
+fn applyFaint(color: c.SDL_Color) c.SDL_Color {
+    const factor = FAINT_FACTOR;
+    const r: u32 = @intFromFloat(@as(f32, @floatFromInt(color.r)) * factor);
+    const g: u32 = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor);
+    const b: u32 = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor);
+    return c.SDL_Color{
+        .r = @intCast(@min(@as(u32, 255), r)),
+        .g = @intCast(@min(@as(u32, 255), g)),
+        .b = @intCast(@min(@as(u32, 255), b)),
+        .a = color.a,
+    };
 }
 
 fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {
