@@ -23,6 +23,9 @@ jobs:
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
       ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
+      # Prevent ghostty (dependency) from reading the repository git tag of Architect
+      # and thinking it is its own release tag.
+      GIT_CEILING_DIRECTORIES: ${{ github.workspace }}/architect/.zig-cache
     steps:
       - uses: actions/checkout@v6
         with:
