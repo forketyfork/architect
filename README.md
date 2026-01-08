@@ -252,11 +252,13 @@ PY
 
 To automatically send notifications when Claude Code stops or requests approval:
 
-1. Download the notification script (included in this repository):
+1. Copy the `architect_notify.py` script from the repository root to your Claude config directory:
    ```bash
    cp architect_notify.py ~/.claude/architect_notify.py
    chmod +x ~/.claude/architect_notify.py
    ```
+
+   This script is included in the Architect repository and handles notifications for all supported AI assistants.
 
 2. Add hooks to your `~/.claude/settings.json`:
    ```json
@@ -344,11 +346,13 @@ To automatically send notifications when Codex requests approval or completes a 
 
 To automatically send notifications when Gemini CLI requests approval or completes a task:
 
-1. Download the notification script (included in this repository):
+1. Copy the `architect_notify.py` script from the repository root (the same script used for Claude Code):
    ```bash
    cp architect_notify.py ~/.gemini/architect_notify.py
    chmod +x ~/.gemini/architect_notify.py
    ```
+
+   This script is included in the Architect repository and works with all supported AI assistants.
 
 2. Add hooks to your `~/.gemini/settings.json`:
    ```json
