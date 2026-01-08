@@ -27,3 +27,11 @@ lint:
     zig fmt --check src/
 
 ci: build test lint
+
+wt name:
+    #!/usr/bin/env bash
+    git worktree add .architect/{{name}} -b forketyfork/{{name}}
+    cd .architect/{{name}}
+    direnv allow
+    echo "Worktree created at .architect/{{name}} on branch forketyfork/{{name}}"
+    echo "To switch to it: cd .architect/{{name}}"
