@@ -24,6 +24,8 @@ pub const ToastComponent = struct {
     const NOTIFICATION_FADE_START_MS: i64 = 1500;
     const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
     const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
+    const MAX_TOAST_LINES: usize = 16;
+    const MAX_LINE_LENGTH: usize = 256;
 
     pub fn init(allocator: std.mem.Allocator) !*ToastComponent {
         const comp = try allocator.create(ToastComponent);
@@ -158,7 +160,7 @@ pub const ToastComponent = struct {
         const toast_font = self.font.?;
         const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
 
-        var lines: [16][]const u8 = undefined;
+        var lines: [MAX_TOAST_LINES][]const u8 = undefined;
         var line_count: usize = 0;
         var line_start: usize = 0;
         for (0..self.message_len) |i| {
@@ -176,8 +178,8 @@ pub const ToastComponent = struct {
         }
 
         var max_width: c_int = 0;
-        var line_surfaces: [16]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** 16;
-        var line_heights: [16]c_int = undefined;
+        var line_surfaces: [MAX_TOAST_LINES]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** MAX_TOAST_LINES;
+        var line_heights: [MAX_TOAST_LINES]c_int = undefined;
         defer {
             for (line_surfaces[0..line_count]) |surf_opt| {
                 if (surf_opt) |surf| {
@@ -187,7 +189,7 @@ pub const ToastComponent = struct {
         }
 
         for (lines[0..line_count], 0..) |line, idx| {
-            var line_buf: [256]u8 = undefined;
+            var line_buf: [MAX_LINE_LENGTH]u8 = undefined;
             @memcpy(line_buf[0..line.len], line);
             line_buf[line.len] = 0;
 
