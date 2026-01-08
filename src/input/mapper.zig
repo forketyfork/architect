@@ -15,13 +15,6 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
     };
 }
 
-pub fn isSwitchTerminalShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?bool {
-    if ((mod & c.SDL_KMOD_GUI) == 0 or (mod & c.SDL_KMOD_SHIFT) == 0) return null;
-    if (key == c.SDLK_RIGHTBRACKET) return true;
-    if (key == c.SDLK_LEFTBRACKET) return false;
-    return null;
-}
-
 pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
     if ((mod & c.SDL_KMOD_GUI) == 0) return null;
     if ((mod & c.SDL_KMOD_SHIFT) != 0) return null;

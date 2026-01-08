@@ -18,6 +18,8 @@ pub const ViewMode = enum {
     Collapsing,
     PanningLeft,
     PanningRight,
+    PanningUp,
+    PanningDown,
 };
 
 pub const Rect = geom.Rect;

@@ -24,6 +24,8 @@ pub const ToastComponent = struct {
     const NOTIFICATION_FADE_START_MS: i64 = 1500;
     const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
     const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
+    const MAX_TOAST_LINES: usize = 16;
+    const MAX_LINE_LENGTH: usize = 256;
 
     pub fn init(allocator: std.mem.Allocator) !*ToastComponent {
         const comp = try allocator.create(ToastComponent);
@@ -156,13 +158,72 @@ pub const ToastComponent = struct {
             }
         }
         const toast_font = self.font.?;
-
         const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
-        const message_z = @as([*:0]const u8, @ptrCast(&self.message));
-        const surface = c.TTF_RenderText_Blended(toast_font, message_z, self.message_len, fg_color) orelse return error.SurfaceFailed;
-        defer c.SDL_DestroySurface(surface);
 
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
+        var lines: [MAX_TOAST_LINES][]const u8 = undefined;
+        var line_count: usize = 0;
+        var line_start: usize = 0;
+        for (0..self.message_len) |i| {
+            if (self.message[i] == '\n') {
+                if (line_count < lines.len) {
+                    lines[line_count] = self.message[line_start..i];
+                    line_count += 1;
+                }
+                line_start = i + 1;
+            }
+        }
+        if (line_start < self.message_len and line_count < lines.len) {
+            lines[line_count] = self.message[line_start..self.message_len];
+            line_count += 1;
+        }
+
+        var max_width: c_int = 0;
+        var line_surfaces: [MAX_TOAST_LINES]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** MAX_TOAST_LINES;
+        var line_heights: [MAX_TOAST_LINES]c_int = undefined;
+        defer {
+            for (line_surfaces[0..line_count]) |surf_opt| {
+                if (surf_opt) |surf| {
+                    c.SDL_DestroySurface(surf);
+                }
+            }
+        }
+
+        for (lines[0..line_count], 0..) |line, idx| {
+            var line_buf: [MAX_LINE_LENGTH]u8 = undefined;
+            @memcpy(line_buf[0..line.len], line);
+            line_buf[line.len] = 0;
+
+            const surface = c.TTF_RenderText_Blended(toast_font, @ptrCast(&line_buf), line.len, fg_color) orelse continue;
+            line_surfaces[idx] = surface;
+            line_heights[idx] = surface.*.h;
+            max_width = @max(max_width, surface.*.w);
+        }
+
+        var total_height: c_int = 0;
+        for (line_heights[0..line_count]) |h| {
+            total_height += h;
+        }
+        const composite_surface = c.SDL_CreateSurface(max_width, total_height, c.SDL_PIXELFORMAT_RGBA8888) orelse return error.SurfaceFailed;
+        defer c.SDL_DestroySurface(composite_surface);
+
+        _ = c.SDL_SetSurfaceBlendMode(composite_surface, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_FillSurfaceRect(composite_surface, null, 0);
+
+        var y_offset: c_int = 0;
+        for (line_surfaces[0..line_count], 0..) |surf_opt, idx| {
+            if (surf_opt) |line_surface| {
+                const dest_rect = c.SDL_Rect{
+                    .x = 0,
+                    .y = y_offset,
+                    .w = line_surface.*.w,
+                    .h = line_surface.*.h,
+                };
+                _ = c.SDL_BlitSurface(line_surface, null, composite_surface, &dest_rect);
+                y_offset += line_heights[idx];
+            }
+        }
+
+        const texture = c.SDL_CreateTextureFromSurface(renderer, composite_surface) orelse return error.TextureFailed;
         if (self.texture) |old| {
             c.SDL_DestroyTexture(old);
         }

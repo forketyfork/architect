@@ -86,6 +86,24 @@ pub fn render(
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
         },
+        .PanningUp, .PanningDown => {
+            const elapsed = current_time - anim_state.start_time;
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
+            const eased = easing.easeInOutCubic(progress);
+
+            const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_height)) * eased));
+            const pan_offset = if (anim_state.mode == .PanningUp) -offset else offset;
+
+            const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+
+            const new_offset = if (anim_state.mode == .PanningUp)
+                window_height - offset
+            else
+                -window_height + offset;
+            const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+        },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
             const elapsed = current_time - anim_state.start_time;

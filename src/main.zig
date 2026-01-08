@@ -405,66 +405,20 @@ pub fn main() !void {
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         ui.showToast(notification_msg, now);
-                    } else if (input.isSwitchTerminalShortcut(key, mod)) |is_next| {
-                        if (anim_state.mode == .Full) {
-                            const total_sessions = GRID_ROWS * GRID_COLS;
-                            const new_session = if (is_next)
-                                (anim_state.focused_session + 1) % total_sessions
-                            else
-                                (anim_state.focused_session + total_sessions - 1) % total_sessions;
-
-                            try sessions[new_session].ensureSpawned();
-                            sessions[anim_state.focused_session].clearSelection();
-                            sessions[new_session].clearSelection();
-
-                            anim_state.mode = if (is_next) .PanningLeft else .PanningRight;
-                            anim_state.previous_session = anim_state.focused_session;
-                            anim_state.focused_session = new_session;
-                            anim_state.start_time = now;
-                            std.debug.print("Panning to session {d} from {d}\n", .{ new_session, anim_state.previous_session });
-
-                            var notification_buf: [64]u8 = undefined;
-                            const hotkey = if (is_next) "⌘⇧]" else "⌘⇧[";
-                            const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Terminal {d}", .{ hotkey, new_session }) catch "Terminal switched";
-                            ui.showToast(notification_msg, now);
-                        }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
-                            const current_row: usize = anim_state.focused_session / GRID_COLS;
-                            const current_col: usize = anim_state.focused_session % GRID_COLS;
-                            var new_row: usize = current_row;
-                            var new_col: usize = current_col;
+                            try navigateGrid(&anim_state, &sessions, direction, now, true, false);
+                            const new_session = anim_state.focused_session;
+                            sessions[new_session].dirty = true;
+                            std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
+                        } else if (anim_state.mode == .Full) {
+                            try navigateGrid(&anim_state, &sessions, direction, now, true, true);
 
-                            switch (direction) {
-                                .up => {
-                                    if (current_row > 0) {
-                                        new_row = current_row - 1;
-                                    }
-                                },
-                                .down => {
-                                    if (current_row < GRID_ROWS - 1) {
-                                        new_row = current_row + 1;
-                                    }
-                                },
-                                .left => {
-                                    if (current_col > 0) {
-                                        new_col = current_col - 1;
-                                    }
-                                },
-                                .right => {
-                                    if (current_col < GRID_COLS - 1) {
-                                        new_col = current_col + 1;
-                                    }
-                                },
-                            }
+                            var notification_buf: [64]u8 = undefined;
+                            const notification_msg = try formatGridNotification(&notification_buf, anim_state.focused_session);
+                            ui.showToast(notification_msg, now);
 
-                            const new_session = new_row * GRID_COLS + new_col;
-                            if (new_session != anim_state.focused_session) {
-                                sessions[anim_state.focused_session].dirty = true;
-                                sessions[new_session].dirty = true;
-                                anim_state.focused_session = new_session;
-                                std.debug.print("Grid nav to session {d}\n", .{new_session});
-                            }
+                            std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
                         } else {
                             if (focused.spawned and !focused.dead) {
                                 try handleKeyInput(focused, key, mod, is_repeat);
@@ -736,11 +690,12 @@ pub fn main() !void {
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
-            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight)
+            anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight or
+            anim_state.mode == .PanningUp or anim_state.mode == .PanningDown)
         {
             if (anim_state.isComplete(now)) {
                 anim_state.mode = switch (anim_state.mode) {
-                    .Expanding, .PanningLeft, .PanningRight => .Full,
+                    .Expanding, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
@@ -796,6 +751,111 @@ fn startCollapseToGrid(
     anim_state.start_time = now;
     anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
     anim_state.target_rect = target_rect;
+}
+
+fn formatGridNotification(buf: []u8, focused_session: usize) ![]const u8 {
+    const row = focused_session / GRID_COLS;
+    const col = focused_session % GRID_COLS;
+
+    var offset: usize = 0;
+    for (0..GRID_ROWS) |r| {
+        for (0..GRID_COLS) |col_idx| {
+            const block = if (r == row and col_idx == col) "■" else "□";
+            @memcpy(buf[offset..][0..block.len], block);
+            offset += block.len;
+
+            if (col_idx < GRID_COLS - 1) {
+                buf[offset] = ' ';
+                offset += 1;
+            }
+        }
+        if (r < GRID_ROWS - 1) {
+            buf[offset] = '\n';
+            offset += 1;
+        }
+    }
+    return buf[0..offset];
+}
+
+fn navigateGrid(
+    anim_state: *AnimationState,
+    sessions: []SessionState,
+    direction: input.GridNavDirection,
+    now: i64,
+    enable_wrapping: bool,
+    show_animation: bool,
+) !void {
+    const current_row: usize = anim_state.focused_session / GRID_COLS;
+    const current_col: usize = anim_state.focused_session % GRID_COLS;
+    var new_row: usize = current_row;
+    var new_col: usize = current_col;
+    var animation_mode: ?ViewMode = null;
+    var is_wrapping = false;
+
+    switch (direction) {
+        .up => {
+            if (current_row > 0) {
+                new_row = current_row - 1;
+            } else if (enable_wrapping) {
+                new_row = GRID_ROWS - 1;
+                is_wrapping = true;
+            }
+            if (show_animation and new_row != current_row) {
+                animation_mode = if (is_wrapping) .PanningUp else .PanningDown;
+            }
+        },
+        .down => {
+            if (current_row < GRID_ROWS - 1) {
+                new_row = current_row + 1;
+            } else if (enable_wrapping) {
+                new_row = 0;
+                is_wrapping = true;
+            }
+            if (show_animation and new_row != current_row) {
+                animation_mode = if (is_wrapping) .PanningDown else .PanningUp;
+            }
+        },
+        .left => {
+            if (current_col > 0) {
+                new_col = current_col - 1;
+            } else if (enable_wrapping) {
+                new_col = GRID_COLS - 1;
+                is_wrapping = true;
+            }
+            if (show_animation and new_col != current_col) {
+                animation_mode = if (is_wrapping) .PanningLeft else .PanningRight;
+            }
+        },
+        .right => {
+            if (current_col < GRID_COLS - 1) {
+                new_col = current_col + 1;
+            } else if (enable_wrapping) {
+                new_col = 0;
+                is_wrapping = true;
+            }
+            if (show_animation and new_col != current_col) {
+                animation_mode = if (is_wrapping) .PanningRight else .PanningLeft;
+            }
+        },
+    }
+
+    const new_session: usize = new_row * GRID_COLS + new_col;
+    if (new_session != anim_state.focused_session) {
+        if (show_animation) {
+            try sessions[new_session].ensureSpawned();
+        }
+        sessions[anim_state.focused_session].clearSelection();
+        sessions[new_session].clearSelection();
+
+        if (animation_mode) |mode| {
+            anim_state.mode = mode;
+            anim_state.previous_session = anim_state.focused_session;
+            anim_state.focused_session = new_session;
+            anim_state.start_time = now;
+        } else {
+            anim_state.focused_session = new_session;
+        }
+    }
 }
 
 fn updateRenderSizes(
@@ -888,7 +948,7 @@ fn calculateHoveredSession(
             const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), @as(usize, GRID_ROWS - 1));
             return grid_row * GRID_COLS + grid_col;
         },
-        .Full, .PanningLeft, .PanningRight => anim_state.focused_session,
+        .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => anim_state.focused_session,
         .Expanding, .Collapsing => {
             const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
