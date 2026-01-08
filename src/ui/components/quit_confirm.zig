@@ -13,6 +13,7 @@ pub const QuitConfirmComponent = struct {
     visible: bool = false,
     dirty: bool = true,
     process_count: usize = 0,
+    escape_pressed: bool = false,
 
     title_tex: ?*c.SDL_Texture = null,
     title_w: c_int = 0,
@@ -68,6 +69,7 @@ pub const QuitConfirmComponent = struct {
 
     pub fn show(self: *QuitConfirmComponent, process_count: usize) void {
         self.visible = true;
+        self.escape_pressed = false;
         if (process_count != self.process_count) {
             self.process_count = process_count;
             self.dirty = true;
@@ -84,6 +86,15 @@ pub const QuitConfirmComponent = struct {
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *QuitConfirmComponent = @ptrCast(@alignCast(self_ptr));
+
+        if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
+            const key = event.key.key;
+            if (key == c.SDLK_ESCAPE) {
+                self.escape_pressed = false;
+                return true;
+            }
+        }
+
         if (!self.visible) return false;
 
         switch (event.type) {
@@ -97,9 +108,13 @@ pub const QuitConfirmComponent = struct {
                 if (is_confirm) {
                     actions.append(.ConfirmQuit) catch {};
                     self.visible = false;
+                    self.escape_pressed = false;
                     return true;
                 }
-                if (key == c.SDLK_ESCAPE or key == c.SDLK_W and (mod & c.SDL_KMOD_GUI) != 0) {
+                if (key == c.SDLK_ESCAPE or (key == c.SDLK_W and (mod & c.SDL_KMOD_GUI) != 0)) {
+                    if (key == c.SDLK_ESCAPE) {
+                        self.escape_pressed = true;
+                    }
                     self.visible = false;
                     return true;
                 }

@@ -292,7 +292,6 @@ pub fn main() !void {
 
             switch (scaled_event.type) {
                 c.SDL_EVENT_QUIT => {
-                    std.debug.print("SDL_EVENT_QUIT received\n", .{});
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                         running = false;
                     }
