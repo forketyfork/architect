@@ -41,6 +41,30 @@ open Architect.app
 - The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. Keep the bundle contents intact.
 - Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
+### Homebrew (macOS)
+
+Install via Homebrew (builds from source):
+
+```bash
+# Tap the repository
+brew tap forketyfork/architect
+
+# Install architect
+brew install architect
+```
+
+Or install directly without tapping:
+
+```bash
+brew install https://raw.githubusercontent.com/forketyfork/architect/main/Formula/architect.rb
+```
+
+The formula will:
+- Build from source using Zig
+- Install all required dependencies (SDL3, SDL3_ttf)
+- Install the binary to `/opt/homebrew/bin/architect` (Apple Silicon) or `/usr/local/bin/architect` (Intel)
+- Install fonts to the Homebrew share directory
+
 ### Build from Source
 
 See [Setup](#setup) section below for building from source.
