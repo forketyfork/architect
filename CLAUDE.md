@@ -15,6 +15,19 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 
+## SDL3 Usage Notes
+
+### Adding New SDL3 Key Codes
+When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. SDL3 constants are exposed through the c_import and must be explicitly re-exported in c.zig to be accessible throughout the codebase.
+
+**Pattern:**
+```zig
+// In src/c.zig, after existing SDLK_* exports:
+pub const SDLK_NEWKEY = c_import.SDLK_NEWKEY;
+```
+
+This applies to all SDL3 constants: key codes (SDLK_*), modifier flags (SDL_KMOD_*), event types (SDL_EVENT_*), etc.
+
 ## Zig Language Gotchas
 
 ### Type Inference with Builtin Functions

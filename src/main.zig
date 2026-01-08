@@ -494,7 +494,7 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
-                        if (focused.spawned and !focused.dead) {
+                        if (focused.spawned and !focused.dead and !isModifierKey(key)) {
                             try handleKeyInput(focused, key, mod, is_repeat);
                         }
                     }
@@ -995,6 +995,13 @@ fn applyTerminalResize(
             session.dirty = true;
         }
     }
+}
+
+fn isModifierKey(key: c.SDL_Keycode) bool {
+    return key == c.SDLK_LSHIFT or key == c.SDLK_RSHIFT or
+        key == c.SDLK_LCTRL or key == c.SDLK_RCTRL or
+        key == c.SDLK_LALT or key == c.SDLK_RALT or
+        key == c.SDLK_LGUI or key == c.SDLK_RGUI;
 }
 
 fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
