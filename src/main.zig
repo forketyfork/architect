@@ -549,6 +549,7 @@ pub fn main() !void {
 
                                 if (cmd_held) {
                                     if (getLinkAtPin(allocator, &focused.terminal.?, pin)) |uri| {
+                                        defer allocator.free(uri);
                                         open_url.openUrl(allocator, uri) catch |err| {
                                             log.err("Failed to open URL: {}", .{err});
                                         };
@@ -612,6 +613,7 @@ pub fn main() !void {
                                     desired_cursor = .pointer;
                                     focused.hovered_link_start = link_match.start_pin;
                                     focused.hovered_link_end = link_match.end_pin;
+                                    allocator.free(link_match.url);
                                     focused.dirty = true;
                                 } else {
                                     desired_cursor = .ibeam;
@@ -1185,7 +1187,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
             const list_cell_cell = list_cell.cell;
             const cp = list_cell_cell.content.codepoint;
-            
+
             if (list_cell_cell.wide == .wide) {
                 // Wide character (takes 2 cells, but emitted as one sequence in text).
                 if (cp != 0 and cp != ' ') {
@@ -1263,7 +1265,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     };
 }
 
-fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]const u8 {
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]u8 {
     if (getLinkMatchAtPin(allocator, terminal, pin)) |match| {
         return match.url;
     }
