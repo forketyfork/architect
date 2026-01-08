@@ -374,7 +374,7 @@ pub fn main() !void {
                 c.SDL_EVENT_DROP_FILE => {
                     const drop_path_ptr = scaled_event.drop.data;
                     if (drop_path_ptr == null) continue;
-                    const drop_path = std.mem.sliceTo(drop_path_ptr, 0);
+                    const drop_path = std.mem.span(drop_path_ptr.?);
                     if (drop_path.len == 0) continue;
 
                     const mouse_x: c_int = @intFromFloat(scaled_event.drop.x);
@@ -395,8 +395,10 @@ pub fn main() !void {
 
                     const escaped = shellQuotePath(allocator, drop_path) catch |err| {
                         std.debug.print("Failed to escape dropped path: {}\n", .{err});
+                        c.SDL_free(@constCast(drop_path_ptr));
                         continue;
                     };
+                    defer c.SDL_free(@constCast(drop_path_ptr));
                     defer allocator.free(escaped);
 
                     pasteText(session, allocator, escaped) catch |err| switch (err) {
@@ -1438,9 +1440,14 @@ fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const
     if (session.shell == null) return error.NoShell;
 
     const opts = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
-    const buf = try allocator.dupe(u8, text);
-    defer allocator.free(buf);
-    const slices = ghostty_vt.input.encodePaste(buf, opts);
+    const slices = ghostty_vt.input.encodePaste(text, opts) catch |err| switch (err) {
+        error.MutableRequired => blk: {
+            const buf = try allocator.dupe(u8, text);
+            defer allocator.free(buf);
+            break :blk ghostty_vt.input.encodePaste(buf, opts);
+        },
+        else => return err,
+    };
 
     for (slices) |part| {
         if (part.len == 0) continue;
