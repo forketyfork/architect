@@ -51,19 +51,23 @@ brew tap forketyfork/architect https://github.com/forketyfork/architect
 
 # Install architect
 brew install architect
+
+# Copy the app to your Applications folder
+cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
 ```
 
 Or install directly without tapping:
 
 ```bash
 brew install https://raw.githubusercontent.com/forketyfork/architect/main/Formula/architect.rb
+cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
 ```
 
 The formula will:
 - Build from source using Zig
 - Install all required dependencies (SDL3, SDL3_ttf)
-- Install the binary to `/opt/homebrew/bin/architect` (Apple Silicon) or `/usr/local/bin/architect` (Intel)
-- Install fonts to the Homebrew share directory
+- Create Architect.app with bundled fonts and icon
+- After copying to /Applications, launch from Spotlight or: `open -a Architect`
 
 ### Build from Source
 
