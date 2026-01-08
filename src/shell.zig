@@ -9,6 +9,20 @@ const libc = @cImport({
 
 const log = std.log.scoped(.shell);
 
+var warned_env_defaults: bool = false;
+
+const DEFAULT_TERM = "xterm-256color";
+const DEFAULT_COLORTERM = "truecolor";
+const DEFAULT_LANG = "en_US.UTF-8";
+const DEFAULT_TERM_PROGRAM = "Architect";
+
+fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
+    if (posix.getenv(name) != null) return;
+    if (libc.setenv(name, value, 1) != 0) {
+        std.c._exit(1);
+    }
+}
+
 pub const Shell = struct {
     pty: pty_mod.Pty,
     child_pid: std.c.pid_t,
@@ -43,6 +57,13 @@ pub const Shell = struct {
                 std.c._exit(1);
             }
 
+            // Finder launches provide a nearly empty environment; seed common
+            // terminal vars so shells behave like real terminals (color, terminfo).
+            setDefaultEnv("TERM", DEFAULT_TERM);
+            setDefaultEnv("COLORTERM", DEFAULT_COLORTERM);
+            setDefaultEnv("LANG", DEFAULT_LANG);
+            setDefaultEnv("TERM_PROGRAM", DEFAULT_TERM_PROGRAM);
+
             // Change to home directory before spawning shell
             if (posix.getenv("HOME")) |home| {
                 posix.chdir(home) catch {};
@@ -57,6 +78,13 @@ pub const Shell = struct {
 
             _ = std.c.execve(shell_path_z, &argv, @ptrCast(std.c.environ));
             std.c._exit(1);
+        }
+
+        if (!warned_env_defaults) {
+            warned_env_defaults = true;
+            if (posix.getenv("TERM") == null or posix.getenv("LANG") == null) {
+                log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ DEFAULT_TERM, DEFAULT_LANG });
+            }
         }
 
         posix.close(pty_instance.slave);
