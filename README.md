@@ -206,7 +206,11 @@ zig fmt src/
 - Architecture and layering overview: see `docs/architecture.md`.
 - For scrolling text overlays, reuse `src/ui/components/marquee_label.zig`.
 
-## Claude Code Integration
+## AI Assistant Integration
+
+Architect integrates with AI coding assistants through a Unix domain socket protocol. Grid tiles automatically highlight when an assistant is waiting for approval (pulsing yellow border) or has completed a task (solid green border).
+
+### Socket Protocol
 
 - **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` (Unix domain socket, mode 0600, where `<pid>` is the process ID).
 - **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
@@ -214,33 +218,35 @@ zig fmt src/
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
   - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid (request).
   - `{"session":0,"state":"done"}` shows a solid green border in the grid (completion).
-- **Example from inside a terminal session**:
-  ```bash
-  python - <<'PY'
-  import json, socket, os
-  sock = os.environ["ARCHITECT_NOTIFY_SOCK"]
-  msg = json.dumps({"session": int(os.environ["ARCHITECT_SESSION_ID"]), "state": "awaiting_approval"}) + "\n"
-  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  s.connect(sock)
-  s.sendall(msg.encode())
-  s.close()
-  PY
-  ```
-- **Example from outside (host)**:
-  ```bash
-  # Find the socket (PID is included in the filename)
-  SOCK=$(ls ${XDG_RUNTIME_DIR:-/tmp}/architect_notify_*.sock 2>/dev/null | head -1)
 
-  # Send notification for session 0
-  python - <<PY
-  import json, socket, os
-  sock = os.environ["SOCK"]
-  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  s.connect(sock)
-  s.sendall(json.dumps({"session":0,"state":"done"}).encode() + b"\n")
-  s.close()
-  PY
-  ```
+**Example from inside a terminal session:**
+```bash
+python - <<'PY'
+import json, socket, os
+sock = os.environ["ARCHITECT_NOTIFY_SOCK"]
+msg = json.dumps({"session": int(os.environ["ARCHITECT_SESSION_ID"]), "state": "awaiting_approval"}) + "\n"
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sock)
+s.sendall(msg.encode())
+s.close()
+PY
+```
+
+**Example from outside (host):**
+```bash
+# Find the socket (PID is included in the filename)
+SOCK=$(ls ${XDG_RUNTIME_DIR:-/tmp}/architect_notify_*.sock 2>/dev/null | head -1)
+
+# Send notification for session 0
+python - <<PY
+import json, socket, os
+sock = os.environ["SOCK"]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sock)
+s.sendall(json.dumps({"session":0,"state":"done"}).encode() + b"\n")
+s.close()
+PY
+```
 
 ### Configuring Claude Code Hooks
 
@@ -281,6 +287,104 @@ To automatically send notifications when Claude Code stops or requests approval:
    ```
 
 3. Run Architect and start Claude Code in one of the terminal sessions. The grid cell will automatically highlight when Claude requests approval or completes a task.
+
+### Configuring Codex Hooks
+
+To automatically send notifications when Codex requests approval or completes a task:
+
+1. Create a notification script at `~/.codex/notify.py`:
+   ```python
+   #!/usr/bin/env python3
+   import json, os, subprocess, sys
+
+   HOME = os.environ.get("HOME", "")
+   ARCHITECT_NOTIFY = [
+       "python3",
+       os.path.join(HOME, "path/to/architect/architect_notify.py"),
+   ]
+
+   def route_to_architect(notification: dict) -> None:
+       ntype = (notification.get("type") or "").lower()
+       state = None
+
+       if ntype == "agent-turn-complete":
+           state = "done"
+       elif "approval" in ntype or "permission" in ntype:
+           state = "awaiting_approval"
+       elif "input" in ntype and "await" in ntype:
+           state = "awaiting_approval"
+
+       if state is None:
+           return
+
+       try:
+           subprocess.run(ARCHITECT_NOTIFY + [state], check=False)
+       except Exception:
+           pass
+
+   def main() -> int:
+       notification = json.loads(sys.argv[1])
+       route_to_architect(notification)
+       return 0
+
+   if __name__ == "__main__":
+       sys.exit(main())
+   ```
+
+2. Update the path to `architect_notify.py` in the script to match your repository location.
+
+3. Add the `notify` setting to your `~/.codex/config.toml`:
+   ```toml
+   notify = ["python3", "/Users/your-username/.codex/notify.py"]
+   ```
+
+4. Run Architect and start Codex in one of the terminal sessions. The grid cell will automatically highlight when Codex requests approval or completes a task.
+
+### Configuring Gemini CLI Hooks
+
+To automatically send notifications when Gemini CLI requests approval or completes a task:
+
+1. Download the notification script (included in this repository):
+   ```bash
+   cp architect_notify.py ~/.gemini/architect_notify.py
+   chmod +x ~/.gemini/architect_notify.py
+   ```
+
+2. Add hooks to your `~/.gemini/settings.json`:
+   ```json
+   {
+     "hooks": {
+       "AfterTool": [
+         {
+           "hooks": [
+             {
+               "name": "architect-completion",
+               "type": "command",
+               "command": "python3 ~/.gemini/architect_notify.py done || true",
+               "description": "Notify Architect when task completes"
+             }
+           ]
+         }
+       ],
+       "BeforeAgent": [
+         {
+           "hooks": [
+             {
+               "name": "architect-approval",
+               "type": "command",
+               "command": "python3 ~/.gemini/architect_notify.py awaiting_approval || true",
+               "description": "Notify Architect when waiting for approval"
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+3. Run Architect and start Gemini CLI in one of the terminal sessions. The grid cell will automatically highlight when Gemini requests approval or completes a task.
+
+**Note**: Gemini CLI hook events differ from Claude Code. The example above uses `AfterTool` for completion notifications and `BeforeAgent` for approval requests. Adjust the hook events based on your workflow needs. See the [Gemini CLI hooks documentation](https://geminicli.com/docs/hooks/) for more details.
 
 ## Releases
 
@@ -365,7 +469,6 @@ The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **No font selection**: Victor Mono font is bundled with the application (though size is adjustable)
 - **Limited configurability**: Grid size, colors, and keybindings are hardcoded
-- **Limited AI tool compatibility**: Works with Claude and Gemini models, but not with Codex
 
 ## License
 
