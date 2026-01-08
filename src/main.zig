@@ -460,13 +460,16 @@ pub fn main() !void {
                     } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
                         if (findNextFreeSession(sessions[0..], anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
-                            var cwd_z_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+                            var cwd_buf: ?[]u8 = null;
                             const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
-                                if (path.len >= cwd_z_buf.len) break :blk null;
-                                @memcpy(cwd_z_buf[0..path.len], path);
-                                cwd_z_buf[path.len] = 0;
-                                break :blk cwd_z_buf[0..path.len :0];
+                                const buf = allocator.alloc(u8, path.len + 1) catch break :blk null;
+                                @memcpy(buf[0..path.len], path);
+                                buf[path.len] = 0;
+                                cwd_buf = buf;
+                                break :blk buf[0..path.len :0];
                             } else null;
+
+                            defer if (cwd_buf) |buf| allocator.free(buf);
 
                             try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z);
                             sessions[next_free_idx].status = .running;
@@ -481,8 +484,6 @@ pub fn main() !void {
                             var notification_buf: [64]u8 = undefined;
                             const notification_msg = try formatGridNotification(&notification_buf, next_free_idx);
                             ui.showToast(notification_msg, now);
-
-                            std.debug.print("Switched to new terminal at session {d}\n", .{next_free_idx});
                         } else {
                             ui.showToast("All terminals in use", now);
                         }
