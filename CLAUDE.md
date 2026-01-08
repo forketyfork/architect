@@ -24,6 +24,9 @@ When creating a new feature or fix branch:
 
 This ensures PRs are based on the latest code and avoids unrelated changes in your PR.
 
+**Working in git worktrees:**
+If you are executing in a git worktree, stay within that worktree and do not attempt to access the root repository directory. All your work should remain in the worktree's local directory structure.
+
 ## SDL3 Usage Notes
 
 ### Adding New SDL3 Key Codes
