@@ -385,9 +385,14 @@ To automatically send notifications when Gemini CLI requests approval or complet
            ]
          }
        ]
+     },
+     "tools": {
+       "enableHooks": true
      }
    }
    ```
+
+   **Important**: The `"tools": {"enableHooks": true}` setting is required to enable hooks in Gemini CLI.
 
 3. Run Architect and start Gemini CLI in one of the terminal sessions. The grid cell will automatically highlight when Gemini requests approval or completes a task.
 
