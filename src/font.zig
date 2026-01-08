@@ -11,10 +11,18 @@ pub const Fallback = enum {
     emoji,
 };
 
+pub const Variant = enum(u2) {
+    regular,
+    bold,
+    italic,
+    bold_italic,
+};
+
 const GlyphKey = struct {
     hash: u64,
     color: u32,
     fallback: Fallback,
+    variant: Variant,
     // Cluster length in codepoints. Using u16 provides generous headroom
     // (up to 65535) while the renderer currently caps runs at 512 codepoints.
     len: u16,
@@ -24,6 +32,9 @@ const WHITE: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
 
 pub const Font = struct {
     font: *c.TTF_Font,
+    bold_font: ?*c.TTF_Font,
+    italic_font: ?*c.TTF_Font,
+    bold_italic_font: ?*c.TTF_Font,
     symbol_fallback: ?*c.TTF_Font,
     emoji_fallback: ?*c.TTF_Font,
     renderer: *c.SDL_Renderer,
@@ -40,6 +51,9 @@ pub const Font = struct {
         allocator: std.mem.Allocator,
         renderer: *c.SDL_Renderer,
         font_path: [*:0]const u8,
+        bold_font_path: ?[*:0]const u8,
+        italic_font_path: ?[*:0]const u8,
+        bold_italic_font_path: ?[*:0]const u8,
         symbol_fallback_path: ?[*:0]const u8,
         emoji_fallback_path: ?[*:0]const u8,
         size: c_int,
@@ -51,6 +65,39 @@ pub const Font = struct {
         errdefer c.TTF_CloseFont(font);
 
         _ = c.TTF_SetFontDirection(font, c.TTF_DIRECTION_LTR);
+
+        const bold_font = if (bold_font_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open bold font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
+        } else null;
+        errdefer if (bold_font) |f| c.TTF_CloseFont(f);
+
+        const italic_font = if (italic_font_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open italic font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
+        } else null;
+        errdefer if (italic_font) |f| c.TTF_CloseFont(f);
+
+        const bold_italic_font = if (bold_italic_font_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open bold-italic font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
+        } else null;
+        errdefer if (bold_italic_font) |f| c.TTF_CloseFont(f);
 
         const symbol_fallback = if (symbol_fallback_path) |path| blk: {
             const f = c.TTF_OpenFont(path, @floatFromInt(size));
@@ -85,6 +132,9 @@ pub const Font = struct {
 
         return Font{
             .font = font,
+            .bold_font = bold_font,
+            .italic_font = italic_font,
+            .bold_italic_font = bold_italic_font,
             .symbol_fallback = symbol_fallback,
             .emoji_fallback = emoji_fallback,
             .renderer = renderer,
@@ -102,6 +152,9 @@ pub const Font = struct {
         }
         self.glyph_cache.deinit();
         c.TTF_CloseFont(self.font);
+        if (self.bold_font) |f| c.TTF_CloseFont(f);
+        if (self.italic_font) |f| c.TTF_CloseFont(f);
+        if (self.bold_italic_font) |f| c.TTF_CloseFont(f);
         if (self.symbol_fallback) |f| c.TTF_CloseFont(f);
         if (self.emoji_fallback) |f| c.TTF_CloseFont(f);
     }
@@ -114,12 +167,12 @@ pub const Font = struct {
 
     pub fn renderGlyph(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) RenderGlyphError!void {
         var buf = [_]u21{codepoint};
-        return self.renderCluster(&buf, x, y, target_width, target_height, fg_color);
+        return self.renderCluster(&buf, x, y, target_width, target_height, fg_color, .regular);
     }
 
-    pub fn renderGlyphFill(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color) RenderGlyphError!void {
+    pub fn renderGlyphFill(self: *Font, codepoint: u21, x: c_int, y: c_int, target_width: c_int, target_height: c_int, fg_color: c.SDL_Color, variant: Variant) RenderGlyphError!void {
         var buf = [_]u21{codepoint};
-        return self.renderClusterFill(&buf, x, y, target_width, target_height, fg_color);
+        return self.renderClusterFill(&buf, x, y, target_width, target_height, fg_color, variant);
     }
 
     pub fn renderCluster(
@@ -130,9 +183,12 @@ pub const Font = struct {
         target_width: c_int,
         target_height: c_int,
         fg_color: c.SDL_Color,
+        variant: Variant,
     ) RenderGlyphError!void {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
+
+        const effective_variant = self.effectiveVariant(variant, codepoints);
 
         var total_bytes: usize = 0;
         for (codepoints) |cp| {
@@ -156,7 +212,7 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -195,9 +251,12 @@ pub const Font = struct {
         target_width: c_int,
         target_height: c_int,
         fg_color: c.SDL_Color,
+        variant: Variant,
     ) RenderGlyphError!void {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
+
+        const effective_variant = self.effectiveVariant(variant, codepoints);
 
         var total_bytes: usize = 0;
         for (codepoints) |cp| {
@@ -221,7 +280,7 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(codepoints);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
@@ -281,11 +340,12 @@ pub const Font = struct {
         return .primary;
     }
 
-    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback) RenderGlyphError!*c.SDL_Texture {
+    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
             .color = packColor(if (fallback == .emoji) WHITE else fg_color),
             .fallback = fallback,
+            .variant = variant,
             .len = @intCast(utf8.len),
         };
 
@@ -294,7 +354,7 @@ pub const Font = struct {
         }
 
         const render_font = switch (fallback) {
-            .primary => self.font,
+            .primary => self.variantFont(variant),
             .symbol => self.symbol_fallback orelse self.font,
             .emoji => self.emoji_fallback orelse self.font,
         };
@@ -328,5 +388,35 @@ pub const Font = struct {
 
     fn packColor(color: c.SDL_Color) u32 {
         return (@as(u32, color.r)) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16) | (@as(u32, color.a) << 24);
+    }
+
+    fn variantFont(self: *Font, variant: Variant) *c.TTF_Font {
+        return switch (variant) {
+            .regular => self.font,
+            .bold => self.bold_font orelse self.font,
+            .italic => self.italic_font orelse self.font,
+            .bold_italic => self.bold_italic_font orelse self.bold_font orelse self.font,
+        };
+    }
+
+    fn effectiveVariant(self: *Font, variant: Variant, codepoints: []const u21) Variant {
+        if (variant == .regular) return .regular;
+        if (self.variantHasGlyphs(variant, codepoints)) return variant;
+        return .regular;
+    }
+
+    fn variantHasGlyphs(self: *Font, variant: Variant, codepoints: []const u21) bool {
+        const font_ptr = switch (variant) {
+            .regular => return true,
+            .bold => self.bold_font,
+            .italic => self.italic_font,
+            .bold_italic => self.bold_italic_font,
+        } orelse return false;
+        for (codepoints) |cp| {
+            if (!c.TTF_FontHasGlyph(font_ptr, @intCast(cp))) {
+                return false;
+            }
+        }
+        return true;
     }
 };
