@@ -495,14 +495,14 @@ fn renderSessionOverlays(
                 const base_alpha: u8 = @intFromFloat(170 + 70 * pulse);
                 break :blk c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = base_alpha };
             },
-            .done => c.SDL_Color{ .r = 152, .g = 195, .b = 121, .a = 230 },
+            .done => c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 230 },
             else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 230 },
         };
         primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
 
         const tint_color = switch (session.status) {
             .awaiting_approval => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
-            .done => c.SDL_Color{ .r = 152, .g = 195, .b = 121, .a = 30 },
+            .done => c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 30 },
             else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
         };
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
