@@ -358,8 +358,9 @@ To automatically send notifications when Gemini CLI requests approval or complet
    ```json
    {
      "hooks": {
-       "AfterTool": [
+       "AfterAgent": [
          {
+           "matcher": "*",
            "hooks": [
              {
                "name": "architect-completion",
@@ -370,8 +371,9 @@ To automatically send notifications when Gemini CLI requests approval or complet
            ]
          }
        ],
-       "BeforeAgent": [
+       "Notification": [
          {
+           "matcher": "*",
            "hooks": [
              {
                "name": "architect-approval",
@@ -388,7 +390,7 @@ To automatically send notifications when Gemini CLI requests approval or complet
 
 3. Run Architect and start Gemini CLI in one of the terminal sessions. The grid cell will automatically highlight when Gemini requests approval or completes a task.
 
-**Note**: Gemini CLI hook events differ from Claude Code. The example above uses `AfterTool` for completion notifications and `BeforeAgent` for approval requests. Adjust the hook events based on your workflow needs. See the [Gemini CLI hooks documentation](https://geminicli.com/docs/hooks/) for more details.
+**Note**: Gemini CLI hook configuration requires the `matcher` field. The example above uses `AfterAgent` for completion notifications (runs when agent loop ends) and `Notification` for approval requests. See the [Gemini CLI hooks documentation](https://geminicli.com/docs/hooks/) for more details on available events and matcher patterns.
 
 ## Releases
 
