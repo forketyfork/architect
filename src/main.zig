@@ -26,7 +26,7 @@ const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
 const GRID_ROWS = 3;
 const GRID_COLS = 3;
-const SCROLL_LINES_PER_TICK: isize = 2;
+const SCROLL_LINES_PER_TICK: isize = 1;
 const MAX_SCROLL_VELOCITY: f32 = 30.0;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
@@ -494,7 +494,7 @@ pub fn main() !void {
                         anim_state.target_rect = target_rect;
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
-                        if (focused.spawned and !focused.dead) {
+                        if (focused.spawned and !focused.dead and !isModifierKey(key)) {
                             try handleKeyInput(focused, key, mod, is_repeat);
                         }
                     }
@@ -581,6 +581,15 @@ pub fn main() !void {
                         if (focused.selection_dragging) {
                             if (pin) |p| {
                                 updateSelectionDrag(focused, p);
+                            }
+
+                            const edge_threshold: c_int = 50;
+                            const scroll_speed: isize = 1;
+
+                            if (mouse_y < edge_threshold) {
+                                scrollSession(focused, -scroll_speed, now);
+                            } else if (mouse_y > render_height - edge_threshold) {
+                                scrollSession(focused, scroll_speed, now);
                             }
                         } else if (focused.selection_pending) {
                             if (focused.selection_anchor) |anchor| {
@@ -995,6 +1004,13 @@ fn applyTerminalResize(
             session.dirty = true;
         }
     }
+}
+
+fn isModifierKey(key: c.SDL_Keycode) bool {
+    return key == c.SDLK_LSHIFT or key == c.SDLK_RSHIFT or
+        key == c.SDLK_LCTRL or key == c.SDLK_RCTRL or
+        key == c.SDLK_LALT or key == c.SDLK_RALT or
+        key == c.SDLK_LGUI or key == c.SDLK_RGUI;
 }
 
 fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {

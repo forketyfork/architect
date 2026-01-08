@@ -43,6 +43,11 @@ open Architect.app
 
 ### Homebrew (macOS)
 
+**Prerequisites**: Xcode Command Line Tools must be installed:
+```bash
+xcode-select --install
+```
+
 Install via Homebrew (builds from source):
 
 ```bash
