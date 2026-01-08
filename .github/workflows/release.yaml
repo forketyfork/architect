@@ -20,6 +20,9 @@ jobs:
           - arch: x86_64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
+      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
     steps:
       - uses: actions/checkout@v6
         with:
@@ -30,6 +33,14 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      - name: Cache Zig package cache
+        uses: actions/cache@v4
+        with:
+          path: architect/.zig-cache
+          key: zig-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('architect/build.zig.zon') }}
+          restore-keys: |
+            zig-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Import code-signing certificate
         env:
@@ -48,11 +59,21 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: Prefetch Zig dependencies
-        run: nix develop --command just setup
+        run: |
+          for i in 1 2 3; do
+            nix develop --command just setup && break
+            if [ $i -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
         working-directory: architect
 
       - name: Build release
-        run: nix develop --command zig build -Doptimize=ReleaseFast
+        run: |
+          for i in 1 2 3; do
+            nix develop --command zig build -Doptimize=ReleaseFast && break
+            if [ $i -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
         working-directory: architect
 
       - name: Bundle libraries and package
