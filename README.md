@@ -46,8 +46,8 @@ open Architect.app
 Install via Homebrew (builds from source):
 
 ```bash
-# Tap the repository
-brew tap forketyfork/architect
+# Tap the repository (note: requires full repo URL since the formula is in the main repo)
+brew tap forketyfork/architect https://github.com/forketyfork/architect
 
 # Install architect
 brew install architect
