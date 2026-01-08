@@ -1187,16 +1187,17 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
             const list_cell_cell = list_cell.cell;
             const cp = list_cell_cell.content.codepoint;
+            const encoded_len: usize = blk: {
+                if (cp != 0 and cp != ' ') {
+                    var utf8_buf: [4]u8 = undefined;
+                    break :blk std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                }
+                break :blk 1;
+            };
 
             if (list_cell_cell.wide == .wide) {
                 // Wide character (takes 2 cells, but emitted as one sequence in text).
-                if (cp != 0 and cp != ' ') {
-                    var utf8_buf: [4]u8 = undefined;
-                    const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
-                    byte_pos += len;
-                } else {
-                    byte_pos += 1;
-                }
+                byte_pos += encoded_len;
 
                 // If possible, handle the second cell of the wide character now
                 // so we map it to the same byte position (start of char).
@@ -1211,13 +1212,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
                 }
             } else {
                 // Narrow character
-                if (cp != 0 and cp != ' ') {
-                    var utf8_buf: [4]u8 = undefined;
-                    const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
-                    byte_pos += len;
-                } else {
-                    byte_pos += 1;
-                }
+                byte_pos += encoded_len;
             }
             cell_idx += 1;
         }
