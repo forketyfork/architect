@@ -54,6 +54,23 @@ fn countForegroundProcesses(sessions: []const SessionState) usize {
     return total;
 }
 
+fn findNextFreeSession(sessions: []const SessionState, current_idx: usize) ?usize {
+    const start_idx = current_idx + 1;
+    var idx = start_idx;
+    while (idx < sessions.len) : (idx += 1) {
+        if (!sessions[idx].spawned) {
+            return idx;
+        }
+    }
+    idx = 0;
+    while (idx < start_idx) : (idx += 1) {
+        if (!sessions[idx].spawned) {
+            return idx;
+        }
+    }
+    return null;
+}
+
 fn handleQuitRequest(
     sessions: []const SessionState,
     confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
@@ -440,6 +457,35 @@ pub fn main() !void {
                         const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         ui.showToast(notification_msg, now);
+                    } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                        if (findNextFreeSession(sessions[0..], anim_state.focused_session)) |next_free_idx| {
+                            const cwd_path = focused.cwd_path;
+                            var cwd_z_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+                            const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
+                                if (path.len >= cwd_z_buf.len) break :blk null;
+                                @memcpy(cwd_z_buf[0..path.len], path);
+                                cwd_z_buf[path.len] = 0;
+                                break :blk cwd_z_buf[0..path.len :0];
+                            } else null;
+
+                            try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z);
+                            sessions[next_free_idx].status = .running;
+                            sessions[next_free_idx].attention = false;
+
+                            sessions[anim_state.focused_session].clearSelection();
+                            sessions[next_free_idx].clearSelection();
+
+                            anim_state.previous_session = anim_state.focused_session;
+                            anim_state.focused_session = next_free_idx;
+
+                            var notification_buf: [64]u8 = undefined;
+                            const notification_msg = try formatGridNotification(&notification_buf, next_free_idx);
+                            ui.showToast(notification_msg, now);
+
+                            std.debug.print("Switched to new terminal at session {d}\n", .{next_free_idx});
+                        } else {
+                            ui.showToast("All terminals in use", now);
+                        }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
                             try navigateGrid(&anim_state, &sessions, direction, now, true, false);
