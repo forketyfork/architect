@@ -1658,39 +1658,3 @@ fn pasteClipboardIntoSession(
 
     ui.showToast("Pasted clipboard", now);
 }
-
-const ansi_colors = [_]c.SDL_Color{
-    // Normal
-    .{ .r = 14, .g = 17, .b = 22, .a = 255 }, // Black
-    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // Red
-    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // Green
-    .{ .r = 209, .g = 154, .b = 102, .a = 255 }, // Yellow
-    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // Blue
-    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // Magenta
-    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // Cyan
-    .{ .r = 171, .g = 178, .b = 191, .a = 255 }, // White
-    // Bright
-    .{ .r = 92, .g = 99, .b = 112, .a = 255 }, // BrightBlack
-    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // BrightRed
-    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // BrightGreen
-    .{ .r = 229, .g = 192, .b = 123, .a = 255 }, // BrightYellow
-    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // BrightBlue
-    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // BrightMagenta
-    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // BrightCyan
-    .{ .r = 205, .g = 214, .b = 224, .a = 255 }, // BrightWhite
-};
-
-fn get256Color(idx: u8) c.SDL_Color {
-    if (idx < 16) {
-        return ansi_colors[idx];
-    } else if (idx < 232) {
-        const color_idx = idx - 16;
-        const r = (color_idx / 36) * 51;
-        const g = ((color_idx % 36) / 6) * 51;
-        const b = (color_idx % 6) * 51;
-        return .{ .r = @intCast(r), .g = @intCast(g), .b = @intCast(b), .a = 255 };
-    } else {
-        const gray = 8 + (idx - 232) * 10;
-        return .{ .r = @intCast(gray), .g = @intCast(gray), .b = @intCast(gray), .a = 255 };
-    }
-}
