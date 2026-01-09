@@ -7,6 +7,7 @@ const c_import = @cImport({
 
 pub const SDL_Init = c_import.SDL_Init;
 pub const SDL_Quit = c_import.SDL_Quit;
+pub const SDL_EnableScreenSaver = c_import.SDL_EnableScreenSaver;
 pub const SDL_CreateWindow = c_import.SDL_CreateWindow;
 pub const SDL_DestroyWindow = c_import.SDL_DestroyWindow;
 pub const SDL_SetWindowPosition = c_import.SDL_SetWindowPosition;

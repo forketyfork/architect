@@ -140,7 +140,7 @@ pub fn main() !void {
     }
 
     var sdl = try platform.init(
-        "Architect - Terminal Wall",
+        "ARCHITECT",
         config.window_width,
         config.window_height,
         window_pos,
@@ -627,7 +627,7 @@ pub fn main() !void {
                                 const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                                 if (cmd_held) {
-                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin)) |uri| {
+                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_scrolled)) |uri| {
                                         defer allocator.free(uri);
                                         open_url.openUrl(allocator, uri) catch |err| {
                                             log.err("Failed to open URL: {}", .{err});
@@ -688,7 +688,7 @@ pub fn main() !void {
                             const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                             if (cmd_held) {
-                                if (getLinkMatchAtPin(allocator, &focused.terminal.?, pin.?)) |link_match| {
+                                if (getLinkMatchAtPin(allocator, &focused.terminal.?, pin.?, focused.is_scrolled)) |link_match| {
                                     desired_cursor = .pointer;
                                     focused.hovered_link_start = link_match.start_pin;
                                     focused.hovered_link_end = link_match.end_pin;
@@ -907,6 +907,10 @@ fn formatGridNotification(buf: []u8, focused_session: usize) ![]const u8 {
             offset += block.len;
 
             if (col_idx < GRID_COLS - 1) {
+                buf[offset] = ' ';
+                offset += 1;
+                buf[offset] = ' ';
+                offset += 1;
                 buf[offset] = ' ';
                 offset += 1;
             }
@@ -1328,7 +1332,7 @@ const LinkMatch = struct {
     end_pin: ghostty_vt.Pin,
 };
 
-fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?LinkMatch {
+fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_scrolled: bool) ?LinkMatch {
     const page = &pin.node.data;
     const row_and_cell = pin.rowAndCell();
     const cell = row_and_cell.cell;
@@ -1343,28 +1347,51 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         };
     }
 
-    var start_y = pin.y;
+    const pin_point = if (is_scrolled)
+        terminal.screens.active.pages.pointFromPin(.viewport, pin)
+    else
+        terminal.screens.active.pages.pointFromPin(.active, pin);
+    const point_or_null = pin_point orelse return null;
+    const start_y_orig = if (is_scrolled) point_or_null.viewport.y else point_or_null.active.y;
+
+    var start_y = start_y_orig;
     var current_row = row_and_cell.row;
 
     while (current_row.wrap_continuation and start_y > 0) {
         start_y -= 1;
-        const prev_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse break;
+        const prev_point = if (is_scrolled)
+            ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = start_y } }
+        else
+            ghostty_vt.point.Point{ .active = .{ .x = 0, .y = start_y } };
+        const prev_pin = terminal.screens.active.pages.pin(prev_point) orelse break;
         current_row = prev_pin.rowAndCell().row;
     }
 
-    var end_y = pin.y;
+    var end_y = start_y_orig;
     current_row = row_and_cell.row;
     const max_y: u16 = @intCast(page.size.rows - 1);
 
     while (current_row.wrap and end_y < max_y) {
         end_y += 1;
-        const next_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = end_y } }) orelse break;
+        const next_point = if (is_scrolled)
+            ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = end_y } }
+        else
+            ghostty_vt.point.Point{ .active = .{ .x = 0, .y = end_y } };
+        const next_pin = terminal.screens.active.pages.pin(next_point) orelse break;
         current_row = next_pin.rowAndCell().row;
     }
 
     const max_x: u16 = @intCast(page.size.cols - 1);
-    const row_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = start_y } }) orelse return null;
-    const row_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = max_x, .y = end_y } }) orelse return null;
+    const row_start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = start_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = start_y } };
+    const row_end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = max_x, .y = end_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = max_x, .y = end_y } };
+    const row_start_pin = terminal.screens.active.pages.pin(row_start_point) orelse return null;
+    const row_end_pin = terminal.screens.active.pages.pin(row_end_point) orelse return null;
 
     const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
     const row_text = terminal.screens.active.selectionString(allocator, .{
@@ -1382,7 +1409,10 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     while (y <= end_y) : (y += 1) {
         var x: u16 = 0;
         while (x < page.size.cols) : (x += 1) {
-            const point = ghostty_vt.point.Point{ .active = .{ .x = x, .y = y } };
+            const point = if (is_scrolled)
+                ghostty_vt.point.Point{ .viewport = .{ .x = x, .y = y } }
+            else
+                ghostty_vt.point.Point{ .active = .{ .x = x, .y = y } };
             const list_cell = terminal.screens.active.pages.getCell(point) orelse {
                 cell_to_byte.append(allocator, byte_pos) catch return null;
                 cell_idx += 1;
@@ -1427,7 +1457,8 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         }
     }
 
-    const click_cell_idx = (pin.y - start_y) * page.size.cols + pin.x;
+    const pin_x = if (is_scrolled) point_or_null.viewport.x else point_or_null.active.x;
+    const click_cell_idx = (start_y_orig - start_y) * page.size.cols + pin_x;
     if (click_cell_idx >= cell_to_byte.items.len) return null;
     const click_byte_pos = cell_to_byte.items[click_cell_idx];
 
@@ -1454,8 +1485,16 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     const end_row = start_y + @as(u16, @intCast(end_cell_idx / page.size.cols));
     const end_col: u16 = @intCast(end_cell_idx % page.size.cols);
 
-    const link_start_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = start_col, .y = start_row } }) orelse return null;
-    const link_end_pin = terminal.screens.active.pages.pin(.{ .active = .{ .x = end_col, .y = end_row } }) orelse return null;
+    const link_start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = start_col, .y = start_row } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = start_col, .y = start_row } };
+    const link_end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = end_col, .y = end_row } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = end_col, .y = end_row } };
+    const link_start_pin = terminal.screens.active.pages.pin(link_start_point) orelse return null;
+    const link_end_pin = terminal.screens.active.pages.pin(link_end_point) orelse return null;
 
     const url = allocator.dupe(u8, url_match.url) catch return null;
 
@@ -1466,8 +1505,8 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     };
 }
 
-fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin) ?[]u8 {
-    if (getLinkMatchAtPin(allocator, terminal, pin)) |match| {
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_scrolled: bool) ?[]u8 {
+    if (getLinkMatchAtPin(allocator, terminal, pin, is_scrolled)) |match| {
         return match.url;
     }
     return null;

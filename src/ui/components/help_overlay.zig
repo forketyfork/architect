@@ -20,6 +20,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "Click terminal", .desc = "Expand to full screen" },
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
+    .{ .key = "⌘↵", .desc = "Expand focused terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
     .{ .key = "Drag (full view)", .desc = "Select text" },
     .{ .key = "⌘C", .desc = "Copy selection to clipboard" },

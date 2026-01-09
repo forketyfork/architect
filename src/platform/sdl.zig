@@ -40,6 +40,8 @@ pub fn init(
         return error.SDLInitFailed;
     }
 
+    _ = c.SDL_EnableScreenSaver();
+
     if (!c.TTF_Init()) {
         std.debug.print("TTF_Init Error: {s}\n", .{c.SDL_GetError()});
         return error.TTFInitFailed;
