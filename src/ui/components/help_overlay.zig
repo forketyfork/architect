@@ -98,6 +98,7 @@ pub const HelpOverlayComponent = struct {
     start_size: c_int = HELP_BUTTON_SIZE_SMALL,
     target_size: c_int = HELP_BUTTON_SIZE_SMALL,
     cache: ?*Cache = null,
+    open_drawn: bool = false,
 
     const HELP_BUTTON_SIZE_SMALL: c_int = 40;
     const HELP_BUTTON_SIZE_LARGE: c_int = 400;
@@ -163,6 +164,9 @@ pub const HelpOverlayComponent = struct {
                 .Collapsing => .Closed,
                 else => self.state,
             };
+            if (self.state == .Open) {
+                self.open_drawn = false;
+            }
         }
     }
 
@@ -260,6 +264,7 @@ pub const HelpOverlayComponent = struct {
 
             y_offset += line_height;
         }
+        self.open_drawn = true;
     }
 
     fn makeTextTexture(
@@ -388,6 +393,7 @@ pub const HelpOverlayComponent = struct {
         self.start_time = now;
         self.start_size = HELP_BUTTON_SIZE_SMALL;
         self.target_size = HELP_BUTTON_SIZE_LARGE;
+        self.open_drawn = false;
     }
 
     fn startCollapsing(self: *HelpOverlayComponent, now: i64) void {
@@ -395,6 +401,7 @@ pub const HelpOverlayComponent = struct {
         self.start_time = now;
         self.start_size = HELP_BUTTON_SIZE_LARGE;
         self.target_size = HELP_BUTTON_SIZE_SMALL;
+        self.open_drawn = false;
     }
 
     fn isAnimating(self: *HelpOverlayComponent) bool {
@@ -431,7 +438,7 @@ pub const HelpOverlayComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.isAnimating();
+        return self.isAnimating() or (self.state == .Open and !self.open_drawn);
     }
 
     const vtable = UiComponent.VTable{
