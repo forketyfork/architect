@@ -166,14 +166,15 @@ pub const SessionState = struct {
             var process = try xev.Process.init(shell.child_pid);
             errdefer process.deinit();
 
-            self.process_watcher = process;
-            self.process_watcher.?.wait(
+            process.wait(
                 loop,
                 &self.process_completion,
                 SessionState,
                 self,
                 processExitCallback,
             );
+
+            self.process_watcher = process;
         }
 
         log.debug("spawned session {d}", .{self.id});
@@ -322,6 +323,9 @@ pub const SessionState = struct {
 
             try stream.nextSlice(self.output_buf[0..n]);
             self.dirty = true;
+
+            // Keep draining until the PTY would block to avoid frame-bounded
+            // throttling of bursty output (e.g. startup logos).
         }
     }
 

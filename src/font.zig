@@ -47,6 +47,18 @@ pub const Font = struct {
     /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
     const MAX_GLYPH_CACHE_ENTRIES: usize = 4096;
 
+    /// Maximum byte length for a single glyph string to prevent abuse from
+    /// malicious or malformed terminal output. 256 bytes allows for reasonable
+    /// grapheme clusters including emoji sequences and combining characters
+    /// while protecting against memory exhaustion attacks.
+    const MAX_GLYPH_BYTE_LENGTH: usize = 256;
+
+    /// Maximum codepoints in a single grapheme cluster before chunking.
+    /// Chosen to balance rendering performance with memory usage. Values above
+    /// this threshold are split into smaller segments to avoid creating
+    /// excessively large textures (e.g., cursor trail effects with 120+ chars).
+    const MAX_CLUSTER_SIZE: usize = 32;
+
     const CacheEntry = struct {
         texture: *c.SDL_Texture,
         seq: u64,
@@ -197,10 +209,9 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
-        const max_cluster_size = 32;
-        if (codepoints.len > max_cluster_size) {
-            const chars_per_chunk = max_cluster_size;
-            const cell_width = @divTrunc(target_width, @as(c_int, @intCast(codepoints.len)));
+        if (codepoints.len > MAX_CLUSTER_SIZE) {
+            const chars_per_chunk = MAX_CLUSTER_SIZE;
+            const cell_width = @max(1, @divTrunc(target_width, @as(c_int, @intCast(codepoints.len))));
 
             var offset: usize = 0;
             while (offset < codepoints.len) {
@@ -282,10 +293,9 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
-        const max_cluster_size = 32;
-        if (codepoints.len > max_cluster_size) {
-            const chars_per_chunk = max_cluster_size;
-            const cell_width = @divTrunc(target_width, @as(c_int, @intCast(codepoints.len)));
+        if (codepoints.len > MAX_CLUSTER_SIZE) {
+            const chars_per_chunk = MAX_CLUSTER_SIZE;
+            const cell_width = @max(1, @divTrunc(target_width, @as(c_int, @intCast(codepoints.len))));
 
             var offset: usize = 0;
             while (offset < codepoints.len) {
@@ -384,7 +394,7 @@ pub const Font = struct {
     }
 
     fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
-        if (utf8.len > 256) {
+        if (utf8.len > MAX_GLYPH_BYTE_LENGTH) {
             log.warn("Refusing to render excessively long glyph string: {d} bytes", .{utf8.len});
             return error.GlyphRenderFailed;
         }
