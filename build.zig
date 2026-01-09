@@ -35,6 +35,13 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("xev", dep.module("xev"));
     }
 
+    if (b.lazyDependency("tomlz", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        exe_mod.addImport("tomlz", dep.module("tomlz"));
+    }
+
     const exe = b.addExecutable(.{
         .name = "architect",
         .root_module = exe_mod,

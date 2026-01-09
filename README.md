@@ -151,28 +151,27 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
+Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-32px, default: 14px)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
+Existing `config.json` files from older versions are automatically migrated to TOML on next launch.
 
 **Example configuration:**
-```json
-{
-  "font_size": 16,
-  "window_width": 1920,
-  "window_height": 1080,
-  "window_x": 150,
-  "window_y": 100
-}
+```toml
+font_size = 16
+window_width = 1920
+window_height = 1080
+window_x = 150
+window_y = 100
 ```
 
 To reset to defaults, simply delete the configuration file:
 ```bash
-rm ~/.config/architect/config.json
+rm ~/.config/architect/config.toml
 ```
 
 ## Development

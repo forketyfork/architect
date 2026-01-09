@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const json = std.json;
+const tomlz = @import("tomlz");
 
 pub const Config = struct {
     font_size: i32,
@@ -13,6 +14,44 @@ pub const Config = struct {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
+        return loadTomlConfig(allocator, config_path) catch |err| switch (err) {
+            error.ConfigNotFound => loadLegacyJson(allocator),
+            else => return err,
+        };
+    }
+
+    pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
+        const config_path = try getConfigPath(allocator);
+        defer allocator.free(config_path);
+
+        const config_dir = fs.path.dirname(config_path) orelse return error.InvalidPath;
+        fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        var buffer = std.ArrayList(u8).init(allocator);
+        defer buffer.deinit();
+
+        try tomlz.serialize(allocator, buffer.writer(), self);
+        try buffer.append('\n');
+
+        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(buffer.items);
+    }
+
+    fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
+    }
+
+    fn getLegacyJsonPath(allocator: std.mem.Allocator) ![]u8 {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.json" });
+    }
+
+    fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
         const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.ConfigNotFound,
             else => return err,
@@ -22,7 +61,23 @@ pub const Config = struct {
         const content = try file.readToEndAlloc(allocator, 1024 * 1024);
         defer allocator.free(content);
 
-        const parsed = try json.parseFromSlice(json.Value, allocator, content, .{});
+        return tomlz.decode(Config, allocator, content) catch return error.InvalidConfig;
+    }
+
+    fn loadLegacyJson(allocator: std.mem.Allocator) LoadError!Config {
+        const config_path = try getLegacyJsonPath(allocator);
+        defer allocator.free(config_path);
+
+        const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.ConfigNotFound,
+            else => return err,
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(content);
+
+        const parsed = json.parseFromSlice(json.Value, allocator, content, .{}) catch return error.InvalidConfig;
         defer parsed.deinit();
 
         const root = parsed.value;
@@ -41,48 +96,16 @@ pub const Config = struct {
             return error.InvalidConfig;
         }
 
-        return Config{
+        const legacy_config = Config{
             .font_size = @intCast(font_size_val.integer),
             .window_width = @intCast(window_width_val.integer),
             .window_height = @intCast(window_height_val.integer),
             .window_x = @intCast(window_x_val.integer),
             .window_y = @intCast(window_y_val.integer),
         };
-    }
 
-    pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
-        const config_path = try getConfigPath(allocator);
-        defer allocator.free(config_path);
-
-        const config_dir = fs.path.dirname(config_path) orelse return error.InvalidPath;
-        fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
-        const content = try std.fmt.allocPrint(
-            allocator,
-            \\{{
-            \\  "font_size": {d},
-            \\  "window_width": {d},
-            \\  "window_height": {d},
-            \\  "window_x": {d},
-            \\  "window_y": {d}
-            \\}}
-            \\
-        ,
-            .{ self.font_size, self.window_width, self.window_height, self.window_x, self.window_y },
-        );
-        defer allocator.free(content);
-
-        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(content);
-    }
-
-    fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.json" });
+        legacy_config.save(allocator) catch {};
+        return legacy_config;
     }
 };
 
@@ -92,70 +115,31 @@ pub const LoadError = error{
     HomeNotFound,
     InvalidPath,
     OutOfMemory,
-} || fs.File.OpenError || fs.File.ReadError || json.ParseError(json.Scanner);
+} || fs.File.OpenError || fs.File.ReadError;
 
 pub const SaveError = error{
     HomeNotFound,
     InvalidPath,
     OutOfMemory,
-} || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
+} || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError || tomlz.serializer.SerializeError;
 
-test "Config - save and load" {
+test "Config - decode toml" {
     const allocator = std.testing.allocator;
 
-    const test_config = Config{
-        .font_size = 16,
-        .window_width = 1920,
-        .window_height = 1080,
-        .window_x = 100,
-        .window_y = 100,
-    };
-
-    const test_dir = try std.fs.cwd().makeOpenPath("test_config", .{});
-    defer std.fs.cwd().deleteTree("test_config") catch {};
-
-    const test_path = try fs.path.join(allocator, &[_][]const u8{ "test_config", "config.json" });
-    defer allocator.free(test_path);
-
-    const content = try std.fmt.allocPrint(
-        allocator,
-        \\{{
-        \\  "font_size": {d},
-        \\  "window_width": {d},
-        \\  "window_height": {d},
-        \\  "window_x": {d},
-        \\  "window_y": {d}
-        \\}}
+    const content =
+        \\font_size = 16
+        \\window_width = 1920
+        \\window_height = 1080
+        \\window_x = 100
+        \\window_y = 100
         \\
-    ,
-        .{ test_config.font_size, test_config.window_width, test_config.window_height, test_config.window_x, test_config.window_y },
-    );
-    defer allocator.free(content);
+    ;
 
-    try test_dir.writeFile(.{ .sub_path = "config.json", .data = content });
+    const decoded = try tomlz.decode(Config, allocator, content);
 
-    const file = try fs.cwd().openFile(test_path, .{});
-    defer file.close();
-
-    const read_content = try file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(read_content);
-
-    const parsed = try json.parseFromSlice(json.Value, allocator, read_content, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    try std.testing.expect(root == .object);
-    const obj = root.object;
-
-    const font_size_val = obj.get("font_size").?;
-    const window_width_val = obj.get("window_width").?;
-    const window_height_val = obj.get("window_height").?;
-    const window_x_val = obj.get("window_x").?;
-    const window_y_val = obj.get("window_y").?;
-
-    try std.testing.expectEqual(@as(i64, 16), font_size_val.integer);
-    try std.testing.expectEqual(@as(i64, 1920), window_width_val.integer);
-    try std.testing.expectEqual(@as(i64, 1080), window_height_val.integer);
-    try std.testing.expectEqual(@as(i64, 100), window_x_val.integer);
-    try std.testing.expectEqual(@as(i64, 100), window_y_val.integer);
+    try std.testing.expectEqual(@as(i32, 16), decoded.font_size);
+    try std.testing.expectEqual(@as(i32, 1920), decoded.window_width);
+    try std.testing.expectEqual(@as(i32, 1080), decoded.window_height);
+    try std.testing.expectEqual(@as(i32, 100), decoded.window_x);
+    try std.testing.expectEqual(@as(i32, 100), decoded.window_y);
 }
