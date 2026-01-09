@@ -1,41 +1,283 @@
 # Architecture Overview
 
-Architect is organized around three layers: platform input/output, scene rendering, and a UI overlay powered by a small retained-ish component registry.
+Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         main.zig                            │
+│  (application lifetime, frame loop, event dispatch)         │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │  Platform   │  │    Input    │  │    Notification     │  │
+│  │ (SDL3 init) │  │  (mapper)   │  │   (socket thread)   │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              Session Layer (src/session/)           │    │
+│  │  SessionState: PTY, ghostty-vt terminal, xev watcher│    │
+│  └─────────────────────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────┐    ┌───────────────────────────┐   │
+│  │  Scene Renderer     │    │      UI Overlay System    │   │
+│  │ (render/renderer)   │    │      (src/ui/*)           │   │
+│  │ terminals, borders, │    │  UiRoot → components      │   │
+│  │ animations, CWD bar │    │  → UiAction queue         │   │
+│  └─────────────────────┘    └───────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Runtime Flow
-- **main.zig**: owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
-  1. Polls SDL events.
-  2. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
-  3. Runs remaining app logic (terminal input, resizing, notifications).
-  4. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
-- **renderer/render.zig**: draws only the *scene* (terminals, borders, attention tint, grid/full animations). It has no UI hit-testing or UI-specific textures.
-- **UiRoot (src/ui/)**: registry of UI components. Dispatches events topmost-first, updates components, drains `UiAction`s, and renders UI last.
 
-## Key Modules
-- `src/ui/components/`: individual overlay pieces (`help_overlay`, `toast`, `escape_hold`, `restart_buttons`).
-- `src/ui/components/marquee_label.zig`: reusable scrolling label renderer; wrap text here instead of ad-hoc marquee math.
-- `src/ui/gestures/`: reusable input gestures (`hold`).
-- `src/gfx/primitives.zig`: shared rounded/thick border drawing helpers.
-- `src/geom.zig`: shared `Rect` + hit-testing.
-- `src/anim/easing.zig`: shared easing functions.
+**main.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
+
+1. Polls SDL events and scales coordinates to render space.
+2. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
+3. Runs remaining app logic (terminal input, resizing, keyboard shortcuts).
+4. Runs `xev` loop iteration for async process exit detection.
+5. Processes output from all sessions and drains async notifications.
+6. Updates UI components and drains `UiAction` queue.
+7. Advances animation state if transitioning.
+8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
+9. Sleeps based on idle/active frame targets (~16ms active, ~50ms idle).
+
+**renderer/render.zig** draws only the *scene*:
+- Terminal cell content with HarfBuzz-shaped text runs
+- Grid cell backgrounds and borders (focused/unfocused)
+- Expand/collapse/panning animations with eased interpolation
+- Attention borders (pulsing yellow for awaiting approval, solid blue for done)
+- CWD bar with marquee scrolling for long paths
+- Scrollback indicator strip
+
+**UiRoot (src/ui/)** is the registry for UI overlay components:
+- Dispatches events topmost-first (by z-index)
+- Runs per-frame `update()` on all components
+- Drains `UiAction` queue for UI→app mutations
+- Renders all components in z-order after the scene
+- Reports `needsFrame()` when any component requires animation
+
+## Source Structure
+
+```
+src/
+├── main.zig              # Entry point, frame loop, event dispatch
+├── c.zig                 # C bindings (SDL3, TTF, etc.)
+├── config.zig            # JSON config persistence
+├── geom.zig              # Rect + point containment
+├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
+├── font_paths.zig        # Font path resolution for bundled fonts
+├── shell.zig             # Shell process spawning
+├── pty.zig               # PTY abstractions
+├── cwd.zig               # macOS working directory detection
+├── url_matcher.zig       # URL detection in terminal output
+├── vt_stream.zig         # VT stream wrapper for ghostty-vt
+│
+├── platform/
+│   └── sdl.zig           # SDL3 initialization and window management
+│
+├── input/
+│   └── mapper.zig        # Key→bytes encoding, shortcut detection
+│
+├── app/
+│   └── app_state.zig     # ViewMode, AnimationState, SessionStatus
+│
+├── session/
+│   ├── state.zig         # SessionState: PTY, terminal, process watcher
+│   └── notify.zig        # Notification socket thread + queue
+│
+├── render/
+│   └── renderer.zig      # Scene rendering (terminals, animations)
+│
+├── gfx/
+│   └── primitives.zig    # Rounded/thick border drawing helpers
+│
+├── anim/
+│   └── easing.zig        # Easing functions (cubic, etc.)
+│
+├── os/
+│   └── open.zig          # Cross-platform URL opening
+│
+└── ui/
+    ├── mod.zig           # Public UI module exports
+    ├── root.zig          # UiRoot: component registry, dispatch
+    ├── component.zig     # UiComponent vtable interface
+    ├── types.zig         # UiHost, UiAction, UiAssets, SessionUiInfo
+    ├── scale.zig         # DPI scaling helper
+    ├── first_frame_guard.zig  # Idle throttling transition helper
+    │
+    ├── components/
+    │   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
+    │   ├── toast.zig            # Toast notification display
+    │   ├── escape_hold.zig      # ESC hold-to-collapse indicator
+    │   ├── restart_buttons.zig  # Dead session restart buttons
+    │   ├── quit_confirm.zig     # Quit confirmation dialog
+    │   └── marquee_label.zig    # Reusable scrolling text label
+    │
+    └── gestures/
+        └── hold.zig      # Reusable hold gesture detector
+```
+
+## Key Types
+
+### View Modes (`app_state.ViewMode`)
+```
+Grid         → 3×3 overview, all sessions visible
+Expanding    → Animating from grid cell to fullscreen
+Full         → Single session fullscreen
+Collapsing   → Animating from fullscreen to grid cell
+PanningLeft  → Horizontal pan animation (moving left)
+PanningRight → Horizontal pan animation (moving right)
+PanningUp    → Vertical pan animation (moving up)
+PanningDown  → Vertical pan animation (moving down)
+```
+
+### Session Status (`app_state.SessionStatus`)
+```
+idle             → No activity
+running          → Process actively running
+awaiting_approval→ AI assistant waiting for user approval (pulsing border)
+done             → AI assistant task completed (solid border)
+```
+
+### Animation State
+- 300ms cubic ease-in-out transitions
+- `start_rect` → `target_rect` interpolation
+- `focused_session` and `previous_session` for panning
+
+### UI Component Interface
+```zig
+VTable {
+    handleEvent: fn(*anyopaque, *UiHost, *SDL_Event, *UiActionQueue) bool
+    update:      fn(*anyopaque, *UiHost, *UiActionQueue) void
+    render:      fn(*anyopaque, *UiHost, *SDL_Renderer, *UiAssets) void
+    hitTest:     fn(*anyopaque, *UiHost, x, y) bool
+    wantsFrame:  fn(*anyopaque, *UiHost) bool
+    deinit:      fn(*anyopaque, *SDL_Renderer) void
+}
+```
+
+### UiAction (UI→App mutations)
+```zig
+union(enum) {
+    RestartSession: usize,        // Restart dead session at index
+    RequestCollapseFocused: void, // Collapse current fullscreen to grid
+    ConfirmQuit: void,            // Confirm quit despite running processes
+}
+```
+
+### UiHost (read-only snapshot for UI)
+```zig
+struct {
+    now_ms: i64,
+    window_w, window_h: c_int,
+    ui_scale: f32,
+    grid_cols, grid_rows: usize,
+    cell_w, cell_h: c_int,
+    view_mode: ViewMode,
+    focused_session: usize,
+    sessions: []SessionUiInfo,  // dead/spawned flags per session
+}
+```
 
 ## Data & State Boundaries
-- Scene state lives in session/app files (`src/session/*`, `src/app/app_state.zig`).
-- UI-specific state lives inside components under `src/ui/`; scene code must not own UI state.
-- `UiHost` is a read-only snapshot that UI consumes each frame; it mirrors only what UI needs (window size, grid layout, view mode, per-session dead/spawned flags, time).
-- `UiAction` is the only way UI mutates the app (e.g., `RestartSession`, `RequestCollapseFocused`).
+
+| Layer | State Location | What it contains |
+|-------|----------------|------------------|
+| Scene | `src/session/state.zig` | PTY, terminal buffer, scroll position, CWD, cache texture |
+| Scene | `src/app/app_state.zig` | ViewMode, animation rects, focused session index |
+| UI    | Component structs | Visibility flags, animation timers, cached textures |
+| Shared | `UiHost` | Read-only snapshot passed each frame |
+
+**Key rule**: Scene code must not own UI state; UI state lives inside components.
 
 ## Input Routing
-- SDL events enter `main.zig`, which immediately builds `UiHost` and calls `ui.handleEvent`. If a component consumes the event, the app’s legacy handlers are skipped for that event.
-- ESC long-hold, help toggle, restart clicks, and future UI interactions live entirely in UI components; `main.zig` should not reimplement their hit-testing.
+
+1. SDL events enter `main.zig`
+2. Events are scaled to render coordinates
+3. `UiHost` snapshot is built
+4. `ui.handleEvent()` dispatches to components (topmost-first by z-index)
+5. If consumed, skip app handlers; otherwise continue to main event switch
+6. `ui.hitTest()` used for cursor changes in full view
+
+Components that consume events:
+- `HelpOverlayComponent`: ? pill click, overlay dismiss
+- `EscapeHoldComponent`: ESC key down/up for hold-to-collapse
+- `RestartButtonsComponent`: Restart button clicks
+- `QuitConfirmComponent`: Confirmation dialog buttons
 
 ## Rendering Order
-1. Scene: `renderer.render(...)`
-2. UI overlay: `ui.render(...)`
-3. Present: `SDL_RenderPresent`
 
-## Invariants (high-level)
-- UI input/rendering goes through `UiRoot`; `main.zig` and `renderer.zig` stay scene-focused.
-- No UI state or textures stored on sessions or in `app_state.zig`.
-- Renderer never draws help/toast/ESC/restart UI; those belong to `src/ui/components/`.
-- New UI pieces register with `UiRoot`; they do not add new event branches in `main.zig`.
+1. **Clear**: Background color (14, 17, 22)
+2. **Scene**: `renderer.render(...)` - terminals based on view mode
+3. **UI Overlay**: `ui.render(...)` - all registered components in z-order
+4. **Present**: `SDL_RenderPresent`
+
+## Session Management
+
+Each `SessionState` contains:
+- `shell`: Spawned shell process with PTY
+- `terminal`: ghostty-vt terminal state machine
+- `stream`: VT stream wrapper for output processing
+- `process_watcher`: xev-based async process exit detection
+- `cache_texture`: Cached render for grid view (dirty flag optimization)
+- `pending_write`: Buffered stdin for non-blocking writes
+
+Sessions are lazily spawned: only session 0 starts on launch; others spawn on first click/navigation.
+
+## Notification System
+
+External tools (AI assistants) signal state changes via Unix domain socket:
+```
+${XDG_RUNTIME_DIR}/architect_notify_<pid>.sock
+```
+
+Protocol: Single-line JSON
+```json
+{"session": 0, "state": "awaiting_approval"}
+{"session": 0, "state": "done"}
+{"session": 0, "state": "start"}
+```
+
+A background thread (`notify.zig`) accepts connections, parses messages, and pushes to a thread-safe `NotificationQueue`. Main loop drains queue each frame.
+
+## First Frame Guard Pattern
+
+When a UI component transitions to a visible state (modal appears, gesture starts), it must render immediately even under idle throttling. Use `FirstFrameGuard`:
+
+```zig
+// On state change:
+self.first_frame.markTransition();
+
+// In wantsFrame:
+return self.active or self.first_frame.wantsFrame();
+
+// At end of render:
+self.first_frame.markDrawn();
+```
+
+## DPI Scaling
+
+`src/ui/scale.zig` provides `scale(value, ui_scale)` to convert logical points to physical pixels. All UI sizing should use this for HiDPI support.
+
+## Invariants
+
+1. **UI routing**: All UI input/rendering goes through `UiRoot`; `main.zig` and `renderer.zig` stay scene-focused.
+
+2. **State separation**: No UI state or textures stored on sessions or in `app_state.zig`.
+
+3. **Renderer scope**: `renderer.zig` never draws help/toast/ESC/restart/quit UI; those belong to `src/ui/components/`.
+
+4. **Extension pattern**: New UI features register with `UiRoot` via `UiComponent`; they do not add event branches in `main.zig`.
+
+5. **Action-based mutation**: UI components emit `UiAction`s; they do not directly mutate app state.
+
+6. **Lazy spawning**: Sessions spawn on demand, not at startup (except session 0).
+
+7. **Cache invalidation**: Set `session.dirty = true` after any terminal content change.
+
+## Dependencies
+
+- **ghostty-vt**: Terminal emulation (VT state machine, ANSI parsing)
+- **SDL3**: Window management, rendering, input
+- **SDL3_ttf**: Font rendering with HarfBuzz shaping
+- **xev**: Event-driven async I/O for process watching
+- **Victor Mono Nerd Font**: Bundled monospace font with ligatures
