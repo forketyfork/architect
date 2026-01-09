@@ -78,6 +78,11 @@ pub const ToastComponent = struct {
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
+        const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
+        return self.isVisible(host.now_ms);
+    }
+
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.isVisible(host.now_ms)) return;
@@ -266,5 +271,6 @@ pub const ToastComponent = struct {
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };

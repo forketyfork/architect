@@ -84,7 +84,6 @@ See [Setup](#setup) section below for building from source.
 - **Smooth Animations**: Click any terminal to smoothly expand it to full screen
 - **Full-Window Scaling**: Each terminal is sized for the full window and scaled down in grid view
 - **Resizable Window**: Dynamically resize the window with automatic terminal and PTY resizing
-- **Terminal Switching**: Use Cmd+Shift+[ / Cmd+Shift+] to switch between terminals in full-screen mode with smooth horizontal panning animation
 - **Real-Time I/O**: Non-blocking PTY communication with live updates
 - **Interactive Control**:
   - Click any grid cell or press ⌘+Return in grid view to expand
@@ -464,7 +463,6 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Font rendering with SDL_ttf
 - Click-to-expand interaction
 - Smooth expand/collapse animations
-- Terminal switching with horizontal panning animation (Cmd+Shift+[ / Cmd+Shift+])
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize

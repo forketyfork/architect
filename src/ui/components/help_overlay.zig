@@ -225,7 +225,6 @@ pub const HelpOverlayComponent = struct {
         const shortcuts = [_]struct { key: []const u8, desc: []const u8 }{
             .{ .key = "Click terminal", .desc = "Expand to full screen" },
             .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
-            .{ .key = "⌘⇧[ / ⌘⇧]", .desc = "Switch terminals" },
             .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
             .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
             .{ .key = "Drag (full view)", .desc = "Select text" },
@@ -319,11 +318,17 @@ pub const HelpOverlayComponent = struct {
         self.deinit(renderer);
     }
 
+    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+        const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        return self.isAnimating();
+    }
+
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .hitTest = hitTest,
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };

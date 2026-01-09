@@ -83,6 +83,11 @@ pub const EscapeHoldComponent = struct {
         }
     }
 
+    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+        const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
+        return self.gesture.active;
+    }
+
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.gesture.active) return;
@@ -237,5 +242,6 @@ pub const EscapeHoldComponent = struct {
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };
