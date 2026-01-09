@@ -184,6 +184,12 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
 
+        // Pre-warm cached text while the button is expanding so the content is
+        // ready once the panel fully opens.
+        if (self.state != .Closed) {
+            _ = self.ensureCache(renderer, host.ui_scale, assets);
+        }
+
         switch (self.state) {
             .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets),
             .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets),
