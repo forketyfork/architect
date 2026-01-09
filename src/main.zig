@@ -542,7 +542,7 @@ pub fn main() !void {
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
                         } else {
                             if (focused.spawned and !focused.dead) {
-                                try handleKeyInput(focused, key, scaled_event.key.scancode, mod, is_repeat);
+                                try handleKeyInput(focused, key, mod, is_repeat);
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
@@ -570,7 +570,7 @@ pub fn main() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
                         if (focused.spawned and !focused.dead and !isModifierKey(key)) {
-                            try handleKeyInput(focused, key, scaled_event.key.scancode, mod, is_repeat);
+                            try handleKeyInput(focused, key, mod, is_repeat);
                         }
                     }
                 },
@@ -1217,7 +1217,7 @@ fn isModifierKey(key: c.SDL_Keycode) bool {
         key == c.SDLK_LGUI or key == c.SDLK_RGUI;
 }
 
-fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, scancode: c.SDL_Scancode, mod: c.SDL_Keymod, is_repeat: bool) !void {
+fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
     if (key == c.SDLK_ESCAPE) return;
 
     if (focused.is_scrolled) {
@@ -1228,15 +1228,8 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, scancode: c.SDL_Sc
             focused.scroll_remainder = 0.0;
         }
     }
-    var key_to_send = key;
-    const fn_like = (mod & c.SDL_KMOD_MODE) != 0;
-    const is_home_scan = scancode == c.SDL_SCANCODE_HOME;
-    const is_end_scan = scancode == c.SDL_SCANCODE_END;
-    if (is_home_scan or (fn_like and key == c.SDLK_LEFT)) key_to_send = c.SDLK_HOME;
-    if (is_end_scan or (fn_like and key == c.SDLK_RIGHT)) key_to_send = c.SDLK_END;
-
     var buf: [8]u8 = undefined;
-    const n = input.encodeKeyWithMod(key_to_send, mod, &buf);
+    const n = input.encodeKeyWithMod(key, mod, &buf);
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
     } else if (is_repeat and builtin.os.tag == .macos) {

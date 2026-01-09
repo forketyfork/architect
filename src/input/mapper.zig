@@ -170,12 +170,12 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
             break :blk 3;
         },
         c.SDLK_HOME => blk: {
-            @memcpy(buf[0..3], "\x1b[H");
-            break :blk 3;
+            buf[0] = 1;
+            break :blk 1;
         },
         c.SDLK_END => blk: {
-            @memcpy(buf[0..3], "\x1b[F");
-            break :blk 3;
+            buf[0] = 5;
+            break :blk 1;
         },
         c.SDLK_DELETE => blk: {
             @memcpy(buf[0..4], "\x1b[3~");
@@ -250,6 +250,20 @@ test "encodeKeyWithMod - cmd+left (beginning of line)" {
 test "encodeKeyWithMod - cmd+right (end of line)" {
     var buf: [8]u8 = undefined;
     const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_GUI, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 5), buf[0]);
+}
+
+test "encodeKeyWithMod - home (beginning of line)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_HOME, 0, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u8, 1), buf[0]);
+}
+
+test "encodeKeyWithMod - end (end of line)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_END, 0, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 5), buf[0]);
 }
