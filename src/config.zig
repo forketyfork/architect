@@ -75,7 +75,7 @@ pub const Config = struct {
             else => return err,
         };
 
-        const font_family = self.font_family orelse DEFAULT_FONT_FAMILY;
+        const font_family = if (self.font_family) |f| if (f.len > 0) f else DEFAULT_FONT_FAMILY else DEFAULT_FONT_FAMILY;
         const content = try std.fmt.allocPrint(
             allocator,
             \\{{

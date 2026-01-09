@@ -378,15 +378,17 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    const updated_config = config_mod.Config{
+                    const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                    var updated_config = config_mod.Config{
                         .font_size = font_size,
-                        .font_family = config.font_family,
-                        .font_family_owned = false,
+                        .font_family = font_family_dup,
+                        .font_family_owned = true,
                         .window_width = window_width_points,
                         .window_height = window_height_points,
                         .window_x = window_x,
                         .window_y = window_y,
                     };
+                    defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
                         std.debug.print("Failed to save config: {}\n", .{err});
                     };
@@ -493,15 +495,17 @@ pub fn main() !void {
                             applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            const updated_config = config_mod.Config{
+                            const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                            var updated_config = config_mod.Config{
                                 .font_size = font_size,
-                                .font_family = config.font_family,
-                                .font_family_owned = false,
+                                .font_family = font_family_dup,
+                                .font_family_owned = true,
                                 .window_width = window_width_points,
                                 .window_height = window_height_points,
                                 .window_x = window_x,
                                 .window_y = window_y,
                             };
+                            defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {
                                 std.debug.print("Failed to save config: {}\n", .{err});
                             };
