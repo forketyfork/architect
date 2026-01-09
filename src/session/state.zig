@@ -90,6 +90,9 @@ pub const SessionState = struct {
         StringAllocOutOfMemory,
         StyleSetNeedsRehash,
         StyleSetOutOfMemory,
+        SystemResources,
+        SystemFdQuotaExceeded,
+        InvalidArgument,
     };
 
     pub fn init(
