@@ -33,6 +33,9 @@ const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const UI_FONT_SIZE: c_int = 18;
+const ACTIVE_FRAME_NS: i128 = 16_666_667;
+const IDLE_FRAME_NS: i128 = 50_000_000;
+const MAX_IDLE_RENDER_GAP_NS: i128 = 250_000_000;
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -155,7 +158,6 @@ pub fn main() !void {
     }
 
     const renderer = sdl.renderer;
-    const vsync_enabled = sdl.vsync_enabled;
 
     var font_size: c_int = config.font_size;
     var window_width_points: c_int = sdl.window_w;
@@ -277,6 +279,7 @@ pub fn main() !void {
     // notifications, drive animations, and render at ~60 FPS.
     var previous_frame_ns: i128 = undefined;
     var first_frame: bool = true;
+    var last_render_ns: i128 = 0;
     while (running) {
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
@@ -289,7 +292,9 @@ pub fn main() !void {
         previous_frame_ns = frame_start_ns;
 
         var event: c.SDL_Event = undefined;
+        var processed_event = false;
         while (c.SDL_PollEvent(&event)) {
+            processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
             var session_ui_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
             const ui_host = makeUiHost(
@@ -412,10 +417,8 @@ pub fn main() !void {
 
                     const escaped = shellQuotePath(allocator, drop_path) catch |err| {
                         std.debug.print("Failed to escape dropped path: {}\n", .{err});
-                        c.SDL_free(@constCast(drop_path_ptr));
                         continue;
                     };
-                    defer c.SDL_free(@constCast(drop_path_ptr));
                     defer allocator.free(escaped);
 
                     pasteText(session, allocator, escaped) catch |err| switch (err) {
@@ -754,16 +757,21 @@ pub fn main() !void {
             }
         }
 
+        var any_session_dirty = false;
+        var has_scroll_inertia = false;
         for (&sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
             try session.flushPendingWrites();
             session.updateCwd(now);
             updateScrollInertia(session, delta_time_s);
+            any_session_dirty = any_session_dirty or session.dirty;
+            has_scroll_inertia = has_scroll_inertia or (session.scroll_velocity != 0.0);
         }
 
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
+        const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
             if (note.session < sessions.len) {
                 var session = &sessions[note.session];
@@ -824,7 +832,6 @@ pub fn main() !void {
             }
         }
 
-        try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular);
         var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
         const ui_render_host = makeUiHost(
             now,
@@ -837,16 +844,26 @@ pub fn main() !void {
             &sessions,
             &ui_render_info,
         );
-        ui.render(&ui_render_host, renderer);
-        _ = c.SDL_RenderPresent(renderer);
 
-        if (!vsync_enabled) {
-            const target_frame_ns: i128 = 16_666_667;
-            const frame_end_ns: i128 = std.time.nanoTimestamp();
-            const frame_ns = frame_end_ns - frame_start_ns;
-            if (frame_ns < target_frame_ns) {
-                std.Thread.sleep(@intCast(target_frame_ns - frame_ns));
-            }
+        const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
+        const ui_needs_frame = ui.needsFrame(&ui_render_host);
+        const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= MAX_IDLE_RENDER_GAP_NS;
+        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
+
+        if (should_render) {
+            try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular);
+            ui.render(&ui_render_host, renderer);
+            _ = c.SDL_RenderPresent(renderer);
+            last_render_ns = std.time.nanoTimestamp();
+        }
+
+        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !has_scroll_inertia;
+        const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
+        const frame_end_ns: i128 = std.time.nanoTimestamp();
+        const frame_ns = frame_end_ns - frame_start_ns;
+        if (frame_ns < target_frame_ns) {
+            const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
+            std.Thread.sleep(sleep_ns);
         }
     }
 }

@@ -12,5 +12,7 @@ pub const UiComponent = struct {
         render: ?*const fn (ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void = null,
         hitTest: ?*const fn (ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool = null,
         deinit: ?*const fn (ptr: *anyopaque, renderer: *c.SDL_Renderer) void = null,
+        /// Return true when the component needs a frame even if nothing else is dirty.
+        wantsFrame: ?*const fn (ptr: *anyopaque, host: *const types.UiHost) bool = null,
     };
 };

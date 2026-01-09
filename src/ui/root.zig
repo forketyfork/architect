@@ -89,6 +89,18 @@ pub const UiRoot = struct {
             comp.show(message, now_ms);
         }
     }
+
+    /// True when any component needs a frame even if the rest of the app is idle.
+    pub fn needsFrame(self: *UiRoot, host: *const types.UiHost) bool {
+        for (self.components.items) |comp| {
+            if (comp.vtable.wantsFrame) |needs_frame_fn| {
+                if (needs_frame_fn(comp.ptr, host)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 };
 
 fn sortComponents(list: *std.ArrayList(UiComponent)) void {

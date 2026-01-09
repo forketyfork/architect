@@ -6,11 +6,13 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const HoldGesture = @import("../gestures/hold.zig").HoldGesture;
 const dpi = @import("../scale.zig");
+const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
     gesture: HoldGesture = .{},
     font: *font_mod.Font,
+    first_frame: FirstFrameGuard = .{},
 
     const ESC_HOLD_TOTAL_MS: i64 = 700;
     const ESC_ARC_COUNT: usize = 5;
@@ -46,6 +48,7 @@ pub const EscapeHoldComponent = struct {
             c.SDL_EVENT_KEY_DOWN => {
                 if (event.key.key == c.SDLK_ESCAPE and !event.key.repeat) {
                     self.gesture.start(host.now_ms, ESC_HOLD_TOTAL_MS);
+                    self.first_frame.markTransition();
                     return true;
                 }
             },
@@ -81,6 +84,11 @@ pub const EscapeHoldComponent = struct {
                 self.gesture.stop();
             }
         }
+    }
+
+    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+        const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
+        return self.gesture.active or self.first_frame.wantsFrame();
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
@@ -225,6 +233,7 @@ pub const EscapeHoldComponent = struct {
                 _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
             }
         }
+        self.first_frame.markDrawn();
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
@@ -237,5 +246,6 @@ pub const EscapeHoldComponent = struct {
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };

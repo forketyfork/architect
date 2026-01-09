@@ -7,11 +7,45 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const font_mod = @import("../../font.zig");
+const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 const FontWithFallbacks = struct {
     main: *c.TTF_Font,
     symbol: ?*c.TTF_Font,
     emoji: ?*c.TTF_Font,
+};
+
+const Shortcut = struct { key: []const u8, desc: []const u8 };
+const shortcuts = [_]Shortcut{
+    .{ .key = "Click terminal", .desc = "Expand to full screen" },
+    .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
+    .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
+    .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
+    .{ .key = "Drag (full view)", .desc = "Select text" },
+    .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
+    .{ .key = "⌘V", .desc = "Paste clipboard into terminal" },
+    .{ .key = "Mouse wheel", .desc = "Scroll history" },
+};
+
+const TextTex = struct {
+    tex: *c.SDL_Texture,
+    w: c_int,
+    h: c_int,
+};
+
+const ShortcutTex = struct {
+    key: TextTex,
+    desc: TextTex,
+};
+
+const Cache = struct {
+    ui_scale: f32,
+    title_font_size: c_int,
+    key_font_size: c_int,
+    title_fonts: FontWithFallbacks,
+    key_fonts: FontWithFallbacks,
+    title: TextTex,
+    shortcuts: [shortcuts.len]ShortcutTex,
 };
 
 fn openFontWithFallbacks(
@@ -64,6 +98,8 @@ pub const HelpOverlayComponent = struct {
     start_time: i64 = 0,
     start_size: c_int = HELP_BUTTON_SIZE_SMALL,
     target_size: c_int = HELP_BUTTON_SIZE_SMALL,
+    cache: ?*Cache = null,
+    first_frame: FirstFrameGuard = .{},
 
     const HELP_BUTTON_SIZE_SMALL: c_int = 40;
     const HELP_BUTTON_SIZE_LARGE: c_int = 400;
@@ -84,6 +120,7 @@ pub const HelpOverlayComponent = struct {
     }
 
     fn deinit(self: *HelpOverlayComponent, _: *c.SDL_Renderer) void {
+        self.destroyCache();
         self.allocator.destroy(self);
     }
 
@@ -128,6 +165,7 @@ pub const HelpOverlayComponent = struct {
                 .Collapsing => .Closed,
                 else => self.state,
             };
+            if (self.state == .Open) self.first_frame.markTransition();
         }
     }
 
@@ -148,6 +186,12 @@ pub const HelpOverlayComponent = struct {
 
         _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
+
+        // Pre-warm cached text while the button is expanding so the content is
+        // ready once the panel fully opens.
+        if (self.state != .Closed) {
+            _ = self.ensureCache(renderer, host.ui_scale, assets);
+        }
 
         switch (self.state) {
             .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets),
@@ -186,91 +230,160 @@ pub const HelpOverlayComponent = struct {
     }
 
     fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
-        _ = self;
-        const font_path = assets.font_path orelse return;
-        const title_font_size: c_int = dpi.scale(20, ui_scale);
-        const key_font_size: c_int = dpi.scale(16, ui_scale);
+        const cache = self.ensureCache(renderer, ui_scale, assets) orelse return;
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
-        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch return;
-        defer closeFontWithFallbacks(title_fonts);
+        const title_tex = cache.title;
+        const title_x = rect.x + @divFloor(rect.w - title_tex.w, 2);
+        _ = c.SDL_RenderTexture(renderer, title_tex.tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(title_x),
+            .y = @floatFromInt(y_offset),
+            .w = @floatFromInt(title_tex.w),
+            .h = @floatFromInt(title_tex.h),
+        });
 
-        const key_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, key_font_size) catch return;
-        defer closeFontWithFallbacks(key_fonts);
+        y_offset += title_tex.h + line_height;
+
+        for (cache.shortcuts) |shortcut_tex| {
+            _ = c.SDL_RenderTexture(renderer, shortcut_tex.key.tex, null, &c.SDL_FRect{
+                .x = @floatFromInt(rect.x + padding),
+                .y = @floatFromInt(y_offset),
+                .w = @floatFromInt(shortcut_tex.key.w),
+                .h = @floatFromInt(shortcut_tex.key.h),
+            });
+
+            _ = c.SDL_RenderTexture(renderer, shortcut_tex.desc.tex, null, &c.SDL_FRect{
+                .x = @floatFromInt(rect.x + rect.w - padding - shortcut_tex.desc.w),
+                .y = @floatFromInt(y_offset),
+                .w = @floatFromInt(shortcut_tex.desc.w),
+                .h = @floatFromInt(shortcut_tex.desc.h),
+            });
+
+            y_offset += line_height;
+        }
+        self.first_frame.markDrawn();
+    }
+
+    fn makeTextTexture(
+        renderer: *c.SDL_Renderer,
+        font: *c.TTF_Font,
+        text: []const u8,
+        color: c.SDL_Color,
+    ) !TextTex {
+        var buf: [256]u8 = undefined;
+        if (text.len >= buf.len) return error.TextTooLong;
+        @memcpy(buf[0..text.len], text);
+        buf[text.len] = 0;
+        const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), text.len, color) orelse return error.SurfaceFailed;
+        defer c.SDL_DestroySurface(surface);
+        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
+        var w: f32 = 0;
+        var h: f32 = 0;
+        _ = c.SDL_GetTextureSize(tex, &w, &h);
+        _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
+        return TextTex{
+            .tex = tex,
+            .w = @intFromFloat(w),
+            .h = @intFromFloat(h),
+        };
+    }
+
+    fn destroyCache(self: *HelpOverlayComponent) void {
+        if (self.cache) |cache| {
+            c.SDL_DestroyTexture(cache.title.tex);
+            for (cache.shortcuts) |shortcut_tex| {
+                c.SDL_DestroyTexture(shortcut_tex.key.tex);
+                c.SDL_DestroyTexture(shortcut_tex.desc.tex);
+            }
+            closeFontWithFallbacks(cache.title_fonts);
+            closeFontWithFallbacks(cache.key_fonts);
+            self.allocator.destroy(cache);
+            self.cache = null;
+        }
+    }
+
+    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets) ?*Cache {
+        const font_path = assets.font_path orelse return null;
+        const title_font_size: c_int = dpi.scale(20, ui_scale);
+        const key_font_size: c_int = dpi.scale(16, ui_scale);
+
+        if (self.cache) |cache| {
+            if (cache.title_font_size == title_font_size and cache.key_font_size == key_font_size) {
+                return cache;
+            }
+            self.destroyCache();
+        }
+
+        const cache = self.allocator.create(Cache) catch return null;
+        errdefer self.allocator.destroy(cache);
+
+        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
+            self.allocator.destroy(cache);
+            return null;
+        };
+        errdefer closeFontWithFallbacks(title_fonts);
+
+        const key_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, key_font_size) catch {
+            closeFontWithFallbacks(title_fonts);
+            self.allocator.destroy(cache);
+            return null;
+        };
+        errdefer closeFontWithFallbacks(key_fonts);
 
         const title_text = "Keyboard Shortcuts";
         const title_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
-        const title_surface = c.TTF_RenderText_Blended(title_fonts.main, title_text, title_text.len, title_color) orelse return;
-        defer c.SDL_DestroySurface(title_surface);
-
-        const title_texture = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return;
-        defer c.SDL_DestroyTexture(title_texture);
-
-        var title_width_f: f32 = 0;
-        var title_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(title_texture, &title_width_f, &title_height_f);
-
-        const title_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(title_width_f)), 2);
-        _ = c.SDL_RenderTexture(renderer, title_texture, null, &c.SDL_FRect{
-            .x = @floatFromInt(title_x),
-            .y = @floatFromInt(y_offset),
-            .w = title_width_f,
-            .h = title_height_f,
-        });
-
-        y_offset += @as(c_int, @intFromFloat(title_height_f)) + line_height;
-
-        const shortcuts = [_]struct { key: []const u8, desc: []const u8 }{
-            .{ .key = "Click terminal", .desc = "Expand to full screen" },
-            .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
-            .{ .key = "⌘⇧[ / ⌘⇧]", .desc = "Switch terminals" },
-            .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
-            .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
-            .{ .key = "Drag (full view)", .desc = "Select text" },
-            .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
-            .{ .key = "⌘V", .desc = "Paste clipboard into terminal" },
-            .{ .key = "Mouse wheel", .desc = "Scroll history" },
+        const title_tex = makeTextTexture(renderer, title_fonts.main, title_text, title_color) catch {
+            closeFontWithFallbacks(key_fonts);
+            closeFontWithFallbacks(title_fonts);
+            self.allocator.destroy(cache);
+            return null;
         };
 
         const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
         const desc_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
 
-        for (shortcuts) |shortcut| {
-            const key_surface = c.TTF_RenderText_Blended(key_fonts.main, @ptrCast(shortcut.key.ptr), shortcut.key.len, key_color) orelse continue;
-            defer c.SDL_DestroySurface(key_surface);
-            const desc_surface = c.TTF_RenderText_Blended(key_fonts.main, @ptrCast(shortcut.desc.ptr), shortcut.desc.len, desc_color) orelse continue;
-            defer c.SDL_DestroySurface(desc_surface);
-
-            const key_texture = c.SDL_CreateTextureFromSurface(renderer, key_surface) orelse continue;
-            defer c.SDL_DestroyTexture(key_texture);
-            const desc_texture = c.SDL_CreateTextureFromSurface(renderer, desc_surface) orelse continue;
-            defer c.SDL_DestroyTexture(desc_texture);
-
-            var key_w: f32 = 0;
-            var key_h: f32 = 0;
-            _ = c.SDL_GetTextureSize(key_texture, &key_w, &key_h);
-            var desc_w: f32 = 0;
-            var desc_h: f32 = 0;
-            _ = c.SDL_GetTextureSize(desc_texture, &desc_w, &desc_h);
-
-            _ = c.SDL_RenderTexture(renderer, key_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding),
-                .y = @floatFromInt(y_offset),
-                .w = key_w,
-                .h = key_h,
-            });
-
-            _ = c.SDL_RenderTexture(renderer, desc_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - @as(c_int, @intFromFloat(desc_w))),
-                .y = @floatFromInt(y_offset),
-                .w = desc_w,
-                .h = desc_h,
-            });
-
-            y_offset += line_height;
+        var shortcut_tex: [shortcuts.len]ShortcutTex = undefined;
+        for (shortcuts, 0..) |shortcut, idx| {
+            const key_tex = makeTextTexture(renderer, key_fonts.main, shortcut.key, key_color) catch {
+                for (shortcut_tex[0..idx]) |st| {
+                    c.SDL_DestroyTexture(st.key.tex);
+                    c.SDL_DestroyTexture(st.desc.tex);
+                }
+                c.SDL_DestroyTexture(title_tex.tex);
+                closeFontWithFallbacks(key_fonts);
+                closeFontWithFallbacks(title_fonts);
+                self.allocator.destroy(cache);
+                return null;
+            };
+            const desc_tex = makeTextTexture(renderer, key_fonts.main, shortcut.desc, desc_color) catch {
+                c.SDL_DestroyTexture(key_tex.tex);
+                for (shortcut_tex[0..idx]) |st| {
+                    c.SDL_DestroyTexture(st.key.tex);
+                    c.SDL_DestroyTexture(st.desc.tex);
+                }
+                c.SDL_DestroyTexture(title_tex.tex);
+                closeFontWithFallbacks(key_fonts);
+                closeFontWithFallbacks(title_fonts);
+                self.allocator.destroy(cache);
+                return null;
+            };
+            shortcut_tex[idx] = .{ .key = key_tex, .desc = desc_tex };
         }
+
+        cache.* = .{
+            .ui_scale = ui_scale,
+            .title_font_size = title_font_size,
+            .key_font_size = key_font_size,
+            .title_fonts = title_fonts,
+            .key_fonts = key_fonts,
+            .title = title_tex,
+            .shortcuts = shortcut_tex,
+        };
+
+        self.cache = cache;
+        return cache;
     }
 
     fn startExpanding(self: *HelpOverlayComponent, now: i64) void {
@@ -319,11 +432,17 @@ pub const HelpOverlayComponent = struct {
         self.deinit(renderer);
     }
 
+    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+        const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        return self.isAnimating() or self.first_frame.wantsFrame();
+    }
+
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .hitTest = hitTest,
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };
