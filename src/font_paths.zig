@@ -12,7 +12,7 @@ pub const FontPaths = struct {
     emoji_fallback: ?[:0]const u8,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) !FontPaths {
+    pub fn init(allocator: std.mem.Allocator, font_family: ?[]const u8) !FontPaths {
         const exe_path = try std.fs.selfExePathAlloc(allocator);
         defer allocator.free(exe_path);
 
@@ -43,10 +43,15 @@ pub const FontPaths = struct {
         if (font_dir_path) |dir| {
             defer allocator.free(dir);
 
-            paths.regular = try std.fs.path.joinZ(allocator, &.{ dir, "VictorMonoNerdFont-Regular.ttf" });
-            paths.bold = try std.fs.path.joinZ(allocator, &.{ dir, "VictorMonoNerdFont-Bold.ttf" });
-            paths.italic = try std.fs.path.joinZ(allocator, &.{ dir, "VictorMonoNerdFont-Italic.ttf" });
-            paths.bold_italic = try std.fs.path.joinZ(allocator, &.{ dir, "VictorMonoNerdFont-BoldItalic.ttf" });
+            const selected_family = pickFontFamily(allocator, dir, font_family) catch |err| {
+                log.err("Failed to resolve font family: {}", .{err});
+                return error.FontsNotFound;
+            };
+
+            paths.regular = try fontPath(allocator, dir, selected_family, "Regular");
+            paths.bold = try fontPath(allocator, dir, selected_family, "Bold");
+            paths.italic = try fontPath(allocator, dir, selected_family, "Italic");
+            paths.bold_italic = try fontPath(allocator, dir, selected_family, "BoldItalic");
         } else {
             log.err("fonts not found in any candidate location", .{});
             return error.FontsNotFound;
@@ -76,3 +81,27 @@ pub const FontPaths = struct {
         }
     }
 };
+
+const DEFAULT_FONT_FAMILY = "VictorMonoNerdFont";
+
+fn pickFontFamily(allocator: std.mem.Allocator, dir: []const u8, font_family: ?[]const u8) ![]const u8 {
+    const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
+    const regular_path = try fontPath(allocator, dir, selected_family, "Regular");
+    defer allocator.free(regular_path);
+
+    std.fs.accessAbsolute(regular_path, .{}) catch |err| {
+        if (font_family == null or std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+            return err;
+        }
+        log.warn("Font family '{s}' not found, falling back to {s}", .{ selected_family, DEFAULT_FONT_FAMILY });
+        return DEFAULT_FONT_FAMILY;
+    };
+
+    return selected_family;
+}
+
+fn fontPath(allocator: std.mem.Allocator, dir: []const u8, font_family: []const u8, style: []const u8) ![:0]const u8 {
+    const filename = try std.fmt.allocPrint(allocator, "{s}-{s}.ttf", .{ font_family, style });
+    defer allocator.free(filename);
+    return std.fs.path.joinZ(allocator, &.{ dir, filename });
+}
