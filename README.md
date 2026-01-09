@@ -153,11 +153,12 @@ zig build run
 
 Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
 
-- **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-32px, default: 14px)
+- **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
+- **Grid size**: Configure `grid_rows` and `grid_cols` to set the terminal grid layout (range: 1-12 for each, default: 3x3)
 
-The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
+The configuration file is created automatically on first use and updated whenever settings change. Grid size must be edited manually in the config file.
 
 **Example configuration:**
 ```json
@@ -166,7 +167,9 @@ The configuration file is created automatically on first use and updated wheneve
   "window_width": 1920,
   "window_height": 1080,
   "window_x": 150,
-  "window_y": 100
+  "window_y": 100,
+  "grid_rows": 3,
+  "grid_cols": 4
 }
 ```
 
@@ -478,7 +481,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **No font selection**: Victor Mono font is bundled with the application (though size is adjustable)
-- **Limited configurability**: Grid size, colors, and keybindings are hardcoded
+- **Limited configurability**: Colors and keybindings are hardcoded
 
 ## License
 

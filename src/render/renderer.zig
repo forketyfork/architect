@@ -33,6 +33,7 @@ pub fn render(
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
     grid_cols: usize,
+    grid_rows: usize,
     anim_state: *const AnimationState,
     current_time: i64,
     font: *font_mod.Font,
@@ -46,7 +47,9 @@ pub fn render(
     _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
     _ = c.SDL_RenderClear(renderer);
 
-    const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_cols));
+    // Use the larger dimension for grid scale to ensure proper scaling
+    const grid_dim = @max(grid_cols, grid_rows);
+    const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
 
     switch (anim_state.mode) {
         .Grid => {

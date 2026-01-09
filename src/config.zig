@@ -2,12 +2,19 @@ const std = @import("std");
 const fs = std.fs;
 const json = std.json;
 
+pub const MIN_GRID_SIZE: i32 = 1;
+pub const MAX_GRID_SIZE: i32 = 12;
+pub const DEFAULT_GRID_ROWS: i32 = 3;
+pub const DEFAULT_GRID_COLS: i32 = 3;
+
 pub const Config = struct {
     font_size: i32,
     window_width: i32,
     window_height: i32,
     window_x: i32,
     window_y: i32,
+    grid_rows: i32,
+    grid_cols: i32,
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -41,12 +48,32 @@ pub const Config = struct {
             return error.InvalidConfig;
         }
 
+        // Grid dimensions are optional for backward compatibility - use defaults if not present
+        const grid_rows_val = obj.get("grid_rows");
+        const grid_cols_val = obj.get("grid_cols");
+
+        const grid_rows_raw: i32 = if (grid_rows_val) |v| blk: {
+            if (v != .integer) break :blk DEFAULT_GRID_ROWS;
+            break :blk @intCast(v.integer);
+        } else DEFAULT_GRID_ROWS;
+
+        const grid_cols_raw: i32 = if (grid_cols_val) |v| blk: {
+            if (v != .integer) break :blk DEFAULT_GRID_COLS;
+            break :blk @intCast(v.integer);
+        } else DEFAULT_GRID_COLS;
+
+        // Clamp to valid range
+        const grid_rows = std.math.clamp(grid_rows_raw, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        const grid_cols = std.math.clamp(grid_cols_raw, MIN_GRID_SIZE, MAX_GRID_SIZE);
+
         return Config{
             .font_size = @intCast(font_size_val.integer),
             .window_width = @intCast(window_width_val.integer),
             .window_height = @intCast(window_height_val.integer),
             .window_x = @intCast(window_x_val.integer),
             .window_y = @intCast(window_y_val.integer),
+            .grid_rows = grid_rows,
+            .grid_cols = grid_cols,
         };
     }
 
@@ -67,11 +94,13 @@ pub const Config = struct {
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "window_x": {d},
-            \\  "window_y": {d}
+            \\  "window_y": {d},
+            \\  "grid_rows": {d},
+            \\  "grid_cols": {d}
             \\}}
             \\
         ,
-            .{ self.font_size, self.window_width, self.window_height, self.window_x, self.window_y },
+            .{ self.font_size, self.window_width, self.window_height, self.window_x, self.window_y, self.grid_rows, self.grid_cols },
         );
         defer allocator.free(content);
 
@@ -109,6 +138,8 @@ test "Config - save and load" {
         .window_height = 1080,
         .window_x = 100,
         .window_y = 100,
+        .grid_rows = 3,
+        .grid_cols = 4,
     };
 
     const test_dir = try std.fs.cwd().makeOpenPath("test_config", .{});
@@ -124,11 +155,13 @@ test "Config - save and load" {
         \\  "window_width": {d},
         \\  "window_height": {d},
         \\  "window_x": {d},
-        \\  "window_y": {d}
+        \\  "window_y": {d},
+        \\  "grid_rows": {d},
+        \\  "grid_cols": {d}
         \\}}
         \\
     ,
-        .{ test_config.font_size, test_config.window_width, test_config.window_height, test_config.window_x, test_config.window_y },
+        .{ test_config.font_size, test_config.window_width, test_config.window_height, test_config.window_x, test_config.window_y, test_config.grid_rows, test_config.grid_cols },
     );
     defer allocator.free(content);
 
@@ -152,10 +185,14 @@ test "Config - save and load" {
     const window_height_val = obj.get("window_height").?;
     const window_x_val = obj.get("window_x").?;
     const window_y_val = obj.get("window_y").?;
+    const grid_rows_val = obj.get("grid_rows").?;
+    const grid_cols_val = obj.get("grid_cols").?;
 
     try std.testing.expectEqual(@as(i64, 16), font_size_val.integer);
     try std.testing.expectEqual(@as(i64, 1920), window_width_val.integer);
     try std.testing.expectEqual(@as(i64, 1080), window_height_val.integer);
     try std.testing.expectEqual(@as(i64, 100), window_x_val.integer);
     try std.testing.expectEqual(@as(i64, 100), window_y_val.integer);
+    try std.testing.expectEqual(@as(i64, 3), grid_rows_val.integer);
+    try std.testing.expectEqual(@as(i64, 4), grid_cols_val.integer);
 }
