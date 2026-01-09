@@ -197,6 +197,23 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
+        const max_cluster_size = 32;
+        if (codepoints.len > max_cluster_size) {
+            const chars_per_chunk = max_cluster_size;
+            const cell_width = @divTrunc(target_width, @as(c_int, @intCast(codepoints.len)));
+
+            var offset: usize = 0;
+            while (offset < codepoints.len) {
+                const chunk_end = @min(offset + chars_per_chunk, codepoints.len);
+                const chunk = codepoints[offset..chunk_end];
+                const chunk_x = x + @as(c_int, @intCast(offset)) * cell_width;
+                const chunk_width = @as(c_int, @intCast(chunk.len)) * cell_width;
+                try self.renderCluster(chunk, chunk_x, y, chunk_width, target_height, fg_color, variant);
+                offset = chunk_end;
+            }
+            return;
+        }
+
         const effective_variant = self.effectiveVariant(variant, codepoints);
 
         var total_bytes: usize = 0;
@@ -264,6 +281,23 @@ pub const Font = struct {
     ) RenderGlyphError!void {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
+
+        const max_cluster_size = 32;
+        if (codepoints.len > max_cluster_size) {
+            const chars_per_chunk = max_cluster_size;
+            const cell_width = @divTrunc(target_width, @as(c_int, @intCast(codepoints.len)));
+
+            var offset: usize = 0;
+            while (offset < codepoints.len) {
+                const chunk_end = @min(offset + chars_per_chunk, codepoints.len);
+                const chunk = codepoints[offset..chunk_end];
+                const chunk_x = x + @as(c_int, @intCast(offset)) * cell_width;
+                const chunk_width = @as(c_int, @intCast(chunk.len)) * cell_width;
+                try self.renderClusterFill(chunk, chunk_x, y, chunk_width, target_height, fg_color, variant);
+                offset = chunk_end;
+            }
+            return;
+        }
 
         const effective_variant = self.effectiveVariant(variant, codepoints);
 
@@ -350,6 +384,11 @@ pub const Font = struct {
     }
 
     fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
+        if (utf8.len > 256) {
+            log.warn("Refusing to render excessively long glyph string: {d} bytes", .{utf8.len});
+            return error.GlyphRenderFailed;
+        }
+
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
             .color = packColor(if (fallback == .emoji) WHITE else fg_color),

@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const xev = @import("xev");
 const app_state = @import("app/app_state.zig");
 const notify = @import("session/notify.zig");
 const session_state = @import("session/state.zig");
@@ -241,6 +242,9 @@ pub fn main() !void {
         }
     }
 
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+
     for (0..GRID_ROWS * GRID_COLS) |i| {
         var session_buf: [16]u8 = undefined;
         const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
@@ -248,7 +252,7 @@ pub fn main() !void {
         init_count += 1;
     }
 
-    try sessions[0].ensureSpawned();
+    try sessions[0].ensureSpawnedWithLoop(&loop);
 
     defer {
         for (&sessions) |*session| {
@@ -417,7 +421,7 @@ pub fn main() !void {
                     ) orelse continue;
 
                     var session = &sessions[hovered_session];
-                    try session.ensureSpawned();
+                    try session.ensureSpawnedWithLoop(&loop);
 
                     const escaped = shellQuotePath(allocator, drop_path) catch |err| {
                         std.debug.print("Failed to escape dropped path: {}\n", .{err});
@@ -514,7 +518,7 @@ pub fn main() !void {
 
                             defer if (cwd_buf) |buf| allocator.free(buf);
 
-                            try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z);
+                            try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
                             sessions[next_free_idx].status = .running;
                             sessions[next_free_idx].attention = false;
 
@@ -760,6 +764,8 @@ pub fn main() !void {
                 else => {},
             }
         }
+
+        try loop.run(.no_wait);
 
         var any_session_dirty = false;
         var has_scroll_inertia = false;
