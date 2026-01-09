@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
@@ -72,6 +73,10 @@ pub const SessionState = struct {
     hovered_link_start: ?ghostty_vt.Pin = null,
     hovered_link_end: ?ghostty_vt.Pin = null,
     pending_write: std.ArrayListUnmanaged(u8) = .empty,
+    /// Process watcher for event-driven exit detection.
+    process_watcher: ?xev.Process = null,
+    /// Completion structure for process wait callback.
+    process_completion: xev.Completion = .{},
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -85,6 +90,9 @@ pub const SessionState = struct {
         StringAllocOutOfMemory,
         StyleSetNeedsRehash,
         StyleSetOutOfMemory,
+        SystemResources,
+        SystemFdQuotaExceeded,
+        InvalidArgument,
     };
 
     pub fn init(
@@ -115,10 +123,14 @@ pub const SessionState = struct {
     }
 
     pub fn ensureSpawned(self: *SessionState) InitError!void {
-        return self.ensureSpawnedWithDir(null);
+        return self.ensureSpawnedWithDir(null, null);
     }
 
-    pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8) InitError!void {
+    pub fn ensureSpawnedWithLoop(self: *SessionState, loop: *xev.Loop) InitError!void {
+        return self.ensureSpawnedWithDir(null, loop);
+    }
+
+    pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         if (self.spawned) return;
 
         const shell = try shell_mod.Shell.spawn(
@@ -153,6 +165,21 @@ pub const SessionState = struct {
         self.cwd_dirty = true;
         self.dirty = true;
 
+        if (loop_opt) |loop| {
+            var process = try xev.Process.init(shell.child_pid);
+            errdefer process.deinit();
+
+            process.wait(
+                loop,
+                &self.process_completion,
+                SessionState,
+                self,
+                processExitCallback,
+            );
+
+            self.process_watcher = process;
+        }
+
         log.debug("spawned session {d}", .{self.id});
 
         self.processOutput() catch {};
@@ -176,6 +203,9 @@ pub const SessionState = struct {
         }
         if (self.cwd_path) |path| {
             allocator.free(path);
+        }
+        if (self.process_watcher) |*watcher| {
+            watcher.deinit();
         }
         if (self.spawned) {
             if (self.stream) |*stream| {
@@ -204,6 +234,25 @@ pub const SessionState = struct {
         StyleSetOutOfMemory,
     };
 
+    fn processExitCallback(
+        self_opt: ?*SessionState,
+        _: *xev.Loop,
+        _: *xev.Completion,
+        r: xev.Process.WaitError!u32,
+    ) xev.CallbackAction {
+        const self = self_opt orelse return .disarm;
+        const exit_code = r catch |err| {
+            log.err("process wait error for session {d}: {}", .{ self.id, err });
+            return .disarm;
+        };
+
+        self.dead = true;
+        self.dirty = true;
+        log.info("session {d} process exited with code {d}", .{ self.id, exit_code });
+
+        return .disarm;
+    }
+
     pub fn checkAlive(self: *SessionState) void {
         if (!self.spawned or self.dead) return;
 
@@ -223,6 +272,10 @@ pub const SessionState = struct {
 
         self.clearSelection();
         self.pending_write.clearAndFree(self.allocator);
+        if (self.process_watcher) |*watcher| {
+            watcher.deinit();
+            self.process_watcher = null;
+        }
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();

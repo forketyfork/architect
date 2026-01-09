@@ -28,6 +28,13 @@ pub fn build(b: *std.Build) void {
         );
     }
 
+    if (b.lazyDependency("libxev", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        exe_mod.addImport("xev", dep.module("xev"));
+    }
+
     const exe = b.addExecutable(.{
         .name = "architect",
         .root_module = exe_mod,
