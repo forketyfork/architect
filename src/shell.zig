@@ -35,7 +35,7 @@ pub const Shell = struct {
     const NAME_SESSION: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
     const NAME_SOCK: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8) SpawnError!Shell {
+    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
         const pty_instance = try pty_mod.Pty.open(size);
         errdefer {
             var pty_copy = pty_instance;
@@ -64,8 +64,10 @@ pub const Shell = struct {
             setDefaultEnv("LANG", DEFAULT_LANG);
             setDefaultEnv("TERM_PROGRAM", DEFAULT_TERM_PROGRAM);
 
-            // Change to home directory before spawning shell
-            if (posix.getenv("HOME")) |home| {
+            // Change to specified directory or home directory before spawning shell
+            if (working_dir) |dir| {
+                posix.chdir(dir) catch {};
+            } else if (posix.getenv("HOME")) |home| {
                 posix.chdir(home) catch {};
             }
 

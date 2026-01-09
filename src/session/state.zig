@@ -113,6 +113,10 @@ pub const SessionState = struct {
     }
 
     pub fn ensureSpawned(self: *SessionState) InitError!void {
+        return self.ensureSpawnedWithDir(null);
+    }
+
+    pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8) InitError!void {
         if (self.spawned) return;
 
         const shell = try shell_mod.Shell.spawn(
@@ -120,6 +124,7 @@ pub const SessionState = struct {
             self.pty_size,
             &self.session_id_z,
             self.notify_sock_z,
+            working_dir,
         );
         errdefer {
             var s = shell;
