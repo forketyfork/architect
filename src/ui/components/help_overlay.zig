@@ -119,8 +119,8 @@ pub const HelpOverlayComponent = struct {
         };
     }
 
-    fn deinit(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer) void {
-        self.destroyCache(renderer);
+    fn deinit(self: *HelpOverlayComponent, _: *c.SDL_Renderer) void {
+        self.destroyCache();
         self.allocator.destroy(self);
     }
 
@@ -290,7 +290,7 @@ pub const HelpOverlayComponent = struct {
         };
     }
 
-    fn destroyCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer) void {
+    fn destroyCache(self: *HelpOverlayComponent) void {
         if (self.cache) |cache| {
             c.SDL_DestroyTexture(cache.title.tex);
             for (cache.shortcuts) |shortcut_tex| {
@@ -302,7 +302,6 @@ pub const HelpOverlayComponent = struct {
             self.allocator.destroy(cache);
             self.cache = null;
         }
-        _ = renderer;
     }
 
     fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets) ?*Cache {
@@ -314,7 +313,7 @@ pub const HelpOverlayComponent = struct {
             if (cache.title_font_size == title_font_size and cache.key_font_size == key_font_size) {
                 return cache;
             }
-            self.destroyCache(renderer);
+            self.destroyCache();
         }
 
         const cache = self.allocator.create(Cache) catch return null;

@@ -396,6 +396,7 @@ pub fn main() !void {
                 c.SDL_EVENT_DROP_FILE => {
                     const drop_path_ptr = scaled_event.drop.data;
                     if (drop_path_ptr == null) continue;
+                    defer c.SDL_free(@constCast(drop_path_ptr));
                     const drop_path = std.mem.span(drop_path_ptr.?);
                     if (drop_path.len == 0) continue;
 
