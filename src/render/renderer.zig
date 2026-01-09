@@ -168,8 +168,18 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
 ) RenderError!void {
+    if (!session.spawned) return;
+
+    const terminal = session.terminal orelse {
+        log.err("session {d} is spawned but terminal is null!", .{session.id});
+        return;
+    };
+
     const base_bg = c.SDL_Color{ .r = 14, .g = 17, .b = 22, .a = 255 };
-    const session_bg_color = base_bg;
+    const session_bg_color = if (terminal.colors.background.get()) |rgb|
+        c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
+    else
+        base_bg;
 
     _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
@@ -179,13 +189,6 @@ fn renderSessionContent(
         .h = @floatFromInt(rect.h),
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
-
-    if (!session.spawned) return;
-
-    const terminal = session.terminal orelse {
-        log.err("session {d} is spawned but terminal is null!", .{session.id});
-        return;
-    };
     const screen = terminal.screens.active;
     const cursor_visible = terminal.modes.get(.cursor_visible);
     const pages = screen.pages;
@@ -248,7 +251,10 @@ fn renderSessionContent(
 
             const style = list_cell.style();
             var fg_color = getCellColor(style.fg_color, default_fg);
-            var bg_color = getCellColor(style.bg_color, session_bg_color);
+            var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
+                c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
+            else
+                session_bg_color;
             const variant = chooseVariant(style);
 
             if (style.flags.inverse) {
