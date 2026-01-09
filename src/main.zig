@@ -13,6 +13,7 @@ const shell_mod = @import("shell.zig");
 const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
 const font_paths_mod = @import("font_paths.zig");
+const icon_paths_mod = @import("icon_paths.zig");
 const config_mod = @import("config.zig");
 const ui_mod = @import("ui/mod.zig");
 const ghostty_vt = @import("ghostty-vt");
@@ -174,6 +175,38 @@ pub fn main() !void {
 
     var font_paths = try font_paths_mod.FontPaths.init(allocator);
     defer font_paths.deinit();
+
+    var icon_paths = try icon_paths_mod.IconPaths.init(allocator);
+    defer icon_paths.deinit();
+
+    const loadIcon = struct {
+        fn load(renderer_ptr: *c.SDL_Renderer, path: [:0]const u8) ?*c.SDL_Texture {
+            const surf = c.SDL_LoadBMP(path);
+            if (surf) |s| {
+                defer c.SDL_DestroySurface(s);
+                const tex = c.SDL_CreateTextureFromSurface(renderer_ptr, s);
+                if (tex) |t| {
+                     _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_LINEAR);
+                     _ = c.SDL_SetTextureBlendMode(t, c.SDL_BLENDMODE_BLEND);
+                     return t;
+                }
+            } else {
+                std.debug.print("Failed to load icon {s}: {s}\n", .{path, c.SDL_GetError()});
+            }
+            return null;
+        }
+    }.load;
+
+    const icons = renderer_mod.IconTextures{
+        .gemini = loadIcon(renderer, icon_paths.gemini),
+        .openai = loadIcon(renderer, icon_paths.openai),
+        .claude = loadIcon(renderer, icon_paths.claude),
+    };
+    defer {
+        if (icons.gemini) |t| c.SDL_DestroyTexture(t);
+        if (icons.openai) |t| c.SDL_DestroyTexture(t);
+        if (icons.claude) |t| c.SDL_DestroyTexture(t);
+    }
 
     var font = try font_mod.Font.init(
         allocator,
@@ -855,7 +888,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular);
+            try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, icons);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();

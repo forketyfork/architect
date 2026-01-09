@@ -61,6 +61,13 @@ pub fn build(b: *std.Build) void {
     });
     b.getInstallStep().dependOn(&install_fonts.step);
 
+    const install_icons = b.addInstallDirectory(.{
+        .source_dir = b.path("assets/icons"),
+        .install_dir = .{ .custom = "share/architect" },
+        .install_subdir = "icons",
+    });
+    b.getInstallStep().dependOn(&install_icons.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 

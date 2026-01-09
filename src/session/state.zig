@@ -57,6 +57,7 @@ pub const SessionState = struct {
     /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
     /// When cwd_path is freed, this becomes invalid and must not be used.
     cwd_basename: ?[]const u8 = null,
+    process_name: ?[]const u8 = null,
     cwd_last_check: i64 = 0,
     scroll_velocity: f32 = 0.0,
     scroll_remainder: f32 = 0.0,
@@ -176,6 +177,9 @@ pub const SessionState = struct {
         }
         if (self.cwd_path) |path| {
             allocator.free(path);
+        }
+        if (self.process_name) |name| {
+            allocator.free(name);
         }
         if (self.spawned) {
             if (self.stream) |*stream| {
@@ -341,6 +345,41 @@ pub const SessionState = struct {
         self.cwd_basename = cwd_mod.getBasename(new_path);
         self.cwd_dirty = true;
         self.dirty = true;
+
+        if (getForegroundPgrp(shell.child_pid)) |fg_pgid| {
+            if (fg_pgid == shell.child_pid) {
+                if (self.process_name) |old| {
+                    self.allocator.free(old);
+                    self.process_name = null;
+                    self.dirty = true;
+                }
+                return;
+            }
+
+            const pid: posix.pid_t = fg_pgid;
+            var name_res = cwd_mod.getCommandLine(self.allocator, pid);
+            if (name_res == error.ProcessNotFound or name_res == error.SystemError) {
+                name_res = cwd_mod.getProcessName(self.allocator, pid);
+            }
+
+            if (name_res) |name| {
+                // log.debug("Session {d}: fg_pgid={d}, cmd={s}", .{ self.id, fg_pgid, name });
+                if (self.process_name) |old| {
+                    if (!std.mem.eql(u8, old, name)) {
+                        log.info("Session {d}: process changed from '{s}' to '{s}'", .{ self.id, old, name });
+                        self.allocator.free(old);
+                        self.process_name = name;
+                        self.dirty = true;
+                    } else {
+                        self.allocator.free(name);
+                    }
+                } else {
+                    log.info("Session {d}: process detected '{s}'", .{ self.id, name });
+                    self.process_name = name;
+                    self.dirty = true;
+                }
+            } else |_| {}
+        }
     }
 
     /// Returns true when the PTY's foreground process group differs from the

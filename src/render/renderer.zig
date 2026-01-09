@@ -25,6 +25,12 @@ const MARQUEE_SPEED: f32 = 30.0;
 const FADE_WIDTH: c_int = 20;
 const FAINT_FACTOR: f32 = 0.6;
 
+pub const IconTextures = struct {
+    gemini: ?*c.SDL_Texture = null,
+    openai: ?*c.SDL_Texture = null,
+    claude: ?*c.SDL_Texture = null,
+};
+
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
 pub fn render(
@@ -42,6 +48,7 @@ pub fn render(
     window_height: c_int,
     ui_scale: f32,
     font_path: [:0]const u8,
+    icons: IconTextures,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -61,12 +68,12 @@ pub fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
+                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path, icons);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -77,14 +84,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
             else
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -95,14 +102,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningUp) -offset else offset;
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
             else
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -126,12 +133,12 @@ pub fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
+                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path, icons);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path, icons);
         },
     }
 }
@@ -150,12 +157,13 @@ fn renderSession(
     is_grid_view: bool,
     ui_scale: f32,
     font_path: [:0]const u8,
+    icons: IconTextures,
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
     if (is_grid_view) {
         renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
     }
-    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
+    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view, icons);
 }
 
 fn renderSessionContent(
@@ -458,22 +466,51 @@ fn renderSessionOverlays(
     apply_effects: bool,
     current_time_ms: i64,
     is_grid_view: bool,
+    icons: IconTextures,
 ) void {
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused);
-    } else if (is_grid_view) {
-        if (is_focused) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
-        } else {
-            _ = c.SDL_SetRenderDrawColor(renderer, 92, 99, 112, 255);
+    }
+
+    if (is_grid_view) {
+        if (!apply_effects) {
+            if (is_focused) {
+                _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+            } else {
+                _ = c.SDL_SetRenderDrawColor(renderer, 92, 99, 112, 255);
+            }
+            const border_rect = c.SDL_FRect{
+                .x = @floatFromInt(rect.x),
+                .y = @floatFromInt(rect.y),
+                .w = @floatFromInt(rect.w),
+                .h = @floatFromInt(rect.h),
+            };
+            _ = c.SDL_RenderRect(renderer, &border_rect);
         }
-        const border_rect = c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        };
-        _ = c.SDL_RenderRect(renderer, &border_rect);
+
+        if (session.process_name) |name| {
+            var icon: ?*c.SDL_Texture = null;
+            if (std.mem.indexOf(u8, name, "claude") != null) {
+                icon = icons.claude;
+            } else if (std.mem.indexOf(u8, name, "codex") != null or std.mem.indexOf(u8, name, "openai") != null) {
+                icon = icons.openai;
+            } else if (std.mem.indexOf(u8, name, "gemini") != null) {
+                icon = icons.gemini;
+            }
+
+            if (icon) |tex| {
+                const icon_size: c_int = 32;
+                const padding: c_int = 8;
+                const icon_rect = c.SDL_FRect{
+                    .x = @floatFromInt(rect.x + rect.w - icon_size - padding),
+                    .y = @floatFromInt(rect.y + padding),
+                    .w = @floatFromInt(icon_size),
+                    .h = @floatFromInt(icon_size),
+                };
+                _ = c.SDL_SetTextureAlphaMod(tex, 200);
+                _ = c.SDL_RenderTexture(renderer, tex, null, &icon_rect);
+            }
+        }
     }
 
     if (is_grid_view and session.is_scrolled) {
@@ -553,6 +590,7 @@ fn renderGridSessionCached(
     current_time_ms: i64,
     ui_scale: f32,
     font_path: [:0]const u8,
+    icons: IconTextures,
 ) RenderError!void {
     const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
 
@@ -578,12 +616,12 @@ fn renderGridSessionCached(
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
             renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
-            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
+            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true, icons);
             return;
         }
     }
 
-    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path);
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path, icons);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {

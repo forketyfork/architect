@@ -98,6 +98,7 @@ See [Setup](#setup) section below for building from source.
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 - **Session Recovery**: A `Restart` button appears on any grid tile whose shell exited, letting you respawn that session without quitting the app
 - **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
+- **Automatic Tool Icons**: Detects running AI tools (Claude, Codex, Gemini) and displays their logo in the top-right corner of the grid tile
 
 ## Prerequisites
 
@@ -419,7 +420,9 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
 - `src/font_paths.zig` - Font path resolution for bundled fonts
+- `src/icon_paths.zig` - Icon path resolution for bundled icons
 - `src/config.zig` - Configuration persistence (saves font size, window size, and position)
+- `src/cwd.zig` - Process information retrieval (macOS)
 - `src/c.zig` - C library bindings for SDL3
 - `assets/fonts/` - Bundled Victor Mono Nerd Font files (installed to share/architect/fonts)
 - `build.zig` - Zig build configuration with SDL3 dependencies
