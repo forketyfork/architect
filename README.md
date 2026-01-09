@@ -91,7 +91,7 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with the bundled Victor Mono Nerd Font (ligatures enabled), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **High-Quality Rendering**: SDL_ttf font rendering with SFMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
@@ -154,21 +154,19 @@ zig build run
 Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
-- **Font family**: Base filename for the bundled font set (e.g., `VictorMonoNerdFont`)
+- **Font family**: Font to use (default: `SFMono` on macOS, a system monospace font)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
 
-`font_family` matches the base filename of the font files in the installed fonts directory. For example, setting
-`VictorMonoNerdFont` expects `VictorMonoNerdFont-Regular.ttf`, `VictorMonoNerdFont-Bold.ttf`,
-`VictorMonoNerdFont-Italic.ttf`, and `VictorMonoNerdFont-BoldItalic.ttf` alongside the bundled fonts.
+On macOS, `SFMono` uses the system fonts from `/System/Library/Fonts/`. Custom fonts can be added to `assets/fonts/` with the naming pattern `{font_family}-Regular.ttf`, `{font_family}-Bold.ttf`, `{font_family}-Italic.ttf`, and `{font_family}-BoldItalic.ttf`.
 
 **Example configuration:**
 ```json
 {
   "font_size": 16,
-  "font_family": "VictorMonoNerdFont",
+  "font_family": "SFMono",
   "window_width": 1920,
   "window_height": 1080,
   "window_x": 150,

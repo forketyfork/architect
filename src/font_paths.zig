@@ -13,48 +13,57 @@ pub const FontPaths = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, font_family: ?[]const u8) !FontPaths {
-        const exe_path = try std.fs.selfExePathAlloc(allocator);
-        defer allocator.free(exe_path);
-
-        const exe_dir = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
-
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
 
-        const candidates = [_][]const u8{
-            "../share/architect/fonts",
-            "../../share/architect/fonts",
-            "assets/fonts",
-        };
+        const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
 
-        var font_dir_path: ?[]const u8 = null;
-        for (candidates) |candidate| {
-            const test_path = try std.fs.path.join(allocator, &.{ exe_dir, candidate });
-            defer allocator.free(test_path);
+        if (builtin.os.tag == .macos and std.mem.eql(u8, selected_family, "SFMono")) {
+            paths.regular = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Regular.otf");
+            paths.bold = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Bold.otf");
+            paths.italic = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Italic.otf");
+            paths.bold_italic = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-BoldItalic.otf");
+        } else {
+            const exe_path = try std.fs.selfExePathAlloc(allocator);
+            defer allocator.free(exe_path);
 
-            const real_path = std.fs.realpathAlloc(allocator, test_path) catch continue;
-            defer allocator.free(real_path);
+            const exe_dir = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
 
-            std.fs.accessAbsolute(real_path, .{}) catch continue;
-            font_dir_path = try allocator.dupe(u8, real_path);
-            break;
-        }
-
-        if (font_dir_path) |dir| {
-            defer allocator.free(dir);
-
-            const selected_family = pickFontFamily(allocator, dir, font_family) catch |err| {
-                log.err("Failed to resolve font family: {}", .{err});
-                return error.FontsNotFound;
+            const candidates = [_][]const u8{
+                "../share/architect/fonts",
+                "../../share/architect/fonts",
+                "assets/fonts",
             };
 
-            paths.regular = try fontPath(allocator, dir, selected_family, "Regular");
-            paths.bold = try fontPath(allocator, dir, selected_family, "Bold");
-            paths.italic = try fontPath(allocator, dir, selected_family, "Italic");
-            paths.bold_italic = try fontPath(allocator, dir, selected_family, "BoldItalic");
-        } else {
-            log.err("fonts not found in any candidate location", .{});
-            return error.FontsNotFound;
+            var font_dir_path: ?[]const u8 = null;
+            for (candidates) |candidate| {
+                const test_path = try std.fs.path.join(allocator, &.{ exe_dir, candidate });
+                defer allocator.free(test_path);
+
+                const real_path = std.fs.realpathAlloc(allocator, test_path) catch continue;
+                defer allocator.free(real_path);
+
+                std.fs.accessAbsolute(real_path, .{}) catch continue;
+                font_dir_path = try allocator.dupe(u8, real_path);
+                break;
+            }
+
+            if (font_dir_path) |dir| {
+                defer allocator.free(dir);
+
+                const resolved_family = pickFontFamily(allocator, dir, font_family) catch |err| {
+                    log.err("Failed to resolve font family: {}", .{err});
+                    return error.FontsNotFound;
+                };
+
+                paths.regular = try fontPath(allocator, dir, resolved_family, "Regular");
+                paths.bold = try fontPath(allocator, dir, resolved_family, "Bold");
+                paths.italic = try fontPath(allocator, dir, resolved_family, "Italic");
+                paths.bold_italic = try fontPath(allocator, dir, resolved_family, "BoldItalic");
+            } else {
+                log.err("fonts not found in any candidate location", .{});
+                return error.FontsNotFound;
+            }
         }
 
         if (builtin.os.tag == .macos) {
@@ -82,7 +91,7 @@ pub const FontPaths = struct {
     }
 };
 
-const DEFAULT_FONT_FAMILY = "VictorMonoNerdFont";
+const DEFAULT_FONT_FAMILY = "SFMono";
 
 fn pickFontFamily(allocator: std.mem.Allocator, dir: []const u8, font_family: ?[]const u8) ![]const u8 {
     const selected_family = font_family orelse DEFAULT_FONT_FAMILY;

@@ -113,7 +113,7 @@ pub const Config = struct {
     }
 };
 
-pub const DEFAULT_FONT_FAMILY = "VictorMonoNerdFont";
+pub const DEFAULT_FONT_FAMILY = "SFMono";
 
 pub const LoadError = error{
     ConfigNotFound,
