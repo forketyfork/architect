@@ -294,13 +294,13 @@ fn renderSessionContent(
 
             if (session.hovered_link_start) |link_start| {
                 if (session.hovered_link_end) |link_end| {
-                    const point_tag = if (session.is_scrolled)
+                    const point_for_link = if (session.is_scrolled)
                         ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
                     else
                         ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
-                    if (pages.pin(point_tag)) |pin| {
+                    if (pages.pin(point_for_link)) |link_pin| {
                         const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
-                        if (link_sel.contains(screen, pin)) {
+                        if (link_sel.contains(screen, link_pin)) {
                             _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
                             const underline_y: f32 = @floatFromInt(y + cell_height_actual - 1);
                             const x_start: f32 = @floatFromInt(x);
