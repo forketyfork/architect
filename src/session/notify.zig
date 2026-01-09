@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const app_state = @import("../app/app_state.zig");
+const atomic = std.atomic;
 
 pub const Notification = struct {
     session: usize,
@@ -44,6 +45,7 @@ const NotifyContext = struct {
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
+    stop: *atomic.Value(bool),
 };
 
 pub const StartNotifyThreadError = std.Thread.SpawnError;
@@ -52,6 +54,7 @@ pub fn startNotifyThread(
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
+    stop: *atomic.Value(bool),
 ) StartNotifyThreadError!std.Thread {
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -103,8 +106,22 @@ pub fn startNotifyThread(
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
             _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
 
-            while (true) {
-                const conn_fd = posix.accept(fd, null, null, 0) catch continue;
+            // Make accept non-blocking so the loop can observe stop requests.
+            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch null;
+            if (flags) |f| {
+                var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
+                o_flags.NONBLOCK = true;
+                _ = posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
+            }
+
+            while (!ctx.stop.load(.seq_cst)) {
+                const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
+                    error.WouldBlock => {
+                        std.Thread.sleep(std.time.ns_per_ms * 10);
+                        continue;
+                    },
+                    else => continue,
+                };
                 defer posix.close(conn_fd);
 
                 var buffer = std.ArrayList(u8){};
@@ -130,7 +147,7 @@ pub fn startNotifyThread(
         }
     };
 
-    const ctx = NotifyContext{ .allocator = allocator, .socket_path = socket_path, .queue = queue };
+    const ctx = NotifyContext{ .allocator = allocator, .socket_path = socket_path, .queue = queue, .stop = stop };
     return try std.Thread.spawn(.{}, handler.run, .{ctx});
 }
 

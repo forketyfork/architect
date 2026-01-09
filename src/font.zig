@@ -38,10 +38,19 @@ pub const Font = struct {
     symbol_fallback: ?*c.TTF_Font,
     emoji_fallback: ?*c.TTF_Font,
     renderer: *c.SDL_Renderer,
-    glyph_cache: std.AutoHashMap(GlyphKey, *c.SDL_Texture),
+    glyph_cache: std.AutoHashMap(GlyphKey, CacheEntry),
+    cache_tick: u64 = 0,
     allocator: std.mem.Allocator,
     cell_width: c_int,
     cell_height: c_int,
+
+    /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
+    const MAX_GLYPH_CACHE_ENTRIES: usize = 4096;
+
+    const CacheEntry = struct {
+        texture: *c.SDL_Texture,
+        seq: u64,
+    };
 
     pub const InitError = error{
         FontLoadFailed,
@@ -138,7 +147,7 @@ pub const Font = struct {
             .symbol_fallback = symbol_fallback,
             .emoji_fallback = emoji_fallback,
             .renderer = renderer,
-            .glyph_cache = std.AutoHashMap(GlyphKey, *c.SDL_Texture).init(allocator),
+            .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
             .allocator = allocator,
             .cell_width = cell_width,
             .cell_height = cell_height,
@@ -147,8 +156,8 @@ pub const Font = struct {
 
     pub fn deinit(self: *Font) void {
         var it = self.glyph_cache.valueIterator();
-        while (it.next()) |texture| {
-            c.SDL_DestroyTexture(texture.*);
+        while (it.next()) |entry| {
+            c.SDL_DestroyTexture(entry.texture);
         }
         self.glyph_cache.deinit();
         c.TTF_CloseFont(self.font);
@@ -349,8 +358,9 @@ pub const Font = struct {
             .len = @intCast(utf8.len),
         };
 
-        if (self.glyph_cache.get(key)) |texture| {
-            return texture;
+        if (self.glyph_cache.getEntry(key)) |entry| {
+            entry.value_ptr.seq = self.nextSeq();
+            return entry.value_ptr.texture;
         }
 
         const render_font = switch (fallback) {
@@ -382,8 +392,38 @@ pub const Font = struct {
 
         _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_LINEAR);
 
-        try self.glyph_cache.put(key, texture);
+        try self.glyph_cache.put(key, .{ .texture = texture, .seq = self.nextSeq() });
+        self.evictIfNeeded();
         return texture;
+    }
+
+    fn nextSeq(self: *Font) u64 {
+        self.cache_tick +%= 1;
+        return self.cache_tick;
+    }
+
+    fn evictIfNeeded(self: *Font) void {
+        if (self.glyph_cache.count() <= MAX_GLYPH_CACHE_ENTRIES) return;
+
+        if (findOldestKey(&self.glyph_cache)) |victim| {
+            if (self.glyph_cache.fetchRemove(victim)) |removed| {
+                c.SDL_DestroyTexture(removed.value.texture);
+            }
+        }
+    }
+
+    fn findOldestKey(map: *std.AutoHashMap(GlyphKey, CacheEntry)) ?GlyphKey {
+        var it = map.iterator();
+        var oldest_key: ?GlyphKey = null;
+        var oldest_seq: u64 = 0;
+        while (it.next()) |entry| {
+            const seq = entry.value_ptr.seq;
+            if (oldest_key == null or seq < oldest_seq) {
+                oldest_key = entry.key_ptr.*;
+                oldest_seq = seq;
+            }
+        }
+        return oldest_key;
     }
 
     fn packColor(color: c.SDL_Color) u32 {
@@ -420,3 +460,17 @@ pub const Font = struct {
         return true;
     }
 };
+
+test "findOldestKey picks lowest seq" {
+    const allocator = std.testing.allocator;
+    var map = std.AutoHashMap(GlyphKey, Font.CacheEntry).init(allocator);
+    defer map.deinit();
+
+    const k1 = GlyphKey{ .hash = 1, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
+    const k2 = GlyphKey{ .hash = 2, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
+    try map.put(k1, .{ .texture = @ptrFromInt(1), .seq = 10 });
+    try map.put(k2, .{ .texture = @ptrFromInt(2), .seq = 5 });
+
+    const oldest = Font.findOldestKey(&map) orelse return error.TestExpectedResult;
+    try std.testing.expect(std.meta.eql(oldest, k2));
+}

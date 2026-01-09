@@ -22,6 +22,8 @@ const log = std.log.scoped(.session_state);
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
 
+const PENDING_WRITE_SHRINK_THRESHOLD: usize = 64 * 1024;
+
 pub const SessionState = struct {
     id: usize,
     shell: ?shell_mod.Shell,
@@ -288,6 +290,7 @@ pub const SessionState = struct {
         };
         if (wrote == buf.len) {
             self.pending_write.clearRetainingCapacity();
+            maybeShrinkPendingWrite(&self.pending_write, self.allocator);
             return;
         }
         if (wrote > 0) {
@@ -378,4 +381,26 @@ fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
     _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
+}
+
+fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
+    if (buf.items.len == 0 and buf.capacity > PENDING_WRITE_SHRINK_THRESHOLD) {
+        buf.shrinkAndFree(allocator, 0);
+    }
+}
+
+test "pending write shrinks when empty and over threshold" {
+    const allocator = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    try buf.ensureTotalCapacity(allocator, PENDING_WRITE_SHRINK_THRESHOLD + 10);
+    buf.items.len = PENDING_WRITE_SHRINK_THRESHOLD + 10;
+    buf.clearRetainingCapacity();
+
+    const before = buf.capacity;
+    try std.testing.expect(before > PENDING_WRITE_SHRINK_THRESHOLD);
+
+    maybeShrinkPendingWrite(&buf, allocator);
+    try std.testing.expect(buf.capacity <= PENDING_WRITE_SHRINK_THRESHOLD);
 }

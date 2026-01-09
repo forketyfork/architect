@@ -99,8 +99,12 @@ pub fn main() !void {
     const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
-    const notify_thread = try notify.startNotifyThread(allocator, notify_sock, &notify_queue);
-    notify_thread.detach();
+    var notify_stop = std.atomic.Value(bool).init(false);
+    const notify_thread = try notify.startNotifyThread(allocator, notify_sock, &notify_queue, &notify_stop);
+    defer {
+        notify_stop.store(true, .seq_cst);
+        notify_thread.join();
+    }
 
     const config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
