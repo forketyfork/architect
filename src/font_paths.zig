@@ -13,66 +13,23 @@ pub const FontPaths = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, font_family: ?[]const u8) !FontPaths {
+        if (builtin.os.tag != .macos) {
+            log.err("Only macOS is supported", .{});
+            return error.UnsupportedPlatform;
+        }
+
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
 
         const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
 
-        if (builtin.os.tag == .macos and std.mem.eql(u8, selected_family, "SFMono")) {
-            paths.regular = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Regular.otf");
-            paths.bold = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Bold.otf");
-            paths.italic = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-Italic.otf");
-            paths.bold_italic = try allocator.dupeZ(u8, "/System/Library/Fonts/SFMono-BoldItalic.otf");
-        } else {
-            const exe_path = try std.fs.selfExePathAlloc(allocator);
-            defer allocator.free(exe_path);
+        paths.regular = try findSystemFont(allocator, selected_family, "Regular");
+        paths.bold = try findSystemFont(allocator, selected_family, "Bold");
+        paths.italic = try findSystemFont(allocator, selected_family, "Italic");
+        paths.bold_italic = try findSystemFont(allocator, selected_family, "BoldItalic");
 
-            const exe_dir = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
-
-            const candidates = [_][]const u8{
-                "../share/architect/fonts",
-                "../../share/architect/fonts",
-                "assets/fonts",
-            };
-
-            var font_dir_path: ?[]const u8 = null;
-            for (candidates) |candidate| {
-                const test_path = try std.fs.path.join(allocator, &.{ exe_dir, candidate });
-                defer allocator.free(test_path);
-
-                const real_path = std.fs.realpathAlloc(allocator, test_path) catch continue;
-                defer allocator.free(real_path);
-
-                std.fs.accessAbsolute(real_path, .{}) catch continue;
-                font_dir_path = try allocator.dupe(u8, real_path);
-                break;
-            }
-
-            if (font_dir_path) |dir| {
-                defer allocator.free(dir);
-
-                const resolved_family = pickFontFamily(allocator, dir, font_family) catch |err| {
-                    log.err("Failed to resolve font family: {}", .{err});
-                    return error.FontsNotFound;
-                };
-
-                paths.regular = try fontPath(allocator, dir, resolved_family, "Regular");
-                paths.bold = try fontPath(allocator, dir, resolved_family, "Bold");
-                paths.italic = try fontPath(allocator, dir, resolved_family, "Italic");
-                paths.bold_italic = try fontPath(allocator, dir, resolved_family, "BoldItalic");
-            } else {
-                log.err("fonts not found in any candidate location", .{});
-                return error.FontsNotFound;
-            }
-        }
-
-        if (builtin.os.tag == .macos) {
-            paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
-            paths.emoji_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Apple Color Emoji.ttc");
-        } else {
-            paths.symbol_fallback = null;
-            paths.emoji_fallback = null;
-        }
+        paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+        paths.emoji_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Apple Color Emoji.ttc");
 
         return paths;
     }
@@ -93,24 +50,38 @@ pub const FontPaths = struct {
 
 const DEFAULT_FONT_FAMILY = "SFMono";
 
-fn pickFontFamily(allocator: std.mem.Allocator, dir: []const u8, font_family: ?[]const u8) ![]const u8 {
-    const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
-    const regular_path = try fontPath(allocator, dir, selected_family, "Regular");
-    defer allocator.free(regular_path);
-
-    std.fs.accessAbsolute(regular_path, .{}) catch |err| {
-        if (font_family == null or std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
-            return err;
-        }
-        log.warn("Font family '{s}' not found, falling back to {s}", .{ selected_family, DEFAULT_FONT_FAMILY });
-        return DEFAULT_FONT_FAMILY;
+fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {
+    const search_dirs = [_][]const u8{
+        "/System/Library/Fonts",
+        "/Library/Fonts",
     };
 
-    return selected_family;
-}
+    const home = std.posix.getenv("HOME");
+    const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
 
-fn fontPath(allocator: std.mem.Allocator, dir: []const u8, font_family: []const u8, style: []const u8) ![:0]const u8 {
-    const filename = try std.fmt.allocPrint(allocator, "{s}-{s}.ttf", .{ font_family, style });
-    defer allocator.free(filename);
-    return std.fs.path.joinZ(allocator, &.{ dir, filename });
+    for (search_dirs) |dir| {
+        for (extensions) |ext| {
+            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir, font_family, style, ext });
+            defer allocator.free(font_path);
+
+            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            return allocator.dupeZ(u8, font_path);
+        }
+    }
+
+    if (home) |h| {
+        const user_fonts_dir = try std.fmt.allocPrint(allocator, "{s}/Library/Fonts", .{h});
+        defer allocator.free(user_fonts_dir);
+
+        for (extensions) |ext| {
+            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ user_fonts_dir, font_family, style, ext });
+            defer allocator.free(font_path);
+
+            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            return allocator.dupeZ(u8, font_path);
+        }
+    }
+
+    log.err("Font not found: {s}-{s}", .{ font_family, style });
+    return error.FontNotFound;
 }

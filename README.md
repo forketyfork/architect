@@ -154,13 +154,18 @@ zig build run
 Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
-- **Font family**: Font to use (default: `SFMono` on macOS, a system monospace font)
+- **Font family**: Font to use (default: `SFMono` on macOS)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
 
-On macOS, `SFMono` uses the system fonts from `/System/Library/Fonts/`. Custom fonts can be added to `assets/fonts/` with the naming pattern `{font_family}-Regular.ttf`, `{font_family}-Bold.ttf`, `{font_family}-Italic.ttf`, and `{font_family}-BoldItalic.ttf`.
+Fonts are loaded from macOS system directories in this order:
+1. `/System/Library/Fonts/` - System fonts
+2. `/Library/Fonts/` - System-wide installed fonts
+3. `~/Library/Fonts/` - User-installed fonts
+
+Font files must follow the naming pattern: `{font_family}-Regular.{otf|ttf|ttc}`, `{font_family}-Bold.{otf|ttf|ttc}`, `{font_family}-Italic.{otf|ttf|ttc}`, and `{font_family}-BoldItalic.{otf|ttf|ttc}`.
 
 **Example configuration:**
 ```json
@@ -422,10 +427,9 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
-- `src/font_paths.zig` - Font path resolution for bundled fonts
+- `src/font_paths.zig` - Font path resolution from macOS system font directories
 - `src/config.zig` - Configuration persistence (saves font size, font family, window size, and position)
 - `src/c.zig` - C library bindings for SDL3
-- `assets/fonts/` - Bundled Victor Mono Nerd Font files (installed to share/architect/fonts by default)
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
 - `docs/` - Documentation and implementation plans
@@ -439,9 +443,6 @@ Download the latest release from the [releases page](https://github.com/forketyf
   - Provides terminal state machine and ANSI escape sequence parsing
 - **SDL3**: Window management and rendering backend (via Nix)
 - **SDL3_ttf**: Font rendering library (via Nix)
-- **Victor Mono Nerd Font**: Bundled monospace font with programming ligatures (default font family)
-  - Licensed under SIL Open Font License 1.1 (see `assets/fonts/LICENSE`)
-  - Includes Nerd Font icons for enhanced terminal experience
 
 ## Architecture
 
