@@ -89,6 +89,9 @@ pub const SDL_SYSTEM_CURSOR_DEFAULT = c_import.SDL_SYSTEM_CURSOR_DEFAULT;
 pub const SDL_SYSTEM_CURSOR_TEXT = c_import.SDL_SYSTEM_CURSOR_TEXT;
 pub const SDL_SYSTEM_CURSOR_POINTER = c_import.SDL_SYSTEM_CURSOR_POINTER;
 pub const SDL_GetModState = c_import.SDL_GetModState;
+pub const SDL_Scancode = c_import.SDL_Scancode;
+pub const SDL_SCANCODE_HOME = c_import.SDL_SCANCODE_HOME;
+pub const SDL_SCANCODE_END = c_import.SDL_SCANCODE_END;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;
