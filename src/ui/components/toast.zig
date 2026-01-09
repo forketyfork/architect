@@ -1,12 +1,14 @@
 const std = @import("std");
 const c = @import("../../c.zig");
 const types = @import("../types.zig");
+const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const UiComponent = @import("../component.zig").UiComponent;
 
 pub const ToastComponent = struct {
     allocator: std.mem.Allocator,
     start_time: i64 = 0,
     active: bool = false,
+    first_frame: FirstFrameGuard = .{},
 
     message: [256]u8 = undefined,
     message_len: usize = 0,
@@ -49,6 +51,7 @@ pub const ToastComponent = struct {
         self.start_time = now;
         self.active = true;
         self.dirty = true;
+        self.first_frame.markTransition();
     }
 
     pub fn destroy(self: *ToastComponent, renderer: *c.SDL_Renderer) void {
@@ -80,7 +83,7 @@ pub const ToastComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
-        return self.isVisible(host.now_ms);
+        return self.first_frame.wantsFrame() or self.isVisible(host.now_ms);
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
@@ -131,6 +134,7 @@ pub const ToastComponent = struct {
         };
 
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
+        self.first_frame.markDrawn();
     }
 
     fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer, assets: *types.UiAssets) !void {
