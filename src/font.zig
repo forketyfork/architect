@@ -415,7 +415,7 @@ pub const Font = struct {
     fn findOldestKey(map: *std.AutoHashMap(GlyphKey, CacheEntry)) ?GlyphKey {
         var it = map.iterator();
         var oldest_key: ?GlyphKey = null;
-        var oldest_seq: u64 = 0;
+        var oldest_seq: u64 = std.math.maxInt(u64);
         while (it.next()) |entry| {
             const seq = entry.value_ptr.seq;
             if (oldest_key == null or seq < oldest_seq) {
@@ -468,8 +468,8 @@ test "findOldestKey picks lowest seq" {
 
     const k1 = GlyphKey{ .hash = 1, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
     const k2 = GlyphKey{ .hash = 2, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
-    try map.put(k1, .{ .texture = @ptrFromInt(1), .seq = 10 });
-    try map.put(k2, .{ .texture = @ptrFromInt(2), .seq = 5 });
+    try map.put(k1, .{ .texture = undefined, .seq = 10 });
+    try map.put(k2, .{ .texture = undefined, .seq = 5 });
 
     const oldest = Font.findOldestKey(&map) orelse return error.TestExpectedResult;
     try std.testing.expect(std.meta.eql(oldest, k2));

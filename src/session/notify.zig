@@ -124,6 +124,13 @@ pub fn startNotifyThread(
                 };
                 defer posix.close(conn_fd);
 
+                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch null;
+                if (conn_flags) |f| {
+                    var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
+                    o_flags.NONBLOCK = true;
+                    _ = posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
+                }
+
                 var buffer = std.ArrayList(u8){};
                 defer buffer.deinit(ctx.allocator);
 
