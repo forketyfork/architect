@@ -24,9 +24,19 @@ pub const FontPaths = struct {
         const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
 
         paths.regular = try findSystemFont(allocator, selected_family, "Regular");
-        paths.bold = try findSystemFont(allocator, selected_family, "Bold");
-        paths.italic = try findSystemFont(allocator, selected_family, "Italic");
-        paths.bold_italic = try findSystemFont(allocator, selected_family, "BoldItalic");
+        paths.bold = findSystemFont(allocator, selected_family, "Bold") catch paths.regular;
+        paths.italic = findSystemFont(allocator, selected_family, "Italic") catch paths.regular;
+        paths.bold_italic = findSystemFont(allocator, selected_family, "BoldItalic") catch paths.regular;
+
+        if (!std.mem.eql(u8, paths.regular, paths.bold)) {
+            paths.bold = try allocator.dupeZ(u8, paths.bold);
+        }
+        if (!std.mem.eql(u8, paths.regular, paths.italic)) {
+            paths.italic = try allocator.dupeZ(u8, paths.italic);
+        }
+        if (!std.mem.eql(u8, paths.regular, paths.bold_italic)) {
+            paths.bold_italic = try allocator.dupeZ(u8, paths.bold_italic);
+        }
 
         paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
         paths.emoji_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Apple Color Emoji.ttc");
@@ -48,7 +58,7 @@ pub const FontPaths = struct {
     }
 };
 
-const DEFAULT_FONT_FAMILY = "SFMono";
+const DEFAULT_FONT_FAMILY = "SFNSMono";
 
 fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {
     const search_dirs = [_][]const u8{
@@ -59,9 +69,22 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
     const home = std.posix.getenv("HOME");
     const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
 
+    const style_suffix = if (std.mem.eql(u8, style, "Regular")) "" else style;
+
     for (search_dirs) |dir| {
         for (extensions) |ext| {
-            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir, font_family, style, ext });
+            const font_path = if (style_suffix.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir, font_family, style_suffix, ext })
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir, font_family, ext });
+            defer allocator.free(font_path);
+
+            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            return allocator.dupeZ(u8, font_path);
+        }
+
+        for (extensions) |ext| {
+            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ dir, font_family, style_suffix, ext });
             defer allocator.free(font_path);
 
             std.fs.accessAbsolute(font_path, .{}) catch continue;
@@ -74,7 +97,18 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
         defer allocator.free(user_fonts_dir);
 
         for (extensions) |ext| {
-            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ user_fonts_dir, font_family, style, ext });
+            const font_path = if (style_suffix.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ user_fonts_dir, font_family, style_suffix, ext })
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ user_fonts_dir, font_family, ext });
+            defer allocator.free(font_path);
+
+            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            return allocator.dupeZ(u8, font_path);
+        }
+
+        for (extensions) |ext| {
+            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ user_fonts_dir, font_family, style_suffix, ext });
             defer allocator.free(font_path);
 
             std.fs.accessAbsolute(font_path, .{}) catch continue;
@@ -82,6 +116,6 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
         }
     }
 
-    log.err("Font not found: {s}-{s}", .{ font_family, style });
+    log.err("Font not found: {s} {s}", .{ font_family, style });
     return error.FontNotFound;
 }

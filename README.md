@@ -91,7 +91,7 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with SFMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
@@ -154,7 +154,7 @@ zig build run
 Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
-- **Font family**: Font to use (default: `SFMono` on macOS)
+- **Font family**: Font to use (default: `SFNSMono` on macOS)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 
@@ -165,13 +165,18 @@ Fonts are loaded from macOS system directories in this order:
 2. `/Library/Fonts/` - System-wide installed fonts
 3. `~/Library/Fonts/` - User-installed fonts
 
-Font files must follow the naming pattern: `{font_family}-Regular.{otf|ttf|ttc}`, `{font_family}-Bold.{otf|ttf|ttc}`, `{font_family}-Italic.{otf|ttf|ttc}`, and `{font_family}-BoldItalic.{otf|ttf|ttc}`.
+The font loader tries multiple naming patterns to find fonts:
+- `{font_family}-{style}.{ext}` (e.g., `Monaco-Bold.ttf`)
+- `{font_family}{style}.{ext}` (e.g., `SFNSMonoBold.ttf`)
+- `{font_family}.{ext}` for Regular style (e.g., `Monaco.ttf`)
+
+If style variants (Bold, Italic, BoldItalic) aren't found, the Regular font will be used as a fallback.
 
 **Example configuration:**
 ```json
 {
   "font_size": 16,
-  "font_family": "SFMono",
+  "font_family": "SFNSMono",
   "window_width": 1920,
   "window_height": 1080,
   "window_x": 150,
