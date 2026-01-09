@@ -1229,8 +1229,11 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, scancode: c.SDL_Sc
         }
     }
     var key_to_send = key;
-    if (scancode == c.SDL_SCANCODE_HOME) key_to_send = c.SDLK_HOME;
-    if (scancode == c.SDL_SCANCODE_END) key_to_send = c.SDLK_END;
+    const fn_like = (mod & c.SDL_KMOD_MODE) != 0;
+    const is_home_scan = scancode == c.SDL_SCANCODE_HOME;
+    const is_end_scan = scancode == c.SDL_SCANCODE_END;
+    if (is_home_scan or (fn_like and key == c.SDLK_LEFT)) key_to_send = c.SDLK_HOME;
+    if (is_end_scan or (fn_like and key == c.SDLK_RIGHT)) key_to_send = c.SDLK_END;
 
     var buf: [8]u8 = undefined;
     const n = input.encodeKeyWithMod(key_to_send, mod, &buf);
