@@ -61,7 +61,7 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 src/
 ├── main.zig              # Entry point, frame loop, event dispatch
 ├── c.zig                 # C bindings (SDL3, TTF, etc.)
-├── config.zig            # JSON config persistence
+├── config.zig            # TOML config persistence
 ├── geom.zig              # Rect + point containment
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
 ├── font_paths.zig        # Font path resolution for bundled fonts

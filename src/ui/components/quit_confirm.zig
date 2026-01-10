@@ -163,7 +163,7 @@ pub const QuitConfirmComponent = struct {
         }
         if (self.font_path == null) return;
 
-        self.ensureTextures(renderer, host.ui_scale) catch return;
+        self.ensureTextures(renderer, host.ui_scale, host.theme) catch return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
@@ -176,7 +176,8 @@ pub const QuitConfirmComponent = struct {
         _ = c.SDL_RenderFillRect(renderer, &overlay);
 
         const modal = self.modalRect(host);
-        _ = c.SDL_SetRenderDrawColor(renderer, 23, 28, 39, 240);
+        const sel = host.theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
         const modal_rect = c.SDL_FRect{
             .x = @floatFromInt(modal.x),
             .y = @floatFromInt(modal.y),
@@ -184,11 +185,12 @@ pub const QuitConfirmComponent = struct {
             .h = @floatFromInt(modal.h),
         };
         _ = c.SDL_RenderFillRect(renderer, &modal_rect);
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+        const acc = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, modal, dpi.scale(MODAL_RADIUS, host.ui_scale));
 
         self.renderText(renderer, modal, host.ui_scale);
-        self.renderButtons(renderer, modal, host.ui_scale);
+        self.renderButtons(renderer, modal, host.ui_scale, host.theme);
     }
 
     fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
@@ -213,7 +215,7 @@ pub const QuitConfirmComponent = struct {
         _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
     }
 
-    fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
+    fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
         const cancel_rect = c.SDL_FRect{
@@ -222,9 +224,11 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.cancel.w),
             .h = @floatFromInt(buttons.cancel.h),
         };
-        _ = c.SDL_SetRenderDrawColor(renderer, 41, 50, 67, 255);
+        const bg = theme.background;
+        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
         _ = c.SDL_RenderFillRect(renderer, &cancel_rect);
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+        const acc = theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, buttons.cancel, dpi.scale(8, ui_scale));
 
         const quit_rect = c.SDL_FRect{
@@ -233,9 +237,11 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.quit.w),
             .h = @floatFromInt(buttons.quit.h),
         };
-        _ = c.SDL_SetRenderDrawColor(renderer, 63, 34, 39, 255);
+        const red = theme.palette[1];
+        _ = c.SDL_SetRenderDrawColor(renderer, red.r, red.g, red.b, 255);
         _ = c.SDL_RenderFillRect(renderer, &quit_rect);
-        _ = c.SDL_SetRenderDrawColor(renderer, 224, 108, 117, 255);
+        const bright_red = theme.palette[9];
+        _ = c.SDL_SetRenderDrawColor(renderer, bright_red.r, bright_red.g, bright_red.b, 255);
         primitives.drawRoundedBorder(renderer, buttons.quit, dpi.scale(8, ui_scale));
 
         const cancel_w = @as(f32, @floatFromInt(self.cancel_w));
@@ -284,7 +290,7 @@ pub const QuitConfirmComponent = struct {
         };
     }
 
-    fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, ui_scale: f32) !void {
+    fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null and self.quit_tex != null and self.cancel_tex != null) return;
         const font_path = self.font_path orelse return error.FontPathNotSet;
         if (self.font == null) {
@@ -300,7 +306,8 @@ pub const QuitConfirmComponent = struct {
 
         _ = c.TTF_SetFontSize(font, @floatFromInt(dpi.scale(TITLE_SIZE, ui_scale)));
         const title_text = "Quit Architect?";
-        const title_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const fg = theme.foreground;
+        const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_surface = c.TTF_RenderText_Blended(font, title_text, title_text.len, title_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(title_surface);
         self.title_tex = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return error.TextureFailed;
@@ -320,7 +327,8 @@ pub const QuitConfirmComponent = struct {
         self.message_h = message_size.y;
 
         const quit_text = "Quit";
-        const quit_color = c.SDL_Color{ .r = 224, .g = 108, .b = 117, .a = 255 };
+        const bright_red = theme.palette[9];
+        const quit_color = c.SDL_Color{ .r = bright_red.r, .g = bright_red.g, .b = bright_red.b, .a = 255 };
         const quit_surface = c.TTF_RenderText_Blended(font, quit_text, quit_text.len, quit_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(quit_surface);
         self.quit_tex = c.SDL_CreateTextureFromSurface(renderer, quit_surface) orelse return error.TextureFailed;
@@ -329,7 +337,7 @@ pub const QuitConfirmComponent = struct {
         self.quit_h = quit_size.y;
 
         const cancel_text = "Cancel";
-        const cancel_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const cancel_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const cancel_surface = c.TTF_RenderText_Blended(font, cancel_text, cancel_text.len, cancel_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(cancel_surface);
         self.cancel_tex = c.SDL_CreateTextureFromSurface(renderer, cancel_surface) orelse return error.TextureFailed;
