@@ -376,12 +376,12 @@ pub fn main() !void {
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     } else {
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     }
                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
@@ -506,7 +506,7 @@ pub fn main() !void {
                             const term_size = calculateTerminalSize(&font, render_width, render_height);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
-                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                            applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
@@ -555,8 +555,10 @@ pub fn main() !void {
                             anim_state.previous_session = anim_state.focused_session;
                             anim_state.focused_session = next_free_idx;
 
-                            var notification_buf: [256]u8 = undefined;
-                            const notification_msg = try formatGridNotification(&notification_buf, next_free_idx, grid_cols, grid_rows);
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, next_free_idx, grid_cols, grid_rows);
                             ui.showToast(notification_msg, now);
                         } else {
                             ui.showToast("All terminals in use", now);
@@ -570,8 +572,10 @@ pub fn main() !void {
                         } else if (anim_state.mode == .Full) {
                             try navigateGrid(&anim_state, sessions, direction, now, true, true, grid_cols, grid_rows);
 
-                            var notification_buf: [256]u8 = undefined;
-                            const notification_msg = try formatGridNotification(&notification_buf, anim_state.focused_session, grid_cols, grid_rows);
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, anim_state.focused_session, grid_cols, grid_rows);
                             ui.showToast(notification_msg, now);
 
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
@@ -798,7 +802,7 @@ pub fn main() !void {
 
         var any_session_dirty = false;
         var has_scroll_inertia = false;
-        for (&sessions) |*session| {
+        for (sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
             try session.flushPendingWrites();
@@ -937,6 +941,12 @@ fn startCollapseToGrid(
     anim_state.target_rect = target_rect;
 }
 
+fn gridNotificationBufferSize(grid_cols: usize, grid_rows: usize) usize {
+    const block_bytes = 3;
+    const spaces_between_cols = 3;
+    return grid_rows * grid_cols * block_bytes + grid_rows * (grid_cols - 1) * spaces_between_cols + (grid_rows - 1);
+}
+
 fn formatGridNotification(buf: []u8, focused_session: usize, grid_cols: usize, grid_rows: usize) ![]const u8 {
     const row = focused_session / grid_cols;
     const col = focused_session % grid_cols;
@@ -950,7 +960,8 @@ fn formatGridNotification(buf: []u8, focused_session: usize, grid_cols: usize, g
             offset += block.len;
 
             if (col_idx < grid_cols - 1) {
-                if (offset + 3 > buf.len) return error.BufferTooSmall;
+                const spaces_between_cols = 3;
+                if (offset + spaces_between_cols > buf.len) return error.BufferTooSmall;
                 buf[offset] = ' ';
                 offset += 1;
                 buf[offset] = ' ';
