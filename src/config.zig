@@ -6,6 +6,8 @@ pub const MIN_GRID_SIZE: i32 = 1;
 pub const MAX_GRID_SIZE: i32 = 12;
 pub const DEFAULT_GRID_ROWS: i32 = 3;
 pub const DEFAULT_GRID_COLS: i32 = 3;
+pub const MIN_GRID_FONT_SCALE: f32 = 0.5;
+pub const MAX_GRID_FONT_SCALE: f32 = 3.0;
 
 pub const Color = struct {
     r: u8,
@@ -69,6 +71,7 @@ pub const WindowConfig = struct {
 pub const GridConfig = struct {
     rows: i32 = DEFAULT_GRID_ROWS,
     cols: i32 = DEFAULT_GRID_COLS,
+    font_scale: f32 = 1.0,
 };
 
 pub const PaletteConfig = struct {
@@ -280,6 +283,7 @@ pub const Config = struct {
 
         config.grid.rows = std.math.clamp(config.grid.rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid.cols = std.math.clamp(config.grid.cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid.font_scale = std.math.clamp(config.grid.font_scale, MIN_GRID_FONT_SCALE, MAX_GRID_FONT_SCALE);
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);

@@ -45,13 +45,16 @@ pub fn render(
     ui_scale: f32,
     font_path: [:0]const u8,
     theme: *const colors.Theme,
+    grid_font_scale: f32,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
 
     // Use the larger dimension for grid scale to ensure proper scaling
+    // Multiply by grid_font_scale to allow proportionally larger font in grid view
     const grid_dim = @max(grid_cols, grid_rows);
-    const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
+    const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
+    const grid_scale: f32 = base_grid_scale * grid_font_scale;
 
     switch (anim_state.mode) {
         .Grid => {

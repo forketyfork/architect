@@ -186,8 +186,9 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 ### Grid Settings (`[grid]`)
 - **rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
 - **cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
+- **font_scale**: Proportional font scaling in grid view (range: 0.5-3.0, default: 1.0). Values greater than 1.0 render larger, more readable text but show fewer terminal rows/columns. For example, `font_scale = 1.5` makes text 50% larger.
 
-Grid size must be edited manually in the config file.
+Grid settings must be edited manually in the config file.
 
 The configuration file is created automatically on first use and updated whenever settings change.
 
@@ -270,6 +271,7 @@ bright_white = "#A6ADC8"
 [grid]
 rows = 3
 cols = 4
+font_scale = 1.2
 ```
 
 **Debugging font loading:**
