@@ -151,14 +151,26 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration includes:
+Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration is organized into sections:
 
-- **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
-- **Font family**: Font to use (default: `SFNSMono` on macOS)
-- **Window dimensions**: Automatically saved when you resize the window
-- **Window position**: Saved along with window dimensions when you resize or adjust font size
+### Font Settings (`[font]`)
+- **size**: Font size in pixels (range: 8-96, default: 14)
+- **family**: Font family name (default: `SFNSMono` on macOS)
 
-The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
+### Window Settings (`[window]`)
+- **width**: Window width in pixels
+- **height**: Window height in pixels
+- **x**: Window X position (-1 = system default)
+- **y**: Window Y position (-1 = system default)
+
+### Theme Settings (`[theme]`)
+- **background**: Terminal background color as hex (default: `#0E1116`)
+- **foreground**: Terminal text color as hex (default: `#CDD6E0`)
+- **selection**: Selection highlight color as hex (default: `#1B2230`)
+- **accent**: UI accent color as hex (default: `#61AFEF`)
+- **palette**: Array of 16 ANSI colors (8 normal + 8 bright) as hex strings
+
+The configuration file is created automatically on first use and updated whenever settings change.
 
 ### Font Loading
 
@@ -201,12 +213,27 @@ If style variants (Bold, Italic, BoldItalic) aren't found:
 
 **Example configuration:**
 ```toml
-font_size = 16
-font_family = "VictorMonoNerdFont"
-window_width = 1920
-window_height = 1080
-window_x = 150
-window_y = 100
+[font]
+size = 16
+family = "VictorMonoNerdFont"
+
+[window]
+width = 1920
+height = 1080
+x = 150
+y = 100
+
+[theme]
+background = "#1E1E2E"
+foreground = "#CDD6F4"
+accent = "#89B4FA"
+# Optional: custom 16-color ANSI palette
+# palette = [
+#   "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF",
+#   "#89B4FA", "#F5C2E7", "#94E2D5", "#BAC2DE",
+#   "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF",
+#   "#89B4FA", "#F5C2E7", "#94E2D5", "#A6ADC8"
+# ]
 ```
 
 **Debugging font loading:**
@@ -476,7 +503,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
 - `src/font_paths.zig` - Font path resolution from macOS system font directories
-- `src/config.zig` - Configuration persistence (saves font size, font family, window size, and position)
+- `src/config.zig` - Configuration persistence (font, window, and theme settings)
 - `src/c.zig` - C library bindings for SDL3
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
@@ -519,7 +546,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize
-- Persistent configuration (font size, font family, window size, and position)
+- Persistent configuration (font, window, and theme/color settings)
 - Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
@@ -531,7 +558,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **Limited font distribution**: Only the bundled font family ships with the app today
-- **Limited configurability**: Grid size, colors, and keybindings are hardcoded
+- **Limited configurability**: Grid size and keybindings are hardcoded
 
 ## License
 

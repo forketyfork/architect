@@ -15,6 +15,7 @@ const pty_mod = @import("pty.zig");
 const font_mod = @import("font.zig");
 const font_paths_mod = @import("font_paths.zig");
 const config_mod = @import("config.zig");
+const colors_mod = @import("colors.zig");
 const ui_mod = @import("ui/mod.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
@@ -114,19 +115,21 @@ pub fn main() !void {
             std.debug.print("Failed to load config: {}, using defaults\n", .{err});
         }
         break :blk config_mod.Config{
-            .font_size = DEFAULT_FONT_SIZE,
-            .font_family = null,
-            .font_family_owned = false,
-            .window_width = INITIAL_WINDOW_WIDTH,
-            .window_height = INITIAL_WINDOW_HEIGHT,
-            .window_x = -1,
-            .window_y = -1,
+            .font = .{ .size = DEFAULT_FONT_SIZE },
+            .window = .{
+                .width = INITIAL_WINDOW_WIDTH,
+                .height = INITIAL_WINDOW_HEIGHT,
+            },
         };
     };
     defer config.deinit(allocator);
 
-    const window_pos = if (config.window_x >= 0 and config.window_y >= 0)
-        platform.WindowPosition{ .x = config.window_x, .y = config.window_y }
+    // Initialize theme from config
+    const theme = colors_mod.Theme.fromConfig(config.theme);
+    _ = theme; // TODO: Pass to renderer once integrated
+
+    const window_pos = if (config.window.x >= 0 and config.window.y >= 0)
+        platform.WindowPosition{ .x = config.window.x, .y = config.window.y }
     else
         null;
     var vsync_requested: bool = true;
@@ -145,8 +148,8 @@ pub fn main() !void {
 
     var sdl = try platform.init(
         "ARCHITECT",
-        config.window_width,
-        config.window_height,
+        config.window.width,
+        config.window.height,
         window_pos,
         vsync_requested,
     );
@@ -167,7 +170,7 @@ pub fn main() !void {
 
     const renderer = sdl.renderer;
 
-    var font_size: c_int = config.font_size;
+    var font_size: c_int = config.font.size;
     var window_width_points: c_int = sdl.window_w;
     var window_height_points: c_int = sdl.window_h;
     var render_width: c_int = sdl.render_w;
@@ -176,7 +179,7 @@ pub fn main() !void {
     var scale_y = sdl.scale_y;
     var ui_scale: f32 = @max(scale_x, scale_y);
 
-    var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font_family);
+    var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font.family);
     defer font_paths.deinit();
 
     var font = try font_mod.Font.init(
@@ -212,8 +215,8 @@ pub fn main() !void {
     ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
     ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
 
-    var window_x: c_int = config.window_x;
-    var window_y: c_int = config.window_y;
+    var window_x: c_int = config.window.x;
+    var window_y: c_int = config.window.y;
 
     const initial_term_size = calculateTerminalSize(&font, render_width, render_height);
     var full_cols: u16 = initial_term_size.cols;
@@ -378,15 +381,20 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                    const font_family_dup = if (config.font.family) |ff| try allocator.dupe(u8, ff) else null;
                     var updated_config = config_mod.Config{
-                        .font_size = font_size,
-                        .font_family = font_family_dup,
-                        .font_family_owned = true,
-                        .window_width = window_width_points,
-                        .window_height = window_height_points,
-                        .window_x = window_x,
-                        .window_y = window_y,
+                        .font = .{
+                            .size = font_size,
+                            .family = font_family_dup,
+                            .family_owned = true,
+                        },
+                        .window = .{
+                            .width = window_width_points,
+                            .height = window_height_points,
+                            .x = window_x,
+                            .y = window_y,
+                        },
+                        .theme = config.theme,
                     };
                     defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
@@ -495,15 +503,20 @@ pub fn main() !void {
                             applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                            const font_family_dup = if (config.font.family) |ff| try allocator.dupe(u8, ff) else null;
                             var updated_config = config_mod.Config{
-                                .font_size = font_size,
-                                .font_family = font_family_dup,
-                                .font_family_owned = true,
-                                .window_width = window_width_points,
-                                .window_height = window_height_points,
-                                .window_x = window_x,
-                                .window_y = window_y,
+                                .font = .{
+                                    .size = font_size,
+                                    .family = font_family_dup,
+                                    .family_owned = true,
+                                },
+                                .window = .{
+                                    .width = window_width_points,
+                                    .height = window_height_points,
+                                    .x = window_x,
+                                    .y = window_y,
+                                },
+                                .theme = config.theme,
                             };
                             defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {
