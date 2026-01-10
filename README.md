@@ -91,8 +91,8 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with bundled Victor Mono Nerd Font (ligatures enabled), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
-- **Persistent Configuration**: Automatically saves and restores font size, window dimensions, and window position
+- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
@@ -151,31 +151,88 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
+Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
+- **Font family**: Font to use (default: `SFNSMono` on macOS)
 - **Window dimensions**: Automatically saved when you resize the window
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 - **Grid size**: Configure `grid_rows` and `grid_cols` to set the terminal grid layout (range: 1-12 for each, default: 3x3)
 
 The configuration file is created automatically on first use and updated whenever settings change. Grid size must be edited manually in the config file.
 
+### Font Loading
+
+Fonts are loaded from macOS system directories, searched recursively:
+1. `/System/Library/Fonts/` - System fonts (and subdirectories)
+2. `/Library/Fonts/` - System-wide installed fonts (and subdirectories)
+3. `~/Library/Fonts/` - User-installed fonts (and subdirectories)
+
+**Supported font formats:**
+- `.ttf` - TrueType fonts
+- `.otf` - OpenType fonts
+- `.ttc` - TrueType Collection (multiple variants in one file)
+
+**Naming patterns searched (in order):**
+- `{font_family}-{style}.{ext}` (e.g., `VictorMonoNerdFont-Bold.ttf`)
+- `{font_family}{style}.{ext}` (e.g., `SFNSMonoBold.ttf`)
+- `{font_family}.{ext}` for Regular style (e.g., `Monaco.ttf`)
+- `{font_family}.ttc` - TTC file containing all variants
+
+**Examples of supported fonts:**
+
+| Font | Location | Type |
+|------|----------|------|
+| `SFNSMono` | `/System/Library/Fonts/SFNSMono.ttf` | Separate TTF files |
+| `Menlo` | `/System/Library/Fonts/Menlo.ttc` | TTC with all variants |
+| `Monaco` | `/System/Library/Fonts/Monaco.ttf` | Single TTF (no variants) |
+| `VictorMonoNerdFont` | `/Library/Fonts/Nix Fonts/.../VictorMonoNerdFont-Regular.ttf` | Nerd Font in subdirectory |
+
+**Fallback behavior:**
+
+If a requested font isn't found, the app falls back to `SFNSMono` with a warning:
+```
+warning(font_paths): Font family 'MyFont' not found, falling back to SFNSMono
+```
+
+If style variants (Bold, Italic, BoldItalic) aren't found:
+1. For TTC files: Uses the same TTC file for all variants (SDL_ttf loads correct variant)
+2. For TTF/OTF: Falls back to default font's variant
+3. Last resort: Uses Regular variant
+
 **Example configuration:**
-```json
-{
-  "font_size": 16,
-  "window_width": 1920,
-  "window_height": 1080,
-  "window_x": 150,
-  "window_y": 100,
-  "grid_rows": 3,
-  "grid_cols": 4
-}
+```toml
+font_size = 16
+font_family = "VictorMonoNerdFont"
+window_width = 1920
+window_height = 1080
+window_x = 150
+window_y = 100
+grid_rows = 3
+grid_cols = 4
+```
+
+**Debugging font loading:**
+
+Run the app and check logs to see which fonts were found:
+```
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Regular.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Bold.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Italic.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-BoldItalic.ttf
+```
+
+Or for TTC files:
+```
+info(font_paths): Found font: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for Bold variant: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for Italic variant: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for BoldItalic variant: /System/Library/Fonts/Menlo.ttc
 ```
 
 To reset to defaults, simply delete the configuration file:
 ```bash
-rm ~/.config/architect/config.json
+rm ~/.config/architect/config.toml
 ```
 
 ## Development
@@ -421,10 +478,9 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/shell.zig` - Shell process spawning and management
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
-- `src/font_paths.zig` - Font path resolution for bundled fonts
-- `src/config.zig` - Configuration persistence (saves font size, window size, and position)
+- `src/font_paths.zig` - Font path resolution from macOS system font directories
+- `src/config.zig` - Configuration persistence (saves font size, font family, window size, and position)
 - `src/c.zig` - C library bindings for SDL3
-- `assets/fonts/` - Bundled Victor Mono Nerd Font files (installed to share/architect/fonts)
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
 - `docs/` - Documentation and implementation plans
@@ -438,9 +494,6 @@ Download the latest release from the [releases page](https://github.com/forketyf
   - Provides terminal state machine and ANSI escape sequence parsing
 - **SDL3**: Window management and rendering backend (via Nix)
 - **SDL3_ttf**: Font rendering library (via Nix)
-- **Victor Mono Nerd Font**: Bundled monospace font with programming ligatures
-  - Licensed under SIL Open Font License 1.1 (see `assets/fonts/LICENSE`)
-  - Includes Nerd Font icons for enhanced terminal experience
 
 ## Architecture
 
@@ -469,7 +522,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize
-- Persistent configuration (font size, window size, and position)
+- Persistent configuration (font size, font family, window size, and position)
 - Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
@@ -480,7 +533,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
-- **No font selection**: Victor Mono font is bundled with the application (though size is adjustable)
+- **Limited font distribution**: Only the bundled font family ships with the app today
 - **Limited configurability**: Colors and keybindings are hardcoded
 
 ## License

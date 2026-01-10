@@ -35,6 +35,13 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("xev", dep.module("xev"));
     }
 
+    if (b.lazyDependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        exe_mod.addImport("toml", dep.module("toml"));
+    }
+
     const exe = b.addExecutable(.{
         .name = "architect",
         .root_module = exe_mod,
@@ -60,13 +67,6 @@ pub fn build(b: *std.Build) void {
     }
 
     b.installArtifact(exe);
-
-    const install_fonts = b.addInstallDirectory(.{
-        .source_dir = b.path("assets/fonts"),
-        .install_dir = .{ .custom = "share/architect" },
-        .install_subdir = "fonts",
-    });
-    b.getInstallStep().dependOn(&install_fonts.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

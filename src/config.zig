@@ -1,6 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
-const json = std.json;
+const toml = @import("toml");
 
 pub const MIN_GRID_SIZE: i32 = 1;
 pub const MAX_GRID_SIZE: i32 = 12;
@@ -9,6 +9,8 @@ pub const DEFAULT_GRID_COLS: i32 = 3;
 
 pub const Config = struct {
     font_size: i32,
+    font_family: ?[]const u8,
+    font_family_owned: bool = false,
     window_width: i32,
     window_height: i32,
     window_x: i32,
@@ -20,61 +22,7 @@ pub const Config = struct {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
-        const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return error.ConfigNotFound,
-            else => return err,
-        };
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(content);
-
-        const parsed = try json.parseFromSlice(json.Value, allocator, content, .{});
-        defer parsed.deinit();
-
-        const root = parsed.value;
-        if (root != .object) return error.InvalidConfig;
-        const obj = root.object;
-
-        const font_size_val = obj.get("font_size") orelse return error.InvalidConfig;
-        const window_width_val = obj.get("window_width") orelse return error.InvalidConfig;
-        const window_height_val = obj.get("window_height") orelse return error.InvalidConfig;
-        const window_x_val = obj.get("window_x") orelse return error.InvalidConfig;
-        const window_y_val = obj.get("window_y") orelse return error.InvalidConfig;
-
-        if (font_size_val != .integer or window_width_val != .integer or window_height_val != .integer or
-            window_x_val != .integer or window_y_val != .integer)
-        {
-            return error.InvalidConfig;
-        }
-
-        // Grid dimensions are optional for backward compatibility - use defaults if not present
-        const grid_rows_val = obj.get("grid_rows");
-        const grid_cols_val = obj.get("grid_cols");
-
-        const grid_rows_raw: i32 = if (grid_rows_val) |v| blk: {
-            if (v != .integer) break :blk DEFAULT_GRID_ROWS;
-            break :blk @intCast(v.integer);
-        } else DEFAULT_GRID_ROWS;
-
-        const grid_cols_raw: i32 = if (grid_cols_val) |v| blk: {
-            if (v != .integer) break :blk DEFAULT_GRID_COLS;
-            break :blk @intCast(v.integer);
-        } else DEFAULT_GRID_COLS;
-
-        // Clamp to valid range
-        const grid_rows = std.math.clamp(grid_rows_raw, MIN_GRID_SIZE, MAX_GRID_SIZE);
-        const grid_cols = std.math.clamp(grid_cols_raw, MIN_GRID_SIZE, MAX_GRID_SIZE);
-
-        return Config{
-            .font_size = @intCast(font_size_val.integer),
-            .window_width = @intCast(window_width_val.integer),
-            .window_height = @intCast(window_height_val.integer),
-            .window_x = @intCast(window_x_val.integer),
-            .window_y = @intCast(window_y_val.integer),
-            .grid_rows = grid_rows,
-            .grid_cols = grid_cols,
-        };
+        return loadTomlConfig(allocator, config_path);
     }
 
     pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
@@ -87,33 +35,62 @@ pub const Config = struct {
             else => return err,
         };
 
-        const content = try std.fmt.allocPrint(
-            allocator,
-            \\{{
-            \\  "font_size": {d},
-            \\  "window_width": {d},
-            \\  "window_height": {d},
-            \\  "window_x": {d},
-            \\  "window_y": {d},
-            \\  "grid_rows": {d},
-            \\  "grid_cols": {d}
-            \\}}
-            \\
-        ,
-            .{ self.font_size, self.window_width, self.window_height, self.window_x, self.window_y, self.grid_rows, self.grid_cols },
-        );
-        defer allocator.free(content);
+        var buf: [2048]u8 = undefined;
+        var writer = std.io.Writer.fixed(&buf);
+        try toml.serialize(allocator, self, &writer);
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(content);
+        try file.writeAll(writer.buffered());
     }
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.json" });
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
+    }
+
+    fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
+        const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.ConfigNotFound,
+            else => return err,
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(content);
+
+        var parser = toml.Parser(Config).init(allocator);
+        defer parser.deinit();
+
+        var result = parser.parseString(content) catch |err| {
+            std.log.err("Failed to parse TOML config `{s}`: {any}", .{ config_path, err });
+            return error.InvalidConfig;
+        };
+        defer result.deinit();
+
+        var config = result.value;
+
+        if (config.grid_rows == 0) config.grid_rows = DEFAULT_GRID_ROWS;
+        if (config.grid_cols == 0) config.grid_cols = DEFAULT_GRID_COLS;
+
+        config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
+
+        return config;
+    }
+
+    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
+        if (self.font_family_owned) {
+            if (self.font_family) |value| {
+                allocator.free(value);
+            }
+        }
+        self.font_family = null;
+        self.font_family_owned = false;
     }
 };
+
+pub const DEFAULT_FONT_FAMILY = "SFNSMono";
 
 pub const LoadError = error{
     ConfigNotFound,
@@ -121,78 +98,46 @@ pub const LoadError = error{
     HomeNotFound,
     InvalidPath,
     OutOfMemory,
-} || fs.File.OpenError || fs.File.ReadError || json.ParseError(json.Scanner);
+} || fs.File.OpenError || fs.File.ReadError;
 
 pub const SaveError = error{
     HomeNotFound,
     InvalidPath,
+    InvalidConfig,
     OutOfMemory,
+    WriteFailed,
 } || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
 
-test "Config - save and load" {
+test "Config - decode toml" {
     const allocator = std.testing.allocator;
 
-    const test_config = Config{
-        .font_size = 16,
-        .window_width = 1920,
-        .window_height = 1080,
-        .window_x = 100,
-        .window_y = 100,
-        .grid_rows = 3,
-        .grid_cols = 4,
-    };
-
-    const test_dir = try std.fs.cwd().makeOpenPath("test_config", .{});
-    defer std.fs.cwd().deleteTree("test_config") catch {};
-
-    const test_path = try fs.path.join(allocator, &[_][]const u8{ "test_config", "config.json" });
-    defer allocator.free(test_path);
-
-    const content = try std.fmt.allocPrint(
-        allocator,
-        \\{{
-        \\  "font_size": {d},
-        \\  "window_width": {d},
-        \\  "window_height": {d},
-        \\  "window_x": {d},
-        \\  "window_y": {d},
-        \\  "grid_rows": {d},
-        \\  "grid_cols": {d}
-        \\}}
+    const content =
+        \\font_size = 16
+        \\font_family = "VictorMonoNerdFont"
+        \\window_width = 1920
+        \\window_height = 1080
+        \\window_x = 100
+        \\window_y = 100
+        \\grid_rows = 3
+        \\grid_cols = 4
         \\
-    ,
-        .{ test_config.font_size, test_config.window_width, test_config.window_height, test_config.window_x, test_config.window_y, test_config.grid_rows, test_config.grid_cols },
-    );
-    defer allocator.free(content);
+    ;
 
-    try test_dir.writeFile(.{ .sub_path = "config.json", .data = content });
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
 
-    const file = try fs.cwd().openFile(test_path, .{});
-    defer file.close();
+    var result = try parser.parseString(content);
+    defer result.deinit();
 
-    const read_content = try file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(read_content);
+    const decoded = result.value;
 
-    const parsed = try json.parseFromSlice(json.Value, allocator, read_content, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    try std.testing.expect(root == .object);
-    const obj = root.object;
-
-    const font_size_val = obj.get("font_size").?;
-    const window_width_val = obj.get("window_width").?;
-    const window_height_val = obj.get("window_height").?;
-    const window_x_val = obj.get("window_x").?;
-    const window_y_val = obj.get("window_y").?;
-    const grid_rows_val = obj.get("grid_rows").?;
-    const grid_cols_val = obj.get("grid_cols").?;
-
-    try std.testing.expectEqual(@as(i64, 16), font_size_val.integer);
-    try std.testing.expectEqual(@as(i64, 1920), window_width_val.integer);
-    try std.testing.expectEqual(@as(i64, 1080), window_height_val.integer);
-    try std.testing.expectEqual(@as(i64, 100), window_x_val.integer);
-    try std.testing.expectEqual(@as(i64, 100), window_y_val.integer);
-    try std.testing.expectEqual(@as(i64, 3), grid_rows_val.integer);
-    try std.testing.expectEqual(@as(i64, 4), grid_cols_val.integer);
+    try std.testing.expectEqual(@as(i32, 16), decoded.font_size);
+    try std.testing.expect(decoded.font_family != null);
+    try std.testing.expectEqualStrings("VictorMonoNerdFont", decoded.font_family.?);
+    try std.testing.expectEqual(@as(i32, 1920), decoded.window_width);
+    try std.testing.expectEqual(@as(i32, 1080), decoded.window_height);
+    try std.testing.expectEqual(@as(i32, 100), decoded.window_x);
+    try std.testing.expectEqual(@as(i32, 100), decoded.window_y);
+    try std.testing.expectEqual(@as(i32, 3), decoded.grid_rows);
+    try std.testing.expectEqual(@as(i32, 4), decoded.grid_cols);
 }

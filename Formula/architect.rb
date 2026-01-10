@@ -24,7 +24,6 @@ class Architect < Formula
 
     macos.mkpath
     resources.mkpath
-    (share/"fonts").mkpath
 
     (contents/"Info.plist").write <<~EOS
       <?xml version="1.0" encoding="UTF-8"?>
@@ -61,9 +60,6 @@ class Architect < Formula
 
     (macos/"architect.bin").write (buildpath/"zig-out/bin/architect").read
     chmod 0755, macos/"architect.bin"
-
-    (share/"fonts").install Dir["assets/fonts/*.ttf"]
-    (share/"fonts").install "assets/fonts/LICENSE"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
