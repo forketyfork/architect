@@ -107,7 +107,10 @@ pub fn main() !void {
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
-            std.debug.print("Config not found, using defaults\n", .{});
+            std.debug.print("Config not found, creating default config file\n", .{});
+            config_mod.Config.createDefaultConfigFile(allocator) catch |create_err| {
+                std.debug.print("Failed to create default config: {}\n", .{create_err});
+            };
         } else {
             std.debug.print("Failed to load config: {}, using defaults\n", .{err});
         }

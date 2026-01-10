@@ -54,6 +54,46 @@ pub const Config = struct {
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
     }
 
+    pub fn createDefaultConfigFile(allocator: std.mem.Allocator) SaveError!void {
+        const config_path = try getConfigPath(allocator);
+        defer allocator.free(config_path);
+
+        const config_dir = fs.path.dirname(config_path) orelse return error.InvalidPath;
+        fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        const template =
+            \\# Architect configuration file
+            \\# Uncomment and modify values to customize behavior.
+            \\# Changes take effect on next launch.
+            \\
+            \\# Font size in points (default: 14)
+            \\# font_size = 14
+            \\
+            \\# Font family name (default: system monospace)
+            \\# font_family = "SFNSMono"
+            \\
+            \\# Window dimensions in pixels (default: 1200x900)
+            \\# window_width = 1200
+            \\# window_height = 900
+            \\
+            \\# Window position (-1 = system default)
+            \\# window_x = -1
+            \\# window_y = -1
+            \\
+            \\# Terminal grid size, 1-12 (default: 3x3)
+            \\# grid_rows = 3
+            \\# grid_cols = 3
+            \\
+        ;
+
+        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(template);
+    }
+
     fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
         const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.ConfigNotFound,
