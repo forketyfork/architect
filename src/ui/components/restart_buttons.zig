@@ -118,12 +118,12 @@ pub const RestartButtonsComponent = struct {
                 .w = host.cell_w,
                 .h = host.cell_h,
             };
-            self.renderButton(renderer, cell_rect);
+            self.renderButton(renderer, cell_rect, host.theme);
         }
     }
 
-    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect) void {
-        self.ensureTexture(renderer) catch return;
+    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const @import("../../colors.zig").Theme) void {
+        self.ensureTexture(renderer, theme) catch return;
         const text_width = self.tex_w;
         const text_height = self.tex_h;
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
@@ -139,7 +139,8 @@ pub const RestartButtonsComponent = struct {
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 220);
+        const sel = theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(button_x),
             .y = @floatFromInt(button_y),
@@ -148,7 +149,8 @@ pub const RestartButtonsComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+        const acc = theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
 
         const text_x = button_x + RESTART_BUTTON_PADDING;
@@ -177,7 +179,7 @@ pub const RestartButtonsComponent = struct {
         };
     }
 
-    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer) !void {
+    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
         const font_path = self.font_path orelse return error.FontPathNotSet;
@@ -188,7 +190,8 @@ pub const RestartButtonsComponent = struct {
         const icon_font = self.font.?;
 
         const restart_text = "Restart";
-        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const fg = theme.foreground;
+        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(icon_font, restart_text, restart_text.len, fg_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(surface);
 

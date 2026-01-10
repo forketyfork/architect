@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const app_state = @import("../app/app_state.zig");
 const font_mod = @import("../font.zig");
+const colors = @import("../colors.zig");
 
 pub const SessionUiInfo = struct {
     dead: bool,
@@ -24,6 +25,7 @@ pub const UiHost = struct {
     focused_session: usize,
 
     sessions: []const SessionUiInfo,
+    theme: *const colors.Theme,
 };
 
 pub const UiAction = union(enum) {

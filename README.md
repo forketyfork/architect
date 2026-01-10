@@ -151,15 +151,45 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration includes:
+Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration is organized into sections:
 
-- **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
-- **Font family**: Font to use (default: `SFNSMono` on macOS)
-- **Window dimensions**: Automatically saved when you resize the window
-- **Window position**: Saved along with window dimensions when you resize or adjust font size
-- **Grid size**: Configure `grid_rows` and `grid_cols` to set the terminal grid layout (range: 1-12 for each, default: 3x3)
+### Font Settings (`[font]`)
+- **size**: Font size in pixels (range: 8-96, default: 14) - Adjusted via Cmd+Plus/Minus shortcuts
+- **family**: Font family name (default: `SFNSMono` on macOS)
 
-The configuration file is created automatically on first use and updated whenever settings change. Grid size must be edited manually in the config file.
+### Window Settings (`[window]`)
+- **width**: Window width in pixels
+- **height**: Window height in pixels
+- **x**: Window X position (-1 = system default)
+- **y**: Window Y position (-1 = system default)
+
+Window dimensions and position are automatically saved when you resize the window or adjust font size.
+
+### Theme Settings (`[theme]`)
+- **background**: Terminal background color as hex (default: `#0E1116`)
+- **foreground**: Terminal text color as hex (default: `#CDD6E0`)
+- **selection**: Selection highlight color as hex (default: `#1B2230`)
+- **accent**: UI accent color as hex (default: `#61AFEF`)
+
+#### Palette Colors (`[theme.palette]`)
+
+The 16 ANSI colors can be customized with named parameters:
+
+**Normal colors (0-7):**
+- **black**, **red**, **green**, **yellow**, **blue**, **magenta**, **cyan**, **white**
+
+**Bright colors (8-15):**
+- **bright_black**, **bright_red**, **bright_green**, **bright_yellow**, **bright_blue**, **bright_magenta**, **bright_cyan**, **bright_white**
+
+Each color is specified as a hex string (e.g., `"#E06C75"`).
+
+### Grid Settings (`[grid]`)
+- **rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
+- **cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
+
+Grid size must be edited manually in the config file.
+
+The configuration file is created automatically on first use and updated whenever settings change.
 
 ### Font Loading
 
@@ -202,14 +232,44 @@ If style variants (Bold, Italic, BoldItalic) aren't found:
 
 **Example configuration:**
 ```toml
-font_size = 16
-font_family = "VictorMonoNerdFont"
-window_width = 1920
-window_height = 1080
-window_x = 150
-window_y = 100
-grid_rows = 3
-grid_cols = 4
+[font]
+size = 16
+family = "VictorMonoNerdFont"
+
+[window]
+width = 1920
+height = 1080
+x = 150
+y = 100
+
+[theme]
+background = "#1E1E2E"
+foreground = "#CDD6F4"
+accent = "#89B4FA"
+selection = "#313244"
+
+# Optional: custom ANSI palette colors (example: Catppuccin Mocha)
+[theme.palette]
+black = "#45475A"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#BAC2DE"
+bright_black = "#585B70"
+bright_red = "#F38BA8"
+bright_green = "#A6E3A1"
+bright_yellow = "#F9E2AF"
+bright_blue = "#89B4FA"
+bright_magenta = "#F5C2E7"
+bright_cyan = "#94E2D5"
+bright_white = "#A6ADC8"
+
+[grid]
+rows = 3
+cols = 4
 ```
 
 **Debugging font loading:**
@@ -479,7 +539,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
 - `src/font_paths.zig` - Font path resolution from macOS system font directories
-- `src/config.zig` - Configuration persistence (saves font size, font family, window size, and position)
+- `src/config.zig` - Configuration persistence (font, window, and theme settings)
 - `src/c.zig` - C library bindings for SDL3
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
@@ -522,7 +582,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize
-- Persistent configuration (font size, font family, window size, and position)
+- Persistent configuration (font, window, and theme/color settings)
 - Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
@@ -534,7 +594,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **Limited font distribution**: Only the bundled font family ships with the app today
-- **Limited configurability**: Colors and keybindings are hardcoded
+- **Limited configurability**: Keybindings are hardcoded
 
 ## License
 
