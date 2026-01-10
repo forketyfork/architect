@@ -93,7 +93,7 @@ pub const ToastComponent = struct {
         const alpha = self.getAlpha(host.now_ms);
         if (alpha == 0) return;
 
-        self.ensureTexture(renderer, assets) catch return;
+        self.ensureTexture(renderer, assets, host.theme) catch return;
         const texture = self.texture orelse return;
 
         var text_width_f: f32 = 0;
@@ -117,11 +117,13 @@ pub const ToastComponent = struct {
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
-        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, bg_alpha);
+        const sel = host.theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, border_alpha);
+        const acc = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, border_alpha);
         _ = c.SDL_RenderRect(renderer, &bg_rect);
 
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
@@ -137,7 +139,7 @@ pub const ToastComponent = struct {
         self.first_frame.markDrawn();
     }
 
-    fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer, assets: *types.UiAssets) !void {
+    fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) !void {
         if (!self.active) return;
         if (!self.dirty and self.texture != null) return;
 
@@ -167,7 +169,8 @@ pub const ToastComponent = struct {
             }
         }
         const toast_font = self.font.?;
-        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const fg = theme.foreground;
+        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
         var lines: [MAX_TOAST_LINES][]const u8 = undefined;
         var line_count: usize = 0;

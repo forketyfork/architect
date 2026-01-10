@@ -49,6 +49,7 @@ const Cache = struct {
     key_fonts: FontWithFallbacks,
     title: TextTex,
     shortcuts: [shortcuts.len]ShortcutTex,
+    theme_fg: c.SDL_Color,
 };
 
 fn openFontWithFallbacks(
@@ -178,7 +179,8 @@ pub const HelpOverlayComponent = struct {
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 220);
+        const sel = host.theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y),
@@ -187,29 +189,31 @@ pub const HelpOverlayComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+        const accent = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         // Pre-warm cached text while the button is expanding so the content is
         // ready once the panel fully opens.
         if (self.state != .Closed) {
-            _ = self.ensureCache(renderer, host.ui_scale, assets);
+            _ = self.ensureCache(renderer, host.ui_scale, assets, host.theme);
         }
 
         switch (self.state) {
-            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets),
-            .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets),
+            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets, host.theme),
+            .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets, host.theme),
         }
     }
 
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
+    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const font_path = assets.font_path orelse return;
         const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
         const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
         defer closeFontWithFallbacks(fonts);
 
         const question_mark: [2]u8 = .{ '?', 0 };
-        const fg_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const fg = theme.foreground;
+        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.main, &question_mark, 1, fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
@@ -232,8 +236,8 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets) void {
-        const cache = self.ensureCache(renderer, ui_scale, assets) orelse return;
+    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+        const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
         var y_offset: c_int = rect.y + padding;
@@ -307,13 +311,17 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets) ?*Cache {
+    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
         const font_path = assets.font_path orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const key_font_size: c_int = dpi.scale(16, ui_scale);
+        const fg = theme.foreground;
 
         if (self.cache) |cache| {
-            if (cache.title_font_size == title_font_size and cache.key_font_size == key_font_size) {
+            if (cache.title_font_size == title_font_size and
+                cache.key_font_size == key_font_size and
+                cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b)
+            {
                 return cache;
             }
             self.destroyCache();
@@ -336,7 +344,7 @@ pub const HelpOverlayComponent = struct {
         errdefer closeFontWithFallbacks(key_fonts);
 
         const title_text = "Keyboard Shortcuts";
-        const title_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.main, title_text, title_color) catch {
             closeFontWithFallbacks(key_fonts);
             closeFontWithFallbacks(title_fonts);
@@ -383,6 +391,7 @@ pub const HelpOverlayComponent = struct {
             .key_fonts = key_fonts,
             .title = title_tex,
             .shortcuts = shortcut_tex,
+            .theme_fg = fg,
         };
 
         self.cache = cache;
