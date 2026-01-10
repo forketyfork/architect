@@ -108,6 +108,7 @@ src/
     │   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
     │   ├── toast.zig            # Toast notification display
     │   ├── escape_hold.zig      # ESC hold-to-collapse indicator
+    │   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
     │   ├── restart_buttons.zig  # Dead session restart buttons
     │   ├── quit_confirm.zig     # Quit confirmation dialog
     │   └── marquee_label.zig    # Reusable scrolling text label

@@ -89,6 +89,7 @@ See [Setup](#setup) section below for building from source.
   - Click any grid cell or press ⌘+Return in grid view to expand
   - Hold Esc for ~700ms to collapse back to grid; a quick tap is forwarded to the terminal
   - Type in the focused terminal
+  - Visual feedback indicator appears briefly when hotkeys are pressed
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
@@ -189,6 +190,9 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 
 Grid size must be edited manually in the config file.
 
+### UI Settings (`[ui]`)
+- **show_hotkey_feedback**: Show visual indicator when hotkeys are pressed (default: `true`)
+
 The configuration file is created automatically on first use and updated whenever settings change.
 
 ### Font Loading
@@ -270,6 +274,9 @@ bright_white = "#A6ADC8"
 [grid]
 rows = 3
 cols = 4
+
+[ui]
+show_hotkey_feedback = true
 ```
 
 **Debugging font loading:**
