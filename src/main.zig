@@ -1412,8 +1412,8 @@ fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
 /// Only ASCII characters are considered; non-ASCII codepoints return false.
 fn isWordCharacter(codepoint: u21) bool {
     if (codepoint > 127) return false;
-    const c: u8 = @intCast(codepoint);
-    return std.ascii.isAlphanumeric(c) or c == '_';
+    const ch: u8 = @intCast(codepoint);
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 /// Select the word at the given pin position. A word is a contiguous sequence of
