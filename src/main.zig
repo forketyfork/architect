@@ -658,20 +658,31 @@ pub fn main() !void {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and focused.terminal != null) {
                             if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                const mod = c.SDL_GetModState();
-                                const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+                                const clicks = scaled_event.button.clicks;
 
-                                if (cmd_held) {
-                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_scrolled)) |uri| {
-                                        defer allocator.free(uri);
-                                        open_url.openUrl(allocator, uri) catch |err| {
-                                            log.err("Failed to open URL: {}", .{err});
-                                        };
+                                if (clicks >= 3) {
+                                    // Triple-click: select entire line
+                                    selectLine(focused, pin, focused.is_scrolled);
+                                } else if (clicks == 2) {
+                                    // Double-click: select word
+                                    selectWord(focused, pin, focused.is_scrolled);
+                                } else {
+                                    // Single-click: begin drag selection or open link
+                                    const mod = c.SDL_GetModState();
+                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                                    if (cmd_held) {
+                                        if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_scrolled)) |uri| {
+                                            defer allocator.free(uri);
+                                            open_url.openUrl(allocator, uri) catch |err| {
+                                                log.err("Failed to open URL: {}", .{err});
+                                            };
+                                        } else {
+                                            beginSelection(focused, pin);
+                                        }
                                     } else {
                                         beginSelection(focused, pin);
                                     }
-                                } else {
-                                    beginSelection(focused, pin);
                                 }
                             }
                         }
@@ -1395,6 +1406,126 @@ fn endSelection(session: *SessionState) void {
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+/// Returns true if the codepoint is considered part of a word (alphanumeric or underscore).
+/// Only ASCII characters are considered; non-ASCII codepoints return false.
+fn isWordCharacter(codepoint: u21) bool {
+    if (codepoint > 127) return false;
+    const ch: u8 = @intCast(codepoint);
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+/// Select the word at the given pin position. A word is a contiguous sequence of
+/// word characters (alphanumeric and underscore).
+fn selectWord(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) void {
+    const terminal = &(session.terminal orelse return);
+    const page = &pin.node.data;
+    const max_col: u16 = @intCast(page.size.cols - 1);
+
+    // Get the point from the pin
+    const pin_point = if (is_scrolled)
+        terminal.screens.active.pages.pointFromPin(.viewport, pin)
+    else
+        terminal.screens.active.pages.pointFromPin(.active, pin);
+    const point = pin_point orelse return;
+    const click_x = if (is_scrolled) point.viewport.x else point.active.x;
+    const click_y = if (is_scrolled) point.viewport.y else point.active.y;
+
+    // Check if clicked cell is a word character
+    const clicked_cell = terminal.screens.active.pages.getCell(
+        if (is_scrolled)
+            ghostty_vt.point.Point{ .viewport = .{ .x = click_x, .y = click_y } }
+        else
+            ghostty_vt.point.Point{ .active = .{ .x = click_x, .y = click_y } },
+    ) orelse return;
+    const clicked_cp = clicked_cell.cell.content.codepoint;
+    if (!isWordCharacter(clicked_cp)) return;
+
+    // Find word start by scanning left
+    var start_x = click_x;
+    while (start_x > 0) {
+        const prev_x = start_x - 1;
+        const prev_cell = terminal.screens.active.pages.getCell(
+            if (is_scrolled)
+                ghostty_vt.point.Point{ .viewport = .{ .x = prev_x, .y = click_y } }
+            else
+                ghostty_vt.point.Point{ .active = .{ .x = prev_x, .y = click_y } },
+        ) orelse break;
+        if (!isWordCharacter(prev_cell.cell.content.codepoint)) break;
+        start_x = prev_x;
+    }
+
+    // Find word end by scanning right
+    var end_x = click_x;
+    while (end_x < max_col) {
+        const next_x = end_x + 1;
+        const next_cell = terminal.screens.active.pages.getCell(
+            if (is_scrolled)
+                ghostty_vt.point.Point{ .viewport = .{ .x = next_x, .y = click_y } }
+            else
+                ghostty_vt.point.Point{ .active = .{ .x = next_x, .y = click_y } },
+        ) orelse break;
+        if (!isWordCharacter(next_cell.cell.content.codepoint)) break;
+        end_x = next_x;
+    }
+
+    // Create pins for the word boundaries
+    const start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = start_x, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = start_x, .y = click_y } };
+    const end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = end_x, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = end_x, .y = click_y } };
+
+    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
+    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
+
+    // Apply the selection
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select word: {}", .{err});
+        return;
+    };
+    session.dirty = true;
+}
+
+/// Select the entire line at the given pin position.
+fn selectLine(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) void {
+    const terminal = &(session.terminal orelse return);
+    const page = &pin.node.data;
+    const max_col: u16 = @intCast(page.size.cols - 1);
+
+    // Get the point from the pin
+    const pin_point = if (is_scrolled)
+        terminal.screens.active.pages.pointFromPin(.viewport, pin)
+    else
+        terminal.screens.active.pages.pointFromPin(.active, pin);
+    const point = pin_point orelse return;
+    const click_y = if (is_scrolled) point.viewport.y else point.active.y;
+
+    // Create pins for line start (x=0) and line end (x=max_col)
+    const start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = click_y } };
+    const end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = max_col, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = max_col, .y = click_y } };
+
+    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
+    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
+
+    // Apply the selection
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select line: {}", .{err});
+        return;
+    };
+    session.dirty = true;
 }
 
 const LinkMatch = struct {
