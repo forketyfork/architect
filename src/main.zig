@@ -386,6 +386,7 @@ pub fn main() !void {
                         .window_y = window_y,
                         .grid_rows = config.grid_rows,
                         .grid_cols = config.grid_cols,
+                        .rendering = config.rendering,
                     };
                     defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
@@ -507,6 +508,7 @@ pub fn main() !void {
                                 .window_y = window_y,
                                 .grid_rows = config.grid_rows,
                                 .grid_cols = config.grid_cols,
+                                .rendering = config.rendering,
                             };
                             defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {
