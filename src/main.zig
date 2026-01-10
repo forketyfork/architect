@@ -880,15 +880,15 @@ pub fn main() !void {
                 running = false;
             },
             .OpenConfig => {
-                const config_path = config_mod.Config.getConfigPath(allocator) catch |err| {
+                if (config_mod.Config.getConfigPath(allocator)) |config_path| {
+                    defer allocator.free(config_path);
+                    open_url.openUrl(allocator, config_path) catch |err| {
+                        std.debug.print("Failed to open config file: {}\n", .{err});
+                    };
+                    ui.showToast("⌘, Opening config file", now);
+                } else |err| {
                     std.debug.print("Failed to get config path: {}\n", .{err});
-                    continue;
-                };
-                defer allocator.free(config_path);
-                open_url.openUrl(allocator, config_path) catch |err| {
-                    std.debug.print("Failed to open config file: {}\n", .{err});
-                };
-                ui.showToast("⌘, Opening config file", now);
+                }
             },
         };
 
