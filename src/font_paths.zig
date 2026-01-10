@@ -23,7 +23,14 @@ pub const FontPaths = struct {
 
         const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
 
-        paths.regular = try findSystemFont(allocator, selected_family, "Regular");
+        if (findSystemFont(allocator, selected_family, "Regular")) |regular_path| {
+            paths.regular = regular_path;
+        } else |_| {
+            if (font_family) |requested| {
+                log.warn("Font family '{s}' not found, falling back to {s}", .{ requested, DEFAULT_FONT_FAMILY });
+            }
+            paths.regular = try findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Regular");
+        }
 
         if (findSystemFont(allocator, selected_family, "Bold")) |bold_path| {
             paths.bold = bold_path;
@@ -72,55 +79,90 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
     };
 
     const home = std.posix.getenv("HOME");
-    const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
-
     const style_suffix = if (std.mem.eql(u8, style, "Regular")) "" else style;
 
     for (search_dirs) |dir| {
-        for (extensions) |ext| {
-            const font_path = if (style_suffix.len > 0)
-                try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir, font_family, style_suffix, ext })
-            else
-                try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir, font_family, ext });
-            defer allocator.free(font_path);
-
-            std.fs.accessAbsolute(font_path, .{}) catch continue;
-            return allocator.dupeZ(u8, font_path);
-        }
-
-        for (extensions) |ext| {
-            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ dir, font_family, style_suffix, ext });
-            defer allocator.free(font_path);
-
-            std.fs.accessAbsolute(font_path, .{}) catch continue;
-            return allocator.dupeZ(u8, font_path);
-        }
+        if (searchFontInDirectory(allocator, dir, font_family, style_suffix)) |path| {
+            return path;
+        } else |_| {}
     }
 
     if (home) |h| {
         const user_fonts_dir = try std.fmt.allocPrint(allocator, "{s}/Library/Fonts", .{h});
         defer allocator.free(user_fonts_dir);
 
-        for (extensions) |ext| {
-            const font_path = if (style_suffix.len > 0)
-                try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ user_fonts_dir, font_family, style_suffix, ext })
-            else
-                try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ user_fonts_dir, font_family, ext });
-            defer allocator.free(font_path);
-
-            std.fs.accessAbsolute(font_path, .{}) catch continue;
-            return allocator.dupeZ(u8, font_path);
-        }
-
-        for (extensions) |ext| {
-            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ user_fonts_dir, font_family, style_suffix, ext });
-            defer allocator.free(font_path);
-
-            std.fs.accessAbsolute(font_path, .{}) catch continue;
-            return allocator.dupeZ(u8, font_path);
-        }
+        if (searchFontInDirectory(allocator, user_fonts_dir, font_family, style_suffix)) |path| {
+            return path;
+        } else |_| {}
     }
 
     log.err("Font not found: {s} {s}", .{ font_family, style });
+    return error.FontNotFound;
+}
+
+fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, font_family: []const u8, style_suffix: []const u8) ![:0]const u8 {
+    const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
+
+    for (extensions) |ext| {
+        const font_path = if (style_suffix.len > 0)
+            try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir_path, font_family, style_suffix, ext })
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir_path, font_family, ext });
+        defer allocator.free(font_path);
+
+        std.fs.accessAbsolute(font_path, .{}) catch continue;
+        return allocator.dupeZ(u8, font_path);
+    }
+
+    for (extensions) |ext| {
+        const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
+        defer allocator.free(font_path);
+
+        std.fs.accessAbsolute(font_path, .{}) catch continue;
+        return allocator.dupeZ(u8, font_path);
+    }
+
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return error.FontNotFound;
+    defer dir.close();
+
+    var walker = dir.walk(allocator) catch return error.FontNotFound;
+    defer walker.deinit();
+
+    while (walker.next() catch return error.FontNotFound) |entry| {
+        if (entry.kind != .file) continue;
+
+        const basename = entry.basename;
+        const has_valid_ext = blk: {
+            for (extensions) |ext| {
+                if (std.mem.endsWith(u8, basename, ext)) break :blk true;
+            }
+            break :blk false;
+        };
+        if (!has_valid_ext) continue;
+
+        const matches = blk: {
+            if (style_suffix.len > 0) {
+                const pattern1 = try std.fmt.allocPrint(allocator, "{s}-{s}.", .{ font_family, style_suffix });
+                defer allocator.free(pattern1);
+                if (std.mem.indexOf(u8, basename, pattern1)) |_| break :blk true;
+
+                const pattern2 = try std.fmt.allocPrint(allocator, "{s}{s}.", .{ font_family, style_suffix });
+                defer allocator.free(pattern2);
+                if (std.mem.indexOf(u8, basename, pattern2)) |_| break :blk true;
+            } else {
+                const pattern = try std.fmt.allocPrint(allocator, "{s}.", .{font_family});
+                defer allocator.free(pattern);
+                if (std.mem.indexOf(u8, basename, pattern)) |_| break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (matches) {
+            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.path });
+            defer allocator.free(full_path);
+            return allocator.dupeZ(u8, full_path);
+        }
+    }
+
     return error.FontNotFound;
 }
