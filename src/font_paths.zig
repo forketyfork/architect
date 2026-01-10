@@ -35,19 +35,31 @@ pub const FontPaths = struct {
         if (findSystemFont(allocator, selected_family, "Bold")) |bold_path| {
             paths.bold = bold_path;
         } else |_| {
-            paths.bold = try allocator.dupeZ(u8, paths.regular);
+            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+                paths.bold = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Bold") catch try allocator.dupeZ(u8, paths.regular);
+            } else {
+                paths.bold = try allocator.dupeZ(u8, paths.regular);
+            }
         }
 
         if (findSystemFont(allocator, selected_family, "Italic")) |italic_path| {
             paths.italic = italic_path;
         } else |_| {
-            paths.italic = try allocator.dupeZ(u8, paths.regular);
+            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+                paths.italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Italic") catch try allocator.dupeZ(u8, paths.regular);
+            } else {
+                paths.italic = try allocator.dupeZ(u8, paths.regular);
+            }
         }
 
         if (findSystemFont(allocator, selected_family, "BoldItalic")) |bold_italic_path| {
             paths.bold_italic = bold_italic_path;
         } else |_| {
-            paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
+            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+                paths.bold_italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
+            } else {
+                paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
+            }
         }
 
         paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
