@@ -71,6 +71,10 @@ pub const GridConfig = struct {
     cols: i32 = DEFAULT_GRID_COLS,
 };
 
+pub const UiConfig = struct {
+    show_hotkey_feedback: bool = true,
+};
+
 pub const PaletteConfig = struct {
     black: ?[]const u8 = null,
     red: ?[]const u8 = null,
@@ -225,6 +229,7 @@ pub const Config = struct {
     window: WindowConfig = .{},
     grid: GridConfig = .{},
     theme: ThemeConfig = .{},
+    ui: UiConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
