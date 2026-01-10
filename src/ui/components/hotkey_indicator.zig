@@ -42,9 +42,8 @@ pub const HotkeyIndicatorComponent = struct {
     }
 
     pub fn show(self: *HotkeyIndicatorComponent, label: []const u8, now_ms: i64) void {
-        const len = @min(label.len, self.label.len - 1);
+        const len = @min(label.len, self.label.len);
         @memcpy(self.label[0..len], label[0..len]);
-        self.label[len] = 0;
         self.label_len = len;
         self.start_ms = now_ms;
         self.active = true;
