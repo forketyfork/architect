@@ -401,7 +401,7 @@ pub fn main() !void {
                             .x = window_x,
                             .y = window_y,
                         },
-                        .theme = config.theme,
+                        .theme = try config.theme.duplicate(allocator),
                         .grid_rows = config.grid_rows,
                         .grid_cols = config.grid_cols,
                     };
@@ -527,7 +527,7 @@ pub fn main() !void {
                                     .x = window_x,
                                     .y = window_y,
                                 },
-                                .theme = config.theme,
+                                .theme = try config.theme.duplicate(allocator),
                                 .grid_rows = config.grid_rows,
                                 .grid_cols = config.grid_cols,
                             };
