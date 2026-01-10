@@ -1400,11 +1400,11 @@ fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
 }
 
 /// Returns true if the codepoint is considered part of a word (alphanumeric or underscore).
+/// Only ASCII characters are considered; non-ASCII codepoints return false.
 fn isWordCharacter(codepoint: u21) bool {
-    return (codepoint >= 'a' and codepoint <= 'z') or
-        (codepoint >= 'A' and codepoint <= 'Z') or
-        (codepoint >= '0' and codepoint <= '9') or
-        codepoint == '_';
+    if (codepoint > 127) return false;
+    const c: u8 = @intCast(codepoint);
+    return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
 /// Select the word at the given pin position. A word is a contiguous sequence of
@@ -1476,7 +1476,10 @@ fn selectWord(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) vo
 
     // Apply the selection
     terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select word: {}", .{err});
+        return;
+    };
     session.dirty = true;
 }
 
@@ -1509,7 +1512,10 @@ fn selectLine(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) vo
 
     // Apply the selection
     terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select line: {}", .{err});
+        return;
+    };
     session.dirty = true;
 }
 
