@@ -1,7 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
-const json = std.json;
-const tomlz = @import("tomlz");
+const toml = @import("toml");
 
 pub const Config = struct {
     font_size: i32,
@@ -16,10 +15,7 @@ pub const Config = struct {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
-        return loadTomlConfig(allocator, config_path) catch |err| switch (err) {
-            error.ConfigNotFound => loadLegacyJson(allocator),
-            else => return err,
-        };
+        return loadTomlConfig(allocator, config_path);
     }
 
     pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
@@ -32,25 +28,29 @@ pub const Config = struct {
             else => return err,
         };
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
-
-        try tomlz.serialize(allocator, buffer.writer(), self);
-        try buffer.append('\n');
+        const font_family = if (self.font_family) |f| if (f.len > 0) f else DEFAULT_FONT_FAMILY else DEFAULT_FONT_FAMILY;
+        const content = try std.fmt.allocPrint(
+            allocator,
+            \\font_size = {d}
+            \\font_family = "{s}"
+            \\window_width = {d}
+            \\window_height = {d}
+            \\window_x = {d}
+            \\window_y = {d}
+            \\
+        ,
+            .{ self.font_size, font_family, self.window_width, self.window_height, self.window_x, self.window_y },
+        );
+        defer allocator.free(content);
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(buffer.items);
+        try file.writeAll(content);
     }
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
-    }
-
-    fn getLegacyJsonPath(allocator: std.mem.Allocator) ![]u8 {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.json" });
     }
 
     fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
@@ -63,64 +63,16 @@ pub const Config = struct {
         const content = try file.readToEndAlloc(allocator, 1024 * 1024);
         defer allocator.free(content);
 
-        return tomlz.decode(Config, allocator, content) catch return error.InvalidConfig;
-    }
+        var parser = toml.Parser(Config).init(allocator);
+        defer parser.deinit();
 
-    fn loadLegacyJson(allocator: std.mem.Allocator) LoadError!Config {
-        const config_path = try getLegacyJsonPath(allocator);
-        defer allocator.free(config_path);
-
-        const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return error.ConfigNotFound,
-            else => return err,
-        };
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(content);
-
-        const parsed = json.parseFromSlice(json.Value, allocator, content, .{}) catch return error.InvalidConfig;
-        defer parsed.deinit();
-
-        const root = parsed.value;
-        if (root != .object) return error.InvalidConfig;
-        const obj = root.object;
-
-        const font_size_val = obj.get("font_size") orelse return error.InvalidConfig;
-        const font_family_val = obj.get("font_family");
-        const window_width_val = obj.get("window_width") orelse return error.InvalidConfig;
-        const window_height_val = obj.get("window_height") orelse return error.InvalidConfig;
-        const window_x_val = obj.get("window_x") orelse return error.InvalidConfig;
-        const window_y_val = obj.get("window_y") orelse return error.InvalidConfig;
-
-        if (font_size_val != .integer or window_width_val != .integer or window_height_val != .integer or
-            window_x_val != .integer or window_y_val != .integer)
-        {
+        var result = parser.parseString(content) catch |err| {
+            std.log.err("Failed to parse TOML config `{s}`: {any}", .{ config_path, err });
             return error.InvalidConfig;
-        }
-
-        var font_family: ?[]const u8 = null;
-        var font_family_owned = false;
-        if (font_family_val) |value| {
-            if (value != .string) return error.InvalidConfig;
-            if (value.string.len > 0) {
-                font_family = try allocator.dupe(u8, value.string);
-                font_family_owned = true;
-            }
-        }
-
-        const legacy_config = Config{
-            .font_size = @intCast(font_size_val.integer),
-            .font_family = font_family,
-            .font_family_owned = font_family_owned,
-            .window_width = @intCast(window_width_val.integer),
-            .window_height = @intCast(window_height_val.integer),
-            .window_x = @intCast(window_x_val.integer),
-            .window_y = @intCast(window_y_val.integer),
         };
+        defer result.deinit();
 
-        legacy_config.save(allocator) catch {};
-        return legacy_config;
+        return result.value;
     }
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
@@ -148,7 +100,7 @@ pub const SaveError = error{
     HomeNotFound,
     InvalidPath,
     OutOfMemory,
-} || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError || tomlz.serializer.SerializeError;
+} || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
 
 test "Config - decode toml" {
     const allocator = std.testing.allocator;
@@ -163,8 +115,13 @@ test "Config - decode toml" {
         \\
     ;
 
-    var decoded = try tomlz.decode(Config, allocator, content);
-    defer decoded.deinit(allocator);
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(content);
+    defer result.deinit();
+
+    const decoded = result.value;
 
     try std.testing.expectEqual(@as(i32, 16), decoded.font_size);
     try std.testing.expect(decoded.font_family != null);

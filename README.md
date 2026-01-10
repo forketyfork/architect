@@ -159,7 +159,6 @@ Architect automatically saves your preferences to `~/.config/architect/config.to
 - **Window position**: Saved along with window dimensions when you resize or adjust font size
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
-Existing `config.json` files from older versions are automatically migrated to TOML on next launch.
 
 ### Font Loading
 
