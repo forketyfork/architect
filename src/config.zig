@@ -49,7 +49,7 @@ pub const Config = struct {
         try file.writeAll(writer.buffered());
     }
 
-    fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
+    pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
     }

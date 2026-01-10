@@ -483,6 +483,16 @@ pub fn main() !void {
                         pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
+                    } else if (key == c.SDLK_COMMA and has_gui and !has_blocking_mod) {
+                        const config_path = config_mod.Config.getConfigPath(allocator) catch |err| {
+                            std.debug.print("Failed to get config path: {}\n", .{err});
+                            continue;
+                        };
+                        defer allocator.free(config_path);
+                        open_url.openUrl(allocator, config_path) catch |err| {
+                            std.debug.print("Failed to open config file: {}\n", .{err});
+                        };
+                        ui.showToast("⌘,  Opening config file", now);
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
