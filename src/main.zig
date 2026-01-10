@@ -134,26 +134,13 @@ pub fn main() !void {
         platform.WindowPosition{ .x = config.window_x, .y = config.window_y }
     else
         null;
-    var vsync_requested: bool = true;
-    if (std.posix.getenv("ARCHITECT_NO_VSYNC") != null) {
-        vsync_requested = false;
-    } else if (std.posix.getenv("ARCHITECT_VSYNC")) |val| {
-        if (std.ascii.eqlIgnoreCase(val, "0") or
-            std.ascii.eqlIgnoreCase(val, "false") or
-            std.ascii.eqlIgnoreCase(val, "no"))
-        {
-            vsync_requested = false;
-        } else {
-            vsync_requested = true;
-        }
-    }
 
     var sdl = try platform.init(
         "ARCHITECT",
         config.window_width,
         config.window_height,
         window_pos,
-        vsync_requested,
+        config.rendering.vsync,
     );
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);

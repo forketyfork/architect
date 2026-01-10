@@ -12,6 +12,10 @@ pub const DEFAULT_WINDOW_HEIGHT: i32 = 900;
 pub const DEFAULT_WINDOW_X: i32 = -1;
 pub const DEFAULT_WINDOW_Y: i32 = -1;
 
+pub const Rendering = struct {
+    vsync: bool = true,
+};
+
 pub const Config = struct {
     font_size: i32 = DEFAULT_FONT_SIZE,
     font_family: ?[]const u8 = null,
@@ -22,6 +26,7 @@ pub const Config = struct {
     window_y: i32 = DEFAULT_WINDOW_Y,
     grid_rows: i32 = DEFAULT_GRID_ROWS,
     grid_cols: i32 = DEFAULT_GRID_COLS,
+    rendering: Rendering = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -133,6 +138,9 @@ test "Config - decode toml with all fields" {
         \\grid_rows = 3
         \\grid_cols = 4
         \\
+        \\[rendering]
+        \\vsync = false
+        \\
     ;
 
     var parser = toml.Parser(Config).init(allocator);
@@ -152,6 +160,7 @@ test "Config - decode toml with all fields" {
     try std.testing.expectEqual(@as(i32, 100), decoded.window_y);
     try std.testing.expectEqual(@as(i32, 3), decoded.grid_rows);
     try std.testing.expectEqual(@as(i32, 4), decoded.grid_cols);
+    try std.testing.expectEqual(false, decoded.rendering.vsync);
 }
 
 test "Config - decode toml with partial fields uses defaults" {
@@ -178,6 +187,7 @@ test "Config - decode toml with partial fields uses defaults" {
     try std.testing.expectEqual(DEFAULT_WINDOW_Y, decoded.window_y);
     try std.testing.expectEqual(DEFAULT_GRID_ROWS, decoded.grid_rows);
     try std.testing.expectEqual(DEFAULT_GRID_COLS, decoded.grid_cols);
+    try std.testing.expectEqual(true, decoded.rendering.vsync);
 }
 
 test "Config - decode empty toml uses all defaults" {
@@ -201,4 +211,5 @@ test "Config - decode empty toml uses all defaults" {
     try std.testing.expectEqual(DEFAULT_WINDOW_Y, decoded.window_y);
     try std.testing.expectEqual(DEFAULT_GRID_ROWS, decoded.grid_rows);
     try std.testing.expectEqual(DEFAULT_GRID_COLS, decoded.grid_cols);
+    try std.testing.expectEqual(true, decoded.rendering.vsync);
 }
