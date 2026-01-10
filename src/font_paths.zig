@@ -21,7 +21,7 @@ pub const FontPaths = struct {
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
 
-        const selected_family = font_family orelse DEFAULT_FONT_FAMILY;
+        const selected_family = if (font_family) |ff| if (ff.len > 0) ff else DEFAULT_FONT_FAMILY else DEFAULT_FONT_FAMILY;
 
         if (findSystemFont(allocator, selected_family, "Regular")) |regular_path| {
             paths.regular = regular_path;
