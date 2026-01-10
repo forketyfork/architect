@@ -5,6 +5,8 @@ const tomlz = @import("tomlz");
 
 pub const Config = struct {
     font_size: i32,
+    font_family: ?[]const u8,
+    font_family_owned: bool = false,
     window_width: i32,
     window_height: i32,
     window_x: i32,
@@ -85,6 +87,7 @@ pub const Config = struct {
         const obj = root.object;
 
         const font_size_val = obj.get("font_size") orelse return error.InvalidConfig;
+        const font_family_val = obj.get("font_family");
         const window_width_val = obj.get("window_width") orelse return error.InvalidConfig;
         const window_height_val = obj.get("window_height") orelse return error.InvalidConfig;
         const window_x_val = obj.get("window_x") orelse return error.InvalidConfig;
@@ -96,8 +99,20 @@ pub const Config = struct {
             return error.InvalidConfig;
         }
 
+        var font_family: ?[]const u8 = null;
+        var font_family_owned = false;
+        if (font_family_val) |value| {
+            if (value != .string) return error.InvalidConfig;
+            if (value.string.len > 0) {
+                font_family = try allocator.dupe(u8, value.string);
+                font_family_owned = true;
+            }
+        }
+
         const legacy_config = Config{
             .font_size = @intCast(font_size_val.integer),
+            .font_family = font_family,
+            .font_family_owned = font_family_owned,
             .window_width = @intCast(window_width_val.integer),
             .window_height = @intCast(window_height_val.integer),
             .window_x = @intCast(window_x_val.integer),
@@ -107,7 +122,19 @@ pub const Config = struct {
         legacy_config.save(allocator) catch {};
         return legacy_config;
     }
+
+    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
+        if (self.font_family_owned) {
+            if (self.font_family) |value| {
+                allocator.free(value);
+            }
+        }
+        self.font_family = null;
+        self.font_family_owned = false;
+    }
 };
+
+pub const DEFAULT_FONT_FAMILY = "SFNSMono";
 
 pub const LoadError = error{
     ConfigNotFound,
@@ -128,6 +155,7 @@ test "Config - decode toml" {
 
     const content =
         \\font_size = 16
+        \\font_family = "VictorMonoNerdFont"
         \\window_width = 1920
         \\window_height = 1080
         \\window_x = 100
@@ -135,9 +163,12 @@ test "Config - decode toml" {
         \\
     ;
 
-    const decoded = try tomlz.decode(Config, allocator, content);
+    var decoded = try tomlz.decode(Config, allocator, content);
+    defer decoded.deinit(allocator);
 
     try std.testing.expectEqual(@as(i32, 16), decoded.font_size);
+    try std.testing.expect(decoded.font_family != null);
+    try std.testing.expectEqualStrings("VictorMonoNerdFont", decoded.font_family.?);
     try std.testing.expectEqual(@as(i32, 1920), decoded.window_width);
     try std.testing.expectEqual(@as(i32, 1080), decoded.window_height);
     try std.testing.expectEqual(@as(i32, 100), decoded.window_x);

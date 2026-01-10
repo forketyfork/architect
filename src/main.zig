@@ -107,7 +107,7 @@ pub fn main() !void {
         notify_thread.join();
     }
 
-    const config = config_mod.Config.load(allocator) catch |err| blk: {
+    var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
             std.debug.print("Config not found, using defaults\n", .{});
         } else {
@@ -115,12 +115,15 @@ pub fn main() !void {
         }
         break :blk config_mod.Config{
             .font_size = DEFAULT_FONT_SIZE,
+            .font_family = null,
+            .font_family_owned = false,
             .window_width = INITIAL_WINDOW_WIDTH,
             .window_height = INITIAL_WINDOW_HEIGHT,
             .window_x = -1,
             .window_y = -1,
         };
     };
+    defer config.deinit(allocator);
 
     const window_pos = if (config.window_x >= 0 and config.window_y >= 0)
         platform.WindowPosition{ .x = config.window_x, .y = config.window_y }
@@ -173,7 +176,7 @@ pub fn main() !void {
     var scale_y = sdl.scale_y;
     var ui_scale: f32 = @max(scale_x, scale_y);
 
-    var font_paths = try font_paths_mod.FontPaths.init(allocator);
+    var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font_family);
     defer font_paths.deinit();
 
     var font = try font_mod.Font.init(
@@ -375,13 +378,17 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    const updated_config = config_mod.Config{
+                    const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                    var updated_config = config_mod.Config{
                         .font_size = font_size,
+                        .font_family = font_family_dup,
+                        .font_family_owned = true,
                         .window_width = window_width_points,
                         .window_height = window_height_points,
                         .window_x = window_x,
                         .window_y = window_y,
                     };
+                    defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
                         std.debug.print("Failed to save config: {}\n", .{err});
                     };
@@ -488,13 +495,17 @@ pub fn main() !void {
                             applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            const updated_config = config_mod.Config{
+                            const font_family_dup = if (config.font_family) |ff| try allocator.dupe(u8, ff) else null;
+                            var updated_config = config_mod.Config{
                                 .font_size = font_size,
+                                .font_family = font_family_dup,
+                                .font_family_owned = true,
                                 .window_width = window_width_points,
                                 .window_height = window_height_points,
                                 .window_x = window_x,
                                 .window_y = window_y,
                             };
+                            defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {
                                 std.debug.print("Failed to save config: {}\n", .{err});
                             };
@@ -1657,40 +1668,4 @@ fn pasteClipboardIntoSession(
     };
 
     ui.showToast("Pasted clipboard", now);
-}
-
-const ansi_colors = [_]c.SDL_Color{
-    // Normal
-    .{ .r = 14, .g = 17, .b = 22, .a = 255 }, // Black
-    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // Red
-    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // Green
-    .{ .r = 209, .g = 154, .b = 102, .a = 255 }, // Yellow
-    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // Blue
-    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // Magenta
-    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // Cyan
-    .{ .r = 171, .g = 178, .b = 191, .a = 255 }, // White
-    // Bright
-    .{ .r = 92, .g = 99, .b = 112, .a = 255 }, // BrightBlack
-    .{ .r = 224, .g = 108, .b = 117, .a = 255 }, // BrightRed
-    .{ .r = 152, .g = 195, .b = 121, .a = 255 }, // BrightGreen
-    .{ .r = 229, .g = 192, .b = 123, .a = 255 }, // BrightYellow
-    .{ .r = 97, .g = 175, .b = 239, .a = 255 }, // BrightBlue
-    .{ .r = 198, .g = 120, .b = 221, .a = 255 }, // BrightMagenta
-    .{ .r = 86, .g = 182, .b = 194, .a = 255 }, // BrightCyan
-    .{ .r = 205, .g = 214, .b = 224, .a = 255 }, // BrightWhite
-};
-
-fn get256Color(idx: u8) c.SDL_Color {
-    if (idx < 16) {
-        return ansi_colors[idx];
-    } else if (idx < 232) {
-        const color_idx = idx - 16;
-        const r = (color_idx / 36) * 51;
-        const g = ((color_idx % 36) / 6) * 51;
-        const b = (color_idx % 6) * 51;
-        return .{ .r = @intCast(r), .g = @intCast(g), .b = @intCast(b), .a = 255 };
-    } else {
-        const gray = 8 + (idx - 232) * 10;
-        return .{ .r = @intCast(gray), .g = @intCast(gray), .b = @intCast(gray), .a = 255 };
-    }
 }
