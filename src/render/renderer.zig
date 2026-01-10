@@ -46,7 +46,7 @@ pub fn render(
     font_path: [:0]const u8,
     theme: *const colors.Theme,
 ) RenderError!void {
-    _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
+    _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
 
     // Use the larger dimension for grid scale to ensure proper scaling
@@ -182,7 +182,7 @@ fn renderSessionContent(
         return;
     };
 
-    const base_bg = c.SDL_Color{ .r = 14, .g = 17, .b = 22, .a = 255 };
+    const base_bg = c.SDL_Color{ .r = theme.background.r, .g = theme.background.g, .b = theme.background.b, .a = 255 };
     const session_bg_color = if (terminal.colors.background.get()) |rgb|
         c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
     else
@@ -219,7 +219,7 @@ fn renderSessionContent(
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
-    const default_fg = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+    const default_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
     const active_selection = screen.selection;
 
     var row: usize = 0;
@@ -576,7 +576,7 @@ fn renderGridSessionCached(
                 log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
                 _ = c.SDL_SetRenderTarget(renderer, tex);
                 _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
-                _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
+                _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows, theme);
