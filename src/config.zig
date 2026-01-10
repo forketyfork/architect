@@ -28,24 +28,13 @@ pub const Config = struct {
             else => return err,
         };
 
-        const font_family = if (self.font_family) |f| if (f.len > 0) f else DEFAULT_FONT_FAMILY else DEFAULT_FONT_FAMILY;
-        const content = try std.fmt.allocPrint(
-            allocator,
-            \\font_size = {d}
-            \\font_family = "{s}"
-            \\window_width = {d}
-            \\window_height = {d}
-            \\window_x = {d}
-            \\window_y = {d}
-            \\
-        ,
-            .{ self.font_size, font_family, self.window_width, self.window_height, self.window_x, self.window_y },
-        );
-        defer allocator.free(content);
+        var buf: [2048]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+        try toml.serialize(allocator, self, &writer);
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(content);
+        try file.writeAll(writer.buffered());
     }
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
@@ -99,7 +88,9 @@ pub const LoadError = error{
 pub const SaveError = error{
     HomeNotFound,
     InvalidPath,
+    InvalidConfig,
     OutOfMemory,
+    WriteFailed,
 } || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
 
 test "Config - decode toml" {
