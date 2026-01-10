@@ -32,10 +32,15 @@ pub const FontPaths = struct {
             paths.regular = try findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Regular");
         }
 
+        const regular_is_ttc = std.mem.endsWith(u8, paths.regular, ".ttc");
+
         if (findSystemFont(allocator, selected_family, "Bold")) |bold_path| {
             paths.bold = bold_path;
         } else |_| {
-            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+            if (regular_is_ttc) {
+                log.info("Using TTC file for Bold variant: {s}", .{paths.regular});
+                paths.bold = try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
                 paths.bold = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Bold") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold = try allocator.dupeZ(u8, paths.regular);
@@ -45,7 +50,10 @@ pub const FontPaths = struct {
         if (findSystemFont(allocator, selected_family, "Italic")) |italic_path| {
             paths.italic = italic_path;
         } else |_| {
-            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+            if (regular_is_ttc) {
+                log.info("Using TTC file for Italic variant: {s}", .{paths.regular});
+                paths.italic = try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
                 paths.italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Italic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.italic = try allocator.dupeZ(u8, paths.regular);
@@ -55,7 +63,10 @@ pub const FontPaths = struct {
         if (findSystemFont(allocator, selected_family, "BoldItalic")) |bold_italic_path| {
             paths.bold_italic = bold_italic_path;
         } else |_| {
-            if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
+            if (regular_is_ttc) {
+                log.info("Using TTC file for BoldItalic variant: {s}", .{paths.regular});
+                paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
                 paths.bold_italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
@@ -144,6 +155,13 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
         }
     }
 
+    const ttc_path = try std.fmt.allocPrint(allocator, "{s}/{s}.ttc", .{ dir_path, font_family });
+    defer allocator.free(ttc_path);
+    if (std.fs.accessAbsolute(ttc_path, .{})) {
+        log.info("Found TTC file containing {s} variant: {s}", .{ style_suffix, ttc_path });
+        return allocator.dupeZ(u8, ttc_path);
+    } else |_| {}
+
     log.info("Recursively searching {s} for {s} {s}", .{ dir_path, font_family, style_suffix });
 
     var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch |err| {
@@ -197,6 +215,16 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
             defer allocator.free(full_path);
             log.info("Found font via recursive search: {s}", .{full_path});
             return allocator.dupeZ(u8, full_path);
+        }
+
+        if (std.mem.endsWith(u8, basename, ".ttc")) {
+            const ttc_name_end = basename.len - 4;
+            if (std.mem.eql(u8, basename[0..ttc_name_end], font_family)) {
+                const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.path });
+                defer allocator.free(full_path);
+                log.info("Found TTC file via recursive search containing {s} variant: {s}", .{ style_suffix, full_path });
+                return allocator.dupeZ(u8, full_path);
+            }
         }
     } else |err| {
         log.warn("Error during directory walk: {}", .{err});
