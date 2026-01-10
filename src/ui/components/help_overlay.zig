@@ -177,7 +177,8 @@ pub const HelpOverlayComponent = struct {
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 220);
+        const sel = host.theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y),
@@ -186,7 +187,8 @@ pub const HelpOverlayComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
+        const accent = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         // Pre-warm cached text while the button is expanding so the content is

@@ -159,9 +159,9 @@ fn renderSession(
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows, theme);
     if (is_grid_view) {
-        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
+        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, theme);
     }
-    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view);
+    renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme);
 }
 
 fn renderSessionContent(
@@ -471,15 +471,13 @@ fn renderSessionOverlays(
     apply_effects: bool,
     current_time_ms: i64,
     is_grid_view: bool,
+    theme: *const colors.Theme,
 ) void {
     if (apply_effects) {
-        applyTvOverlay(renderer, rect, is_focused);
+        applyTvOverlay(renderer, rect, is_focused, theme);
     } else if (is_grid_view) {
-        if (is_focused) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 97, 175, 239, 255);
-        } else {
-            _ = c.SDL_SetRenderDrawColor(renderer, 92, 99, 112, 255);
-        }
+        const border_color = if (is_focused) theme.accent else theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, 255);
         const border_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y),
@@ -490,7 +488,8 @@ fn renderSessionOverlays(
     }
 
     if (is_grid_view and session.is_scrolled) {
-        _ = c.SDL_SetRenderDrawColor(renderer, 215, 186, 125, 220);
+        const yellow = theme.palette[3];
+        _ = c.SDL_SetRenderDrawColor(renderer, yellow.r, yellow.g, yellow.b, 220);
         const indicator_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y + rect.h - 4),
@@ -501,22 +500,29 @@ fn renderSessionOverlays(
     }
 
     if (is_grid_view and session.attention) {
+        const yellow = theme.palette[3];
         const color = switch (session.status) {
             .awaiting_approval => blk: {
                 const phase_ms: f32 = @floatFromInt(@mod(current_time_ms, @as(i64, 1000)));
                 const pulse = 0.5 + 0.5 * std.math.sin(phase_ms / 1000.0 * 2.0 * std.math.pi);
                 const base_alpha: u8 = @intFromFloat(170 + 70 * pulse);
-                break :blk c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = base_alpha };
+                break :blk c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = base_alpha };
             },
-            .done => c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 230 },
-            else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 230 },
+            .done => blk: {
+                const acc = theme.accent;
+                break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 230 };
+            },
+            else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 230 },
         };
         primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
 
         const tint_color = switch (session.status) {
-            .awaiting_approval => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
-            .done => c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 30 },
-            else => c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 25 },
+            .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 25 },
+            .done => blk: {
+                const acc = theme.accent;
+                break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 30 };
+            },
+            else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 25 },
         };
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, tint_color.r, tint_color.g, tint_color.b, tint_color.a);
@@ -591,8 +597,8 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
-            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true);
+            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, theme);
+            renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true, theme);
             return;
         }
     }
@@ -600,10 +606,11 @@ fn renderGridSessionCached(
     try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path, theme);
 }
 
-fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
+fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
-    _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 60);
+    const bg = theme.background;
+    _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 60);
     _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
         .x = @floatFromInt(rect.x),
         .y = @floatFromInt(rect.y),
@@ -613,10 +620,13 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void 
 
     const radius: c_int = 12;
 
-    const border_color = if (is_focused)
-        c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 190 }
-    else
-        c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 170 };
+    const border_color = if (is_focused) blk: {
+        const acc = theme.accent;
+        break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 190 };
+    } else blk: {
+        const sel = theme.selection;
+        break :blk c.SDL_Color{ .r = sel.r, .g = sel.g, .b = sel.b, .a = 170 };
+    };
 
     _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
     primitives.drawRoundedBorder(renderer, rect, radius);
@@ -629,6 +639,7 @@ fn renderCwdBar(
     current_time: i64,
     ui_scale: f32,
     font_path: [:0]const u8,
+    theme: *const colors.Theme,
 ) void {
     const cwd_path = session.cwd_path orelse return;
     const cwd_basename = session.cwd_basename orelse return;
@@ -645,7 +656,8 @@ fn renderCwdBar(
     };
 
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 230);
+    const sel = theme.selection;
+    _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 230);
     const bg_rect = c.SDL_FRect{
         .x = @floatFromInt(bar_rect.x),
         .y = @floatFromInt(bar_rect.y),
@@ -664,7 +676,8 @@ fn renderCwdBar(
     }
     const cwd_font = session.cwd_font orelse return;
 
-    const text_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+    const fg = theme.foreground;
+    const text_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
     var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
     const basename_with_slash = blk: {

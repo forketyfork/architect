@@ -330,6 +330,7 @@ pub fn main() !void {
                 &anim_state,
                 sessions,
                 session_ui_info,
+                &theme,
             );
 
             const ui_consumed = ui.handleEvent(&ui_host, &scaled_event);
@@ -853,6 +854,7 @@ pub fn main() !void {
             &anim_state,
             sessions,
             ui_update_info,
+            &theme,
         );
         ui.update(&ui_update_host);
 
@@ -902,6 +904,7 @@ pub fn main() !void {
             &anim_state,
             sessions,
             ui_render_info,
+            &theme,
         );
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
@@ -1127,6 +1130,7 @@ fn makeUiHost(
     anim_state: *const AnimationState,
     sessions: []const SessionState,
     buffer: []ui_mod.SessionUiInfo,
+    theme: *const colors_mod.Theme,
 ) ui_mod.UiHost {
     for (sessions, 0..) |session, i| {
         buffer[i] = .{
@@ -1147,6 +1151,7 @@ fn makeUiHost(
         .view_mode = anim_state.mode,
         .focused_session = anim_state.focused_session,
         .sessions = buffer[0..sessions.len],
+        .theme = theme,
     };
 }
 
