@@ -288,6 +288,9 @@ pub fn main() !void {
     ui.toast_component = toast_component;
     const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
     try ui.register(escape_component.asComponent());
+    const hotkey_component = try ui_mod.hotkey_indicator.HotkeyIndicatorComponent.init(allocator, &ui_font);
+    try ui.register(hotkey_component.asComponent());
+    ui.hotkey_component = hotkey_component;
     const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
@@ -466,6 +469,7 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (has_gui and !has_blocking_mod and (key == c.SDLK_Q or key == c.SDLK_W)) {
+                        ui.showHotkey(if (key == c.SDLK_Q) "⌘Q" else "⌘W", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                             running = false;
                         }
@@ -473,17 +477,21 @@ pub fn main() !void {
                     }
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
+                        ui.showHotkey("⌘K", now);
                         clearTerminal(focused);
                         ui.showToast("Cleared terminal", now);
                     } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                        ui.showHotkey("⌘C", now);
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
+                        ui.showHotkey("⌘V", now);
                         pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
+                        ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
@@ -532,6 +540,7 @@ pub fn main() !void {
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         ui.showToast(notification_msg, now);
                     } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                        ui.showHotkey(if (key == c.SDLK_T) "⌘T" else "⌘N", now);
                         if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
@@ -565,11 +574,25 @@ pub fn main() !void {
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
+                            const arrow = switch (direction) {
+                                .up => "⌘↑",
+                                .down => "⌘↓",
+                                .left => "⌘←",
+                                .right => "⌘→",
+                            };
+                            ui.showHotkey(arrow, now);
                             try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
+                            const arrow = switch (direction) {
+                                .up => "⌘↑",
+                                .down => "⌘↓",
+                                .left => "⌘←",
+                                .right => "⌘→",
+                            };
+                            ui.showHotkey(arrow, now);
                             try navigateGrid(&anim_state, sessions, direction, now, true, true, grid_cols, grid_rows);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
@@ -585,6 +608,7 @@ pub fn main() !void {
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
+                        ui.showHotkey("⌘↵", now);
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawned();
 
