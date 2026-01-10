@@ -91,7 +91,7 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsync-aligned presentation (renders at display refresh rate), and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
@@ -189,6 +189,9 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 
 Grid size must be edited manually in the config file.
 
+### Rendering Settings (`[rendering]`)
+- **vsync**: Enable vertical sync (default: `true`) - When enabled, frames render at display refresh rate
+
 The configuration file is created automatically on first use and updated whenever settings change.
 
 ### Font Loading
@@ -270,6 +273,9 @@ bright_white = "#A6ADC8"
 [grid]
 rows = 3
 cols = 4
+
+[rendering]
+vsync = true
 ```
 
 **Debugging font loading:**

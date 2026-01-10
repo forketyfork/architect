@@ -220,11 +220,16 @@ pub const default_palette = [16]Color{
     .{ .r = 205, .g = 214, .b = 224 },
 };
 
+pub const Rendering = struct {
+    vsync: bool = true,
+};
+
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
     grid: GridConfig = .{},
     theme: ThemeConfig = .{},
+    rendering: Rendering = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -396,6 +401,9 @@ test "Config - decode sectioned toml" {
         \\rows = 3
         \\cols = 4
         \\
+        \\[rendering]
+        \\vsync = false
+        \\
     ;
 
     var parser = toml.Parser(Config).init(allocator);
@@ -417,4 +425,5 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
     try std.testing.expectEqual(@as(i32, 3), config.grid.rows);
     try std.testing.expectEqual(@as(i32, 4), config.grid.cols);
+    try std.testing.expectEqual(false, config.rendering.vsync);
 }
