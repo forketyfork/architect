@@ -12,6 +12,10 @@
             .url = "https://deps.files.ghostty.org/libxev-34fa50878aec6e5fa8f532867001ab3c36fae23e.tar.gz",
             .hash = "libxev-0.0.0-86vtc4IcEwCqEYxEYoN_3KXmc6A9VLcm22aVImfvecYs",
         },
+        .toml = .{
+            .url = "https://github.com/sam701/zig-toml/archive/cf50bd59c6276fb2b6d34b8d71d35486eecc719c.tar.gz",
+            .hash = "toml-0.3.0-bV14Bd-EAQBKoXhpYft303BtA2vgLNlxntUCIWgRUl46",
+        },
     },
     .paths = .{
         "build.zig",

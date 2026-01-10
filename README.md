@@ -151,7 +151,7 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.json`. The configuration includes:
+Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration includes:
 
 - **Font size**: Adjusted via Cmd+Plus/Minus shortcuts (range: 8-96px, default: 14px)
 - **Font family**: Font to use (default: `SFNSMono` on macOS)
@@ -200,15 +200,13 @@ If style variants (Bold, Italic, BoldItalic) aren't found:
 3. Last resort: Uses Regular variant
 
 **Example configuration:**
-```json
-{
-  "font_size": 16,
-  "font_family": "VictorMonoNerdFont",
-  "window_width": 1920,
-  "window_height": 1080,
-  "window_x": 150,
-  "window_y": 100
-}
+```toml
+font_size = 16
+font_family = "VictorMonoNerdFont"
+window_width = 1920
+window_height = 1080
+window_x = 150
+window_y = 100
 ```
 
 **Debugging font loading:**
@@ -231,7 +229,7 @@ info(font_paths): Using TTC file for BoldItalic variant: /System/Library/Fonts/M
 
 To reset to defaults, simply delete the configuration file:
 ```bash
-rm ~/.config/architect/config.json
+rm ~/.config/architect/config.toml
 ```
 
 ## Development
