@@ -79,7 +79,7 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
     };
 
     const home = std.posix.getenv("HOME");
-    const style_suffix = if (std.mem.eql(u8, style, "Regular")) "" else style;
+    const style_suffix = style;
 
     for (search_dirs) |dir| {
         if (searchFontInDirectory(allocator, dir, font_family, style_suffix)) |path| {
@@ -104,13 +104,11 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
     const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
 
     for (extensions) |ext| {
-        const font_path = if (style_suffix.len > 0)
-            try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir_path, font_family, style_suffix, ext })
-        else
-            try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir_path, font_family, ext });
+        const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
         defer allocator.free(font_path);
 
         std.fs.accessAbsolute(font_path, .{}) catch continue;
+        log.info("Found font: {s}", .{font_path});
         return allocator.dupeZ(u8, font_path);
     }
 
@@ -119,16 +117,37 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
         defer allocator.free(font_path);
 
         std.fs.accessAbsolute(font_path, .{}) catch continue;
+        log.info("Found font: {s}", .{font_path});
         return allocator.dupeZ(u8, font_path);
     }
 
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return error.FontNotFound;
+    if (std.mem.eql(u8, style_suffix, "Regular")) {
+        for (extensions) |ext| {
+            const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir_path, font_family, ext });
+            defer allocator.free(font_path);
+
+            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            log.info("Found font: {s}", .{font_path});
+            return allocator.dupeZ(u8, font_path);
+        }
+    }
+
+    log.info("Recursively searching {s} for {s} {s}", .{ dir_path, font_family, style_suffix });
+
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch |err| {
+        log.warn("Could not open directory {s}: {}", .{ dir_path, err });
+        return error.FontNotFound;
+    };
     defer dir.close();
 
-    var walker = dir.walk(allocator) catch return error.FontNotFound;
+    var walker = dir.walk(allocator) catch |err| {
+        log.warn("Could not walk directory {s}: {}", .{ dir_path, err });
+        return error.FontNotFound;
+    };
     defer walker.deinit();
 
-    while (walker.next() catch return error.FontNotFound) |entry| {
+    while (walker.next()) |maybe_entry| {
+        const entry = maybe_entry orelse break;
         if (entry.kind != .file) continue;
 
         const basename = entry.basename;
@@ -141,27 +160,34 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
         if (!has_valid_ext) continue;
 
         const matches = blk: {
-            if (style_suffix.len > 0) {
-                const pattern1 = try std.fmt.allocPrint(allocator, "{s}-{s}.", .{ font_family, style_suffix });
-                defer allocator.free(pattern1);
-                if (std.mem.indexOf(u8, basename, pattern1)) |_| break :blk true;
+            const pattern1 = try std.fmt.allocPrint(allocator, "{s}-{s}.", .{ font_family, style_suffix });
+            defer allocator.free(pattern1);
+            if (std.mem.indexOf(u8, basename, pattern1)) |_| break :blk true;
 
-                const pattern2 = try std.fmt.allocPrint(allocator, "{s}{s}.", .{ font_family, style_suffix });
-                defer allocator.free(pattern2);
-                if (std.mem.indexOf(u8, basename, pattern2)) |_| break :blk true;
-            } else {
-                const pattern = try std.fmt.allocPrint(allocator, "{s}.", .{font_family});
-                defer allocator.free(pattern);
-                if (std.mem.indexOf(u8, basename, pattern)) |_| break :blk true;
+            const pattern2 = try std.fmt.allocPrint(allocator, "{s}{s}.", .{ font_family, style_suffix });
+            defer allocator.free(pattern2);
+            if (std.mem.indexOf(u8, basename, pattern2)) |_| break :blk true;
+
+            if (std.mem.eql(u8, style_suffix, "Regular")) {
+                const pattern3 = try std.fmt.allocPrint(allocator, "{s}.", .{font_family});
+                defer allocator.free(pattern3);
+                if (std.mem.indexOf(u8, basename, pattern3)) |_| {
+                    const has_style_marker = std.mem.indexOf(u8, basename, "-") orelse std.mem.indexOf(u8, basename, "Bold") orelse std.mem.indexOf(u8, basename, "Italic") orelse std.mem.indexOf(u8, basename, "Light") orelse std.mem.indexOf(u8, basename, "Medium");
+                    if (has_style_marker == null) break :blk true;
+                }
             }
+
             break :blk false;
         };
 
         if (matches) {
             const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.path });
             defer allocator.free(full_path);
+            log.info("Found font via recursive search: {s}", .{full_path});
             return allocator.dupeZ(u8, full_path);
         }
+    } else |err| {
+        log.warn("Error during directory walk: {}", .{err});
     }
 
     return error.FontNotFound;
