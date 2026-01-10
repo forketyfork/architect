@@ -6,17 +6,22 @@ pub const MIN_GRID_SIZE: i32 = 1;
 pub const MAX_GRID_SIZE: i32 = 12;
 pub const DEFAULT_GRID_ROWS: i32 = 3;
 pub const DEFAULT_GRID_COLS: i32 = 3;
+pub const DEFAULT_FONT_SIZE: i32 = 14;
+pub const DEFAULT_WINDOW_WIDTH: i32 = 1200;
+pub const DEFAULT_WINDOW_HEIGHT: i32 = 900;
+pub const DEFAULT_WINDOW_X: i32 = -1;
+pub const DEFAULT_WINDOW_Y: i32 = -1;
 
 pub const Config = struct {
-    font_size: i32,
-    font_family: ?[]const u8,
+    font_size: i32 = DEFAULT_FONT_SIZE,
+    font_family: ?[]const u8 = null,
     font_family_owned: bool = false,
-    window_width: i32,
-    window_height: i32,
-    window_x: i32,
-    window_y: i32,
-    grid_rows: i32,
-    grid_cols: i32,
+    window_width: i32 = DEFAULT_WINDOW_WIDTH,
+    window_height: i32 = DEFAULT_WINDOW_HEIGHT,
+    window_x: i32 = DEFAULT_WINDOW_X,
+    window_y: i32 = DEFAULT_WINDOW_Y,
+    grid_rows: i32 = DEFAULT_GRID_ROWS,
+    grid_cols: i32 = DEFAULT_GRID_COLS,
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -70,9 +75,6 @@ pub const Config = struct {
 
         var config = result.value;
 
-        if (config.grid_rows == 0) config.grid_rows = DEFAULT_GRID_ROWS;
-        if (config.grid_cols == 0) config.grid_cols = DEFAULT_GRID_COLS;
-
         config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
@@ -108,7 +110,7 @@ pub const SaveError = error{
     WriteFailed,
 } || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
 
-test "Config - decode toml" {
+test "Config - decode toml with all fields" {
     const allocator = std.testing.allocator;
 
     const content =
@@ -140,4 +142,53 @@ test "Config - decode toml" {
     try std.testing.expectEqual(@as(i32, 100), decoded.window_y);
     try std.testing.expectEqual(@as(i32, 3), decoded.grid_rows);
     try std.testing.expectEqual(@as(i32, 4), decoded.grid_cols);
+}
+
+test "Config - decode toml with partial fields uses defaults" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\font_size = 18
+        \\
+    ;
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(content);
+    defer result.deinit();
+
+    const decoded = result.value;
+
+    try std.testing.expectEqual(@as(i32, 18), decoded.font_size);
+    try std.testing.expectEqual(@as(?[]const u8, null), decoded.font_family);
+    try std.testing.expectEqual(DEFAULT_WINDOW_WIDTH, decoded.window_width);
+    try std.testing.expectEqual(DEFAULT_WINDOW_HEIGHT, decoded.window_height);
+    try std.testing.expectEqual(DEFAULT_WINDOW_X, decoded.window_x);
+    try std.testing.expectEqual(DEFAULT_WINDOW_Y, decoded.window_y);
+    try std.testing.expectEqual(DEFAULT_GRID_ROWS, decoded.grid_rows);
+    try std.testing.expectEqual(DEFAULT_GRID_COLS, decoded.grid_cols);
+}
+
+test "Config - decode empty toml uses all defaults" {
+    const allocator = std.testing.allocator;
+
+    const content = "";
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(content);
+    defer result.deinit();
+
+    const decoded = result.value;
+
+    try std.testing.expectEqual(DEFAULT_FONT_SIZE, decoded.font_size);
+    try std.testing.expectEqual(@as(?[]const u8, null), decoded.font_family);
+    try std.testing.expectEqual(DEFAULT_WINDOW_WIDTH, decoded.window_width);
+    try std.testing.expectEqual(DEFAULT_WINDOW_HEIGHT, decoded.window_height);
+    try std.testing.expectEqual(DEFAULT_WINDOW_X, decoded.window_x);
+    try std.testing.expectEqual(DEFAULT_WINDOW_Y, decoded.window_y);
+    try std.testing.expectEqual(DEFAULT_GRID_ROWS, decoded.grid_rows);
+    try std.testing.expectEqual(DEFAULT_GRID_COLS, decoded.grid_cols);
 }
