@@ -78,6 +78,16 @@ pub const Config = struct {
         config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
+        if (config.font_family) |ff| {
+            if (ff.len > 0) {
+                config.font_family = try allocator.dupe(u8, ff);
+                config.font_family_owned = true;
+            } else {
+                config.font_family = null;
+                config.font_family_owned = false;
+            }
+        }
+
         return config;
     }
 
