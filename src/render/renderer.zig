@@ -34,6 +34,7 @@ pub fn render(
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
     grid_cols: usize,
+    grid_rows: usize,
     anim_state: *const AnimationState,
     current_time: i64,
     font: *font_mod.Font,
@@ -43,11 +44,14 @@ pub fn render(
     window_height: c_int,
     ui_scale: f32,
     font_path: [:0]const u8,
+    theme: *const colors.Theme,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
     _ = c.SDL_RenderClear(renderer);
 
-    const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_cols));
+    // Use the larger dimension for grid scale to ensure proper scaling
+    const grid_dim = @max(grid_cols, grid_rows);
+    const grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
 
     switch (anim_state.mode) {
         .Grid => {
@@ -62,12 +66,12 @@ pub fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
+                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path, theme);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -78,14 +82,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
             else
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -96,14 +100,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningUp) -offset else offset;
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
             else
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -127,12 +131,12 @@ pub fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path);
+                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path, theme);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
         },
     }
 }
@@ -151,8 +155,9 @@ fn renderSession(
     is_grid_view: bool,
     ui_scale: f32,
     font_path: [:0]const u8,
+    theme: *const colors.Theme,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows);
+    try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows, theme);
     if (is_grid_view) {
         renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path);
     }
@@ -168,6 +173,7 @@ fn renderSessionContent(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    theme: *const colors.Theme,
 ) RenderError!void {
     if (!session.spawned) return;
 
@@ -251,7 +257,7 @@ fn renderSessionContent(
             if (y + cell_height_actual <= rect.y or y >= rect.y + rect.h) continue;
 
             const style = list_cell.style();
-            var fg_color = getCellColor(style.fg_color, default_fg);
+            var fg_color = getCellColor(style.fg_color, default_fg, theme);
             var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
                 c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
             else
@@ -560,6 +566,7 @@ fn renderGridSessionCached(
     current_time_ms: i64,
     ui_scale: f32,
     font_path: [:0]const u8,
+    theme: *const colors.Theme,
 ) RenderError!void {
     const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
 
@@ -572,7 +579,7 @@ fn renderGridSessionCached(
                 _ = c.SDL_SetRenderDrawColor(renderer, 14, 17, 22, 255);
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-                try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows);
+                try renderSessionContent(renderer, session, local_rect, scale, is_focused, font, term_cols, term_rows, theme);
                 session.dirty = false;
                 _ = c.SDL_SetRenderTarget(renderer, null);
             }
@@ -590,7 +597,7 @@ fn renderGridSessionCached(
         }
     }
 
-    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path);
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path, theme);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool) void {
@@ -852,10 +859,10 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, 
     }
 }
 
-fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color) c.SDL_Color {
+fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color, theme: *const colors.Theme) c.SDL_Color {
     return switch (color) {
         .none => default,
-        .palette => |idx| colors.get256Color(idx),
+        .palette => |idx| colors.get256ColorWithTheme(idx, theme),
         .rgb => |rgb| c.SDL_Color{
             .r = rgb.r,
             .g = rgb.g,

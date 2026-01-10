@@ -2,18 +2,21 @@ const std = @import("std");
 const fs = std.fs;
 const toml = @import("toml");
 
-/// RGB color represented as a hex string (e.g., "#E06C75")
+pub const MIN_GRID_SIZE: i32 = 1;
+pub const MAX_GRID_SIZE: i32 = 12;
+pub const DEFAULT_GRID_ROWS: i32 = 3;
+pub const DEFAULT_GRID_COLS: i32 = 3;
+
 pub const Color = struct {
     r: u8,
     g: u8,
     b: u8,
 
-    pub const default_background: Color = .{ .r = 14, .g = 17, .b = 22 }; // #0E1116
-    pub const default_foreground: Color = .{ .r = 205, .g = 214, .b = 224 }; // #CDD6E0
-    pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 }; // #61AFEF
-    pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 }; // #1B2230
+    pub const default_background: Color = .{ .r = 14, .g = 17, .b = 22 };
+    pub const default_foreground: Color = .{ .r = 205, .g = 214, .b = 224 };
+    pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 };
+    pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
 
-    /// Parse a hex color string like "#RRGGBB" or "RRGGBB"
     pub fn fromHex(hex: []const u8) ?Color {
         const start: usize = if (hex.len > 0 and hex[0] == '#') 1 else 0;
         const hex_digits = hex[start..];
@@ -27,13 +30,11 @@ pub const Color = struct {
         return .{ .r = r, .g = g, .b = b };
     }
 
-    /// Convert to hex string (allocates)
     pub fn toHex(self: Color, allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "#{X:0>2}{X:0>2}{X:0>2}", .{ self.r, self.g, self.b });
     }
 };
 
-/// Font configuration section
 pub const FontConfig = struct {
     size: i32 = 14,
     family: ?[]const u8 = null,
@@ -50,7 +51,6 @@ pub const FontConfig = struct {
     }
 };
 
-/// Window configuration section
 pub const WindowConfig = struct {
     width: i32 = 1280,
     height: i32 = 720,
@@ -58,24 +58,57 @@ pub const WindowConfig = struct {
     y: i32 = -1,
 };
 
-/// Theme/color configuration section
+pub const PaletteConfig = struct {
+    black: ?[]const u8 = null,
+    red: ?[]const u8 = null,
+    green: ?[]const u8 = null,
+    yellow: ?[]const u8 = null,
+    blue: ?[]const u8 = null,
+    magenta: ?[]const u8 = null,
+    cyan: ?[]const u8 = null,
+    white: ?[]const u8 = null,
+    bright_black: ?[]const u8 = null,
+    bright_red: ?[]const u8 = null,
+    bright_green: ?[]const u8 = null,
+    bright_yellow: ?[]const u8 = null,
+    bright_blue: ?[]const u8 = null,
+    bright_magenta: ?[]const u8 = null,
+    bright_cyan: ?[]const u8 = null,
+    bright_white: ?[]const u8 = null,
+
+    pub fn getColor(self: PaletteConfig, idx: u4) Color {
+        const hex: ?[]const u8 = switch (idx) {
+            0 => self.black,
+            1 => self.red,
+            2 => self.green,
+            3 => self.yellow,
+            4 => self.blue,
+            5 => self.magenta,
+            6 => self.cyan,
+            7 => self.white,
+            8 => self.bright_black,
+            9 => self.bright_red,
+            10 => self.bright_green,
+            11 => self.bright_yellow,
+            12 => self.bright_blue,
+            13 => self.bright_magenta,
+            14 => self.bright_cyan,
+            15 => self.bright_white,
+        };
+        if (hex) |h| {
+            if (Color.fromHex(h)) |c| return c;
+        }
+        return default_palette[idx];
+    }
+};
+
 pub const ThemeConfig = struct {
-    /// Terminal background color
     background: ?[]const u8 = null,
-    /// Terminal foreground (text) color
     foreground: ?[]const u8 = null,
-    /// Selection highlight background
     selection: ?[]const u8 = null,
-    /// Accent color for UI elements
     accent: ?[]const u8 = null,
+    palette: PaletteConfig = .{},
 
-    /// 16 ANSI palette colors (8 normal + 8 bright)
-    /// Order: black, red, green, yellow, blue, magenta, cyan, white,
-    ///        bright_black, bright_red, bright_green, bright_yellow,
-    ///        bright_blue, bright_magenta, bright_cyan, bright_white
-    palette: ?[16][]const u8 = null,
-
-    /// Get background color, falling back to default
     pub fn getBackground(self: ThemeConfig) Color {
         if (self.background) |hex| {
             if (Color.fromHex(hex)) |c| return c;
@@ -83,7 +116,6 @@ pub const ThemeConfig = struct {
         return Color.default_background;
     }
 
-    /// Get foreground color, falling back to default
     pub fn getForeground(self: ThemeConfig) Color {
         if (self.foreground) |hex| {
             if (Color.fromHex(hex)) |c| return c;
@@ -91,7 +123,6 @@ pub const ThemeConfig = struct {
         return Color.default_foreground;
     }
 
-    /// Get selection color, falling back to default
     pub fn getSelection(self: ThemeConfig) Color {
         if (self.selection) |hex| {
             if (Color.fromHex(hex)) |c| return c;
@@ -99,7 +130,6 @@ pub const ThemeConfig = struct {
         return Color.default_selection;
     }
 
-    /// Get accent color, falling back to default
     pub fn getAccent(self: ThemeConfig) Color {
         if (self.accent) |hex| {
             if (Color.fromHex(hex)) |c| return c;
@@ -107,44 +137,37 @@ pub const ThemeConfig = struct {
         return Color.default_accent;
     }
 
-    /// Get a palette color by index (0-15), falling back to default One Dark colors
     pub fn getPaletteColor(self: ThemeConfig, idx: u4) Color {
-        if (self.palette) |p| {
-            if (Color.fromHex(p[idx])) |c| return c;
-        }
-        return default_palette[idx];
+        return self.palette.getColor(idx);
     }
 };
 
-/// Default One Dark palette colors
 pub const default_palette = [16]Color{
-    // Normal (0-7)
-    .{ .r = 14, .g = 17, .b = 22 }, // Black
-    .{ .r = 224, .g = 108, .b = 117 }, // Red
-    .{ .r = 152, .g = 195, .b = 121 }, // Green
-    .{ .r = 209, .g = 154, .b = 102 }, // Yellow
-    .{ .r = 97, .g = 175, .b = 239 }, // Blue
-    .{ .r = 198, .g = 120, .b = 221 }, // Magenta
-    .{ .r = 86, .g = 182, .b = 194 }, // Cyan
-    .{ .r = 171, .g = 178, .b = 191 }, // White
-    // Bright (8-15)
-    .{ .r = 92, .g = 99, .b = 112 }, // BrightBlack
-    .{ .r = 224, .g = 108, .b = 117 }, // BrightRed
-    .{ .r = 152, .g = 195, .b = 121 }, // BrightGreen
-    .{ .r = 229, .g = 192, .b = 123 }, // BrightYellow
-    .{ .r = 97, .g = 175, .b = 239 }, // BrightBlue
-    .{ .r = 198, .g = 120, .b = 221 }, // BrightMagenta
-    .{ .r = 86, .g = 182, .b = 194 }, // BrightCyan
-    .{ .r = 205, .g = 214, .b = 224 }, // BrightWhite
+    .{ .r = 14, .g = 17, .b = 22 },
+    .{ .r = 224, .g = 108, .b = 117 },
+    .{ .r = 152, .g = 195, .b = 121 },
+    .{ .r = 209, .g = 154, .b = 102 },
+    .{ .r = 97, .g = 175, .b = 239 },
+    .{ .r = 198, .g = 120, .b = 221 },
+    .{ .r = 86, .g = 182, .b = 194 },
+    .{ .r = 171, .g = 178, .b = 191 },
+    .{ .r = 92, .g = 99, .b = 112 },
+    .{ .r = 224, .g = 108, .b = 117 },
+    .{ .r = 152, .g = 195, .b = 121 },
+    .{ .r = 229, .g = 192, .b = 123 },
+    .{ .r = 97, .g = 175, .b = 239 },
+    .{ .r = 198, .g = 120, .b = 221 },
+    .{ .r = 86, .g = 182, .b = 194 },
+    .{ .r = 205, .g = 214, .b = 224 },
 };
 
-/// Main configuration structure with sections
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
     theme: ThemeConfig = .{},
+    grid_rows: i32 = DEFAULT_GRID_ROWS,
+    grid_cols: i32 = DEFAULT_GRID_COLS,
 
-    // Legacy flat fields for backwards compatibility during migration
     font_size: ?i32 = null,
     font_family: ?[]const u8 = null,
     font_family_owned: bool = false,
@@ -171,7 +194,7 @@ pub const Config = struct {
         };
 
         var buf: [4096]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
+        var writer = std.io.Writer.fixed(&buf);
         try toml.serialize(allocator, self, &writer);
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
@@ -205,15 +228,14 @@ pub const Config = struct {
 
         var config = result.value;
 
-        // Migrate legacy flat fields to sectioned format
         config.migrateFromLegacy();
+        config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
         return config;
     }
 
-    /// Migrate legacy flat config fields to the new sectioned format
     fn migrateFromLegacy(self: *Config) void {
-        // Migrate font settings
         if (self.font_size) |size| {
             self.font.size = size;
             self.font_size = null;
@@ -225,7 +247,6 @@ pub const Config = struct {
             self.font_family_owned = false;
         }
 
-        // Migrate window settings
         if (self.window_width) |w| {
             self.window.width = w;
             self.window_width = null;
@@ -246,7 +267,6 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         self.font.deinit(allocator);
-        // Handle legacy fields if present
         if (self.font_family_owned) {
             if (self.font_family) |value| {
                 allocator.free(value);
@@ -256,12 +276,10 @@ pub const Config = struct {
         self.font_family_owned = false;
     }
 
-    /// Get effective font size (from section or default)
     pub fn getFontSize(self: Config) i32 {
         return self.font.size;
     }
 
-    /// Get effective font family (from section or default)
     pub fn getFontFamily(self: Config) []const u8 {
         return self.font.family orelse DEFAULT_FONT_FAMILY;
     }
@@ -284,8 +302,6 @@ pub const SaveError = error{
     OutOfMemory,
     WriteFailed,
 } || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
-
-// Tests
 
 test "Color.fromHex - valid hex colors" {
     const white = Color.fromHex("#FFFFFF").?;
@@ -360,6 +376,9 @@ test "Config - decode sectioned toml" {
         \\background = "#1E1E2E"
         \\foreground = "#CDD6F4"
         \\
+        \\grid_rows = 3
+        \\grid_cols = 4
+        \\
     ;
 
     var parser = toml.Parser(Config).init(allocator);
@@ -379,6 +398,8 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(@as(i32, 100), config.window.y);
     try std.testing.expect(config.theme.background != null);
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
+    try std.testing.expectEqual(@as(i32, 3), config.grid_rows);
+    try std.testing.expectEqual(@as(i32, 4), config.grid_cols);
 }
 
 test "Config - decode legacy flat toml with migration" {
@@ -391,6 +412,8 @@ test "Config - decode legacy flat toml with migration" {
         \\window_height = 1080
         \\window_x = 100
         \\window_y = 100
+        \\grid_rows = 3
+        \\grid_cols = 4
         \\
     ;
 
@@ -410,4 +433,6 @@ test "Config - decode legacy flat toml with migration" {
     try std.testing.expectEqual(@as(i32, 1080), config.window.height);
     try std.testing.expectEqual(@as(i32, 100), config.window.x);
     try std.testing.expectEqual(@as(i32, 100), config.window.y);
+    try std.testing.expectEqual(@as(i32, 3), config.grid_rows);
+    try std.testing.expectEqual(@as(i32, 4), config.grid_cols);
 }

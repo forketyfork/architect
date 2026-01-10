@@ -154,7 +154,7 @@ zig build run
 Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration is organized into sections:
 
 ### Font Settings (`[font]`)
-- **size**: Font size in pixels (range: 8-96, default: 14)
+- **size**: Font size in pixels (range: 8-96, default: 14) - Adjusted via Cmd+Plus/Minus shortcuts
 - **family**: Font family name (default: `SFNSMono` on macOS)
 
 ### Window Settings (`[window]`)
@@ -163,12 +163,31 @@ Architect automatically saves your preferences to `~/.config/architect/config.to
 - **x**: Window X position (-1 = system default)
 - **y**: Window Y position (-1 = system default)
 
+Window dimensions and position are automatically saved when you resize the window or adjust font size.
+
 ### Theme Settings (`[theme]`)
 - **background**: Terminal background color as hex (default: `#0E1116`)
 - **foreground**: Terminal text color as hex (default: `#CDD6E0`)
 - **selection**: Selection highlight color as hex (default: `#1B2230`)
 - **accent**: UI accent color as hex (default: `#61AFEF`)
-- **palette**: Array of 16 ANSI colors (8 normal + 8 bright) as hex strings
+
+#### Palette Colors (`[theme.palette]`)
+
+The 16 ANSI colors can be customized with named parameters:
+
+**Normal colors (0-7):**
+- **black**, **red**, **green**, **yellow**, **blue**, **magenta**, **cyan**, **white**
+
+**Bright colors (8-15):**
+- **bright_black**, **bright_red**, **bright_green**, **bright_yellow**, **bright_blue**, **bright_magenta**, **bright_cyan**, **bright_white**
+
+Each color is specified as a hex string (e.g., `"#E06C75"`).
+
+### Grid Settings
+- **grid_rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
+- **grid_cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
+
+Grid size must be edited manually in the config file.
 
 The configuration file is created automatically on first use and updated whenever settings change.
 
@@ -227,13 +246,29 @@ y = 100
 background = "#1E1E2E"
 foreground = "#CDD6F4"
 accent = "#89B4FA"
-# Optional: custom 16-color ANSI palette
-# palette = [
-#   "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF",
-#   "#89B4FA", "#F5C2E7", "#94E2D5", "#BAC2DE",
-#   "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF",
-#   "#89B4FA", "#F5C2E7", "#94E2D5", "#A6ADC8"
-# ]
+selection = "#313244"
+
+# Optional: custom ANSI palette colors (example: Catppuccin Mocha)
+[theme.palette]
+black = "#45475A"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#BAC2DE"
+bright_black = "#585B70"
+bright_red = "#F38BA8"
+bright_green = "#A6E3A1"
+bright_yellow = "#F9E2AF"
+bright_blue = "#89B4FA"
+bright_magenta = "#F5C2E7"
+bright_cyan = "#94E2D5"
+bright_white = "#A6ADC8"
+
+grid_rows = 3
+grid_cols = 4
 ```
 
 **Debugging font loading:**
@@ -558,7 +593,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
 - **Limited font distribution**: Only the bundled font family ships with the app today
-- **Limited configurability**: Grid size and keybindings are hardcoded
+- **Limited configurability**: Keybindings are hardcoded
 
 ## License
 

@@ -26,8 +26,6 @@ const log = std.log.scoped(.main);
 
 const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
-const GRID_ROWS = 3;
-const GRID_COLS = 3;
 const SCROLL_LINES_PER_TICK: isize = 1;
 const MAX_SCROLL_VELOCITY: f32 = 30.0;
 const DEFAULT_FONT_SIZE: c_int = 14;
@@ -120,13 +118,17 @@ pub fn main() !void {
                 .width = INITIAL_WINDOW_WIDTH,
                 .height = INITIAL_WINDOW_HEIGHT,
             },
+            .grid_rows = config_mod.DEFAULT_GRID_ROWS,
+            .grid_cols = config_mod.DEFAULT_GRID_COLS,
         };
     };
     defer config.deinit(allocator);
 
-    // Initialize theme from config
     const theme = colors_mod.Theme.fromConfig(config.theme);
-    _ = theme; // TODO: Pass to renderer once integrated
+
+    const grid_rows: usize = @intCast(config.grid_rows);
+    const grid_cols: usize = @intCast(config.grid_cols);
+    const grid_count: usize = grid_rows * grid_cols;
 
     const window_pos = if (config.window.x >= 0 and config.window.y >= 0)
         platform.WindowPosition{ .x = config.window.x, .y = config.window.y }
@@ -225,10 +227,10 @@ pub fn main() !void {
     std.debug.print("Full window terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
-    std.debug.print("Spawning {d} shell instances: {s}\n", .{ GRID_ROWS * GRID_COLS, shell_path });
+    std.debug.print("Spawning {d} shell instances ({d}x{d} grid): {s}\n", .{ grid_count, grid_cols, grid_rows, shell_path });
 
-    var cell_width_pixels = @divFloor(render_width, GRID_COLS);
-    var cell_height_pixels = @divFloor(render_height, GRID_ROWS);
+    var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
+    var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
 
     const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
     const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
@@ -240,18 +242,19 @@ pub fn main() !void {
         .ws_ypixel = @intCast(usable_height),
     };
 
-    var sessions: [GRID_ROWS * GRID_COLS]SessionState = undefined;
+    const sessions = try allocator.alloc(SessionState, grid_count);
     var init_count: usize = 0;
     errdefer {
         for (0..init_count) |i| {
             sessions[i].deinit(allocator);
         }
+        allocator.free(sessions);
     }
 
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
 
-    for (0..GRID_ROWS * GRID_COLS) |i| {
+    for (0..grid_count) |i| {
         var session_buf: [16]u8 = undefined;
         const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
         sessions[i] = try SessionState.init(allocator, i, shell_path, size, session_z, notify_sock);
@@ -261,9 +264,10 @@ pub fn main() !void {
     try sessions[0].ensureSpawnedWithLoop(&loop);
 
     defer {
-        for (&sessions) |*session| {
+        for (sessions) |*session| {
             session.deinit(allocator);
         }
+        allocator.free(sessions);
     }
 
     var running = true;
@@ -310,7 +314,8 @@ pub fn main() !void {
         while (c.SDL_PollEvent(&event)) {
             processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
-            var session_ui_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+            const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
+            defer allocator.free(session_ui_info);
             const ui_host = makeUiHost(
                 now,
                 render_width,
@@ -318,9 +323,11 @@ pub fn main() !void {
                 ui_scale,
                 cell_width_pixels,
                 cell_height_pixels,
+                grid_cols,
+                grid_rows,
                 &anim_state,
-                &sessions,
-                &session_ui_info,
+                sessions,
+                session_ui_info,
             );
 
             const ui_consumed = ui.handleEvent(&ui_host, &scaled_event);
@@ -369,15 +376,15 @@ pub fn main() !void {
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     } else {
                         const new_term_size = calculateTerminalSize(&font, render_width, render_height);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     }
-                    cell_width_pixels = @divFloor(render_width, GRID_COLS);
-                    cell_height_pixels = @divFloor(render_height, GRID_ROWS);
+                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
+                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
@@ -395,6 +402,8 @@ pub fn main() !void {
                             .y = window_y,
                         },
                         .theme = config.theme,
+                        .grid_rows = config.grid_rows,
+                        .grid_cols = config.grid_cols,
                     };
                     defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
@@ -433,6 +442,8 @@ pub fn main() !void {
                         cell_height_pixels,
                         render_width,
                         render_height,
+                        grid_cols,
+                        grid_rows,
                     ) orelse continue;
 
                     var session = &sessions[hovered_session];
@@ -500,7 +511,7 @@ pub fn main() !void {
                             const term_size = calculateTerminalSize(&font, render_width, render_height);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
-                            applyTerminalResize(&sessions, allocator, full_cols, full_rows, render_width, render_height);
+                            applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             const font_family_dup = if (config.font.family) |ff| try allocator.dupe(u8, ff) else null;
@@ -517,6 +528,8 @@ pub fn main() !void {
                                     .y = window_y,
                                 },
                                 .theme = config.theme,
+                                .grid_rows = config.grid_rows,
+                                .grid_cols = config.grid_cols,
                             };
                             defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {
@@ -529,7 +542,7 @@ pub fn main() !void {
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
                         ui.showToast(notification_msg, now);
                     } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
-                        if (findNextFreeSession(sessions[0..], anim_state.focused_session)) |next_free_idx| {
+                        if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
                             const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
@@ -552,23 +565,27 @@ pub fn main() !void {
                             anim_state.previous_session = anim_state.focused_session;
                             anim_state.focused_session = next_free_idx;
 
-                            var notification_buf: [64]u8 = undefined;
-                            const notification_msg = try formatGridNotification(&notification_buf, next_free_idx);
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, next_free_idx, grid_cols, grid_rows);
                             ui.showToast(notification_msg, now);
                         } else {
                             ui.showToast("All terminals in use", now);
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
-                            try navigateGrid(&anim_state, &sessions, direction, now, true, false);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
-                            try navigateGrid(&anim_state, &sessions, direction, now, true, true);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, true, grid_cols, grid_rows);
 
-                            var notification_buf: [64]u8 = undefined;
-                            const notification_msg = try formatGridNotification(&notification_buf, anim_state.focused_session);
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, anim_state.focused_session, grid_cols, grid_rows);
                             ui.showToast(notification_msg, now);
 
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
@@ -584,8 +601,8 @@ pub fn main() !void {
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
 
-                        const grid_row: c_int = @intCast(clicked_session / GRID_COLS);
-                        const grid_col: c_int = @intCast(clicked_session % GRID_COLS);
+                        const grid_row: c_int = @intCast(clicked_session / grid_cols);
+                        const grid_col: c_int = @intCast(clicked_session % grid_cols);
                         const start_rect = Rect{
                             .x = grid_col * cell_width_pixels,
                             .y = grid_row * cell_height_pixels,
@@ -623,13 +640,13 @@ pub fn main() !void {
 
                     if (anim_state.mode == .Grid) {
                         sessions[anim_state.focused_session].clearSelection();
-                        const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), @as(usize, GRID_COLS - 1));
-                        const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), @as(usize, GRID_ROWS - 1));
-                        const clicked_session: usize = grid_row * @as(usize, GRID_COLS) + grid_col;
+                        const grid_col_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), grid_cols - 1);
+                        const grid_row_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), grid_rows - 1);
+                        const clicked_session: usize = grid_row_idx * grid_cols + grid_col_idx;
 
                         const cell_rect = Rect{
-                            .x = @as(c_int, @intCast(grid_col)) * cell_width_pixels,
-                            .y = @as(c_int, @intCast(grid_row)) * cell_height_pixels,
+                            .x = @as(c_int, @intCast(grid_col_idx)) * cell_width_pixels,
+                            .y = @as(c_int, @intCast(grid_row_idx)) * cell_height_pixels,
                             .w = cell_width_pixels,
                             .h = cell_height_pixels,
                         };
@@ -769,6 +786,8 @@ pub fn main() !void {
                         cell_height_pixels,
                         render_width,
                         render_height,
+                        grid_cols,
+                        grid_rows,
                     );
 
                     if (hovered_session) |session_idx| {
@@ -793,7 +812,7 @@ pub fn main() !void {
 
         var any_session_dirty = false;
         var has_scroll_inertia = false;
-        for (&sessions) |*session| {
+        for (sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
             try session.flushPendingWrites();
@@ -820,7 +839,8 @@ pub fn main() !void {
             }
         }
 
-        var ui_update_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_update_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
+        defer allocator.free(ui_update_info);
         const ui_update_host = makeUiHost(
             now,
             render_width,
@@ -828,9 +848,11 @@ pub fn main() !void {
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
+            grid_cols,
+            grid_rows,
             &anim_state,
-            &sessions,
-            &ui_update_info,
+            sessions,
+            ui_update_info,
         );
         ui.update(&ui_update_host);
 
@@ -843,7 +865,7 @@ pub fn main() !void {
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
-                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height);
+                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
             },
@@ -866,7 +888,8 @@ pub fn main() !void {
             }
         }
 
-        var ui_render_info: [GRID_ROWS * GRID_COLS]ui_mod.SessionUiInfo = undefined;
+        const ui_render_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
+        defer allocator.free(ui_render_info);
         const ui_render_host = makeUiHost(
             now,
             render_width,
@@ -874,9 +897,11 @@ pub fn main() !void {
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
+            grid_cols,
+            grid_rows,
             &anim_state,
-            &sessions,
-            &ui_render_info,
+            sessions,
+            ui_render_info,
         );
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
@@ -885,7 +910,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, &sessions, cell_width_pixels, cell_height_pixels, GRID_COLS, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular);
+            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();
@@ -909,9 +934,10 @@ fn startCollapseToGrid(
     cell_height_pixels: c_int,
     render_width: c_int,
     render_height: c_int,
+    grid_cols: usize,
 ) void {
-    const grid_row: c_int = @intCast(anim_state.focused_session / GRID_COLS);
-    const grid_col: c_int = @intCast(anim_state.focused_session % GRID_COLS);
+    const grid_row: c_int = @intCast(anim_state.focused_session / grid_cols);
+    const grid_col: c_int = @intCast(anim_state.focused_session % grid_cols);
     const target_rect = Rect{
         .x = grid_col * cell_width_pixels,
         .y = grid_row * cell_height_pixels,
@@ -925,18 +951,27 @@ fn startCollapseToGrid(
     anim_state.target_rect = target_rect;
 }
 
-fn formatGridNotification(buf: []u8, focused_session: usize) ![]const u8 {
-    const row = focused_session / GRID_COLS;
-    const col = focused_session % GRID_COLS;
+fn gridNotificationBufferSize(grid_cols: usize, grid_rows: usize) usize {
+    const block_bytes = 3;
+    const spaces_between_cols = 3;
+    return grid_rows * grid_cols * block_bytes + grid_rows * (grid_cols - 1) * spaces_between_cols + (grid_rows - 1);
+}
+
+fn formatGridNotification(buf: []u8, focused_session: usize, grid_cols: usize, grid_rows: usize) ![]const u8 {
+    const row = focused_session / grid_cols;
+    const col = focused_session % grid_cols;
 
     var offset: usize = 0;
-    for (0..GRID_ROWS) |r| {
-        for (0..GRID_COLS) |col_idx| {
+    for (0..grid_rows) |r| {
+        for (0..grid_cols) |col_idx| {
             const block = if (r == row and col_idx == col) "■" else "□";
+            if (offset + block.len > buf.len) return error.BufferTooSmall;
             @memcpy(buf[offset..][0..block.len], block);
             offset += block.len;
 
-            if (col_idx < GRID_COLS - 1) {
+            if (col_idx < grid_cols - 1) {
+                const spaces_between_cols = 3;
+                if (offset + spaces_between_cols > buf.len) return error.BufferTooSmall;
                 buf[offset] = ' ';
                 offset += 1;
                 buf[offset] = ' ';
@@ -945,7 +980,8 @@ fn formatGridNotification(buf: []u8, focused_session: usize) ![]const u8 {
                 offset += 1;
             }
         }
-        if (r < GRID_ROWS - 1) {
+        if (r < grid_rows - 1) {
+            if (offset + 1 > buf.len) return error.BufferTooSmall;
             buf[offset] = '\n';
             offset += 1;
         }
@@ -960,9 +996,11 @@ fn navigateGrid(
     now: i64,
     enable_wrapping: bool,
     show_animation: bool,
+    grid_cols: usize,
+    grid_rows: usize,
 ) !void {
-    const current_row: usize = anim_state.focused_session / GRID_COLS;
-    const current_col: usize = anim_state.focused_session % GRID_COLS;
+    const current_row: usize = anim_state.focused_session / grid_cols;
+    const current_col: usize = anim_state.focused_session % grid_cols;
     var new_row: usize = current_row;
     var new_col: usize = current_col;
     var animation_mode: ?ViewMode = null;
@@ -973,7 +1011,7 @@ fn navigateGrid(
             if (current_row > 0) {
                 new_row = current_row - 1;
             } else if (enable_wrapping) {
-                new_row = GRID_ROWS - 1;
+                new_row = grid_rows - 1;
                 is_wrapping = true;
             }
             if (show_animation and new_row != current_row) {
@@ -981,7 +1019,7 @@ fn navigateGrid(
             }
         },
         .down => {
-            if (current_row < GRID_ROWS - 1) {
+            if (current_row < grid_rows - 1) {
                 new_row = current_row + 1;
             } else if (enable_wrapping) {
                 new_row = 0;
@@ -995,7 +1033,7 @@ fn navigateGrid(
             if (current_col > 0) {
                 new_col = current_col - 1;
             } else if (enable_wrapping) {
-                new_col = GRID_COLS - 1;
+                new_col = grid_cols - 1;
                 is_wrapping = true;
             }
             if (show_animation and new_col != current_col) {
@@ -1003,7 +1041,7 @@ fn navigateGrid(
             }
         },
         .right => {
-            if (current_col < GRID_COLS - 1) {
+            if (current_col < grid_cols - 1) {
                 new_col = current_col + 1;
             } else if (enable_wrapping) {
                 new_col = 0;
@@ -1015,7 +1053,7 @@ fn navigateGrid(
         },
     }
 
-    const new_session: usize = new_row * GRID_COLS + new_col;
+    const new_session: usize = new_row * grid_cols + new_col;
     if (new_session != anim_state.focused_session) {
         if (show_animation) {
             try sessions[new_session].ensureSpawned();
@@ -1084,6 +1122,8 @@ fn makeUiHost(
     ui_scale: f32,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
+    grid_cols: usize,
+    grid_rows: usize,
     anim_state: *const AnimationState,
     sessions: []const SessionState,
     buffer: []ui_mod.SessionUiInfo,
@@ -1100,8 +1140,8 @@ fn makeUiHost(
         .window_w = render_width,
         .window_h = render_height,
         .ui_scale = ui_scale,
-        .grid_cols = GRID_COLS,
-        .grid_rows = GRID_ROWS,
+        .grid_cols = grid_cols,
+        .grid_rows = grid_rows,
         .cell_w = cell_width_pixels,
         .cell_h = cell_height_pixels,
         .view_mode = anim_state.mode,
@@ -1118,15 +1158,17 @@ fn calculateHoveredSession(
     cell_height_pixels: c_int,
     render_width: c_int,
     render_height: c_int,
+    grid_cols: usize,
+    grid_rows: usize,
 ) ?usize {
     return switch (anim_state.mode) {
         .Grid => {
             if (mouse_x < 0 or mouse_x >= render_width or
                 mouse_y < 0 or mouse_y >= render_height) return null;
 
-            const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), @as(usize, GRID_COLS - 1));
-            const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), @as(usize, GRID_ROWS - 1));
-            return grid_row * GRID_COLS + grid_col;
+            const grid_col_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), grid_cols - 1);
+            const grid_row_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), grid_rows - 1);
+            return grid_row_idx * grid_cols + grid_col_idx;
         },
         .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => anim_state.focused_session,
         .Expanding, .Collapsing => {
