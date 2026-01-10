@@ -882,7 +882,14 @@ pub fn main() !void {
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
                     defer allocator.free(config_path);
-                    open_url.openUrl(allocator, config_path) catch |err| {
+                    const result = switch (builtin.os.tag) {
+                        .macos => blk: {
+                            var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
+                            break :blk child.spawn();
+                        },
+                        else => open_url.openUrl(allocator, config_path),
+                    };
+                    result catch |err| {
                         std.debug.print("Failed to open config file: {}\n", .{err});
                     };
                     ui.showToast("⌘, Opening config file", now);
