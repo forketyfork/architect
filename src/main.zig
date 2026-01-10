@@ -388,13 +388,10 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    const font_family_dup = if (config.font.family) |ff| try allocator.dupe(u8, ff) else null;
+                    var font_config = try config.font.duplicate(allocator);
+                    font_config.size = font_size;
                     var updated_config = config_mod.Config{
-                        .font = .{
-                            .size = font_size,
-                            .family = font_family_dup,
-                            .family_owned = true,
-                        },
+                        .font = font_config,
                         .window = .{
                             .width = window_width_points,
                             .height = window_height_points,
@@ -514,13 +511,10 @@ pub fn main() !void {
                             applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            const font_family_dup = if (config.font.family) |ff| try allocator.dupe(u8, ff) else null;
+                            var font_config = try config.font.duplicate(allocator);
+                            font_config.size = font_size;
                             var updated_config = config_mod.Config{
-                                .font = .{
-                                    .size = font_size,
-                                    .family = font_family_dup,
-                                    .family_owned = true,
-                                },
+                                .font = font_config,
                                 .window = .{
                                     .width = window_width_points,
                                     .height = window_height_points,

@@ -49,6 +49,14 @@ pub const FontConfig = struct {
         self.family = null;
         self.family_owned = false;
     }
+
+    pub fn duplicate(self: FontConfig, allocator: std.mem.Allocator) !FontConfig {
+        return FontConfig{
+            .size = self.size,
+            .family = if (self.family) |f| try allocator.dupe(u8, f) else null,
+            .family_owned = self.family != null,
+        };
+    }
 };
 
 pub const WindowConfig = struct {
@@ -278,6 +286,7 @@ pub const Config = struct {
         config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
+        config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
 
         return config;
