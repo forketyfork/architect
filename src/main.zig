@@ -337,6 +337,28 @@ pub fn main() !void {
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = scaled_event.window.data1;
                     window_y = scaled_event.window.data2;
+
+                    var font_config = try config.font.duplicate(allocator);
+                    font_config.size = font_size;
+                    var updated_config = config_mod.Config{
+                        .font = font_config,
+                        .window = .{
+                            .width = window_width_points,
+                            .height = window_height_points,
+                            .x = window_x,
+                            .y = window_y,
+                        },
+                        .theme = try config.theme.duplicate(allocator),
+                        .grid = .{
+                            .rows = config.grid.rows,
+                            .cols = config.grid.cols,
+                        },
+                        .rendering = config.rendering,
+                    };
+                    defer updated_config.deinit(allocator);
+                    updated_config.save(allocator) catch |err| {
+                        std.debug.print("Failed to save config: {}\n", .{err});
+                    };
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
