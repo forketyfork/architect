@@ -96,9 +96,29 @@ pub const PaletteConfig = struct {
             15 => self.bright_white,
         };
         if (hex) |h| {
-            if (Color.fromHex(h)) |c| return c;
+            if (h.len > 0) {
+                if (Color.fromHex(h)) |c| return c;
+            }
         }
         return default_palette[idx];
+    }
+
+    pub fn deinit(self: *PaletteConfig, allocator: std.mem.Allocator) void {
+        inline for (@typeInfo(PaletteConfig).@"struct".fields) |field| {
+            if (@field(self, field.name)) |value| {
+                allocator.free(value);
+            }
+        }
+    }
+
+    pub fn duplicate(self: PaletteConfig, allocator: std.mem.Allocator) !PaletteConfig {
+        var result: PaletteConfig = .{};
+        inline for (@typeInfo(PaletteConfig).@"struct".fields) |field| {
+            if (@field(self, field.name)) |value| {
+                @field(result, field.name) = try allocator.dupe(u8, value);
+            }
+        }
+        return result;
     }
 };
 
@@ -111,34 +131,60 @@ pub const ThemeConfig = struct {
 
     pub fn getBackground(self: ThemeConfig) Color {
         if (self.background) |hex| {
-            if (Color.fromHex(hex)) |c| return c;
+            if (hex.len > 0) {
+                if (Color.fromHex(hex)) |c| return c;
+            }
         }
         return Color.default_background;
     }
 
     pub fn getForeground(self: ThemeConfig) Color {
         if (self.foreground) |hex| {
-            if (Color.fromHex(hex)) |c| return c;
+            if (hex.len > 0) {
+                if (Color.fromHex(hex)) |c| return c;
+            }
         }
         return Color.default_foreground;
     }
 
     pub fn getSelection(self: ThemeConfig) Color {
         if (self.selection) |hex| {
-            if (Color.fromHex(hex)) |c| return c;
+            if (hex.len > 0) {
+                if (Color.fromHex(hex)) |c| return c;
+            }
         }
         return Color.default_selection;
     }
 
     pub fn getAccent(self: ThemeConfig) Color {
         if (self.accent) |hex| {
-            if (Color.fromHex(hex)) |c| return c;
+            if (hex.len > 0) {
+                if (Color.fromHex(hex)) |c| return c;
+            }
         }
         return Color.default_accent;
     }
 
     pub fn getPaletteColor(self: ThemeConfig, idx: u4) Color {
         return self.palette.getColor(idx);
+    }
+
+    pub fn deinit(self: *ThemeConfig, allocator: std.mem.Allocator) void {
+        if (self.background) |value| allocator.free(value);
+        if (self.foreground) |value| allocator.free(value);
+        if (self.selection) |value| allocator.free(value);
+        if (self.accent) |value| allocator.free(value);
+        self.palette.deinit(allocator);
+    }
+
+    pub fn duplicate(self: ThemeConfig, allocator: std.mem.Allocator) !ThemeConfig {
+        return ThemeConfig{
+            .background = if (self.background) |v| try allocator.dupe(u8, v) else null,
+            .foreground = if (self.foreground) |v| try allocator.dupe(u8, v) else null,
+            .selection = if (self.selection) |v| try allocator.dupe(u8, v) else null,
+            .accent = if (self.accent) |v| try allocator.dupe(u8, v) else null,
+            .palette = try self.palette.duplicate(allocator),
+        };
     }
 };
 
@@ -232,6 +278,8 @@ pub const Config = struct {
         config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
+        config.theme = try config.theme.duplicate(allocator);
+
         return config;
     }
 
@@ -267,6 +315,7 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         self.font.deinit(allocator);
+        self.theme.deinit(allocator);
         if (self.font_family_owned) {
             if (self.font_family) |value| {
                 allocator.free(value);
