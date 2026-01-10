@@ -118,16 +118,18 @@ pub fn main() !void {
                 .width = INITIAL_WINDOW_WIDTH,
                 .height = INITIAL_WINDOW_HEIGHT,
             },
-            .grid_rows = config_mod.DEFAULT_GRID_ROWS,
-            .grid_cols = config_mod.DEFAULT_GRID_COLS,
+            .grid = .{
+                .rows = config_mod.DEFAULT_GRID_ROWS,
+                .cols = config_mod.DEFAULT_GRID_COLS,
+            },
         };
     };
     defer config.deinit(allocator);
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
-    const grid_rows: usize = @intCast(config.grid_rows);
-    const grid_cols: usize = @intCast(config.grid_cols);
+    const grid_rows: usize = @intCast(config.grid.rows);
+    const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
 
     const window_pos = if (config.window.x >= 0 and config.window.y >= 0)
@@ -399,8 +401,10 @@ pub fn main() !void {
                             .y = window_y,
                         },
                         .theme = try config.theme.duplicate(allocator),
-                        .grid_rows = config.grid_rows,
-                        .grid_cols = config.grid_cols,
+                        .grid = .{
+                            .rows = config.grid.rows,
+                            .cols = config.grid.cols,
+                        },
                     };
                     defer updated_config.deinit(allocator);
                     updated_config.save(allocator) catch |err| {
@@ -522,8 +526,10 @@ pub fn main() !void {
                                     .y = window_y,
                                 },
                                 .theme = try config.theme.duplicate(allocator),
-                                .grid_rows = config.grid_rows,
-                                .grid_cols = config.grid_cols,
+                                .grid = .{
+                                    .rows = config.grid.rows,
+                                    .cols = config.grid.cols,
+                                },
                             };
                             defer updated_config.deinit(allocator);
                             updated_config.save(allocator) catch |err| {

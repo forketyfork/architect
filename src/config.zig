@@ -66,6 +66,11 @@ pub const WindowConfig = struct {
     y: i32 = -1,
 };
 
+pub const GridConfig = struct {
+    rows: i32 = DEFAULT_GRID_ROWS,
+    cols: i32 = DEFAULT_GRID_COLS,
+};
+
 pub const PaletteConfig = struct {
     black: ?[]const u8 = null,
     red: ?[]const u8 = null,
@@ -218,17 +223,8 @@ pub const default_palette = [16]Color{
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
+    grid: GridConfig = .{},
     theme: ThemeConfig = .{},
-    grid_rows: i32 = DEFAULT_GRID_ROWS,
-    grid_cols: i32 = DEFAULT_GRID_COLS,
-
-    font_size: ?i32 = null,
-    font_family: ?[]const u8 = null,
-    font_family_owned: bool = false,
-    window_width: ?i32 = null,
-    window_height: ?i32 = null,
-    window_x: ?i32 = null,
-    window_y: ?i32 = null,
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -282,9 +278,8 @@ pub const Config = struct {
 
         var config = result.value;
 
-        config.migrateFromLegacy();
-        config.grid_rows = std.math.clamp(config.grid_rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
-        config.grid_cols = std.math.clamp(config.grid_cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid.rows = std.math.clamp(config.grid.rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid.cols = std.math.clamp(config.grid.cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
@@ -292,46 +287,9 @@ pub const Config = struct {
         return config;
     }
 
-    fn migrateFromLegacy(self: *Config) void {
-        if (self.font_size) |size| {
-            self.font.size = size;
-            self.font_size = null;
-        }
-        if (self.font_family) |family| {
-            self.font.family = family;
-            self.font.family_owned = self.font_family_owned;
-            self.font_family = null;
-            self.font_family_owned = false;
-        }
-
-        if (self.window_width) |w| {
-            self.window.width = w;
-            self.window_width = null;
-        }
-        if (self.window_height) |h| {
-            self.window.height = h;
-            self.window_height = null;
-        }
-        if (self.window_x) |x| {
-            self.window.x = x;
-            self.window_x = null;
-        }
-        if (self.window_y) |y| {
-            self.window.y = y;
-            self.window_y = null;
-        }
-    }
-
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         self.font.deinit(allocator);
         self.theme.deinit(allocator);
-        if (self.font_family_owned) {
-            if (self.font_family) |value| {
-                allocator.free(value);
-            }
-        }
-        self.font_family = null;
-        self.font_family_owned = false;
     }
 
     pub fn getFontSize(self: Config) i32 {
@@ -434,8 +392,9 @@ test "Config - decode sectioned toml" {
         \\background = "#1E1E2E"
         \\foreground = "#CDD6F4"
         \\
-        \\grid_rows = 3
-        \\grid_cols = 4
+        \\[grid]
+        \\rows = 3
+        \\cols = 4
         \\
     ;
 
@@ -456,41 +415,6 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(@as(i32, 100), config.window.y);
     try std.testing.expect(config.theme.background != null);
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
-    try std.testing.expectEqual(@as(i32, 3), config.grid_rows);
-    try std.testing.expectEqual(@as(i32, 4), config.grid_cols);
-}
-
-test "Config - decode legacy flat toml with migration" {
-    const allocator = std.testing.allocator;
-
-    const content =
-        \\font_size = 16
-        \\font_family = "VictorMonoNerdFont"
-        \\window_width = 1920
-        \\window_height = 1080
-        \\window_x = 100
-        \\window_y = 100
-        \\grid_rows = 3
-        \\grid_cols = 4
-        \\
-    ;
-
-    var parser = toml.Parser(Config).init(allocator);
-    defer parser.deinit();
-
-    var result = try parser.parseString(content);
-    defer result.deinit();
-
-    var config = result.value;
-    config.migrateFromLegacy();
-
-    try std.testing.expectEqual(@as(i32, 16), config.font.size);
-    try std.testing.expect(config.font.family != null);
-    try std.testing.expectEqualStrings("VictorMonoNerdFont", config.font.family.?);
-    try std.testing.expectEqual(@as(i32, 1920), config.window.width);
-    try std.testing.expectEqual(@as(i32, 1080), config.window.height);
-    try std.testing.expectEqual(@as(i32, 100), config.window.x);
-    try std.testing.expectEqual(@as(i32, 100), config.window.y);
-    try std.testing.expectEqual(@as(i32, 3), config.grid_rows);
-    try std.testing.expectEqual(@as(i32, 4), config.grid_cols);
+    try std.testing.expectEqual(@as(i32, 3), config.grid.rows);
+    try std.testing.expectEqual(@as(i32, 4), config.grid.cols);
 }

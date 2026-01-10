@@ -183,9 +183,9 @@ The 16 ANSI colors can be customized with named parameters:
 
 Each color is specified as a hex string (e.g., `"#E06C75"`).
 
-### Grid Settings
-- **grid_rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
-- **grid_cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
+### Grid Settings (`[grid]`)
+- **rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
+- **cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
 
 Grid size must be edited manually in the config file.
 
@@ -267,8 +267,9 @@ bright_magenta = "#F5C2E7"
 bright_cyan = "#94E2D5"
 bright_white = "#A6ADC8"
 
-grid_rows = 3
-grid_cols = 4
+[grid]
+rows = 3
+cols = 4
 ```
 
 **Debugging font loading:**
