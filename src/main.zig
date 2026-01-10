@@ -907,12 +907,17 @@ pub fn main() !void {
         }
 
         const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !has_scroll_inertia;
-        const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
-        const frame_end_ns: i128 = std.time.nanoTimestamp();
-        const frame_ns = frame_end_ns - frame_start_ns;
-        if (frame_ns < target_frame_ns) {
-            const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
-            std.Thread.sleep(sleep_ns);
+        // When vsync is enabled and we're active, let vsync handle frame pacing.
+        // When idle, always throttle to save power regardless of vsync.
+        const needs_throttle = is_idle or !sdl.vsync_enabled;
+        if (needs_throttle) {
+            const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
+            const frame_end_ns: i128 = std.time.nanoTimestamp();
+            const frame_ns = frame_end_ns - frame_start_ns;
+            if (frame_ns < target_frame_ns) {
+                const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
+                std.Thread.sleep(sleep_ns);
+            }
         }
     }
 }

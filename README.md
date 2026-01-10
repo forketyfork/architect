@@ -91,7 +91,7 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
-- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsynced presentation, and cached grid tiles to reduce redraw work
+- **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsync-aligned presentation (renders at display refresh rate; disable with `ARCHITECT_NO_VSYNC=1` for uncapped fps), and cached grid tiles to reduce redraw work
 - **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
