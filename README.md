@@ -160,28 +160,73 @@ Architect automatically saves your preferences to `~/.config/architect/config.js
 
 The configuration file is created automatically on first use and updated whenever settings change. No manual editing required.
 
-Fonts are loaded from macOS system directories in this order:
-1. `/System/Library/Fonts/` - System fonts
-2. `/Library/Fonts/` - System-wide installed fonts
-3. `~/Library/Fonts/` - User-installed fonts
+### Font Loading
 
-The font loader tries multiple naming patterns to find fonts:
-- `{font_family}-{style}.{ext}` (e.g., `Monaco-Bold.ttf`)
+Fonts are loaded from macOS system directories, searched recursively:
+1. `/System/Library/Fonts/` - System fonts (and subdirectories)
+2. `/Library/Fonts/` - System-wide installed fonts (and subdirectories)
+3. `~/Library/Fonts/` - User-installed fonts (and subdirectories)
+
+**Supported font formats:**
+- `.ttf` - TrueType fonts
+- `.otf` - OpenType fonts
+- `.ttc` - TrueType Collection (multiple variants in one file)
+
+**Naming patterns searched (in order):**
+- `{font_family}-{style}.{ext}` (e.g., `VictorMonoNerdFont-Bold.ttf`)
 - `{font_family}{style}.{ext}` (e.g., `SFNSMonoBold.ttf`)
 - `{font_family}.{ext}` for Regular style (e.g., `Monaco.ttf`)
+- `{font_family}.ttc` - TTC file containing all variants
 
-If style variants (Bold, Italic, BoldItalic) aren't found, the Regular font will be used as a fallback.
+**Examples of supported fonts:**
+
+| Font | Location | Type |
+|------|----------|------|
+| `SFNSMono` | `/System/Library/Fonts/SFNSMono.ttf` | Separate TTF files |
+| `Menlo` | `/System/Library/Fonts/Menlo.ttc` | TTC with all variants |
+| `Monaco` | `/System/Library/Fonts/Monaco.ttf` | Single TTF (no variants) |
+| `VictorMonoNerdFont` | `/Library/Fonts/Nix Fonts/.../VictorMonoNerdFont-Regular.ttf` | Nerd Font in subdirectory |
+
+**Fallback behavior:**
+
+If a requested font isn't found, the app falls back to `SFNSMono` with a warning:
+```
+warning(font_paths): Font family 'MyFont' not found, falling back to SFNSMono
+```
+
+If style variants (Bold, Italic, BoldItalic) aren't found:
+1. For TTC files: Uses the same TTC file for all variants (SDL_ttf loads correct variant)
+2. For TTF/OTF: Falls back to default font's variant
+3. Last resort: Uses Regular variant
 
 **Example configuration:**
 ```json
 {
   "font_size": 16,
-  "font_family": "SFNSMono",
+  "font_family": "VictorMonoNerdFont",
   "window_width": 1920,
   "window_height": 1080,
   "window_x": 150,
   "window_y": 100
 }
+```
+
+**Debugging font loading:**
+
+Run the app and check logs to see which fonts were found:
+```
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Regular.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Bold.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-Italic.ttf
+info(font_paths): Found font: /Library/Fonts/.../VictorMonoNerdFont-BoldItalic.ttf
+```
+
+Or for TTC files:
+```
+info(font_paths): Found font: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for Bold variant: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for Italic variant: /System/Library/Fonts/Menlo.ttc
+info(font_paths): Using TTC file for BoldItalic variant: /System/Library/Fonts/Menlo.ttc
 ```
 
 To reset to defaults, simply delete the configuration file:
