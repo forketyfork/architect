@@ -136,12 +136,14 @@ pub fn main() !void {
             .window = config.window,
         };
     };
+    persistence.font_size = std.math.clamp(persistence.font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
+    var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
     const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
@@ -221,7 +223,7 @@ pub fn main() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_size = calculateTerminalSize(&font, render_width, render_height);
+    const initial_term_size = calculateTerminalSize(&font, render_width, render_height, current_grid_font_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -360,6 +362,7 @@ pub fn main() !void {
                     updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
                     const prev_scale = ui_scale;
                     ui_scale = @max(scale_x, scale_y);
+                    const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
                     if (ui_scale != prev_scale) {
                         font.deinit();
                         ui_font.deinit();
@@ -386,12 +389,12 @@ pub fn main() !void {
                             scaledFontSize(UI_FONT_SIZE, ui_scale),
                         );
                         ui.assets.ui_font = &ui_font;
-                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     } else {
-                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
@@ -512,7 +515,8 @@ pub fn main() !void {
                             font = new_font;
                             font_size = target_size;
 
-                            const term_size = calculateTerminalSize(&font, render_width, render_height);
+                            const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
+                            const term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
                             applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
@@ -956,6 +960,21 @@ pub fn main() !void {
             }
         }
 
+        const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
+        if (desired_font_scale != current_grid_font_scale) {
+            const term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
+            full_cols = term_size.cols;
+            full_rows = term_size.rows;
+            applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+            current_grid_font_scale = desired_font_scale;
+            std.debug.print("Adjusted terminal size for view mode {s}: scale={d:.2} size={d}x{d}\n", .{
+                @tagName(anim_state.mode),
+                desired_font_scale,
+                full_cols,
+                full_rows,
+            });
+        }
+
         const ui_render_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
         defer allocator.free(ui_render_info);
         const ui_render_host = makeUiHost(
@@ -979,7 +998,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme);
+            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();
@@ -1315,12 +1334,14 @@ fn updateScrollInertia(session: *SessionState, delta_time_s: f32) void {
     session.scroll_velocity *= decay_factor;
 }
 
-fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
+fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32) struct { cols: u16, rows: u16 } {
     const padding = renderer_mod.TERMINAL_PADDING * 2;
     const usable_w = @max(0, window_width - padding);
     const usable_h = @max(0, window_height - padding);
-    const cols = @max(1, @divFloor(usable_w, font.cell_width));
-    const rows = @max(1, @divFloor(usable_h, font.cell_height));
+    const scaled_cell_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * grid_font_scale)));
+    const scaled_cell_h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_height)) * grid_font_scale)));
+    const cols = @max(1, @divFloor(usable_w, scaled_cell_w));
+    const rows = @max(1, @divFloor(usable_h, scaled_cell_h));
     return .{
         .cols = @intCast(cols),
         .rows = @intCast(rows),
@@ -1330,6 +1351,13 @@ fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window
 fn scaledFontSize(points: c_int, scale: f32) c_int {
     const scaled = std.math.round(@as(f32, @floatFromInt(points)) * scale);
     return @max(1, @as(c_int, @intFromFloat(scaled)));
+}
+
+fn gridFontScaleForMode(mode: app_state.ViewMode, grid_font_scale: f32) f32 {
+    return switch (mode) {
+        .Grid, .Expanding, .Collapsing => grid_font_scale,
+        else => 1.0,
+    };
 }
 
 fn applyTerminalResize(
