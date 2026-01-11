@@ -92,7 +92,7 @@ See [Setup](#setup) section below for building from source.
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsync-aligned presentation (renders at display refresh rate), and cached grid tiles to reduce redraw work
-- **Persistent Configuration**: Automatically saves and restores font size, font family, window dimensions, and window position
+- **Persistent State**: Automatically saves and restores window position/size and font size; user configuration is read-only and edited via Cmd+,
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)
 - **Link Opening**: Cmd+Click on OSC 8 hyperlinks to open them in your default browser (cursor changes to pointer when hovering over links with Cmd held)
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
@@ -151,21 +151,20 @@ zig build run
 
 ## Configuration
 
-Architect automatically saves your preferences to `~/.config/architect/config.toml`. The configuration is organized into sections:
+Architect uses two configuration files in `~/.config/architect/`:
 
-### Font Settings (`[font]`)
-- **size**: Font size in pixels (range: 8-96, default: 14) - Adjusted via Cmd+Plus/Minus shortcuts
+### User Configuration (`config.toml`)
+
+**Read-only** user preferences that are never modified by the application. Edit via **⌘,** (Cmd+Comma) keyboard shortcut which opens the file in your default text editor.
+
+The configuration is organized into sections:
+
+#### Font Settings (`[font]`)
 - **family**: Font family name (default: `SFNSMono` on macOS)
 
-### Window Settings (`[window]`)
-- **width**: Window width in pixels
-- **height**: Window height in pixels
-- **x**: Window X position (-1 = system default)
-- **y**: Window Y position (-1 = system default)
+Note: Font **size** is stored in `persistence.toml` (see below).
 
-Window dimensions and position are automatically saved when you resize the window or adjust font size.
-
-### Theme Settings (`[theme]`)
+#### Theme Settings (`[theme]`)
 - **background**: Terminal background color as hex (default: `#0E1116`)
 - **foreground**: Terminal text color as hex (default: `#CDD6E0`)
 - **selection**: Selection highlight color as hex (default: `#1B2230`)
@@ -183,16 +182,31 @@ The 16 ANSI colors can be customized with named parameters:
 
 Each color is specified as a hex string (e.g., `"#E06C75"`).
 
-### Grid Settings (`[grid]`)
+#### Grid Settings (`[grid]`)
 - **rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
 - **cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
 
-Grid size must be edited manually in the config file.
-
-### Rendering Settings (`[rendering]`)
+#### Rendering Settings (`[rendering]`)
 - **vsync**: Enable vertical sync (default: `true`) - When enabled, frames render at display refresh rate
 
-The configuration file is created automatically on first use and updated whenever settings change.
+A default configuration file is created automatically on first launch if it doesn't exist.
+
+### Runtime Persistence (`persistence.toml`)
+
+**Automatically managed** by the application to store runtime state. This file should not be edited manually.
+
+#### Window State
+- **width**: Window width in pixels
+- **height**: Window height in pixels
+- **x**: Window X position
+- **y**: Window Y position
+
+Window state is automatically saved whenever you move or resize the window.
+
+#### Font Size
+- **font_size**: Font size in pixels (range: 8-96, default: 14)
+
+Font size is automatically saved when adjusted via **⌘+** / **⌘-** keyboard shortcuts.
 
 ### Font Loading
 
@@ -233,17 +247,10 @@ If style variants (Bold, Italic, BoldItalic) aren't found:
 2. For TTF/OTF: Falls back to default font's variant
 3. Last resort: Uses Regular variant
 
-**Example configuration:**
+**Example config.toml (user-editable):**
 ```toml
 [font]
-size = 16
 family = "VictorMonoNerdFont"
-
-[window]
-width = 1920
-height = 1080
-x = 150
-y = 100
 
 [theme]
 background = "#1E1E2E"
@@ -278,6 +285,17 @@ cols = 4
 vsync = true
 ```
 
+**Example persistence.toml (automatically managed):**
+```toml
+[window]
+width = 1920
+height = 1080
+x = 150
+y = 100
+
+font_size = 16
+```
+
 **Debugging font loading:**
 
 Run the app and check logs to see which fonts were found:
@@ -296,10 +314,16 @@ info(font_paths): Using TTC file for Italic variant: /System/Library/Fonts/Menlo
 info(font_paths): Using TTC file for BoldItalic variant: /System/Library/Fonts/Menlo.ttc
 ```
 
-To reset to defaults, simply delete the configuration file:
+To reset to defaults, delete the configuration files:
 ```bash
+# Reset user configuration to defaults
 rm ~/.config/architect/config.toml
+
+# Reset runtime state (window position/size, font size)
+rm ~/.config/architect/persistence.toml
 ```
+
+The app will recreate `config.toml` with defaults on next launch. The `persistence.toml` will be recreated as you use the app.
 
 ## Development
 
@@ -545,7 +569,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 - `src/pty.zig` - PTY abstractions and utilities
 - `src/font.zig` - Font rendering with SDL_ttf and glyph caching
 - `src/font_paths.zig` - Font path resolution from macOS system font directories
-- `src/config.zig` - Configuration persistence (font, window, and theme settings)
+- `src/config.zig` - Configuration loading (read-only user config) and persistence (runtime window/font state)
 - `src/c.zig` - C library bindings for SDL3
 - `build.zig` - Zig build configuration with SDL3 dependencies
 - `build.zig.zon` - Zig package dependencies
@@ -588,7 +612,9 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Keyboard input handling
 - Full-window terminal scaling
 - Dynamic terminal and PTY resizing on window resize
-- Persistent configuration (font, window, and theme/color settings)
+- Read-only user configuration (font family, theme, grid size, rendering settings)
+- Automatic persistence of runtime state (window position/size, font size)
+- Configuration editor via Cmd+, keyboard shortcut
 - Font size adjustment via keyboard shortcuts (Cmd+Plus/Minus)
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled

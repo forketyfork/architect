@@ -108,7 +108,10 @@ pub fn main() !void {
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
-            std.debug.print("Config not found, using defaults\n", .{});
+            std.debug.print("Config not found, creating default config file\n", .{});
+            config_mod.Config.createDefaultConfigFile(allocator) catch |create_err| {
+                std.debug.print("Failed to create default config: {}\n", .{create_err});
+            };
         } else {
             std.debug.print("Failed to load config: {}, using defaults\n", .{err});
         }
@@ -126,21 +129,29 @@ pub fn main() !void {
     };
     defer config.deinit(allocator);
 
+    var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
+        std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
+        break :blk config_mod.Persistence{
+            .font_size = config.font.size,
+            .window = config.window,
+        };
+    };
+
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
 
-    const window_pos = if (config.window.x >= 0 and config.window.y >= 0)
-        platform.WindowPosition{ .x = config.window.x, .y = config.window.y }
+    const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
+        platform.WindowPosition{ .x = persistence.window.x, .y = persistence.window.y }
     else
         null;
 
     var sdl = try platform.init(
         "ARCHITECT",
-        config.window.width,
-        config.window.height,
+        persistence.window.width,
+        persistence.window.height,
         window_pos,
         config.rendering.vsync,
     );
@@ -161,7 +172,7 @@ pub fn main() !void {
 
     const renderer = sdl.renderer;
 
-    var font_size: c_int = config.font.size;
+    var font_size: c_int = persistence.font_size;
     var window_width_points: c_int = sdl.window_w;
     var window_height_points: c_int = sdl.window_h;
     var render_width: c_int = sdl.render_w;
@@ -206,8 +217,8 @@ pub fn main() !void {
     ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
     ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
 
-    var window_x: c_int = config.window.x;
-    var window_y: c_int = config.window.y;
+    var window_x: c_int = persistence.window.x;
+    var window_y: c_int = persistence.window.y;
 
     const initial_term_size = calculateTerminalSize(&font, render_width, render_height);
     var full_cols: u16 = initial_term_size.cols;
@@ -281,6 +292,8 @@ pub fn main() !void {
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
     try ui.register(quit_confirm_component.asComponent());
+    const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
+    try ui.register(global_shortcuts_component);
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -332,6 +345,12 @@ pub fn main() !void {
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = scaled_event.window.data1;
                     window_y = scaled_event.window.data2;
+
+                    persistence.window.x = window_x;
+                    persistence.window.y = window_y;
+                    persistence.save(allocator) catch |err| {
+                        std.debug.print("Failed to save persistence: {}\n", .{err});
+                    };
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -378,26 +397,12 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    var font_config = try config.font.duplicate(allocator);
-                    font_config.size = font_size;
-                    var updated_config = config_mod.Config{
-                        .font = font_config,
-                        .window = .{
-                            .width = window_width_points,
-                            .height = window_height_points,
-                            .x = window_x,
-                            .y = window_y,
-                        },
-                        .theme = try config.theme.duplicate(allocator),
-                        .grid = .{
-                            .rows = config.grid.rows,
-                            .cols = config.grid.cols,
-                        },
-                        .rendering = config.rendering,
-                    };
-                    defer updated_config.deinit(allocator);
-                    updated_config.save(allocator) catch |err| {
-                        std.debug.print("Failed to save config: {}\n", .{err});
+                    persistence.window.width = window_width_points;
+                    persistence.window.height = window_height_points;
+                    persistence.window.x = window_x;
+                    persistence.window.y = window_y;
+                    persistence.save(allocator) catch |err| {
+                        std.debug.print("Failed to save persistence: {}\n", .{err});
                     };
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
@@ -504,26 +509,9 @@ pub fn main() !void {
                             applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            var font_config = try config.font.duplicate(allocator);
-                            font_config.size = font_size;
-                            var updated_config = config_mod.Config{
-                                .font = font_config,
-                                .window = .{
-                                    .width = window_width_points,
-                                    .height = window_height_points,
-                                    .x = window_x,
-                                    .y = window_y,
-                                },
-                                .theme = try config.theme.duplicate(allocator),
-                                .grid = .{
-                                    .rows = config.grid.rows,
-                                    .cols = config.grid.cols,
-                                },
-                                .rendering = config.rendering,
-                            };
-                            defer updated_config.deinit(allocator);
-                            updated_config.save(allocator) catch |err| {
-                                std.debug.print("Failed to save config: {}\n", .{err});
+                            persistence.font_size = font_size;
+                            persistence.save(allocator) catch |err| {
+                                std.debug.print("Failed to save persistence: {}\n", .{err});
                             };
                         }
 
@@ -873,6 +861,24 @@ pub fn main() !void {
             },
             .ConfirmQuit => {
                 running = false;
+            },
+            .OpenConfig => {
+                if (config_mod.Config.getConfigPath(allocator)) |config_path| {
+                    defer allocator.free(config_path);
+                    const result = switch (builtin.os.tag) {
+                        .macos => blk: {
+                            var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
+                            break :blk child.spawn();
+                        },
+                        else => open_url.openUrl(allocator, config_path),
+                    };
+                    result catch |err| {
+                        std.debug.print("Failed to open config file: {}\n", .{err});
+                    };
+                    ui.showToast("⌘, Opening config file", now);
+                } else |err| {
+                    std.debug.print("Failed to get config path: {}\n", .{err});
+                }
             },
         };
 
