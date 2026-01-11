@@ -438,12 +438,12 @@ pub fn main() !void {
             wait_ms = 16;
         }
 
-        var first_event: c.SDL_Event = undefined;
         var processed_event = false;
+        var first_event_opt: ?c.SDL_Event = null;
+        var first_event: c.SDL_Event = undefined;
         if (c.SDL_WaitEventTimeout(&first_event, @as(i32, @intCast(wait_ms)))) {
             processed_event = true;
-            // Push back so we can process uniformly with the poll loop below.
-            _ = c.SDL_PushEvent(&first_event);
+            first_event_opt = first_event;
         }
 
         const frame_start_ns: i128 = std.time.nanoTimestamp();
@@ -456,8 +456,15 @@ pub fn main() !void {
         }
         previous_frame_ns = frame_start_ns;
 
+        var pending_event = first_event_opt;
         var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event)) {
+        while (true) {
+            if (pending_event) |ev| {
+                event = ev;
+                pending_event = null;
+            } else if (!c.SDL_PollEvent(&event)) {
+                break;
+            }
             processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
             const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
