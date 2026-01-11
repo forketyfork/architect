@@ -73,6 +73,7 @@ pub const GridConfig = struct {
 
 pub const UiConfig = struct {
     show_hotkey_feedback: bool = true,
+    enable_animations: bool = true,
 };
 
 pub const PaletteConfig = struct {
@@ -224,12 +225,73 @@ pub const default_palette = [16]Color{
     .{ .r = 205, .g = 214, .b = 224 },
 };
 
+pub const Rendering = struct {
+    vsync: bool = true,
+};
+
+pub const Persistence = struct {
+    window: WindowConfig = .{},
+    font_size: c_int = 14,
+
+    pub fn load(allocator: std.mem.Allocator) !Persistence {
+        const persistence_path = try getPersistencePath(allocator);
+        defer allocator.free(persistence_path);
+
+        const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
+            return switch (err) {
+                error.FileNotFound => Persistence{},
+                else => err,
+            };
+        };
+        defer file.close();
+
+        const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(contents);
+
+        var parser = toml.Parser(Persistence).init(allocator);
+        defer parser.deinit();
+
+        var result = parser.parseString(contents) catch |err| {
+            std.log.err("Failed to parse persistence TOML: {any}", .{err});
+            return Persistence{};
+        };
+        defer result.deinit();
+
+        return result.value;
+    }
+
+    pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
+        const persistence_path = try getPersistencePath(allocator);
+        defer allocator.free(persistence_path);
+
+        const persistence_dir = fs.path.dirname(persistence_path) orelse return error.InvalidPath;
+        fs.makeDirAbsolute(persistence_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        var buf: [4096]u8 = undefined;
+        var writer = std.io.Writer.fixed(&buf);
+        try toml.serialize(allocator, self, &writer);
+
+        const file = try fs.createFileAbsolute(persistence_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(writer.buffered());
+    }
+
+    pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
+    }
+};
+
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
     grid: GridConfig = .{},
     theme: ThemeConfig = .{},
     ui: UiConfig = .{},
+    rendering: Rendering = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -238,7 +300,12 @@ pub const Config = struct {
         return loadTomlConfig(allocator, config_path);
     }
 
-    pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
+    pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
+    }
+
+    pub fn createDefaultConfigFile(allocator: std.mem.Allocator) SaveError!void {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
@@ -248,18 +315,63 @@ pub const Config = struct {
             else => return err,
         };
 
-        var buf: [4096]u8 = undefined;
-        var writer = std.io.Writer.fixed(&buf);
-        try toml.serialize(allocator, self, &writer);
+        const template =
+            \\# Architect configuration file (user-editable)
+            \\# This file is read-only to the application - edit freely via Cmd+,
+            \\# Changes take effect on next launch.
+            \\#
+            \\# Note: Window position/size and font size are stored in persistence.toml
+            \\# and managed automatically by the application.
+            \\
+            \\# Font family name (default: system monospace)
+            \\# [font]
+            \\# family = "SFNSMono"
+            \\
+            \\# Terminal grid size, 1-12 (default: 3x3)
+            \\# [grid]
+            \\# rows = 3
+            \\# cols = 3
+            \\
+            \\# Rendering options
+            \\# [rendering]
+            \\# vsync = true
+            \\
+            \\# UI options
+            \\# [ui]
+            \\# show_hotkey_feedback = true
+            \\# enable_animations = true
+            \\
+            \\# Theme colors (hex format)
+            \\# [theme]
+            \\# background = "#0E1116"
+            \\# foreground = "#CDD6E0"
+            \\# selection = "#1B2230"
+            \\# accent = "#61AFEF"
+            \\
+            \\# ANSI palette (optional, uncomment to customize)
+            \\# [theme.palette]
+            \\# black = "#0E1116"
+            \\# red = "#E06C75"
+            \\# green = "#98C379"
+            \\# yellow = "#D19A66"
+            \\# blue = "#61AFEF"
+            \\# magenta = "#C678DD"
+            \\# cyan = "#56B6C2"
+            \\# white = "#ABB2BF"
+            \\# bright_black = "#5C6370"
+            \\# bright_red = "#E06C75"
+            \\# bright_green = "#98C379"
+            \\# bright_yellow = "#E5C07B"
+            \\# bright_blue = "#61AFEF"
+            \\# bright_magenta = "#C678DD"
+            \\# bright_cyan = "#56B6C2"
+            \\# bright_white = "#CDD6E0"
+            \\
+        ;
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(writer.buffered());
-    }
-
-    fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
+        try file.writeAll(template);
     }
 
     fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
@@ -401,6 +513,13 @@ test "Config - decode sectioned toml" {
         \\rows = 3
         \\cols = 4
         \\
+        \\[rendering]
+        \\vsync = false
+        \\
+        \\[ui]
+        \\show_hotkey_feedback = false
+        \\enable_animations = false
+        \\
     ;
 
     var parser = toml.Parser(Config).init(allocator);
@@ -422,4 +541,7 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
     try std.testing.expectEqual(@as(i32, 3), config.grid.rows);
     try std.testing.expectEqual(@as(i32, 4), config.grid.cols);
+    try std.testing.expectEqual(false, config.rendering.vsync);
+    try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
+    try std.testing.expectEqual(false, config.ui.enable_animations);
 }
