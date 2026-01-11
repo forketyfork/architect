@@ -441,7 +441,10 @@ pub fn main() !void {
         var processed_event = false;
         var first_event_opt: ?c.SDL_Event = null;
         var first_event: c.SDL_Event = undefined;
-        if (c.SDL_WaitEventTimeout(&first_event, @as(i32, @intCast(wait_ms)))) {
+        if (c.SDL_PollEvent(&first_event)) {
+            processed_event = true;
+            first_event_opt = first_event;
+        } else if (c.SDL_WaitEventTimeout(&first_event, @as(i32, @intCast(wait_ms)))) {
             processed_event = true;
             first_event_opt = first_event;
         }
