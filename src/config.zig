@@ -71,6 +71,11 @@ pub const GridConfig = struct {
     cols: i32 = DEFAULT_GRID_COLS,
 };
 
+pub const UiConfig = struct {
+    show_hotkey_feedback: bool = true,
+    enable_animations: bool = true,
+};
+
 pub const PaletteConfig = struct {
     black: ?[]const u8 = null,
     red: ?[]const u8 = null,
@@ -285,6 +290,7 @@ pub const Config = struct {
     window: WindowConfig = .{},
     grid: GridConfig = .{},
     theme: ThemeConfig = .{},
+    ui: UiConfig = .{},
     rendering: Rendering = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
@@ -329,6 +335,11 @@ pub const Config = struct {
             \\# Rendering options
             \\# [rendering]
             \\# vsync = true
+            \\
+            \\# UI options
+            \\# [ui]
+            \\# show_hotkey_feedback = true
+            \\# enable_animations = true
             \\
             \\# Theme colors (hex format)
             \\# [theme]
@@ -505,6 +516,10 @@ test "Config - decode sectioned toml" {
         \\[rendering]
         \\vsync = false
         \\
+        \\[ui]
+        \\show_hotkey_feedback = false
+        \\enable_animations = false
+        \\
     ;
 
     var parser = toml.Parser(Config).init(allocator);
@@ -527,4 +542,6 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(@as(i32, 3), config.grid.rows);
     try std.testing.expectEqual(@as(i32, 4), config.grid.cols);
     try std.testing.expectEqual(false, config.rendering.vsync);
+    try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
+    try std.testing.expectEqual(false, config.ui.enable_animations);
 }

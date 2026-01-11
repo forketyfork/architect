@@ -87,8 +87,9 @@ See [Setup](#setup) section below for building from source.
 - **Real-Time I/O**: Non-blocking PTY communication with live updates
 - **Interactive Control**:
   - Click any grid cell or press ⌘+Return in grid view to expand
-  - Hold Esc for ~700ms to collapse back to grid; a quick tap is forwarded to the terminal
+  - Hold Esc for ~700ms to collapse back to grid; a quick tap is forwarded to the terminal; the hold ring waits a short moment before appearing to avoid flashes
   - Type in the focused terminal
+  - Visual feedback indicator appears briefly when hotkeys are pressed
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
 - **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled
 - **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsync-aligned presentation (renders at display refresh rate), and cached grid tiles to reduce redraw work
@@ -189,7 +190,11 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 #### Rendering Settings (`[rendering]`)
 - **vsync**: Enable vertical sync (default: `true`) - When enabled, frames render at display refresh rate
 
-A default configuration file is created automatically on first launch if it doesn't exist.
+### UI Settings (`[ui]`)
+- **show_hotkey_feedback**: Show visual indicator when hotkeys are pressed (default: `true`)
+- **enable_animations**: Toggle UI/grid transition animations (default: `true`; set to `false` for instant view changes)
+
+A default configuration file is created automatically on first launch if it doesn't exist. The configuration file is updated whenever settings change.
 
 ### Runtime Persistence (`persistence.toml`)
 
@@ -283,6 +288,10 @@ cols = 4
 
 [rendering]
 vsync = true
+
+[ui]
+show_hotkey_feedback = true
+enable_animations = true
 ```
 
 **Example persistence.toml (automatically managed):**

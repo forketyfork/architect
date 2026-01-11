@@ -70,9 +70,12 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.
 - Report the results in your summary; if you must skip tests, state the reason explicitly.
 
-## Documentation Hygiene
-- Update `README.md` and any relevant docs to reflect behavior, configuration, build, or workflow changes.
+## Documentation Hygiene (REQUIRED)
+- **ALWAYS** update documentation when making changes. This is not optional.
+- Update `README.md` for any user-facing changes: new features, configuration options, keyboard shortcuts, or behavior changes.
+- Update `docs/architecture.md` when adding new components, modules, or changing the system structure.
 - Keep this `CLAUDE.md` aligned when workflows or automation expectations change.
+- Documentation updates should be part of the same PR as the code changes.
 
 ## Repo Notes
 - Architect is a Zig app using the ghostty-vt dependency fetched via the Zig package manager; avoid reintroducing a checked-out `ghostty/` path assumption.

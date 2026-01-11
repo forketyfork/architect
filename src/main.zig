@@ -142,6 +142,7 @@ pub fn main() !void {
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
+    const animations_enabled = config.ui.enable_animations;
 
     const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
         platform.WindowPosition{ .x = persistence.window.x, .y = persistence.window.y }
@@ -288,6 +289,9 @@ pub fn main() !void {
     ui.toast_component = toast_component;
     const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
     try ui.register(escape_component.asComponent());
+    const hotkey_component = try ui_mod.hotkey_indicator.HotkeyIndicatorComponent.init(allocator, &ui_font);
+    try ui.register(hotkey_component.asComponent());
+    ui.hotkey_component = hotkey_component;
     const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
@@ -466,6 +470,7 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (has_gui and !has_blocking_mod and (key == c.SDLK_Q or key == c.SDLK_W)) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_Q) "⌘Q" else "⌘W", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                             running = false;
                         }
@@ -473,17 +478,21 @@ pub fn main() !void {
                     }
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘K", now);
                         clearTerminal(focused);
                         ui.showToast("Cleared terminal", now);
                     } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘C", now);
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘V", now);
                         pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
@@ -516,10 +525,10 @@ pub fn main() !void {
                         }
 
                         var notification_buf: [64]u8 = undefined;
-                        const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
-                        const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
+                        const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch "Font size changed";
                         ui.showToast(notification_msg, now);
                     } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_T) "⌘T" else "⌘N", now);
                         if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
@@ -553,12 +562,30 @@ pub fn main() !void {
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
+                            if (config.ui.show_hotkey_feedback) {
+                                const arrow = switch (direction) {
+                                    .up => "⌘↑",
+                                    .down => "⌘↓",
+                                    .left => "⌘←",
+                                    .right => "⌘→",
+                                };
+                                ui.showHotkey(arrow, now);
+                            }
                             try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
-                            try navigateGrid(&anim_state, sessions, direction, now, true, true, grid_cols, grid_rows);
+                            if (config.ui.show_hotkey_feedback) {
+                                const arrow = switch (direction) {
+                                    .up => "⌘↑",
+                                    .down => "⌘↓",
+                                    .left => "⌘←",
+                                    .right => "⌘→",
+                                };
+                                ui.showHotkey(arrow, now);
+                            }
+                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -573,6 +600,7 @@ pub fn main() !void {
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawned();
 
@@ -589,11 +617,19 @@ pub fn main() !void {
                         };
                         const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                        anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = start_rect;
-                        anim_state.target_rect = target_rect;
+                        if (animations_enabled) {
+                            anim_state.mode = .Expanding;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = start_rect;
+                            anim_state.target_rect = target_rect;
+                        } else {
+                            anim_state.mode = .Full;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = target_rect;
+                            anim_state.target_rect = target_rect;
+                            anim_state.previous_session = clicked_session;
+                        }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
                         if (focused.spawned and !focused.dead and !isModifierKey(key)) {
@@ -636,11 +672,19 @@ pub fn main() !void {
 
                         const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                        anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = cell_rect;
-                        anim_state.target_rect = target_rect;
+                        if (animations_enabled) {
+                            anim_state.mode = .Expanding;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = cell_rect;
+                            anim_state.target_rect = target_rect;
+                        } else {
+                            anim_state.mode = .Full;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = target_rect;
+                            anim_state.target_rect = target_rect;
+                            anim_state.previous_session = clicked_session;
+                        }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
                         const focused = &sessions[anim_state.focused_session];
@@ -855,7 +899,21 @@ pub fn main() !void {
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
-                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                    if (animations_enabled) {
+                        startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                    } else {
+                        const grid_row: c_int = @intCast(anim_state.focused_session / grid_cols);
+                        const grid_col: c_int = @intCast(anim_state.focused_session % grid_cols);
+                        anim_state.mode = .Grid;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                        anim_state.target_rect = Rect{
+                            .x = grid_col * cell_width_pixels,
+                            .y = grid_row * cell_height_pixels,
+                            .w = cell_width_pixels,
+                            .h = cell_height_pixels,
+                        };
+                    }
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
             },
@@ -865,6 +923,8 @@ pub fn main() !void {
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
                     defer allocator.free(config_path);
+                    if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
+
                     const result = switch (builtin.os.tag) {
                         .macos => blk: {
                             var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
@@ -875,7 +935,7 @@ pub fn main() !void {
                     result catch |err| {
                         std.debug.print("Failed to open config file: {}\n", .{err});
                     };
-                    ui.showToast("⌘, Opening config file", now);
+                    ui.showToast("Opening config file", now);
                 } else |err| {
                     std.debug.print("Failed to get config path: {}\n", .{err});
                 }
@@ -1069,7 +1129,9 @@ fn navigateGrid(
 
     const new_session: usize = new_row * grid_cols + new_col;
     if (new_session != anim_state.focused_session) {
-        if (show_animation) {
+        if (anim_state.mode == .Full) {
+            try sessions[new_session].ensureSpawned();
+        } else if (show_animation) {
             try sessions[new_session].ensureSpawned();
         }
         sessions[anim_state.focused_session].clearSelection();
