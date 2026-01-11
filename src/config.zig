@@ -224,6 +224,62 @@ pub const Rendering = struct {
     vsync: bool = true,
 };
 
+pub const Persistence = struct {
+    window: WindowConfig = .{},
+    font_size: c_int = 14,
+
+    pub fn load(allocator: std.mem.Allocator) !Persistence {
+        const persistence_path = try getPersistencePath(allocator);
+        defer allocator.free(persistence_path);
+
+        const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
+            return switch (err) {
+                error.FileNotFound => Persistence{},
+                else => err,
+            };
+        };
+        defer file.close();
+
+        const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(contents);
+
+        var parser = toml.Parser(Persistence).init(allocator);
+        defer parser.deinit();
+
+        var result = parser.parseString(contents) catch |err| {
+            std.log.err("Failed to parse persistence TOML: {any}", .{err});
+            return Persistence{};
+        };
+        defer result.deinit();
+
+        return result.value;
+    }
+
+    pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
+        const persistence_path = try getPersistencePath(allocator);
+        defer allocator.free(persistence_path);
+
+        const persistence_dir = fs.path.dirname(persistence_path) orelse return error.InvalidPath;
+        fs.makeDirAbsolute(persistence_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        var buf: [4096]u8 = undefined;
+        var writer = std.io.Writer.fixed(&buf);
+        try toml.serialize(allocator, self, &writer);
+
+        const file = try fs.createFileAbsolute(persistence_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(writer.buffered());
+    }
+
+    pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
+    }
+};
+
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
@@ -236,25 +292,6 @@ pub const Config = struct {
         defer allocator.free(config_path);
 
         return loadTomlConfig(allocator, config_path);
-    }
-
-    pub fn save(self: Config, allocator: std.mem.Allocator) SaveError!void {
-        const config_path = try getConfigPath(allocator);
-        defer allocator.free(config_path);
-
-        const config_dir = fs.path.dirname(config_path) orelse return error.InvalidPath;
-        fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
-        var buf: [4096]u8 = undefined;
-        var writer = std.io.Writer.fixed(&buf);
-        try toml.serialize(allocator, self, &writer);
-
-        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(writer.buffered());
     }
 
     pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
