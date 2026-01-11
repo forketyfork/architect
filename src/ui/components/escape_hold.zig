@@ -15,6 +15,7 @@ pub const EscapeHoldComponent = struct {
     first_frame: FirstFrameGuard = .{},
 
     const ESC_HOLD_TOTAL_MS: i64 = 700;
+    const ESC_INDICATOR_DELAY_MS: i64 = 150;
     const ESC_ARC_COUNT: usize = 5;
     const ESC_ARC_SEGMENT_MS: i64 = ESC_HOLD_TOTAL_MS / ESC_ARC_COUNT;
     const ESC_INDICATOR_MARGIN: c_int = 40;
@@ -96,7 +97,10 @@ pub const EscapeHoldComponent = struct {
         if (!self.gesture.active) return;
 
         const elapsed = host.now_ms - self.gesture.start_ms;
-        const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(elapsed, ESC_ARC_SEGMENT_MS))));
+        if (elapsed < ESC_INDICATOR_DELAY_MS) return;
+
+        const display_elapsed = elapsed - ESC_INDICATOR_DELAY_MS;
+        const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(display_elapsed, ESC_ARC_SEGMENT_MS))));
         const margin = dpi.scale(ESC_INDICATOR_MARGIN, host.ui_scale);
         const radius = dpi.scale(ESC_INDICATOR_RADIUS, host.ui_scale);
         const ring_half_thickness = dpi.scale(4, host.ui_scale);

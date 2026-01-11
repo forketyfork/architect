@@ -108,7 +108,10 @@ pub fn main() !void {
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
-            std.debug.print("Config not found, using defaults\n", .{});
+            std.debug.print("Config not found, creating default config file\n", .{});
+            config_mod.Config.createDefaultConfigFile(allocator) catch |create_err| {
+                std.debug.print("Failed to create default config: {}\n", .{create_err});
+            };
         } else {
             std.debug.print("Failed to load config: {}, using defaults\n", .{err});
         }
@@ -126,36 +129,34 @@ pub fn main() !void {
     };
     defer config.deinit(allocator);
 
+    var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
+        std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
+        break :blk config_mod.Persistence{
+            .font_size = config.font.size,
+            .window = config.window,
+        };
+    };
+    persistence.font_size = std.math.clamp(persistence.font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
+
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
+    var current_grid_font_scale: f32 = config.grid.font_scale;
+    const animations_enabled = config.ui.enable_animations;
 
-    const window_pos = if (config.window.x >= 0 and config.window.y >= 0)
-        platform.WindowPosition{ .x = config.window.x, .y = config.window.y }
+    const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
+        platform.WindowPosition{ .x = persistence.window.x, .y = persistence.window.y }
     else
         null;
-    var vsync_requested: bool = true;
-    if (std.posix.getenv("ARCHITECT_NO_VSYNC") != null) {
-        vsync_requested = false;
-    } else if (std.posix.getenv("ARCHITECT_VSYNC")) |val| {
-        if (std.ascii.eqlIgnoreCase(val, "0") or
-            std.ascii.eqlIgnoreCase(val, "false") or
-            std.ascii.eqlIgnoreCase(val, "no"))
-        {
-            vsync_requested = false;
-        } else {
-            vsync_requested = true;
-        }
-    }
 
     var sdl = try platform.init(
         "ARCHITECT",
-        config.window.width,
-        config.window.height,
+        persistence.window.width,
+        persistence.window.height,
         window_pos,
-        vsync_requested,
+        config.rendering.vsync,
     );
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
@@ -174,7 +175,7 @@ pub fn main() !void {
 
     const renderer = sdl.renderer;
 
-    var font_size: c_int = config.font.size;
+    var font_size: c_int = persistence.font_size;
     var window_width_points: c_int = sdl.window_w;
     var window_height_points: c_int = sdl.window_h;
     var render_width: c_int = sdl.render_w;
@@ -219,10 +220,10 @@ pub fn main() !void {
     ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
     ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
 
-    var window_x: c_int = config.window.x;
-    var window_y: c_int = config.window.y;
+    var window_x: c_int = persistence.window.x;
+    var window_y: c_int = persistence.window.y;
 
-    const initial_term_size = calculateTerminalSize(&font, render_width, render_height);
+    const initial_term_size = calculateTerminalSize(&font, render_width, render_height, current_grid_font_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -290,10 +291,15 @@ pub fn main() !void {
     ui.toast_component = toast_component;
     const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
     try ui.register(escape_component.asComponent());
+    const hotkey_component = try ui_mod.hotkey_indicator.HotkeyIndicatorComponent.init(allocator, &ui_font);
+    try ui.register(hotkey_component.asComponent());
+    ui.hotkey_component = hotkey_component;
     const restart_component = try ui_mod.restart_buttons.RestartButtonsComponent.init(allocator);
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
     try ui.register(quit_confirm_component.asComponent());
+    const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
+    try ui.register(global_shortcuts_component);
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -345,11 +351,18 @@ pub fn main() !void {
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = scaled_event.window.data1;
                     window_y = scaled_event.window.data2;
+
+                    persistence.window.x = window_x;
+                    persistence.window.y = window_y;
+                    persistence.save(allocator) catch |err| {
+                        std.debug.print("Failed to save persistence: {}\n", .{err});
+                    };
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
                     const prev_scale = ui_scale;
                     ui_scale = @max(scale_x, scale_y);
+                    const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
                     if (ui_scale != prev_scale) {
                         font.deinit();
                         ui_font.deinit();
@@ -376,12 +389,12 @@ pub fn main() !void {
                             scaledFontSize(UI_FONT_SIZE, ui_scale),
                         );
                         ui.assets.ui_font = &ui_font;
-                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     } else {
-                        const new_term_size = calculateTerminalSize(&font, render_width, render_height);
+                        const new_term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
@@ -391,25 +404,12 @@ pub fn main() !void {
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
-                    var font_config = try config.font.duplicate(allocator);
-                    font_config.size = font_size;
-                    var updated_config = config_mod.Config{
-                        .font = font_config,
-                        .window = .{
-                            .width = window_width_points,
-                            .height = window_height_points,
-                            .x = window_x,
-                            .y = window_y,
-                        },
-                        .theme = try config.theme.duplicate(allocator),
-                        .grid = .{
-                            .rows = config.grid.rows,
-                            .cols = config.grid.cols,
-                        },
-                    };
-                    defer updated_config.deinit(allocator);
-                    updated_config.save(allocator) catch |err| {
-                        std.debug.print("Failed to save config: {}\n", .{err});
+                    persistence.window.width = window_width_points;
+                    persistence.window.height = window_height_points;
+                    persistence.window.x = window_x;
+                    persistence.window.y = window_y;
+                    persistence.save(allocator) catch |err| {
+                        std.debug.print("Failed to save persistence: {}\n", .{err});
                     };
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
@@ -473,6 +473,7 @@ pub fn main() !void {
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
                     if (has_gui and !has_blocking_mod and (key == c.SDLK_Q or key == c.SDLK_W)) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_Q) "⌘Q" else "⌘W", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                             running = false;
                         }
@@ -480,17 +481,21 @@ pub fn main() !void {
                     }
 
                     if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘K", now);
                         clearTerminal(focused);
                         ui.showToast("Cleared terminal", now);
                     } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘C", now);
                         copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘V", now);
                         pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
                         const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
@@ -510,39 +515,24 @@ pub fn main() !void {
                             font = new_font;
                             font_size = target_size;
 
-                            const term_size = calculateTerminalSize(&font, render_width, render_height);
+                            const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
+                            const term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
                             applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            var font_config = try config.font.duplicate(allocator);
-                            font_config.size = font_size;
-                            var updated_config = config_mod.Config{
-                                .font = font_config,
-                                .window = .{
-                                    .width = window_width_points,
-                                    .height = window_height_points,
-                                    .x = window_x,
-                                    .y = window_y,
-                                },
-                                .theme = try config.theme.duplicate(allocator),
-                                .grid = .{
-                                    .rows = config.grid.rows,
-                                    .cols = config.grid.cols,
-                                },
-                            };
-                            defer updated_config.deinit(allocator);
-                            updated_config.save(allocator) catch |err| {
-                                std.debug.print("Failed to save config: {}\n", .{err});
+                            persistence.font_size = font_size;
+                            persistence.save(allocator) catch |err| {
+                                std.debug.print("Failed to save persistence: {}\n", .{err});
                             };
                         }
 
                         var notification_buf: [64]u8 = undefined;
-                        const hotkey = if (direction == .increase) "⌘⇧+" else "⌘⇧-";
-                        const notification_msg = std.fmt.bufPrint(&notification_buf, "{s}  Font size: {d}pt", .{ hotkey, font_size }) catch "Font size changed";
+                        const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch "Font size changed";
                         ui.showToast(notification_msg, now);
                     } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_T) "⌘T" else "⌘N", now);
                         if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
@@ -576,12 +566,30 @@ pub fn main() !void {
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
+                            if (config.ui.show_hotkey_feedback) {
+                                const arrow = switch (direction) {
+                                    .up => "⌘↑",
+                                    .down => "⌘↓",
+                                    .left => "⌘←",
+                                    .right => "⌘→",
+                                };
+                                ui.showHotkey(arrow, now);
+                            }
                             try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
-                            try navigateGrid(&anim_state, sessions, direction, now, true, true, grid_cols, grid_rows);
+                            if (config.ui.show_hotkey_feedback) {
+                                const arrow = switch (direction) {
+                                    .up => "⌘↑",
+                                    .down => "⌘↓",
+                                    .left => "⌘←",
+                                    .right => "⌘→",
+                                };
+                                ui.showHotkey(arrow, now);
+                            }
+                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -596,6 +604,7 @@ pub fn main() !void {
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawned();
 
@@ -612,11 +621,19 @@ pub fn main() !void {
                         };
                         const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                        anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = start_rect;
-                        anim_state.target_rect = target_rect;
+                        if (animations_enabled) {
+                            anim_state.mode = .Expanding;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = start_rect;
+                            anim_state.target_rect = target_rect;
+                        } else {
+                            anim_state.mode = .Full;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = target_rect;
+                            anim_state.target_rect = target_rect;
+                            anim_state.previous_session = clicked_session;
+                        }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else {
                         if (focused.spawned and !focused.dead and !isModifierKey(key)) {
@@ -659,30 +676,49 @@ pub fn main() !void {
 
                         const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                        anim_state.mode = .Expanding;
                         anim_state.focused_session = clicked_session;
-                        anim_state.start_time = now;
-                        anim_state.start_rect = cell_rect;
-                        anim_state.target_rect = target_rect;
+                        if (animations_enabled) {
+                            anim_state.mode = .Expanding;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = cell_rect;
+                            anim_state.target_rect = target_rect;
+                        } else {
+                            anim_state.mode = .Full;
+                            anim_state.start_time = now;
+                            anim_state.start_rect = target_rect;
+                            anim_state.target_rect = target_rect;
+                            anim_state.previous_session = clicked_session;
+                        }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and focused.terminal != null) {
                             if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                const mod = c.SDL_GetModState();
-                                const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+                                const clicks = scaled_event.button.clicks;
 
-                                if (cmd_held) {
-                                    if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_scrolled)) |uri| {
-                                        defer allocator.free(uri);
-                                        open_url.openUrl(allocator, uri) catch |err| {
-                                            log.err("Failed to open URL: {}", .{err});
-                                        };
+                                if (clicks >= 3) {
+                                    // Triple-click: select entire line
+                                    selectLine(focused, pin, focused.is_scrolled);
+                                } else if (clicks == 2) {
+                                    // Double-click: select word
+                                    selectWord(focused, pin, focused.is_scrolled);
+                                } else {
+                                    // Single-click: begin drag selection or open link
+                                    const mod = c.SDL_GetModState();
+                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+
+                                    if (cmd_held) {
+                                        if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_scrolled)) |uri| {
+                                            defer allocator.free(uri);
+                                            open_url.openUrl(allocator, uri) catch |err| {
+                                                log.err("Failed to open URL: {}", .{err});
+                                            };
+                                        } else {
+                                            beginSelection(focused, pin);
+                                        }
                                     } else {
                                         beginSelection(focused, pin);
                                     }
-                                } else {
-                                    beginSelection(focused, pin);
                                 }
                             }
                         }
@@ -867,12 +903,46 @@ pub fn main() !void {
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
-                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                    if (animations_enabled) {
+                        startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                    } else {
+                        const grid_row: c_int = @intCast(anim_state.focused_session / grid_cols);
+                        const grid_col: c_int = @intCast(anim_state.focused_session % grid_cols);
+                        anim_state.mode = .Grid;
+                        anim_state.start_time = now;
+                        anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                        anim_state.target_rect = Rect{
+                            .x = grid_col * cell_width_pixels,
+                            .y = grid_row * cell_height_pixels,
+                            .w = cell_width_pixels,
+                            .h = cell_height_pixels,
+                        };
+                    }
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
             },
             .ConfirmQuit => {
                 running = false;
+            },
+            .OpenConfig => {
+                if (config_mod.Config.getConfigPath(allocator)) |config_path| {
+                    defer allocator.free(config_path);
+                    if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
+
+                    const result = switch (builtin.os.tag) {
+                        .macos => blk: {
+                            var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
+                            break :blk child.spawn();
+                        },
+                        else => open_url.openUrl(allocator, config_path),
+                    };
+                    result catch |err| {
+                        std.debug.print("Failed to open config file: {}\n", .{err});
+                    };
+                    ui.showToast("Opening config file", now);
+                } else |err| {
+                    std.debug.print("Failed to get config path: {}\n", .{err});
+                }
             },
         };
 
@@ -888,6 +958,21 @@ pub fn main() !void {
                 };
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
+        }
+
+        const desired_font_scale = gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
+        if (desired_font_scale != current_grid_font_scale) {
+            const term_size = calculateTerminalSize(&font, render_width, render_height, desired_font_scale);
+            full_cols = term_size.cols;
+            full_rows = term_size.rows;
+            applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+            current_grid_font_scale = desired_font_scale;
+            std.debug.print("Adjusted terminal size for view mode {s}: scale={d:.2} size={d}x{d}\n", .{
+                @tagName(anim_state.mode),
+                desired_font_scale,
+                full_cols,
+                full_rows,
+            });
         }
 
         const ui_render_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
@@ -920,12 +1005,17 @@ pub fn main() !void {
         }
 
         const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !has_scroll_inertia;
-        const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
-        const frame_end_ns: i128 = std.time.nanoTimestamp();
-        const frame_ns = frame_end_ns - frame_start_ns;
-        if (frame_ns < target_frame_ns) {
-            const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
-            std.Thread.sleep(sleep_ns);
+        // When vsync is enabled and we're active, let vsync handle frame pacing.
+        // When idle, always throttle to save power regardless of vsync.
+        const needs_throttle = is_idle or !sdl.vsync_enabled;
+        if (needs_throttle) {
+            const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
+            const frame_end_ns: i128 = std.time.nanoTimestamp();
+            const frame_ns = frame_end_ns - frame_start_ns;
+            if (frame_ns < target_frame_ns) {
+                const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
+                std.Thread.sleep(sleep_ns);
+            }
         }
     }
 }
@@ -1058,7 +1148,9 @@ fn navigateGrid(
 
     const new_session: usize = new_row * grid_cols + new_col;
     if (new_session != anim_state.focused_session) {
-        if (show_animation) {
+        if (anim_state.mode == .Full) {
+            try sessions[new_session].ensureSpawned();
+        } else if (show_animation) {
             try sessions[new_session].ensureSpawned();
         }
         sessions[anim_state.focused_session].clearSelection();
@@ -1242,12 +1334,14 @@ fn updateScrollInertia(session: *SessionState, delta_time_s: f32) void {
     session.scroll_velocity *= decay_factor;
 }
 
-fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int) struct { cols: u16, rows: u16 } {
+fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32) struct { cols: u16, rows: u16 } {
     const padding = renderer_mod.TERMINAL_PADDING * 2;
     const usable_w = @max(0, window_width - padding);
     const usable_h = @max(0, window_height - padding);
-    const cols = @max(1, @divFloor(usable_w, font.cell_width));
-    const rows = @max(1, @divFloor(usable_h, font.cell_height));
+    const scaled_cell_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * grid_font_scale)));
+    const scaled_cell_h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_height)) * grid_font_scale)));
+    const cols = @max(1, @divFloor(usable_w, scaled_cell_w));
+    const rows = @max(1, @divFloor(usable_h, scaled_cell_h));
     return .{
         .cols = @intCast(cols),
         .rows = @intCast(rows),
@@ -1257,6 +1351,13 @@ fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window
 fn scaledFontSize(points: c_int, scale: f32) c_int {
     const scaled = std.math.round(@as(f32, @floatFromInt(points)) * scale);
     return @max(1, @as(c_int, @intFromFloat(scaled)));
+}
+
+fn gridFontScaleForMode(mode: app_state.ViewMode, grid_font_scale: f32) f32 {
+    return switch (mode) {
+        .Grid, .Expanding, .Collapsing => grid_font_scale,
+        else => 1.0,
+    };
 }
 
 fn applyTerminalResize(
@@ -1401,6 +1502,126 @@ fn endSelection(session: *SessionState) void {
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+/// Returns true if the codepoint is considered part of a word (alphanumeric or underscore).
+/// Only ASCII characters are considered; non-ASCII codepoints return false.
+fn isWordCharacter(codepoint: u21) bool {
+    if (codepoint > 127) return false;
+    const ch: u8 = @intCast(codepoint);
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+/// Select the word at the given pin position. A word is a contiguous sequence of
+/// word characters (alphanumeric and underscore).
+fn selectWord(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) void {
+    const terminal = &(session.terminal orelse return);
+    const page = &pin.node.data;
+    const max_col: u16 = @intCast(page.size.cols - 1);
+
+    // Get the point from the pin
+    const pin_point = if (is_scrolled)
+        terminal.screens.active.pages.pointFromPin(.viewport, pin)
+    else
+        terminal.screens.active.pages.pointFromPin(.active, pin);
+    const point = pin_point orelse return;
+    const click_x = if (is_scrolled) point.viewport.x else point.active.x;
+    const click_y = if (is_scrolled) point.viewport.y else point.active.y;
+
+    // Check if clicked cell is a word character
+    const clicked_cell = terminal.screens.active.pages.getCell(
+        if (is_scrolled)
+            ghostty_vt.point.Point{ .viewport = .{ .x = click_x, .y = click_y } }
+        else
+            ghostty_vt.point.Point{ .active = .{ .x = click_x, .y = click_y } },
+    ) orelse return;
+    const clicked_cp = clicked_cell.cell.content.codepoint;
+    if (!isWordCharacter(clicked_cp)) return;
+
+    // Find word start by scanning left
+    var start_x = click_x;
+    while (start_x > 0) {
+        const prev_x = start_x - 1;
+        const prev_cell = terminal.screens.active.pages.getCell(
+            if (is_scrolled)
+                ghostty_vt.point.Point{ .viewport = .{ .x = prev_x, .y = click_y } }
+            else
+                ghostty_vt.point.Point{ .active = .{ .x = prev_x, .y = click_y } },
+        ) orelse break;
+        if (!isWordCharacter(prev_cell.cell.content.codepoint)) break;
+        start_x = prev_x;
+    }
+
+    // Find word end by scanning right
+    var end_x = click_x;
+    while (end_x < max_col) {
+        const next_x = end_x + 1;
+        const next_cell = terminal.screens.active.pages.getCell(
+            if (is_scrolled)
+                ghostty_vt.point.Point{ .viewport = .{ .x = next_x, .y = click_y } }
+            else
+                ghostty_vt.point.Point{ .active = .{ .x = next_x, .y = click_y } },
+        ) orelse break;
+        if (!isWordCharacter(next_cell.cell.content.codepoint)) break;
+        end_x = next_x;
+    }
+
+    // Create pins for the word boundaries
+    const start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = start_x, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = start_x, .y = click_y } };
+    const end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = end_x, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = end_x, .y = click_y } };
+
+    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
+    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
+
+    // Apply the selection
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select word: {}", .{err});
+        return;
+    };
+    session.dirty = true;
+}
+
+/// Select the entire line at the given pin position.
+fn selectLine(session: *SessionState, pin: ghostty_vt.Pin, is_scrolled: bool) void {
+    const terminal = &(session.terminal orelse return);
+    const page = &pin.node.data;
+    const max_col: u16 = @intCast(page.size.cols - 1);
+
+    // Get the point from the pin
+    const pin_point = if (is_scrolled)
+        terminal.screens.active.pages.pointFromPin(.viewport, pin)
+    else
+        terminal.screens.active.pages.pointFromPin(.active, pin);
+    const point = pin_point orelse return;
+    const click_y = if (is_scrolled) point.viewport.y else point.active.y;
+
+    // Create pins for line start (x=0) and line end (x=max_col)
+    const start_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = click_y } };
+    const end_point = if (is_scrolled)
+        ghostty_vt.point.Point{ .viewport = .{ .x = max_col, .y = click_y } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = max_col, .y = click_y } };
+
+    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
+    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
+
+    // Apply the selection
+    terminal.screens.active.clearSelection();
+    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
+        log.err("failed to select line: {}", .{err});
+        return;
+    };
+    session.dirty = true;
 }
 
 const LinkMatch = struct {

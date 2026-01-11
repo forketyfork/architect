@@ -327,8 +327,8 @@ pub const QuitConfirmComponent = struct {
         self.message_h = message_size.y;
 
         const quit_text = "Quit";
-        const bright_red = theme.palette[9];
-        const quit_color = c.SDL_Color{ .r = bright_red.r, .g = bright_red.g, .b = bright_red.b, .a = 255 };
+        const quit_fg = theme.foreground;
+        const quit_color = c.SDL_Color{ .r = quit_fg.r, .g = quit_fg.g, .b = quit_fg.b, .a = 255 };
         const quit_surface = c.TTF_RenderText_Blended(font, quit_text, quit_text.len, quit_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(quit_surface);
         self.quit_tex = c.SDL_CreateTextureFromSurface(renderer, quit_surface) orelse return error.TextureFailed;

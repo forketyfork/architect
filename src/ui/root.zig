@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const types = @import("types.zig");
 const toast = @import("components/toast.zig");
+const hotkey_indicator = @import("components/hotkey_indicator.zig");
 
 const UiComponent = @import("component.zig").UiComponent;
 
@@ -11,6 +12,7 @@ pub const UiRoot = struct {
     actions: types.UiActionQueue,
     assets: types.UiAssets,
     toast_component: ?*toast.ToastComponent = null,
+    hotkey_component: ?*hotkey_indicator.HotkeyIndicatorComponent = null,
 
     pub fn init(allocator: std.mem.Allocator) UiRoot {
         return .{
@@ -87,6 +89,12 @@ pub const UiRoot = struct {
     pub fn showToast(self: *UiRoot, message: []const u8, now_ms: i64) void {
         if (self.toast_component) |comp| {
             comp.show(message, now_ms);
+        }
+    }
+
+    pub fn showHotkey(self: *UiRoot, label: []const u8, now_ms: i64) void {
+        if (self.hotkey_component) |comp| {
+            comp.show(label, now_ms);
         }
     }
 
