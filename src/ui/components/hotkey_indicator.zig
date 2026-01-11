@@ -14,7 +14,7 @@ pub const HotkeyIndicatorComponent = struct {
     active: bool = false,
     start_ms: i64 = 0,
 
-    label: [16]u8 = undefined,
+    label: [32]u8 = undefined,
     label_len: usize = 0,
 
     const INDICATOR_MARGIN: c_int = 40;
@@ -171,22 +171,8 @@ pub const HotkeyIndicatorComponent = struct {
         const text_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = alpha };
         const label_slice = self.label[0..self.label_len];
 
-        // Count display width (handle multi-byte UTF-8 characters)
-        var display_width: usize = 0;
-        var idx: usize = 0;
-        while (idx < label_slice.len) {
-            const byte = label_slice[idx];
-            if (byte < 0x80) {
-                idx += 1;
-            } else if (byte < 0xE0) {
-                idx += 2;
-            } else if (byte < 0xF0) {
-                idx += 3;
-            } else {
-                idx += 4;
-            }
-            display_width += 1;
-        }
+        // Count display width (codepoints, handles multi-byte UTF-8)
+        const display_width = countCodepoints(label_slice);
 
         const text_width = self.font.cell_width * @as(c_int, @intCast(display_width));
         const text_height = self.font.cell_height;
@@ -194,31 +180,16 @@ pub const HotkeyIndicatorComponent = struct {
         var x = center_x - @divFloor(text_width, 2);
         const y = center_y - @divFloor(text_height, 2);
 
-        // Render each character
-        idx = 0;
+        var idx: usize = 0;
         while (idx < label_slice.len) {
-            const byte = label_slice[idx];
-            var char_len: usize = 1;
-            if (byte >= 0xF0) {
-                char_len = 4;
-            } else if (byte >= 0xE0) {
-                char_len = 3;
-            } else if (byte >= 0xC0) {
-                char_len = 2;
-            }
-
-            if (idx + char_len <= label_slice.len) {
-                const ch_slice = label_slice[idx .. idx + char_len];
-                if (char_len == 1) {
-                    self.font.renderGlyph(ch_slice[0], x, y, self.font.cell_width, self.font.cell_height, text_color) catch {};
-                } else {
-                    // For multi-byte UTF-8, decode the codepoint
-                    const codepoint = decodeUtf8(ch_slice);
-                    self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch {};
-                }
-            }
+            const first_byte = label_slice[idx];
+            const seq_len = std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
+            const end = @min(idx + seq_len, label_slice.len);
+            const cp_slice = label_slice[idx..end];
+            const codepoint = std.unicode.utf8Decode(cp_slice) catch 0xFFFD;
+            self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch {};
             x += self.font.cell_width;
-            idx += char_len;
+            idx = end;
         }
 
         self.first_frame.markDrawn();
@@ -251,21 +222,16 @@ pub const HotkeyIndicatorComponent = struct {
     };
 };
 
-fn decodeUtf8(bytes: []const u8) u21 {
-    if (bytes.len == 0) return 0;
-    const b0 = bytes[0];
-    if (b0 < 0x80) return b0;
-    if (bytes.len < 2) return 0xFFFD;
-    const b1 = bytes[1];
-    if (b0 < 0xE0) {
-        return (@as(u21, b0 & 0x1F) << 6) | (b1 & 0x3F);
+fn countCodepoints(bytes: []const u8) usize {
+    var idx: usize = 0;
+    var total: usize = 0;
+    while (idx < bytes.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[idx]) catch 1;
+        const end = @min(idx + seq_len, bytes.len);
+        // Decode to validate; errors fall back to replacement and still advance one seq.
+        _ = std.unicode.utf8Decode(bytes[idx..end]) catch 0xFFFD;
+        total += 1;
+        idx = end;
     }
-    if (bytes.len < 3) return 0xFFFD;
-    const b2 = bytes[2];
-    if (b0 < 0xF0) {
-        return (@as(u21, b0 & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | (b2 & 0x3F);
-    }
-    if (bytes.len < 4) return 0xFFFD;
-    const b3 = bytes[3];
-    return (@as(u21, b0 & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | (b3 & 0x3F);
+    return total;
 }
