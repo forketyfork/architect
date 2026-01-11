@@ -310,27 +310,51 @@ pub const Config = struct {
         };
 
         const template =
-            \\# Architect configuration file
-            \\# Uncomment and modify values to customize behavior.
+            \\# Architect configuration file (user-editable)
+            \\# This file is read-only to the application - edit freely via Cmd+,
             \\# Changes take effect on next launch.
-            \\
-            \\# Font size in points (default: 14)
-            \\# font_size = 14
+            \\#
+            \\# Note: Window position/size and font size are stored in persistence.toml
+            \\# and managed automatically by the application.
             \\
             \\# Font family name (default: system monospace)
-            \\# font_family = "SFNSMono"
-            \\
-            \\# Window dimensions in pixels (default: 1200x900)
-            \\# window_width = 1200
-            \\# window_height = 900
-            \\
-            \\# Window position (-1 = system default)
-            \\# window_x = -1
-            \\# window_y = -1
+            \\# [font]
+            \\# family = "SFNSMono"
             \\
             \\# Terminal grid size, 1-12 (default: 3x3)
-            \\# grid_rows = 3
-            \\# grid_cols = 3
+            \\# [grid]
+            \\# rows = 3
+            \\# cols = 3
+            \\
+            \\# Rendering options
+            \\# [rendering]
+            \\# vsync = true
+            \\
+            \\# Theme colors (hex format)
+            \\# [theme]
+            \\# background = "#0E1116"
+            \\# foreground = "#CDD6E0"
+            \\# selection = "#1B2230"
+            \\# accent = "#61AFEF"
+            \\
+            \\# ANSI palette (optional, uncomment to customize)
+            \\# [theme.palette]
+            \\# black = "#0E1116"
+            \\# red = "#E06C75"
+            \\# green = "#98C379"
+            \\# yellow = "#D19A66"
+            \\# blue = "#61AFEF"
+            \\# magenta = "#C678DD"
+            \\# cyan = "#56B6C2"
+            \\# white = "#ABB2BF"
+            \\# bright_black = "#5C6370"
+            \\# bright_red = "#E06C75"
+            \\# bright_green = "#98C379"
+            \\# bright_yellow = "#E5C07B"
+            \\# bright_blue = "#61AFEF"
+            \\# bright_magenta = "#C678DD"
+            \\# bright_cyan = "#56B6C2"
+            \\# bright_white = "#CDD6E0"
             \\
         ;
 
