@@ -6,6 +6,8 @@ pub const MIN_GRID_SIZE: i32 = 1;
 pub const MAX_GRID_SIZE: i32 = 12;
 pub const DEFAULT_GRID_ROWS: i32 = 3;
 pub const DEFAULT_GRID_COLS: i32 = 3;
+pub const MIN_GRID_FONT_SCALE: f32 = 0.5;
+pub const MAX_GRID_FONT_SCALE: f32 = 3.0;
 
 pub const Color = struct {
     r: u8,
@@ -69,6 +71,7 @@ pub const WindowConfig = struct {
 pub const GridConfig = struct {
     rows: i32 = DEFAULT_GRID_ROWS,
     cols: i32 = DEFAULT_GRID_COLS,
+    font_scale: f32 = 1.0,
 };
 
 pub const UiConfig = struct {
@@ -323,7 +326,7 @@ pub const Config = struct {
             \\# Note: Window position/size and font size are stored in persistence.toml
             \\# and managed automatically by the application.
             \\
-            \\# Font family name (default: system monospace)
+            \\# Font options
             \\# [font]
             \\# family = "SFNSMono"
             \\
@@ -331,6 +334,7 @@ pub const Config = struct {
             \\# [grid]
             \\# rows = 3
             \\# cols = 3
+            \\# font_scale = 1.0
             \\
             \\# Rendering options
             \\# [rendering]
@@ -397,6 +401,7 @@ pub const Config = struct {
 
         config.grid.rows = std.math.clamp(config.grid.rows, MIN_GRID_SIZE, MAX_GRID_SIZE);
         config.grid.cols = std.math.clamp(config.grid.cols, MIN_GRID_SIZE, MAX_GRID_SIZE);
+        config.grid.font_scale = std.math.clamp(config.grid.font_scale, MIN_GRID_FONT_SCALE, MAX_GRID_FONT_SCALE);
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
@@ -512,6 +517,7 @@ test "Config - decode sectioned toml" {
         \\[grid]
         \\rows = 3
         \\cols = 4
+        \\font_scale = 1.25
         \\
         \\[rendering]
         \\vsync = false
@@ -541,6 +547,7 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
     try std.testing.expectEqual(@as(i32, 3), config.grid.rows);
     try std.testing.expectEqual(@as(i32, 4), config.grid.cols);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.25), config.grid.font_scale, 0.0001);
     try std.testing.expectEqual(false, config.rendering.vsync);
     try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
     try std.testing.expectEqual(false, config.ui.enable_animations);

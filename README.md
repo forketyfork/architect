@@ -186,6 +186,7 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 #### Grid Settings (`[grid]`)
 - **rows**: Number of terminal rows in the grid (range: 1-12, default: 3)
 - **cols**: Number of terminal columns in the grid (range: 1-12, default: 3)
+- **font_scale**: Proportional font scaling in grid view (range: 0.5-3.0, default: 1.0). Values greater than 1.0 render larger, more readable text but show fewer terminal rows/columns (e.g., `font_scale = 1.5`). Grid settings must be edited manually in the config file.
 
 #### Rendering Settings (`[rendering]`)
 - **vsync**: Enable vertical sync (default: `true`) - When enabled, frames render at display refresh rate
@@ -194,7 +195,7 @@ Each color is specified as a hex string (e.g., `"#E06C75"`).
 - **show_hotkey_feedback**: Show visual indicator when hotkeys are pressed (default: `true`)
 - **enable_animations**: Toggle UI/grid transition animations (default: `true`; set to `false` for instant view changes)
 
-A default configuration file is created automatically on first launch if it doesn't exist. The configuration file is updated whenever settings change.
+A default configuration file is created automatically on first launch if it doesn't exist. User-editable settings live in `config.toml`; runtime state such as window position/size and font size is stored separately in `persistence.toml`.
 
 ### Runtime Persistence (`persistence.toml`)
 
@@ -285,6 +286,7 @@ bright_white = "#A6ADC8"
 [grid]
 rows = 3
 cols = 4
+font_scale = 1.2
 
 [rendering]
 vsync = true
