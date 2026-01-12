@@ -248,8 +248,9 @@ pub fn main() !void {
 
     const sessions = try allocator.alloc(SessionState, grid_count);
     var init_count: usize = 0;
-    errdefer {
-        for (0..init_count) |i| {
+    defer {
+        var i: usize = 0;
+        while (i < init_count) : (i += 1) {
             sessions[i].deinit(allocator);
         }
         allocator.free(sessions);
@@ -267,12 +268,7 @@ pub fn main() !void {
 
     try sessions[0].ensureSpawnedWithLoop(&loop);
 
-    defer {
-        for (sessions) |*session| {
-            session.deinit(allocator);
-        }
-        allocator.free(sessions);
-    }
+    init_count = sessions.len;
 
     var running = true;
 
