@@ -85,6 +85,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Architect is a Zig app using the ghostty-vt dependency fetched via the Zig package manager; avoid reintroducing a checked-out `ghostty/` path assumption.
 - User config lives in `~/.config/architect/config.toml`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
+- Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`’s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Architecture overview lives in `docs/architecture.md`—consult it before structural changes.
@@ -104,6 +105,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 
 ## Known Pitfalls
 - Session teardown can run twice on error paths (errdefer plus outer defer). Keep `SessionState.deinit` idempotent: destroy textures/fonts/watchers, then null pointers and reset flags; in `main.zig` only deinit sessions that were actually constructed.
+- Running `rg` over the whole $HOME on macOS hits protected directories and can hang/time out; narrow searches to the repo, `/etc`, or specific config paths to avoid permission noise and delays.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.

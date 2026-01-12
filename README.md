@@ -375,6 +375,7 @@ Architect integrates with AI coding assistants through a Unix domain socket prot
 
 - **Notification socket**: Architect listens on `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` (Unix domain socket, mode 0600, where `<pid>` is the process ID).
 - **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
+- **Login shells**: Architect spawns shells with `-l`, so your login profiles (e.g., `/etc/zprofile`, `~/.zprofile`) run and provide system aliases and environment tweaks in every session.
 - **Protocol**: Send a single-line JSON object to the socket:
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
   - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the grid (request).
