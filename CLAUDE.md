@@ -67,6 +67,9 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 
 **General rule:** When working with indices, sizes, or any value that might grow, explicitly annotate or cast to `usize` or an appropriate sized type.
 
+### Naming collisions in large render functions
+- When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent “local constant shadows” errors.
+
 ## Build and Test (required after every task)
 - Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.
 - Report the results in your summary; if you must skip tests, state the reason explicitly.
@@ -86,6 +89,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`’s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Architecture overview lives in `docs/architecture.md`—consult it before structural changes.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
+- Cursor rendering: set the cursor’s background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
 
 ## Architecture Invariants (agent instructions)
 - Route UI input/rendering through `UiRoot` only; do not add new UI event branches or rendering in `main.zig` or `renderer.zig`.
