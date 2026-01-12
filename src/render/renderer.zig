@@ -25,6 +25,8 @@ const CWD_PADDING: c_int = 8;
 const MARQUEE_SPEED: f32 = 30.0;
 const FADE_WIDTH: c_int = 20;
 const FAINT_FACTOR: f32 = 0.6;
+const CURSOR_COLOR = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
+const DARK_FALLBACK = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -201,6 +203,10 @@ fn renderSessionContent(
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
     const screen = terminal.screens.active;
     const cursor_visible = terminal.modes.get(.cursor_visible);
+    const cursor = screen.cursor;
+    const cursor_col: usize = cursor.x;
+    const cursor_row: usize = cursor.y;
+    const should_render_cursor = !session.is_scrolled and is_focused and !session.dead and cursor_visible;
     const pages = screen.pages;
 
     const base_cell_width = font.cell_width;
@@ -259,6 +265,8 @@ fn renderSessionContent(
             if (x + cell_width_actual <= rect.x or x >= rect.x + rect.w) continue;
             if (y + cell_height_actual <= rect.y or y >= rect.y + rect.h) continue;
 
+            const on_cursor = should_render_cursor and cursor_col == col and cursor_row == row;
+
             const style = list_cell.style();
             var fg_color = getCellColor(style.fg_color, default_fg, theme);
             var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
@@ -275,6 +283,11 @@ fn renderSessionContent(
 
             if (style.flags.faint) {
                 fg_color = applyFaint(fg_color);
+            }
+
+            if (on_cursor) {
+                bg_color = CURSOR_COLOR;
+                fg_color = chooseCursorFg(theme);
             }
 
             if (!colors.colorsEqual(bg_color, session_bg_color)) {
@@ -423,33 +436,8 @@ fn renderSessionContent(
         try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
     }
 
-    if (!session.is_scrolled and is_focused and !session.dead and cursor_visible) {
-        const cursor = screen.cursor;
-        const cursor_col = cursor.x;
-        const cursor_row = cursor.y;
-
-        if (cursor_col < visible_cols and cursor_row < visible_rows) {
-            const cursor_x: c_int = origin_x + @as(c_int, @intCast(cursor_col)) * cell_width_actual;
-            const cursor_y: c_int = origin_y + @as(c_int, @intCast(cursor_row)) * cell_height_actual;
-
-            if (cursor_x + cell_width_actual > rect.x and cursor_x < rect.x + rect.w and
-                cursor_y + cell_height_actual > rect.y and cursor_y < rect.y + rect.h)
-            {
-                _ = c.SDL_SetRenderDrawColor(renderer, 215, 186, 125, 255);
-                const cursor_rect = c.SDL_FRect{
-                    .x = @floatFromInt(cursor_x),
-                    .y = @floatFromInt(cursor_y),
-                    .w = @floatFromInt(cell_width_actual),
-                    .h = @floatFromInt(cell_height_actual),
-                };
-                _ = c.SDL_RenderFillRect(renderer, &cursor_rect);
-            }
-        }
-    }
-
     if (session.dead) {
         const message = "[Process completed]";
-        const cursor = screen.cursor;
         const message_row: usize = @intCast(cursor.y);
 
         if (message_row < visible_rows) {
@@ -952,6 +940,21 @@ fn applyFaint(color: c.SDL_Color) c.SDL_Color {
         .b = @intCast(b),
         .a = color.a,
     };
+}
+
+fn colorLuma(color: c.SDL_Color) u16 {
+    // Simple Rec. 601 luma approximation
+    return @intCast((@as(u32, color.r) * 299 + @as(u32, color.g) * 587 + @as(u32, color.b) * 114) / 1000);
+}
+
+fn chooseCursorFg(theme: *const colors.Theme) c.SDL_Color {
+    const cursor_luma = colorLuma(CURSOR_COLOR);
+    if (cursor_luma > 140) {
+        const bg_luma = colorLuma(theme.background);
+        if (bg_luma < 180) return theme.background;
+        return DARK_FALLBACK;
+    }
+    return theme.foreground;
 }
 
 fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {

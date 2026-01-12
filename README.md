@@ -99,6 +99,7 @@ See [Setup](#setup) section below for building from source.
 - **Claude-friendly hooks**: Unix domain socket for notifying Architect when a session is waiting for approval or finished; grid tiles highlight with a fat yellow border
 - **Session Recovery**: A `Restart` button appears on any grid tile whose shell exited, letting you respawn that session without quitting the app
 - **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
+- **Legible Cursor**: The block cursor keeps the underlying glyph visible for easier caret tracking
 
 ## Prerequisites
 
