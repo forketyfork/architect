@@ -34,9 +34,6 @@ const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
 const FONT_STEP: c_int = 1;
 const UI_FONT_SIZE: c_int = 18;
-const ACTIVE_FRAME_NS: i128 = 16_666_667;
-const IDLE_FRAME_NS: i128 = 50_000_000;
-const MAX_IDLE_RENDER_GAP_NS: i128 = 250_000_000;
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -85,6 +82,108 @@ fn handleQuitRequest(
         return false;
     }
     return true;
+}
+
+const IoLoopContext = struct {
+    loop: *xev.Loop,
+    queue_mutex: *std.Thread.Mutex,
+    pending_registrations: *std.ArrayListUnmanaged(*SessionState),
+    stop: *std.atomic.Value(bool),
+    async: *xev.Async,
+};
+
+fn ioLoopThread(ctx: *IoLoopContext) void {
+    while (!ctx.stop.load(.acquire)) {
+        // Drain registration requests sent from the main thread.
+        ctx.queue_mutex.lock();
+        const count = ctx.pending_registrations.items.len;
+        if (count > 0) {
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const session = ctx.pending_registrations.items[i];
+                session.registerIoWatchers(ctx.loop) catch |err| {
+                    log.err("failed to register IO watchers for session {d}: {}", .{ session.id, err });
+                };
+            }
+            ctx.pending_registrations.clearRetainingCapacity();
+        }
+        ctx.queue_mutex.unlock();
+
+        // Block until something is ready (async wake or IO watcher).
+        const run_result = ctx.loop.run(.once);
+        run_result catch |err| {
+            log.err("IO loop run error: {}", .{err});
+        };
+    }
+}
+
+fn ioAsyncCallback(
+    stop_flag: ?*std.atomic.Value(bool),
+    _: *xev.Loop,
+    _: *xev.Completion,
+    result: xev.Async.WaitError!void,
+) xev.CallbackAction {
+    result catch |err| {
+        log.err("async wake error: {}", .{err});
+    };
+    if (stop_flag) |flag| {
+        if (flag.load(.acquire)) return .disarm;
+    }
+    return .rearm;
+}
+
+fn spawnSessionWithLoop(
+    session: *SessionState,
+    loop: *xev.Loop,
+    queue_mutex: *std.Thread.Mutex,
+    queue: *std.ArrayListUnmanaged(*SessionState),
+    async: *xev.Async,
+) !void {
+    try session.ensureSpawnedWithLoop(loop);
+    queue_mutex.lock();
+    defer queue_mutex.unlock();
+    try queue.append(std.heap.page_allocator, session);
+    async.notify() catch |err| {
+        log.err("failed to wake IO thread after spawn: {}", .{err});
+    };
+}
+
+fn spawnSessionWithDirAndLoop(
+    session: *SessionState,
+    queue_mutex: *std.Thread.Mutex,
+    queue: *std.ArrayListUnmanaged(*SessionState),
+    async: *xev.Async,
+    working_dir: ?[:0]const u8,
+) !void {
+    try session.ensureSpawnedWithDir(working_dir);
+    queue_mutex.lock();
+    defer queue_mutex.unlock();
+    try queue.append(std.heap.page_allocator, session);
+    async.notify() catch |err| {
+        log.err("failed to wake IO thread after spawn with dir: {}", .{err});
+    };
+}
+
+fn clampWindowPositionToPrimary(
+    desired: platform.WindowPosition,
+    window_w: c_int,
+    window_h: c_int,
+) ?platform.WindowPosition {
+    const primary = c.SDL_GetPrimaryDisplay();
+    if (primary == 0) return desired;
+    var bounds: c.SDL_Rect = undefined;
+    if (!c.SDL_GetDisplayBounds(primary, &bounds)) return desired;
+
+    const margin: c_int = 32;
+    const min_x = bounds.x - window_w + margin;
+    const max_x = bounds.x + bounds.w - margin;
+    const min_y = bounds.y - window_h + margin;
+    const max_y = bounds.y + bounds.h - margin;
+
+    if (desired.x < min_x or desired.x > max_x or desired.y < min_y or desired.y > max_y) {
+        return null;
+    }
+    return desired;
 }
 
 pub fn main() !void {
@@ -141,14 +240,41 @@ pub fn main() !void {
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
+    const session_event_type_count: c_int = 1;
+    const session_event_type_base: u32 = c.SDL_RegisterEvents(session_event_type_count);
+    const session_event_type: u32 = if (session_event_type_base == std.math.maxInt(u32)) blk: {
+        log.err("Failed to register SDL user events; falling back to SDL_EVENT_USER", .{});
+        break :blk c.SDL_EVENT_USER;
+    } else session_event_type_base;
+    session_state.setSessionEventType(session_event_type);
+
+    var io_loop = try xev.Loop.init(.{});
+    defer io_loop.deinit();
+    var io_queue_mutex = std.Thread.Mutex{};
+    var io_pending_registrations = std.ArrayListUnmanaged(*SessionState){};
+    var io_stop = std.atomic.Value(bool).init(false);
+
+    var io_async = try xev.Async.init();
+    defer io_async.deinit();
+    var io_async_completion: xev.Completion = .{};
+    {
+        io_queue_mutex.lock();
+        defer io_queue_mutex.unlock();
+        io_async.wait(&io_loop, &io_async_completion, std.atomic.Value(bool), &io_stop, ioAsyncCallback);
+    }
+
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
     var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
-    const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
+    const persisted_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
         platform.WindowPosition{ .x = persistence.window.x, .y = persistence.window.y }
+    else
+        null;
+    const window_pos = if (persisted_pos) |pos|
+        clampWindowPositionToPrimary(pos, persistence.window.width, persistence.window.height)
     else
         null;
 
@@ -255,9 +381,6 @@ pub fn main() !void {
         allocator.free(sessions);
     }
 
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
-
     for (0..grid_count) |i| {
         var session_buf: [16]u8 = undefined;
         const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
@@ -265,13 +388,29 @@ pub fn main() !void {
         init_count += 1;
     }
 
-    try sessions[0].ensureSpawnedWithLoop(&loop);
+    try spawnSessionWithLoop(&sessions[0], &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async);
 
     defer {
         for (sessions) |*session| {
             session.deinit(allocator);
         }
         allocator.free(sessions);
+    }
+
+    var io_ctx = IoLoopContext{
+        .loop = &io_loop,
+        .queue_mutex = &io_queue_mutex,
+        .pending_registrations = &io_pending_registrations,
+        .stop = &io_stop,
+        .async = &io_async,
+    };
+    const io_thread = try std.Thread.spawn(.{}, ioLoopThread, .{&io_ctx});
+    defer {
+        io_stop.store(true, .release);
+        io_async.notify() catch |err| {
+            log.err("failed to wake IO thread during shutdown: {}", .{err});
+        };
+        io_thread.join();
     }
 
     var running = true;
@@ -302,12 +441,31 @@ pub fn main() !void {
     const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
     try ui.register(global_shortcuts_component);
 
-    // Main loop: handle SDL input, feed PTY output into terminals, apply async
-    // notifications, drive animations, and render at ~60 FPS.
+    // Main loop: event-driven; blocks on SDL, woken by IO thread user events or UI needs.
     var previous_frame_ns: i128 = undefined;
     var first_frame: bool = true;
     var last_render_ns: i128 = 0;
+    var force_next_frame = true;
+    var scroll_inertia_active_prev = false;
     while (running) {
+        var wait_ms: u32 = 500;
+        if (force_next_frame) {
+            wait_ms = 0;
+        } else if (scroll_inertia_active_prev) {
+            wait_ms = 16;
+        }
+
+        var processed_event = false;
+        var first_event_opt: ?c.SDL_Event = null;
+        var first_event: c.SDL_Event = undefined;
+        if (c.SDL_PollEvent(&first_event)) {
+            processed_event = true;
+            first_event_opt = first_event;
+        } else if (c.SDL_WaitEventTimeout(&first_event, @as(i32, @intCast(wait_ms)))) {
+            processed_event = true;
+            first_event_opt = first_event;
+        }
+
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
         var delta_time_s: f32 = 0.0;
@@ -318,9 +476,15 @@ pub fn main() !void {
         }
         previous_frame_ns = frame_start_ns;
 
+        var pending_event = first_event_opt;
         var event: c.SDL_Event = undefined;
-        var processed_event = false;
-        while (c.SDL_PollEvent(&event)) {
+        while (true) {
+            if (pending_event) |ev| {
+                event = ev;
+                pending_event = null;
+            } else if (!c.SDL_PollEvent(&event)) {
+                break;
+            }
             processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
             const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
@@ -449,8 +613,8 @@ pub fn main() !void {
                         grid_rows,
                     ) orelse continue;
 
-                    var session = &sessions[hovered_session];
-                    try session.ensureSpawnedWithLoop(&loop);
+                    const session = &sessions[hovered_session];
+                    try spawnSessionWithLoop(session, &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async);
 
                     const escaped = shellQuotePath(allocator, drop_path) catch |err| {
                         std.debug.print("Failed to escape dropped path: {}\n", .{err});
@@ -547,7 +711,7 @@ pub fn main() !void {
 
                             defer if (cwd_buf) |buf| allocator.free(buf);
 
-                            try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
+                            try spawnSessionWithDirAndLoop(&sessions[next_free_idx], &io_queue_mutex, &io_pending_registrations, &io_async, cwd_z);
                             sessions[next_free_idx].status = .running;
                             sessions[next_free_idx].attention = false;
 
@@ -576,7 +740,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, false, &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async, grid_cols, grid_rows);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
@@ -590,7 +754,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async, grid_cols, grid_rows);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -607,7 +771,7 @@ pub fn main() !void {
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
                         const clicked_session = anim_state.focused_session;
-                        try sessions[clicked_session].ensureSpawned();
+                        try spawnSessionWithLoop(&sessions[clicked_session], &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async);
 
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
@@ -648,7 +812,9 @@ pub fn main() !void {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch {};
+                            _ = focused.shell.?.write(&esc_byte) catch |err| {
+                                log.err("failed to send escape to session {d}: {}", .{ focused.id, err });
+                            };
                         }
                         std.debug.print("Escape released, sent to terminal\n", .{});
                     }
@@ -670,7 +836,7 @@ pub fn main() !void {
                             .h = cell_height_pixels,
                         };
 
-                        try sessions[clicked_session].ensureSpawned();
+                        try spawnSessionWithLoop(&sessions[clicked_session], &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async);
 
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
@@ -842,17 +1008,38 @@ pub fn main() !void {
                         }
                     }
                 },
-                else => {},
+                else => {
+                    if (scaled_event.type == session_event_type) {
+                        const code: session_state.SessionEventCode = @enumFromInt(scaled_event.user.code);
+                        const raw_ptr = @intFromPtr(scaled_event.user.data1);
+                        if (raw_ptr > 0) {
+                            const session_idx: usize = raw_ptr - 1;
+                            if (session_idx < sessions.len) {
+                                var session = &sessions[session_idx];
+                                switch (code) {
+                                    .pty_read_ready => {
+                                        session.needs_output_drain = true;
+                                    },
+                                    .process_exited => {
+                                        session.dead = true;
+                                        session.dirty = true;
+                                    },
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                },
             }
         }
-
-        try loop.run(.no_wait);
 
         var any_session_dirty = false;
         var has_scroll_inertia = false;
         for (sessions) |*session| {
-            session.checkAlive();
-            try session.processOutput();
+            if (session.needs_output_drain) {
+                session.needs_output_drain = false;
+                try session.processOutput();
+            }
             try session.flushPendingWrites();
             session.updateCwd(now);
             updateScrollInertia(session, delta_time_s);
@@ -898,7 +1085,13 @@ pub fn main() !void {
         while (ui.popAction()) |action| switch (action) {
             .RestartSession => |idx| {
                 if (idx < sessions.len) {
-                    try sessions[idx].restart();
+                    try sessions[idx].restart(&io_loop);
+                    io_queue_mutex.lock();
+                    defer io_queue_mutex.unlock();
+                    try io_pending_registrations.append(std.heap.page_allocator, &sessions[idx]);
+                    io_async.notify() catch |err| {
+                        log.err("failed to wake IO thread after restart: {}", .{err});
+                    };
                     std.debug.print("UI requested restart: {d}\n", .{idx});
                 }
             },
@@ -995,8 +1188,7 @@ pub fn main() !void {
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
-        const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= MAX_IDLE_RENDER_GAP_NS;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
+        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications;
 
         if (should_render) {
             try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme, config.grid.font_scale);
@@ -1004,20 +1196,8 @@ pub fn main() !void {
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();
         }
-
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !has_scroll_inertia;
-        // When vsync is enabled and we're active, let vsync handle frame pacing.
-        // When idle, always throttle to save power regardless of vsync.
-        const needs_throttle = is_idle or !sdl.vsync_enabled;
-        if (needs_throttle) {
-            const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
-            const frame_end_ns: i128 = std.time.nanoTimestamp();
-            const frame_ns = frame_end_ns - frame_start_ns;
-            if (frame_ns < target_frame_ns) {
-                const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
-                std.Thread.sleep(sleep_ns);
-            }
-        }
+        scroll_inertia_active_prev = has_scroll_inertia;
+        force_next_frame = should_render or has_scroll_inertia;
     }
 }
 
@@ -1090,6 +1270,10 @@ fn navigateGrid(
     now: i64,
     enable_wrapping: bool,
     show_animation: bool,
+    io_loop: *xev.Loop,
+    io_queue_mutex: *std.Thread.Mutex,
+    io_queue: *std.ArrayListUnmanaged(*SessionState),
+    io_async: *xev.Async,
     grid_cols: usize,
     grid_rows: usize,
 ) !void {
@@ -1150,9 +1334,9 @@ fn navigateGrid(
     const new_session: usize = new_row * grid_cols + new_col;
     if (new_session != anim_state.focused_session) {
         if (anim_state.mode == .Full) {
-            try sessions[new_session].ensureSpawned();
+            try spawnSessionWithLoop(&sessions[new_session], io_loop, io_queue_mutex, io_queue, io_async);
         } else if (show_animation) {
-            try sessions[new_session].ensureSpawned();
+            try spawnSessionWithLoop(&sessions[new_session], io_loop, io_queue_mutex, io_queue, io_async);
         }
         sessions[anim_state.focused_session].clearSelection();
         sessions[new_session].clearSelection();
@@ -1492,7 +1676,9 @@ fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     session.selection_pending = false;
 
     terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.err("failed to start selection drag for session {d}: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -1500,7 +1686,9 @@ fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     if (!session.selection_dragging) return;
     const anchor = session.selection_anchor orelse return;
     const terminal = session.terminal orelse return;
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.err("failed to update selection drag for session {d}: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -1894,7 +2082,9 @@ fn clearTerminal(session: *SessionState) void {
     session.dirty = true;
 
     // Trigger shell redraw like Ghostty (FF) so the prompt is repainted at top.
-    session.sendInput(&[_]u8{0x0C}) catch {};
+    session.sendInput(&[_]u8{0x0C}) catch |err| {
+        log.err("failed to send clear-screen to session {d}: {}", .{ session.id, err });
+    };
 }
 
 fn copySelectionToClipboard(

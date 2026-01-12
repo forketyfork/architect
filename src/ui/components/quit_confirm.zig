@@ -106,7 +106,9 @@ pub const QuitConfirmComponent = struct {
                 const mod = event.key.mod;
                 const is_confirm = key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER or (key == c.SDLK_Q and (mod & c.SDL_KMOD_GUI) != 0);
                 if (is_confirm) {
-                    actions.append(.ConfirmQuit) catch {};
+                    actions.append(.ConfirmQuit) catch |err| {
+                        std.debug.print("quit_confirm: failed to enqueue confirm quit: {}\n", .{err});
+                    };
                     self.visible = false;
                     self.escape_pressed = false;
                     return true;
@@ -125,7 +127,9 @@ pub const QuitConfirmComponent = struct {
                 const modal = self.modalRect(host);
                 const buttons = self.buttonRects(modal, host.ui_scale);
                 if (geom.containsPoint(buttons.quit, mouse_x, mouse_y)) {
-                    actions.append(.ConfirmQuit) catch {};
+                    actions.append(.ConfirmQuit) catch |err| {
+                        std.debug.print("quit_confirm: failed to enqueue confirm quit: {}\n", .{err});
+                    };
                     self.visible = false;
                     return true;
                 }

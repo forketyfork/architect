@@ -34,7 +34,9 @@ pub const GlobalShortcutsComponent = struct {
         const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
         if (key == c.SDLK_COMMA and has_gui and !has_blocking_mod) {
-            actions.append(.OpenConfig) catch {};
+            actions.append(.OpenConfig) catch |err| {
+                std.debug.print("global_shortcuts: failed to enqueue open-config action: {}\n", .{err});
+            };
             return true;
         }
 

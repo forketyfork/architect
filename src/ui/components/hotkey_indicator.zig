@@ -187,7 +187,9 @@ pub const HotkeyIndicatorComponent = struct {
             const end = @min(idx + seq_len, label_slice.len);
             const cp_slice = label_slice[idx..end];
             const codepoint = std.unicode.utf8Decode(cp_slice) catch 0xFFFD;
-            self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch {};
+            self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch |err| {
+                std.debug.print("hotkey_indicator: renderGlyph failed: {}\n", .{err});
+            };
             x += self.font.cell_width;
             idx = end;
         }

@@ -28,17 +28,18 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 
 ## Runtime Flow
 
-**main.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
+**main.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each iteration it:
 
-1. Polls SDL events and scales coordinates to render space.
-2. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
-3. Runs remaining app logic (terminal input, resizing, keyboard shortcuts).
-4. Runs `xev` loop iteration for async process exit detection.
-5. Processes output from all sessions and drains async notifications.
+1. Computes a wait deadline (0ms when work is pending, ~16ms during inertia, up to 500ms when idle) and blocks on `SDL_WaitEventTimeout`.
+2. SDL events include user events posted by a dedicated IO thread (xev) whenever a PTY has data or a child exits.
+3. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
+4. Runs remaining app logic (terminal input, resizing, keyboard shortcuts).
+5. Processes PTY output only for sessions marked “ready” by the IO thread, then flushes queued stdin.
 6. Updates UI components and drains `UiAction` queue.
 7. Advances animation state if transitioning.
-8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
-9. Sleeps based on idle/active frame targets (~16ms active, ~50ms idle).
+8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents—only when something is dirty/animating.
+
+The IO-facing work is isolated on a dedicated xev thread: it watches all PTY masters for readability and process exits, then posts SDL user events that wake the main loop. Access to the xev loop is serialized with a mutex when (re)registering watchers during spawns or restarts.
 
 **Terminal resizing**
 - `applyTerminalResize` updates the PTY size first, then resizes the `ghostty-vt` terminal.
