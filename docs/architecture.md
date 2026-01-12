@@ -59,6 +59,12 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 - Renders all components in z-order after the scene
 - Reports `needsFrame()` when any component requires animation
 
+### Session cleanup
+- `main.zig` tracks how many sessions were constructed and uses a single defer to deinitialize exactly those instances on any exit path.
+- `SessionState.deinit` is idempotent: textures, fonts, watchers, and buffers are nulled/cleared after destruction so double-invocation during error unwinding cannot double-free GPU resources.
+- Font rendering sanitizes invalid Unicode scalars (surrogates or >0x10FFFF) to U+FFFD before shaping, preventing malformed terminal output from crashing the renderer.
+- Renderer treats non-text cells (`content_tag` ≠ `.codepoint`) as empty, avoiding misinterpreting color-only cells as large codepoints that would render replacement glyphs.
+
 ## Source Structure
 
 ```
