@@ -41,6 +41,10 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 
 The IO-facing work is isolated on a dedicated xev thread: it watches all PTY masters for readability and process exits, then posts SDL user events that wake the main loop. Access to the xev loop is serialized with a mutex when (re)registering watchers during spawns or restarts.
 
+**Terminal resizing**
+- `applyTerminalResize` updates the PTY size first, then resizes the `ghostty-vt` terminal.
+- The VT stream stays alive; only its handler is refreshed to repoint at the resized terminal, preserving parser state and preventing in-flight escape sequences from being misparsed.
+
 **renderer/render.zig** draws only the *scene*:
 - Terminal cell content with HarfBuzz-shaped text runs
 - Grid cell backgrounds and borders (focused/unfocused)

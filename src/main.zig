@@ -7,6 +7,7 @@ const xev = @import("xev");
 const app_state = @import("app/app_state.zig");
 const notify = @import("session/notify.zig");
 const session_state = @import("session/state.zig");
+const vt_stream = @import("vt_stream.zig");
 const platform = @import("platform/sdl.zig");
 const input = @import("input/mapper.zig");
 const renderer_mod = @import("render/renderer.zig");
@@ -1545,16 +1546,25 @@ fn applyTerminalResize(
     for (sessions) |*session| {
         session.pty_size = new_size;
         if (session.spawned) {
-            if (session.shell) |*shell| {
-                shell.pty.setSize(new_size) catch |err| {
-                    std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-                };
+            const shell = &(session.shell orelse continue);
+            const terminal = &(session.terminal orelse continue);
+
+            shell.pty.setSize(new_size) catch |err| {
+                std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+            };
+
+            terminal.resize(allocator, cols, rows) catch |err| {
+                std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+                continue;
+            };
+
+            if (session.stream) |*stream| {
+                stream.handler.deinit();
+                stream.handler = vt_stream.Handler.init(terminal, shell);
+            } else {
+                session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
-            if (session.terminal) |*terminal| {
-                terminal.resize(allocator, cols, rows) catch |err| {
-                    std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-                };
-            }
+
             session.dirty = true;
         }
     }
