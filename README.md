@@ -6,7 +6,7 @@
 
 ![Architect Hero](docs/assets/architect-hero.png)
 
-A Zig terminal multiplexer that displays 9 interactive terminal sessions in a 3×3 grid with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL3 for rendering.
+A Zig terminal multiplexer that displays a configurable grid of interactive terminal sessions (default 3×3) with smooth expand/collapse animations. Built on ghostty-vt for terminal emulation and SDL3 for rendering.
 
 > [!WARNING]
 > **This project is in early stages of development. Use at your own risk.**
@@ -71,7 +71,7 @@ cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
 The formula will:
 - Build from source using Zig
 - Install all required dependencies (SDL3, SDL3_ttf)
-- Create Architect.app with bundled fonts and icon
+- Create Architect.app with the application icon (fonts are resolved from your system based on `config.toml`)
 - After copying to /Applications, launch from Spotlight or: `open -a Architect`
 
 ### Build from Source
@@ -80,7 +80,7 @@ See [Setup](#setup) section below for building from source.
 
 ## Features
 
-- **3×3 Terminal Grid**: Run 9 independent shell sessions simultaneously
+- **Configurable Grid**: Run multiple independent shell sessions; defaults to 3×3 but rows/cols are configurable (1–12) in `config.toml`
 - **Smooth Animations**: Click any terminal to smoothly expand it to full screen
 - **Full-Window Scaling**: Each terminal is sized for the full window and scaled down in grid view
 - **Resizable Window**: Dynamically resize the window with automatic terminal and PTY resizing
@@ -376,7 +376,7 @@ Architect integrates with AI coding assistants through a Unix domain socket prot
 - **Per-shell env**: Each spawned shell receives `ARCHITECT_SESSION_ID` (0‑based grid index) and `ARCHITECT_NOTIFY_SOCK` (socket path) so tools inside the terminal can send status.
 - **Protocol**: Send a single-line JSON object to the socket:
   - `{"session":0,"state":"start"}` clears the highlight and marks the session as running.
-  - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the 3×3 grid (request).
+  - `{"session":0,"state":"awaiting_approval"}` turns on a pulsing yellow border in the grid (request).
   - `{"session":0,"state":"done"}` shows a solid green border in the grid (completion).
 
 **Example from inside a terminal session:**
@@ -599,7 +599,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
 ## Architecture
 
 ### Terminal Scaling
-Each terminal session is initialized with full-window dimensions (calculated from font metrics). In grid view, these full-sized terminals are scaled down to 1/3 and rendered into grid cells, providing a "zoomed out" view of complete terminal sessions.
+Each terminal session is initialized with full-window dimensions (calculated from font metrics). In grid view, these full-sized terminals are scaled down to the current grid cell size, providing a "zoomed out" view of complete terminal sessions regardless of the configured rows/cols.
 
 ### Animation System
 The application uses cubic ease-in-out interpolation to smoothly transition between grid and full-screen views over 300ms. Six view modes (Grid, Expanding, Full, Collapsing, PanningLeft, PanningRight) manage the animation state, including horizontal panning for terminal switching.
@@ -613,7 +613,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 ## Implementation Status
 
 ✅ **Fully Implemented**:
-- 3×3 grid layout with 9 terminal sessions
+- Configurable grid layout (defaults to 3×3) with per-cell terminal sessions
 - PTY management and shell spawning
 - Real-time terminal I/O
 - SDL3 window and event loop with resizable window support
@@ -636,7 +636,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 
 The following features are not yet fully implemented:
 - **Emoji coverage is macOS-only**: Apple Color Emoji fallback is used; other platforms may still show tofu or monochrome glyphs for emoji and complex ZWJ sequences.
-- **Limited font distribution**: Only the bundled font family ships with the app today
+- **Fonts must exist locally**: Architect relies on system-installed fonts; ensure your configured family is available on the host OS.
 - **Limited configurability**: Keybindings are hardcoded
 
 ## License

@@ -12,6 +12,7 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 ## Coding Conventions
 - Favor self-documenting code; keep comments minimal and meaningful.
 - Default to ASCII unless the file already uses non-ASCII.
+- Always handle errors explicitly: propagate, recover, or log; do not swallow errors with bare `catch {}` / `catch unreachable` unless proven impossible.
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 
