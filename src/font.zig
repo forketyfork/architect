@@ -58,6 +58,27 @@ pub const Font = struct {
     /// this threshold are split into smaller segments to avoid creating
     /// excessively large textures (e.g., cursor trail effects with 120+ chars).
     const MAX_CLUSTER_SIZE: usize = 32;
+    const UNICODE_REPLACEMENT: u21 = 0xFFFD;
+
+    inline fn isValidScalar(cp: u21) bool {
+        return cp <= 0x10_FFFF and !(cp >= 0xD800 and cp <= 0xDFFF);
+    }
+
+    fn sanitizeCluster(codepoints: []const u21, buf: *[MAX_CLUSTER_SIZE]u21) []const u21 {
+        var needs_sanitize = false;
+        for (codepoints) |cp| {
+            if (!isValidScalar(cp)) {
+                needs_sanitize = true;
+                break;
+            }
+        }
+        if (!needs_sanitize) return codepoints;
+
+        for (codepoints, 0..) |cp, idx| {
+            buf[idx] = if (isValidScalar(cp)) cp else UNICODE_REPLACEMENT;
+        }
+        return buf[0..codepoints.len];
+    }
 
     const CacheEntry = struct {
         texture: *c.SDL_Texture,
@@ -225,10 +246,12 @@ pub const Font = struct {
             return;
         }
 
-        const effective_variant = self.effectiveVariant(variant, codepoints);
+        var sanitized_buf: [MAX_CLUSTER_SIZE]u21 = undefined;
+        const cluster = sanitizeCluster(codepoints, &sanitized_buf);
+        const effective_variant = self.effectiveVariant(variant, cluster);
 
         var total_bytes: usize = 0;
-        for (codepoints) |cp| {
+        for (cluster) |cp| {
             total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
         }
 
@@ -241,14 +264,14 @@ pub const Font = struct {
         defer if (use_heap) self.allocator.free(utf8_slice);
 
         var utf8_len: usize = 0;
-        for (codepoints) |cp| {
+        for (cluster) |cp| {
             var local: [4]u8 = undefined;
             const encoded_len = std.unicode.utf8Encode(cp, &local) catch return error.InvalidCodepoint;
             @memcpy(utf8_slice[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
             utf8_len += encoded_len;
         }
 
-        const fallback_choice = self.classifyFallback(codepoints);
+        const fallback_choice = self.classifyFallback(cluster);
         const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
@@ -309,10 +332,12 @@ pub const Font = struct {
             return;
         }
 
-        const effective_variant = self.effectiveVariant(variant, codepoints);
+        var sanitized_buf: [MAX_CLUSTER_SIZE]u21 = undefined;
+        const cluster = sanitizeCluster(codepoints, &sanitized_buf);
+        const effective_variant = self.effectiveVariant(variant, cluster);
 
         var total_bytes: usize = 0;
-        for (codepoints) |cp| {
+        for (cluster) |cp| {
             total_bytes += std.unicode.utf8CodepointSequenceLength(cp) catch return error.InvalidCodepoint;
         }
 
@@ -325,14 +350,14 @@ pub const Font = struct {
         defer if (use_heap) self.allocator.free(utf8_slice);
 
         var utf8_len: usize = 0;
-        for (codepoints) |cp| {
+        for (cluster) |cp| {
             var local: [4]u8 = undefined;
             const encoded_len = std.unicode.utf8Encode(cp, &local) catch return error.InvalidCodepoint;
             @memcpy(utf8_slice[utf8_len .. utf8_len + encoded_len], local[0..encoded_len]);
             utf8_len += encoded_len;
         }
 
-        const fallback_choice = self.classifyFallback(codepoints);
+        const fallback_choice = self.classifyFallback(cluster);
         const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;

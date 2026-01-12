@@ -188,35 +188,61 @@ pub const SessionState = struct {
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         if (self.cache_texture) |tex| {
             c.SDL_DestroyTexture(tex);
+            self.cache_texture = null;
+            self.cache_w = 0;
+            self.cache_h = 0;
         }
+
         self.pending_write.deinit(allocator);
+        self.pending_write = .empty;
+
         if (self.cwd_basename_tex) |tex| {
             c.SDL_DestroyTexture(tex);
             self.cwd_basename_tex = null;
+            self.cwd_basename_w = 0;
+            self.cwd_basename_h = 0;
         }
+
         if (self.cwd_parent_tex) |tex| {
             c.SDL_DestroyTexture(tex);
             self.cwd_parent_tex = null;
+            self.cwd_parent_w = 0;
+            self.cwd_parent_h = 0;
         }
+
         if (self.cwd_font) |font| {
             c.TTF_CloseFont(font);
+            self.cwd_font = null;
+            self.cwd_font_size = 0;
         }
+
         if (self.cwd_path) |path| {
             allocator.free(path);
+            self.cwd_path = null;
+            self.cwd_basename = null;
         }
+
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
+            self.process_watcher = null;
         }
+
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();
+                self.stream = null;
             }
             if (self.terminal) |*terminal| {
                 terminal.deinit(allocator);
+                self.terminal = null;
             }
             if (self.shell) |*shell| {
                 shell.deinit();
+                self.shell = null;
             }
+
+            self.spawned = false;
+            self.dead = false;
         }
     }
 
