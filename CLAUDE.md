@@ -91,6 +91,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Architecture overview lives in `docs/architecture.md`—consult it before structural changes.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
 - Cursor rendering: set the cursor’s background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
+- ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty’s app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn’t support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
 
 ## Architecture Invariants (agent instructions)
 - Route UI input/rendering through `UiRoot` only; do not add new UI event branches or rendering in `main.zig` or `renderer.zig`.
