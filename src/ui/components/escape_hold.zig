@@ -17,7 +17,8 @@ pub const EscapeHoldComponent = struct {
     const ESC_HOLD_TOTAL_MS: i64 = 700;
     const ESC_INDICATOR_DELAY_MS: i64 = 150;
     const ESC_ARC_COUNT: usize = 5;
-    const ESC_ARC_SEGMENT_MS: i64 = ESC_HOLD_TOTAL_MS / ESC_ARC_COUNT;
+    const ESC_VISIBLE_DURATION_MS: i64 = ESC_HOLD_TOTAL_MS - ESC_INDICATOR_DELAY_MS;
+    const ESC_ARC_SEGMENT_MS: i64 = ESC_VISIBLE_DURATION_MS / ESC_ARC_COUNT;
     const ESC_INDICATOR_MARGIN: c_int = 40;
     const ESC_INDICATOR_RADIUS: c_int = 30;
 
