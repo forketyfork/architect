@@ -1395,14 +1395,12 @@ fn applyTerminalResize(
             };
 
             if (session.stream) |*stream| {
-                stream.deinit();
+                stream.handler.deinit();
+                stream.handler = vt_stream.Handler.init(terminal, shell);
+            } else {
+                session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
-            const new_stream = vt_stream.initStream(
-                allocator,
-                terminal,
-                shell,
-            );
-            session.stream = new_stream;
+
             session.dirty = true;
         }
     }

@@ -40,6 +40,10 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
 9. Sleeps based on idle/active frame targets (~16ms active, ~50ms idle).
 
+**Terminal resizing**
+- `applyTerminalResize` updates the PTY size first, then resizes the `ghostty-vt` terminal.
+- The VT stream stays alive; only its handler is refreshed to repoint at the resized terminal, preserving parser state and preventing in-flight escape sequences from being misparsed.
+
 **renderer/render.zig** draws only the *scene*:
 - Terminal cell content with HarfBuzz-shaped text runs
 - Grid cell backgrounds and borders (focused/unfocused)
