@@ -76,7 +76,8 @@ pub const Shell = struct {
             posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
 
             const shell_path_z = @as([*:0]const u8, @ptrCast(shell_path.ptr));
-            const argv = [_:null]?[*:0]const u8{ shell_path_z, null };
+            const login_flag = "-l\x00";
+            const argv = [_:null]?[*:0]const u8{ shell_path_z, login_flag, null };
 
             _ = std.c.execve(shell_path_z, &argv, @ptrCast(std.c.environ));
             std.c._exit(1);
