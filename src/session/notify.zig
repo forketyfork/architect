@@ -3,6 +3,8 @@ const posix = std.posix;
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
 
+const log = std.log.scoped(.notify);
+
 pub const Notification = struct {
     session: usize,
     state: app_state.SessionStatus,
@@ -58,7 +60,7 @@ pub fn startNotifyThread(
 ) StartNotifyThreadError!std.Thread {
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
-        else => {},
+        else => log.warn("failed to unlink notify socket: {}", .{err}),
     };
 
     const handler = struct {
@@ -104,15 +106,20 @@ pub fn startNotifyThread(
             try posix.bind(fd, &addr.any, addr.getOsSockLen());
             try posix.listen(fd, 16);
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
+            _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+                log.warn("failed to chmod notify socket: {}", .{err});
+            };
 
             // Make accept non-blocking so the loop can observe stop requests.
-            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch null;
-            if (flags) |f| {
-                var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
-                o_flags.NONBLOCK = true;
-                _ = posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
-            }
+            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| {
+                log.warn("failed to get flags for notify socket: {}", .{err});
+                return;
+            };
+            var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
+            o_flags.NONBLOCK = true;
+            _ = posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch |err| {
+                log.warn("failed to set NONBLOCK on notify socket: {}", .{err});
+            };
 
             while (!ctx.stop.load(.seq_cst)) {
                 const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
@@ -124,12 +131,15 @@ pub fn startNotifyThread(
                 };
                 defer posix.close(conn_fd);
 
-                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch null;
-                if (conn_flags) |f| {
-                    var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
-                    o_flags.NONBLOCK = true;
-                    _ = posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
-                }
+                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| {
+                    log.warn("failed to get flags for notify conn: {}", .{err});
+                    return;
+                };
+                var conn_o_flags: posix.O = @bitCast(@as(u32, @intCast(conn_flags)));
+                conn_o_flags.NONBLOCK = true;
+                _ = posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(conn_o_flags))) catch |err| {
+                    log.warn("failed to set NONBLOCK on notify conn: {}", .{err});
+                };
 
                 var buffer = std.ArrayList(u8){};
                 defer buffer.deinit(ctx.allocator);
@@ -148,7 +158,9 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items)) |note| {
-                    ctx.queue.push(ctx.allocator, note) catch {};
+                    ctx.queue.push(ctx.allocator, note) catch |err| {
+                        log.err("failed to enqueue notification: {}", .{err});
+                    };
                 }
             }
         }

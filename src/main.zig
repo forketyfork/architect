@@ -101,7 +101,9 @@ fn ioLoopThread(ctx: *IoLoopContext) void {
             var i: usize = 0;
             while (i < count) : (i += 1) {
                 const session = ctx.pending_registrations.items[i];
-                session.registerIoWatchers(ctx.loop) catch {};
+                session.registerIoWatchers(ctx.loop) catch |err| {
+                    log.err("failed to register IO watchers for session {d}: {}", .{ session.id, err });
+                };
             }
             ctx.pending_registrations.clearRetainingCapacity();
         }
@@ -109,7 +111,9 @@ fn ioLoopThread(ctx: *IoLoopContext) void {
 
         // Block until something is ready (async wake or IO watcher).
         const run_result = ctx.loop.run(.once);
-        _ = run_result catch {};
+        run_result catch |err| {
+            log.err("IO loop run error: {}", .{err});
+        };
     }
 }
 
@@ -119,7 +123,9 @@ fn ioAsyncCallback(
     _: *xev.Completion,
     result: xev.Async.WaitError!void,
 ) xev.CallbackAction {
-    _ = result catch {};
+    result catch |err| {
+        log.err("async wake error: {}", .{err});
+    };
     if (stop_flag) |flag| {
         if (flag.load(.acquire)) return .disarm;
     }
@@ -137,22 +143,25 @@ fn spawnSessionWithLoop(
     queue_mutex.lock();
     defer queue_mutex.unlock();
     try queue.append(std.heap.page_allocator, session);
-    async.notify() catch {};
+    async.notify() catch |err| {
+        log.err("failed to wake IO thread after spawn: {}", .{err});
+    };
 }
 
 fn spawnSessionWithDirAndLoop(
     session: *SessionState,
-    loop: *xev.Loop,
     queue_mutex: *std.Thread.Mutex,
     queue: *std.ArrayListUnmanaged(*SessionState),
     async: *xev.Async,
     working_dir: ?[:0]const u8,
 ) !void {
-    try session.ensureSpawnedWithDir(working_dir, loop);
+    try session.ensureSpawnedWithDir(working_dir);
     queue_mutex.lock();
     defer queue_mutex.unlock();
     try queue.append(std.heap.page_allocator, session);
-    async.notify() catch {};
+    async.notify() catch |err| {
+        log.err("failed to wake IO thread after spawn with dir: {}", .{err});
+    };
 }
 
 fn clampWindowPositionToPrimary(
@@ -231,7 +240,12 @@ pub fn main() !void {
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
-    const session_event_type: u32 = c.SDL_EVENT_USER;
+    const session_event_type_count: c_int = 1;
+    const session_event_type_base: u32 = c.SDL_RegisterEvents(session_event_type_count);
+    const session_event_type: u32 = if (session_event_type_base == std.math.maxInt(u32)) blk: {
+        log.err("Failed to register SDL user events; falling back to SDL_EVENT_USER", .{});
+        break :blk c.SDL_EVENT_USER;
+    } else session_event_type_base;
     session_state.setSessionEventType(session_event_type);
 
     var io_loop = try xev.Loop.init(.{});
@@ -393,7 +407,9 @@ pub fn main() !void {
     const io_thread = try std.Thread.spawn(.{}, ioLoopThread, .{&io_ctx});
     defer {
         io_stop.store(true, .release);
-        io_async.notify() catch {};
+        io_async.notify() catch |err| {
+            log.err("failed to wake IO thread during shutdown: {}", .{err});
+        };
         io_thread.join();
     }
 
@@ -695,7 +711,7 @@ pub fn main() !void {
 
                             defer if (cwd_buf) |buf| allocator.free(buf);
 
-                            try spawnSessionWithDirAndLoop(&sessions[next_free_idx], &io_loop, &io_queue_mutex, &io_pending_registrations, &io_async, cwd_z);
+                            try spawnSessionWithDirAndLoop(&sessions[next_free_idx], &io_queue_mutex, &io_pending_registrations, &io_async, cwd_z);
                             sessions[next_free_idx].status = .running;
                             sessions[next_free_idx].attention = false;
 
@@ -796,7 +812,9 @@ pub fn main() !void {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch {};
+                            _ = focused.shell.?.write(&esc_byte) catch |err| {
+                                log.err("failed to send escape to session {d}: {}", .{ focused.id, err });
+                            };
                         }
                         std.debug.print("Escape released, sent to terminal\n", .{});
                     }
@@ -1071,7 +1089,9 @@ pub fn main() !void {
                     io_queue_mutex.lock();
                     defer io_queue_mutex.unlock();
                     try io_pending_registrations.append(std.heap.page_allocator, &sessions[idx]);
-                    io_async.notify() catch {};
+                    io_async.notify() catch |err| {
+                        log.err("failed to wake IO thread after restart: {}", .{err});
+                    };
                     std.debug.print("UI requested restart: {d}\n", .{idx});
                 }
             },
@@ -1656,7 +1676,9 @@ fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     session.selection_pending = false;
 
     terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.err("failed to start selection drag for session {d}: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -1664,7 +1686,9 @@ fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     if (!session.selection_dragging) return;
     const anchor = session.selection_anchor orelse return;
     const terminal = session.terminal orelse return;
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.err("failed to update selection drag for session {d}: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -2058,7 +2082,9 @@ fn clearTerminal(session: *SessionState) void {
     session.dirty = true;
 
     // Trigger shell redraw like Ghostty (FF) so the prompt is repainted at top.
-    session.sendInput(&[_]u8{0x0C}) catch {};
+    session.sendInput(&[_]u8{0x0C}) catch |err| {
+        log.err("failed to send clear-screen to session {d}: {}", .{ session.id, err });
+    };
 }
 
 fn copySelectionToClipboard(

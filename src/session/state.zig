@@ -141,14 +141,15 @@ pub const SessionState = struct {
     }
 
     pub fn ensureSpawned(self: *SessionState) InitError!void {
-        return self.ensureSpawnedWithDir(null, null);
+        return self.ensureSpawnedWithDir(null);
     }
 
     pub fn ensureSpawnedWithLoop(self: *SessionState, loop: *xev.Loop) InitError!void {
-        return self.ensureSpawnedWithDir(null, loop);
+        _ = loop; // Loop registration happens on the IO thread only.
+        return self.ensureSpawnedWithDir(null);
     }
 
-    pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+    pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8) InitError!void {
         if (self.spawned) return;
 
         const shell = try shell_mod.Shell.spawn(
@@ -183,13 +184,11 @@ pub const SessionState = struct {
         self.cwd_dirty = true;
         self.dirty = true;
 
-        if (loop_opt) |loop| {
-            try self.registerIoWatchers(loop);
-        }
-
         log.debug("spawned session {d}", .{self.id});
 
-        self.processOutput() catch {};
+        self.processOutput() catch |err| {
+            log.err("failed to process initial output for session {d}: {}", .{ self.id, err });
+        };
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
@@ -245,9 +244,20 @@ pub const SessionState = struct {
         _: *xev.Completion,
         r: xev.Process.WaitError!u32,
     ) xev.CallbackAction {
-        _ = r catch {};
+        const exit_code = r catch |err| {
+            if (self_opt) |self| {
+                log.err("process wait error for session {d}: {}", .{ self.id, err });
+            } else {
+                log.err("process wait error for unknown session: {}", .{err});
+            }
+            return .disarm;
+        };
+
         if (self_opt) |self| {
+            log.info("session {d} process exited with code {d}", .{ self.id, exit_code });
             pushSessionEvent(self.id, .process_exited);
+        } else {
+            log.warn("received process exit callback with no session (code {d})", .{exit_code});
         }
         return .disarm;
     }
@@ -259,9 +269,19 @@ pub const SessionState = struct {
         _: XevStream,
         r: xev.PollError!xev.PollEvent,
     ) xev.CallbackAction {
-        _ = r catch {};
+        _ = r catch |err| {
+            if (self_opt) |self| {
+                log.err("poll error for session {d}: {}", .{ self.id, err });
+            } else {
+                log.err("poll error for unknown session: {}", .{err});
+            }
+            return .rearm;
+        };
+
         if (self_opt) |self| {
             pushSessionEvent(self.id, .pty_read_ready);
+        } else {
+            log.warn("received poll event with no session", .{});
         }
         return .rearm;
     }
@@ -272,7 +292,12 @@ pub const SessionState = struct {
         ev.type = session_event_type;
         ev.user.code = @intCast(@intFromEnum(code));
         ev.user.data1 = @ptrFromInt(session_id + 1);
-        _ = c.SDL_PushEvent(&ev);
+        if (!c.SDL_PushEvent(&ev)) {
+            log.err(
+                "failed to push SDL user event for session {d} (code {s})",
+                .{ session_id, @tagName(code) },
+            );
+        }
     }
 
     pub fn registerIoWatchers(self: *SessionState, loop: *xev.Loop) !void {

@@ -66,9 +66,13 @@ pub const Shell = struct {
 
             // Change to specified directory or home directory before spawning shell
             if (working_dir) |dir| {
-                posix.chdir(dir) catch {};
+                posix.chdir(dir) catch |err| {
+                    log.err("failed to chdir to requested dir: {}", .{err});
+                };
             } else if (posix.getenv("HOME")) |home| {
-                posix.chdir(home) catch {};
+                posix.chdir(home) catch |err| {
+                    log.err("failed to chdir to HOME: {}", .{err});
+                };
             }
 
             posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);

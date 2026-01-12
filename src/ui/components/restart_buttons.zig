@@ -72,7 +72,9 @@ pub const RestartButtonsComponent = struct {
         const inside = geom.containsPoint(button_rect, mouse_x, mouse_y);
         if (!inside) return false;
 
-        actions.append(.{ .RestartSession = clicked_session }) catch {};
+        actions.append(.{ .RestartSession = clicked_session }) catch |err| {
+            std.debug.print("restart_buttons: failed to enqueue restart for session {d}: {}\n", .{ clicked_session, err });
+        };
         return true;
     }
 

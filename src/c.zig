@@ -58,6 +58,7 @@ pub const SDL_GetError = c_import.SDL_GetError;
 pub const SDL_PollEvent = c_import.SDL_PollEvent;
 pub const SDL_WaitEventTimeout = c_import.SDL_WaitEventTimeout;
 pub const SDL_PushEvent = c_import.SDL_PushEvent;
+pub const SDL_RegisterEvents = c_import.SDL_RegisterEvents;
 pub const SDL_Delay = c_import.SDL_Delay;
 pub const SDL_StartTextInput = c_import.SDL_StartTextInput;
 pub const SDL_StopTextInput = c_import.SDL_StopTextInput;

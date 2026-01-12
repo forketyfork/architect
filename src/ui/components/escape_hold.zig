@@ -75,7 +75,9 @@ pub const EscapeHoldComponent = struct {
         if (!self.gesture.active) return;
         if (self.gesture.isComplete(host.now_ms) and !self.gesture.consumed) {
             self.gesture.consumed = true;
-            actions.append(.RequestCollapseFocused) catch {};
+            actions.append(.RequestCollapseFocused) catch |err| {
+                std.debug.print("escape_hold: failed to enqueue collapse action: {}\n", .{err});
+            };
         }
 
         if (self.gesture.consumed) {
