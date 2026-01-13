@@ -8,5 +8,12 @@ final: prev: {
       rev = "release-${version}";
       hash = "sha256-/A1y/NaZVebzI58F4TlwtDwuzlcA33Y1YuZqd5lz/Sk=";
     };
+
+    # Drop nixpkgs' Linux-only zenity substitutions that no longer match SDL 3.4.0.
+    # Keep the test timeout bump to avoid slow CTest hangs.
+    postPatch = ''
+      substituteInPlace test/CMakeLists.txt \
+        --replace-fail 'set(noninteractive_timeout 10)' 'set(noninteractive_timeout 30)'
+    '';
   });
 }
