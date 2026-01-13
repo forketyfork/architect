@@ -215,6 +215,19 @@ Window state is automatically saved whenever you move or resize the window.
 
 Font size is automatically saved when adjusted via **⌘+** / **⌘-** keyboard shortcuts.
 
+#### Terminal State
+- Stored under the `[terminals]` table using 1-based grid coordinates in the key name: `terminal_<row>_<col>`
+- Each value is the working directory of a terminal that was running when Architect exited
+- Entries that fall outside the current grid size (after changing rows/columns) are ignored and removed on startup
+- On launch, Architect automatically respawns those terminals in the saved directories when their grid cells exist
+
+**Example:**
+```
+[terminals]
+terminal_1_2 = "/Users/local/dev"
+terminal_2_3 = "/Users/local/api"
+```
+
 ### Font Loading
 
 Fonts are loaded from macOS system directories, searched recursively:
