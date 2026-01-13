@@ -154,10 +154,13 @@ pub fn main() !void {
             std.debug.print("Failed to save pruned persistence: {}\n", .{err});
         };
     }
-    var restored_terminals = persistence.collectTerminalEntries(allocator, grid_cols, grid_rows) catch |err| blk: {
-        std.debug.print("Failed to collect persisted terminals: {}\n", .{err});
-        break :blk try std.ArrayList(config_mod.Persistence.TerminalEntry).initCapacity(allocator, 0);
-    };
+    var restored_terminals = if (builtin.os.tag == .macos)
+        persistence.collectTerminalEntries(allocator, grid_cols, grid_rows) catch |err| blk: {
+            std.debug.print("Failed to collect persisted terminals: {}\n", .{err});
+            break :blk std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
+        }
+    else
+        std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
     defer restored_terminals.deinit(allocator);
     var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
@@ -283,14 +286,10 @@ pub fn main() !void {
 
     for (restored_terminals.items) |entry| {
         if (entry.index >= sessions.len or entry.path.len == 0) continue;
-        const dir_buf = allocator.alloc(u8, entry.path.len + 1) catch |err| blk: {
+        const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
             std.debug.print("Failed to restore terminal {d}: {}\n", .{ entry.index, err });
             break :blk null;
         };
-        if (dir_buf) |buf| {
-            @memcpy(buf[0..entry.path.len], entry.path);
-            buf[entry.path.len] = 0;
-        }
         defer if (dir_buf) |buf| allocator.free(buf);
         if (dir_buf) |buf| {
             const dir: [:0]const u8 = buf[0..entry.path.len :0];
@@ -1050,20 +1049,29 @@ pub fn main() !void {
         }
     }
 
-    persistence.clearTerminals();
-    for (sessions, 0..) |session, idx| {
-        if (!session.spawned or session.dead) continue;
-        if (session.cwd_path) |path| {
-            if (path.len == 0) continue;
-            persistence.setTerminal(allocator, idx, grid_cols, path) catch |err| {
-                std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
-            };
+    if (builtin.os.tag == .macos) {
+        persistence.clearTerminals();
+        for (sessions, 0..) |session, idx| {
+            if (!session.spawned or session.dead) continue;
+            if (session.cwd_path) |path| {
+                if (path.len == 0) continue;
+                persistence.setTerminal(allocator, idx, grid_cols, path) catch |err| {
+                    std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
+                };
+            }
         }
     }
 
     persistence.save(allocator) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
     };
+}
+
+fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, data.len + 1);
+    @memcpy(buf[0..data.len], data);
+    buf[data.len] = 0;
+    return buf;
 }
 
 fn startCollapseToGrid(

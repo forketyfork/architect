@@ -333,7 +333,7 @@ pub const Persistence = struct {
     }
 
     pub fn pruneTerminals(self: *Persistence, allocator: std.mem.Allocator, grid_cols: usize, grid_rows: usize) !bool {
-        var to_remove = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        var to_remove = std.ArrayList([]const u8).empty;
         defer to_remove.deinit(allocator);
 
         var seen = std.AutoHashMap(usize, void).init(allocator);
@@ -373,7 +373,7 @@ pub const Persistence = struct {
     }
 
     pub fn collectTerminalEntries(self: *const Persistence, allocator: std.mem.Allocator, grid_cols: usize, grid_rows: usize) !std.ArrayList(TerminalEntry) {
-        var entries = try std.ArrayList(TerminalEntry).initCapacity(allocator, 0);
+        var entries = std.ArrayList(TerminalEntry).empty;
         errdefer entries.deinit(allocator);
 
         var it = self.terminals.iterator();

@@ -116,6 +116,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Do not keep TOML parser-owned maps after `result.deinit()`: duplicate keys and values into your own storage before freeing the parser arena, or later iteration will segfault.
 - `std.mem.span` rejects `[:0]const u8`; use `std.mem.sliceTo(ptr, 0)` when converting C strings to slices.
 - When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser’s backing memory causes use-after-free crashes.
+- Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.

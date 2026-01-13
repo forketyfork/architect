@@ -220,6 +220,7 @@ Font size is automatically saved when adjusted via **⌘+** / **⌘-** keyboard 
 - Each value is the working directory of a terminal that was running when Architect exited
 - Entries that fall outside the current grid size (after changing rows/columns) are ignored and removed on startup
 - On launch, Architect automatically respawns those terminals in the saved directories when their grid cells exist
+- Current cwd tracking is supported on macOS; other platforms skip saving terminal directories for now.
 
 **Example:**
 ```
