@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-matrix:
+  build:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -51,13 +51,6 @@ jobs:
             sleep 5
           done
         working-directory: architect
-
-  build:
-    name: build
-    needs: build-matrix
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Matrix build succeeded"
 
       - name: Build
         run: |
