@@ -7,6 +7,7 @@ const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
 const app_state = @import("../app/app_state.zig");
 const c = @import("../c.zig");
+const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
 const mac = if (builtin.os.tag == .macos)
@@ -184,6 +185,10 @@ pub const SessionState = struct {
         log.debug("spawned session {d}", .{self.id});
 
         self.processOutput() catch {};
+
+        self.seedCwd(working_dir) catch |err| {
+            log.warn("failed to record cwd for session {d}: {}", .{ self.id, err });
+        };
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
@@ -418,7 +423,29 @@ pub const SessionState = struct {
         }
 
         self.cwd_path = new_path;
-        self.cwd_basename = cwd_mod.getBasename(new_path);
+        self.cwd_basename = basenameForDisplay(new_path);
+        self.cwd_dirty = true;
+        self.dirty = true;
+    }
+
+    fn seedCwd(self: *SessionState, working_dir: ?[:0]const u8) !void {
+        if (working_dir) |dir| {
+            try self.replaceCwdPath(sliceToZ(dir));
+            return;
+        }
+
+        if (std.posix.getenv("HOME")) |home_z| {
+            try self.replaceCwdPath(std.mem.sliceTo(home_z, 0));
+        }
+    }
+
+    fn replaceCwdPath(self: *SessionState, path: []const u8) !void {
+        if (self.cwd_path) |old| {
+            self.allocator.free(old);
+        }
+
+        self.cwd_path = try self.allocator.dupe(u8, path);
+        self.cwd_basename = basenameForDisplay(self.cwd_path.?);
         self.cwd_dirty = true;
         self.dirty = true;
     }
@@ -443,6 +470,17 @@ pub const SessionState = struct {
         return fg_pgrp != shell.child_pid;
     }
 };
+
+fn basenameForDisplay(path: []const u8) []const u8 {
+    if (builtin.os.tag == .macos) {
+        return cwd_mod.getBasename(path);
+    }
+    return fs.path.basename(path);
+}
+
+fn sliceToZ(input: [:0]const u8) []const u8 {
+    return std.mem.sliceTo(input, 0);
+}
 
 fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
     if (builtin.os.tag != .macos) return null;

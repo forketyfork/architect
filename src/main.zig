@@ -132,11 +132,12 @@ pub fn main() !void {
 
     var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
         std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
-        break :blk config_mod.Persistence{
-            .font_size = config.font.size,
-            .window = config.window,
-        };
+        var fallback = config_mod.Persistence.init(allocator);
+        fallback.font_size = config.font.size;
+        fallback.window = config.window;
+        break :blk fallback;
     };
+    defer persistence.deinit();
     persistence.font_size = std.math.clamp(persistence.font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
@@ -144,6 +145,23 @@ pub fn main() !void {
     const grid_rows: usize = @intCast(config.grid.rows);
     const grid_cols: usize = @intCast(config.grid.cols);
     const grid_count: usize = grid_rows * grid_cols;
+    const pruned_terminals = persistence.pruneTerminals(allocator, grid_cols, grid_rows) catch |err| blk: {
+        std.debug.print("Failed to prune persisted terminals: {}\n", .{err});
+        break :blk false;
+    };
+    if (pruned_terminals) {
+        persistence.save(allocator) catch |err| {
+            std.debug.print("Failed to save pruned persistence: {}\n", .{err});
+        };
+    }
+    var restored_terminals = if (builtin.os.tag == .macos)
+        persistence.collectTerminalEntries(allocator, grid_cols, grid_rows) catch |err| blk: {
+            std.debug.print("Failed to collect persisted terminals: {}\n", .{err});
+            break :blk std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
+        }
+    else
+        std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
+    defer restored_terminals.deinit(allocator);
     var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
@@ -264,6 +282,21 @@ pub fn main() !void {
         const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
         sessions[i] = try SessionState.init(allocator, i, shell_path, size, session_z, notify_sock);
         init_count += 1;
+    }
+
+    for (restored_terminals.items) |entry| {
+        if (entry.index >= sessions.len or entry.path.len == 0) continue;
+        const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
+            std.debug.print("Failed to restore terminal {d}: {}\n", .{ entry.index, err });
+            break :blk null;
+        };
+        defer if (dir_buf) |buf| allocator.free(buf);
+        if (dir_buf) |buf| {
+            const dir: [:0]const u8 = buf[0..entry.path.len :0];
+            sessions[entry.index].ensureSpawnedWithDir(dir, &loop) catch |err| {
+                std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ entry.index, err });
+            };
+        }
     }
 
     try sessions[0].ensureSpawnedWithLoop(&loop);
@@ -1015,6 +1048,30 @@ pub fn main() !void {
             }
         }
     }
+
+    if (builtin.os.tag == .macos) {
+        persistence.clearTerminals();
+        for (sessions, 0..) |session, idx| {
+            if (!session.spawned or session.dead) continue;
+            if (session.cwd_path) |path| {
+                if (path.len == 0) continue;
+                persistence.setTerminal(allocator, idx, grid_cols, path) catch |err| {
+                    std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
+                };
+            }
+        }
+    }
+
+    persistence.save(allocator) catch |err| {
+        std.debug.print("Failed to save persistence: {}\n", .{err});
+    };
+}
+
+fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, data.len + 1);
+    @memcpy(buf[0..data.len], data);
+    buf[data.len] = 0;
+    return buf;
 }
 
 fn startCollapseToGrid(

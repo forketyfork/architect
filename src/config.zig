@@ -233,8 +233,35 @@ pub const Rendering = struct {
 };
 
 pub const Persistence = struct {
+    const TerminalKeyPrefix = "terminal_";
+
+    pub const TerminalEntry = struct {
+        index: usize,
+        path: []const u8,
+    };
+
     window: WindowConfig = .{},
     font_size: c_int = 14,
+    terminals: std.StringHashMap([]const u8),
+
+    const TomlPersistence = struct {
+        window: WindowConfig = .{},
+        font_size: c_int = 14,
+        terminals: ?toml.HashMap([]const u8) = null,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) Persistence {
+        return .{
+            .window = .{},
+            .font_size = 14,
+            .terminals = std.StringHashMap([]const u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Persistence) void {
+        self.clearTerminals();
+        self.terminals.deinit();
+    }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
         const persistence_path = try getPersistencePath(allocator);
@@ -242,7 +269,7 @@ pub const Persistence = struct {
 
         const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
             return switch (err) {
-                error.FileNotFound => Persistence{},
+                error.FileNotFound => Persistence.init(allocator),
                 else => err,
             };
         };
@@ -251,16 +278,33 @@ pub const Persistence = struct {
         const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
         defer allocator.free(contents);
 
-        var parser = toml.Parser(Persistence).init(allocator);
+        var parser = toml.Parser(TomlPersistence).init(allocator);
         defer parser.deinit();
 
         var result = parser.parseString(contents) catch |err| {
             std.log.err("Failed to parse persistence TOML: {any}", .{err});
-            return Persistence{};
+            return Persistence.init(allocator);
         };
         defer result.deinit();
 
-        return result.value;
+        var persistence = Persistence.init(allocator);
+        persistence.window = result.value.window;
+        persistence.font_size = result.value.font_size;
+
+        if (result.value.terminals) |stored| {
+            var it = stored.map.iterator();
+            while (it.next()) |entry| {
+                const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(key_copy);
+
+                const val_copy = try allocator.dupe(u8, entry.value_ptr.*);
+                errdefer allocator.free(val_copy);
+
+                try persistence.terminals.put(key_copy, val_copy);
+            }
+        }
+
+        return persistence;
     }
 
     pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
@@ -273,20 +317,118 @@ pub const Persistence = struct {
             else => return err,
         };
 
-        var buf: [4096]u8 = undefined;
-        var writer = std.io.Writer.fixed(&buf);
-        try toml.serialize(allocator, self, &writer);
+        var writer = std.Io.Writer.Allocating.init(allocator);
+        defer writer.deinit();
+        try toml.serialize(allocator, self, &writer.writer);
+        const serialized = writer.written();
 
         const file = try fs.createFileAbsolute(persistence_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(writer.buffered());
+        try file.writeAll(serialized);
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
     }
+
+    pub fn pruneTerminals(self: *Persistence, allocator: std.mem.Allocator, grid_cols: usize, grid_rows: usize) !bool {
+        var to_remove = std.ArrayList([]const u8).empty;
+        defer to_remove.deinit(allocator);
+
+        var seen = std.AutoHashMap(usize, void).init(allocator);
+        defer seen.deinit();
+
+        var changed = false;
+        var it = self.terminals.iterator();
+        while (it.next()) |entry| {
+            const parsed = parseTerminalKey(entry.key_ptr.*) orelse {
+                try to_remove.append(allocator, entry.key_ptr.*);
+                continue;
+            };
+
+            if (parsed.row >= grid_rows or parsed.col >= grid_cols) {
+                try to_remove.append(allocator, entry.key_ptr.*);
+                continue;
+            }
+
+            const index = parsed.row * grid_cols + parsed.col;
+            if (seen.contains(index)) {
+                try to_remove.append(allocator, entry.key_ptr.*);
+                continue;
+            }
+
+            try seen.put(index, {});
+        }
+
+        for (to_remove.items) |key| {
+            if (self.terminals.fetchRemove(key)) |removed| {
+                allocator.free(removed.key);
+                allocator.free(removed.value);
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    pub fn collectTerminalEntries(self: *const Persistence, allocator: std.mem.Allocator, grid_cols: usize, grid_rows: usize) !std.ArrayList(TerminalEntry) {
+        var entries = std.ArrayList(TerminalEntry).empty;
+        errdefer entries.deinit(allocator);
+
+        var it = self.terminals.iterator();
+        while (it.next()) |entry| {
+            const parsed = parseTerminalKey(entry.key_ptr.*) orelse continue;
+            if (parsed.row >= grid_rows or parsed.col >= grid_cols) continue;
+            const index = parsed.row * grid_cols + parsed.col;
+            try entries.append(allocator, .{ .index = index, .path = entry.value_ptr.* });
+        }
+
+        return entries;
+    }
+
+    pub fn setTerminal(self: *Persistence, allocator: std.mem.Allocator, index: usize, grid_cols: usize, path: []const u8) !void {
+        const row = index / grid_cols;
+        const col = index % grid_cols;
+        const key = try std.fmt.allocPrint(allocator, "{s}{d}_{d}", .{ TerminalKeyPrefix, row + 1, col + 1 });
+        errdefer allocator.free(key);
+
+        const value = try allocator.dupe(u8, path);
+        errdefer allocator.free(value);
+
+        if (self.terminals.fetchRemove(key)) |old_entry| {
+            allocator.free(old_entry.key);
+            allocator.free(old_entry.value);
+        }
+
+        try self.terminals.put(key, value);
+    }
+
+    pub fn clearTerminals(self: *Persistence) void {
+        var it = self.terminals.iterator();
+        while (it.next()) |entry| {
+            self.terminals.allocator.free(entry.key_ptr.*);
+            self.terminals.allocator.free(entry.value_ptr.*);
+        }
+        self.terminals.clearRetainingCapacity();
+    }
 };
+
+fn parseTerminalKey(key: []const u8) ?struct { row: usize, col: usize } {
+    if (!std.mem.startsWith(u8, key, Persistence.TerminalKeyPrefix)) return null;
+    const suffix = key[Persistence.TerminalKeyPrefix.len..];
+    const sep_index = std.mem.indexOfScalar(u8, suffix, '_') orelse return null;
+
+    const row_str = suffix[0..sep_index];
+    const col_str = suffix[sep_index + 1 ..];
+
+    const row = std.fmt.parseInt(usize, row_str, 10) catch return null;
+    const col = std.fmt.parseInt(usize, col_str, 10) catch return null;
+
+    if (row == 0 or col == 0) return null;
+
+    return .{ .row = row - 1, .col = col - 1 };
+}
 
 pub const Config = struct {
     font: FontConfig = .{},
@@ -551,4 +693,53 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(false, config.rendering.vsync);
     try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
     try std.testing.expectEqual(false, config.ui.enable_animations);
+}
+
+test "parseTerminalKey decodes 1-based coordinates" {
+    const parsed = parseTerminalKey("terminal_2_3").?;
+    try std.testing.expectEqual(@as(usize, 1), parsed.row);
+    try std.testing.expectEqual(@as(usize, 2), parsed.col);
+    try std.testing.expect(parseTerminalKey("terminal_x") == null);
+    try std.testing.expect(parseTerminalKey("something_else") == null);
+}
+
+test "Persistence.pruneTerminals removes out-of-bounds entries" {
+    const allocator = std.testing.allocator;
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit();
+
+    try persistence.setTerminal(allocator, 0, 2, "/one");
+
+    const bad_key = try std.fmt.allocPrint(allocator, "{s}3_1", .{Persistence.TerminalKeyPrefix});
+    const bad_value = try allocator.dupe(u8, "/bad");
+    try persistence.terminals.put(bad_key, bad_value);
+
+    const changed = try persistence.pruneTerminals(allocator, 2, 2);
+    try std.testing.expect(changed);
+    try std.testing.expectEqual(@as(usize, 1), persistence.terminals.count());
+}
+
+test "Persistence.collectTerminalEntries maps keys to session indices" {
+    const allocator = std.testing.allocator;
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit();
+
+    try persistence.setTerminal(allocator, 1, 3, "/a");
+    try persistence.setTerminal(allocator, 5, 3, "/b");
+
+    var entries = try persistence.collectTerminalEntries(allocator, 3, 3);
+    defer entries.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+
+    var seen = std.AutoHashMap(usize, []const u8).init(allocator);
+    defer seen.deinit();
+    for (entries.items) |entry| {
+        try seen.put(entry.index, entry.path);
+    }
+
+    try std.testing.expect(seen.contains(1));
+    try std.testing.expect(seen.contains(5));
+    try std.testing.expectEqualStrings("/a", seen.get(1).?);
+    try std.testing.expectEqualStrings("/b", seen.get(5).?);
 }

@@ -70,6 +70,11 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 ### Naming collisions in large render functions
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent “local constant shadows” errors.
 
+### Zig 0.15 collection API differences
+- `std.ArrayList(T)` now prefers `initCapacity(allocator, 0)`; `append` and similar methods require the allocator argument (`list.append(allocator, item)`).
+- `std.fmt.allocPrintZ` is unavailable; create a null-terminated buffer manually: allocate `len+1`, copy bytes, set the last byte to 0, and slice as `buf[0..len :0]`.
+- For writers, `toml.serialize` expects `*std.Io.Writer`. Use `std.Io.Writer.Allocating.init(allocator)` (or `initCapacity`) and pass `&writer.writer`; read bytes with `writer.written()`.
+
 ## Build and Test (required after every task)
 - Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.
 - Report the results in your summary; if you must skip tests, state the reason explicitly.
@@ -99,6 +104,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Do not store UI state or UI textures in session structs or `app_state.zig`; UI state must live inside UI components or UI-managed assets.
 - Add new UI features by registering components with `UiRoot`; never bypass `UiAction` for UI→app mutations.
 - When a UI component moves into a new visible state (modals expanding, toasts appearing, gesture indicators starting), use `src/ui/first_frame_guard.zig`: call `markTransition()` when the state flips and `markDrawn()` at the end of the first render; have `wantsFrame` return `guard.wantsFrame()` so the main loop renders immediately even under idle throttling.
+- Restored terminals use `SessionState.ensureSpawnedWithDir` to launch shells already in the target directory; changing cwd of a live shell is not supported—spawn or restart with the desired path.
 
 ## Rendering & Unicode Notes
 - Only read `cell.content.codepoint` when `content_tag == .codepoint`; palette-only or non-text cells should render as empty. Misreading other tags produces spurious replacement glyphs.
@@ -107,6 +113,10 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 ## Known Pitfalls
 - Session teardown can run twice on error paths (errdefer plus outer defer). Keep `SessionState.deinit` idempotent: destroy textures/fonts/watchers, then null pointers and reset flags; in `main.zig` only deinit sessions that were actually constructed.
 - Running `rg` over the whole $HOME on macOS hits protected directories and can hang/time out; narrow searches to the repo, `/etc`, or specific config paths to avoid permission noise and delays.
+- Do not keep TOML parser-owned maps after `result.deinit()`: duplicate keys and values into your own storage before freeing the parser arena, or later iteration will segfault.
+- `std.mem.span` rejects `[:0]const u8`; use `std.mem.sliceTo(ptr, 0)` when converting C strings to slices.
+- When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser’s backing memory causes use-after-free crashes.
+- Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
