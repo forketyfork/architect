@@ -100,6 +100,7 @@ See [Setup](#setup) section below for building from source.
 - **Session Recovery**: A `Restart` button appears on any grid tile whose shell exited, letting you respawn that session without quitting the app
 - **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
 - **Legible Cursor**: The block cursor keeps the underlying glyph visible for easier caret tracking
+- **Hold-to-Repeat on macOS**: Holding a key repeats characters instead of showing the system accent picker, matching terminal expectations
 
 ## Prerequisites
 
@@ -434,7 +435,7 @@ To automatically send notifications when Claude Code stops or requests approval:
    chmod +x ~/.claude/architect_notify.py
    ```
 
-   This script is included in the Architect repository and handles notifications for all supported AI assistants.
+   This is the same shared script used by Codex and Gemini; it understands both plain state arguments and assistant JSON payloads.
 
 2. Add hooks to your `~/.claude/settings.json`:
    ```json
@@ -470,53 +471,24 @@ To automatically send notifications when Claude Code stops or requests approval:
 
 To automatically send notifications when Codex requests approval or completes a task:
 
-1. Create a notification script at `~/.codex/notify.py`:
-   ```python
-   #!/usr/bin/env python3
-   import json, os, subprocess, sys
-
-   HOME = os.environ.get("HOME", "")
-   ARCHITECT_NOTIFY = [
-       "python3",
-       os.path.join(HOME, "path/to/architect/architect_notify.py"),
-   ]
-
-   def route_to_architect(notification: dict) -> None:
-       ntype = (notification.get("type") or "").lower()
-       state = None
-
-       if ntype == "agent-turn-complete":
-           state = "done"
-       elif "approval" in ntype or "permission" in ntype:
-           state = "awaiting_approval"
-       elif "input" in ntype and "await" in ntype:
-           state = "awaiting_approval"
-
-       if state is None:
-           return
-
-       try:
-           subprocess.run(ARCHITECT_NOTIFY + [state], check=False)
-       except Exception:
-           pass
-
-   def main() -> int:
-       notification = json.loads(sys.argv[1])
-       route_to_architect(notification)
-       return 0
-
-   if __name__ == "__main__":
-       sys.exit(main())
+1. Copy the shared notification script to your Codex config directory:
+   ```bash
+   cp architect_notify.py ~/.codex/architect_notify.py
+   chmod +x ~/.codex/architect_notify.py
    ```
 
-2. Update the path to `architect_notify.py` in the script to match your repository location.
+   The script now understands Codex notification payloads (`agent-turn-start`,
+   `agent-turn-complete`, approval/permission prompts, etc.) as well as plain
+   `start` / `awaiting_approval` / `done` arguments.
 
-3. Add the `notify` setting to your `~/.codex/config.toml`:
+2. Add the `notify` setting to your `~/.codex/config.toml`:
    ```toml
-   notify = ["python3", "/Users/your-username/.codex/notify.py"]
+   notify = ["python3", "/Users/your-username/.codex/architect_notify.py"]
    ```
 
-4. Run Architect and start Codex in one of the terminal sessions. The grid cell will automatically highlight when Codex requests approval or completes a task.
+   Replace the path with your username if needed.
+
+3. Run Architect and start Codex in one of the terminal sessions. The grid cell will automatically highlight when Codex requests approval or completes a task. Unrecognized Codex events are ignored.
 
 ### Configuring Gemini CLI Hooks
 
@@ -529,7 +501,7 @@ To automatically send notifications when Gemini CLI requests approval or complet
    chmod +x ~/.gemini/architect_notify.py ~/.gemini/architect_hook.py
    ```
 
-   **Note**: Gemini CLI hooks require special handling because they receive JSON via stdin and must output JSON to stdout. The `architect_hook.py` wrapper handles this protocol and calls the shared `architect_notify.py` script.
+   **Note**: Gemini CLI hooks require special handling because they receive JSON via stdin and must output JSON to stdout. The `architect_hook.py` wrapper handles this protocol and delegates to the shared `architect_notify.py` script (the same one used for Claude and Codex).
 
 2. Add hooks to your `~/.gemini/settings.json`:
    ```json
