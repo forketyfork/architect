@@ -583,6 +583,7 @@ Download the latest release from the [releases page](https://github.com/forketyf
   - Provides terminal state machine and ANSI escape sequence parsing
 - **SDL3**: Window management and rendering backend (via Nix)
 - **SDL3_ttf**: Font rendering library (via Nix)
+- **Nix overlay and cache**: SDL3 is pinned to upstream 3.4.0 through `overlays/sdl3-3-4-0.nix`; binaries are served from the public `forketyfork` Cachix cache to avoid rebuilding locally or in CI.
 
 ## Architecture
 

@@ -10,8 +10,11 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-matrix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
       ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
@@ -43,7 +46,7 @@ jobs:
       - name: Prefetch Zig dependencies
         run: |
           for i in 1 2 3; do
-            nix develop --command just setup && break
+            nix develop --accept-flake-config --command just setup && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -52,7 +55,7 @@ jobs:
       - name: Build
         run: |
           for i in 1 2 3; do
-            nix develop --command just build && break
+            nix develop --accept-flake-config --command just build && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -61,7 +64,7 @@ jobs:
       - name: Test
         run: |
           for i in 1 2 3; do
-            nix develop --command just test && break
+            nix develop --accept-flake-config --command just test && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -70,8 +73,15 @@ jobs:
       - name: Lint
         run: |
           for i in 1 2 3; do
-            nix develop --command just lint && break
+            nix develop --accept-flake-config --command just lint && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
         working-directory: architect
+
+  build:
+    name: build
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Matrix build succeeded"
