@@ -1,6 +1,13 @@
 {
   description = "Architect development environment";
 
+  nixConfig = {
+    extra-substituters = [ "https://forketyfork.cachix.org" ];
+    extra-trusted-public-keys = [
+      "forketyfork.cachix.org-1:+0f7K77HIlUgbueZCRgRHr1GM6gMAThMetrwt0DaF3U="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -15,6 +22,9 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [
+            (import ./overlays/sdl3-3-4-0.nix)
+          ];
           config = {
             allowUnfree = true;
           };

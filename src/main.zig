@@ -496,7 +496,6 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = scaled_event.key.key;
                     const mod = scaled_event.key.mod;
-                    const is_repeat = scaled_event.key.repeat;
                     const focused = &sessions[anim_state.focused_session];
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
@@ -630,7 +629,7 @@ pub fn main() !void {
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
                         } else {
                             if (focused.spawned and !focused.dead) {
-                                try handleKeyInput(focused, key, mod, is_repeat);
+                                try handleKeyInput(focused, key, mod);
                             }
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
@@ -665,10 +664,8 @@ pub fn main() !void {
                             anim_state.previous_session = clicked_session;
                         }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else {
-                        if (focused.spawned and !focused.dead and !isModifierKey(key)) {
-                            try handleKeyInput(focused, key, mod, is_repeat);
-                        }
+                    } else if (focused.spawned and !focused.dead and !isModifierKey(key)) {
+                        try handleKeyInput(focused, key, mod);
                     }
                 },
                 c.SDL_EVENT_KEY_UP => {
@@ -1466,7 +1463,7 @@ fn isModifierKey(key: c.SDL_Keycode) bool {
         key == c.SDLK_LGUI or key == c.SDLK_RGUI;
 }
 
-fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod, is_repeat: bool) !void {
+fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod) !void {
     if (key == c.SDLK_ESCAPE) return;
 
     if (focused.is_scrolled) {
@@ -1481,11 +1478,6 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod,
     const n = input.encodeKeyWithMod(key, mod, &buf);
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
-    } else if (is_repeat and builtin.os.tag == .macos) {
-        if (input.keyToChar(key, mod)) |ch| {
-            buf[0] = ch;
-            try focused.sendInput(buf[0..1]);
-        }
     }
 }
 

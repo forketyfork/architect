@@ -1,5 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("../c.zig");
+
+const is_macos = builtin.os.tag == .macos;
 
 pub const WindowPosition = struct { x: c_int, y: c_int };
 
@@ -34,6 +37,11 @@ pub fn init(
 ) InitError!Platform {
     // Let macOS provide native scroll momentum instead of synthesizing it.
     _ = c.SDL_SetHint("SDL_MAC_SCROLL_MOMENTUM", "1");
+    if (is_macos) {
+        // Keep press-and-hold behavior in repeat mode instead of showing the accent picker.
+        std.debug.print("Disabling SDL_HINT_MAC_PRESS_AND_HOLD\n", .{});
+        _ = c.SDL_SetHint(c.SDL_HINT_MAC_PRESS_AND_HOLD, "0");
+    }
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.debug.print("SDL_Init Error: {s}\n", .{c.SDL_GetError()});
