@@ -384,7 +384,7 @@ zig fmt src/
 
 ## AI Assistant Integration
 
-Architect integrates with AI coding assistants through a Unix domain socket protocol. Grid tiles automatically highlight when an assistant is waiting for approval (pulsing yellow border) or has completed a task (solid green border).
+Architect integrates with AI coding assistants through a Unix domain socket protocol. In grid view the selected tile gets a subtle blue tint; if a notification is active, the yellow/green highlight takes priority over the selection tint. Waiting-for-approval shows a pulsing yellow border, and completion shows a solid green border.
 
 ### Socket Protocol
 

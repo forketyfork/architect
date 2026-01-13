@@ -464,18 +464,41 @@ fn renderSessionOverlays(
     is_grid_view: bool,
     theme: *const colors.Theme,
 ) void {
+    const has_attention = is_grid_view and session.attention;
+    const border_thickness: c_int = ATTENTION_THICKNESS;
+
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused, theme);
-    } else if (is_grid_view) {
-        const border_color = if (is_focused) theme.accent else theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, 255);
-        const border_rect = c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        };
-        _ = c.SDL_RenderRect(renderer, &border_rect);
+    }
+
+    if (is_grid_view) {
+        if (!is_focused) {
+            const base_border = theme.selection;
+            primitives.drawThickBorder(renderer, rect, border_thickness, base_border);
+        }
+
+        if (is_focused) {
+            const focus_blue = theme.palette[12];
+            const inset: c_int = if (has_attention) border_thickness else 0;
+            var focus_rect = rect;
+            focus_rect.x += inset;
+            focus_rect.y += inset;
+            focus_rect.w -= inset * 2;
+            focus_rect.h -= inset * 2;
+            if (focus_rect.w > 0 and focus_rect.h > 0) {
+                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                if (!has_attention) {
+                    _ = c.SDL_SetRenderDrawColor(renderer, focus_blue.r, focus_blue.g, focus_blue.b, 38);
+                    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                        .x = @floatFromInt(focus_rect.x),
+                        .y = @floatFromInt(focus_rect.y),
+                        .w = @floatFromInt(focus_rect.w),
+                        .h = @floatFromInt(focus_rect.h),
+                    });
+                }
+                primitives.drawThickBorder(renderer, focus_rect, border_thickness, focus_blue);
+            }
+        }
     }
 
     if (is_grid_view and session.is_scrolled) {
@@ -490,8 +513,15 @@ fn renderSessionOverlays(
         _ = c.SDL_RenderFillRect(renderer, &indicator_rect);
     }
 
-    if (is_grid_view and session.attention) {
+    if (has_attention) {
         const yellow = theme.palette[3];
+        const base_green = theme.palette[2];
+        const done_green = c.SDL_Color{
+            .r = @intCast(std.math.clamp(@as(i32, base_green.r) - 30, 0, 255)),
+            .g = @intCast(std.math.clamp(@as(i32, base_green.g) + 30, 0, 255)),
+            .b = @intCast(std.math.clamp(@as(i32, base_green.b) - 20, 0, 255)),
+            .a = 255,
+        };
         const color = switch (session.status) {
             .awaiting_approval => blk: {
                 const phase_ms: f32 = @floatFromInt(@mod(current_time_ms, @as(i64, 1000)));
@@ -500,8 +530,7 @@ fn renderSessionOverlays(
                 break :blk c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = base_alpha };
             },
             .done => blk: {
-                const acc = theme.accent;
-                break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 230 };
+                break :blk c.SDL_Color{ .r = done_green.r, .g = done_green.g, .b = done_green.b, .a = 230 };
             },
             else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 230 },
         };
@@ -510,8 +539,7 @@ fn renderSessionOverlays(
         const tint_color = switch (session.status) {
             .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 25 },
             .done => blk: {
-                const acc = theme.accent;
-                break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 30 };
+                break :blk c.SDL_Color{ .r = done_green.r, .g = done_green.g, .b = done_green.b, .a = 35 };
             },
             else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 25 },
         };
