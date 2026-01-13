@@ -46,7 +46,7 @@ jobs:
       - name: Prefetch Zig dependencies
         run: |
           for i in 1 2 3; do
-            nix develop --command just setup && break
+            nix develop --accept-flake-config --command just setup && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -55,7 +55,7 @@ jobs:
       - name: Build
         run: |
           for i in 1 2 3; do
-            nix develop --command just build && break
+            nix develop --accept-flake-config --command just build && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -64,7 +64,7 @@ jobs:
       - name: Test
         run: |
           for i in 1 2 3; do
-            nix develop --command just test && break
+            nix develop --accept-flake-config --command just test && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
@@ -73,7 +73,7 @@ jobs:
       - name: Lint
         run: |
           for i in 1 2 3; do
-            nix develop --command just lint && break
+            nix develop --accept-flake-config --command just lint && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
