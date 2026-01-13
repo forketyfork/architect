@@ -15,5 +15,11 @@ final: prev: {
       substituteInPlace test/CMakeLists.txt \
         --replace-fail 'set(noninteractive_timeout 10)' 'set(noninteractive_timeout 30)'
     '';
+
+    buildInputs =
+      old.buildInputs
+      ++ prev.lib.optionals prev.stdenv.isLinux [
+        prev.xorg.libXtst
+      ];
   });
 }
