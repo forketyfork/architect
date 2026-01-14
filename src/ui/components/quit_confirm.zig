@@ -5,6 +5,7 @@ const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
+const button = @import("button.zig");
 
 pub const QuitConfirmComponent = struct {
     allocator: std.mem.Allocator,
@@ -22,14 +23,6 @@ pub const QuitConfirmComponent = struct {
     message_tex: ?*c.SDL_Texture = null,
     message_w: c_int = 0,
     message_h: c_int = 0,
-
-    quit_tex: ?*c.SDL_Texture = null,
-    quit_w: c_int = 0,
-    quit_h: c_int = 0,
-
-    cancel_tex: ?*c.SDL_Texture = null,
-    cancel_w: c_int = 0,
-    cancel_h: c_int = 0,
 
     const MODAL_WIDTH: c_int = 520;
     const MODAL_HEIGHT: c_int = 220;
@@ -60,8 +53,6 @@ pub const QuitConfirmComponent = struct {
     pub fn destroy(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer) void {
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.quit_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.cancel_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.font) |f| c.TTF_CloseFont(f);
         self.allocator.destroy(self);
         _ = renderer;
@@ -222,49 +213,23 @@ pub const QuitConfirmComponent = struct {
     fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
-        const cancel_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.cancel.x),
-            .y = @floatFromInt(buttons.cancel.y),
-            .w = @floatFromInt(buttons.cancel.w),
-            .h = @floatFromInt(buttons.cancel.h),
-        };
-        const bg = theme.background;
-        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
-        _ = c.SDL_RenderFillRect(renderer, &cancel_rect);
-        const acc = theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, buttons.cancel, dpi.scale(8, ui_scale));
+        if (self.font) |font| {
+            const cancel_rect = c.SDL_FRect{
+                .x = @floatFromInt(buttons.cancel.x),
+                .y = @floatFromInt(buttons.cancel.y),
+                .w = @floatFromInt(buttons.cancel.w),
+                .h = @floatFromInt(buttons.cancel.h),
+            };
+            button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale);
 
-        const quit_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.quit.x),
-            .y = @floatFromInt(buttons.quit.y),
-            .w = @floatFromInt(buttons.quit.w),
-            .h = @floatFromInt(buttons.quit.h),
-        };
-        const red = theme.palette[1];
-        _ = c.SDL_SetRenderDrawColor(renderer, red.r, red.g, red.b, 255);
-        _ = c.SDL_RenderFillRect(renderer, &quit_rect);
-        const bright_red = theme.palette[9];
-        _ = c.SDL_SetRenderDrawColor(renderer, bright_red.r, bright_red.g, bright_red.b, 255);
-        primitives.drawRoundedBorder(renderer, buttons.quit, dpi.scale(8, ui_scale));
-
-        const cancel_w = @as(f32, @floatFromInt(self.cancel_w));
-        const cancel_h = @as(f32, @floatFromInt(self.cancel_h));
-        const cancel_text_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.cancel.x + @divFloor(buttons.cancel.w - self.cancel_w, 2)),
-            .y = @floatFromInt(buttons.cancel.y + @divFloor(buttons.cancel.h - self.cancel_h, 2)),
-            .w = cancel_w,
-            .h = cancel_h,
-        };
-        _ = c.SDL_RenderTexture(renderer, self.cancel_tex.?, null, &cancel_text_rect);
-
-        const quit_text_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.quit.x + @divFloor(buttons.quit.w - self.quit_w, 2)),
-            .y = @floatFromInt(buttons.quit.y + @divFloor(buttons.quit.h - self.quit_h, 2)),
-            .w = @floatFromInt(self.quit_w),
-            .h = @floatFromInt(self.quit_h),
-        };
-        _ = c.SDL_RenderTexture(renderer, self.quit_tex.?, null, &quit_text_rect);
+            const quit_rect = c.SDL_FRect{
+                .x = @floatFromInt(buttons.quit.x),
+                .y = @floatFromInt(buttons.quit.y),
+                .w = @floatFromInt(buttons.quit.w),
+                .h = @floatFromInt(buttons.quit.h),
+            };
+            button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale);
+        }
     }
 
     fn modalRect(self: *QuitConfirmComponent, host: *const types.UiHost) geom.Rect {
@@ -295,7 +260,7 @@ pub const QuitConfirmComponent = struct {
     }
 
     fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) !void {
-        if (!self.dirty and self.title_tex != null and self.message_tex != null and self.quit_tex != null and self.cancel_tex != null) return;
+        if (!self.dirty and self.title_tex != null and self.message_tex != null) return;
         const font_path = self.font_path orelse return error.FontPathNotSet;
         if (self.font == null) {
             self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(dpi.scale(BODY_SIZE, ui_scale))) orelse return error.FontUnavailable;
@@ -305,8 +270,6 @@ pub const QuitConfirmComponent = struct {
 
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.quit_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.cancel_tex) |tex| c.SDL_DestroyTexture(tex);
 
         _ = c.TTF_SetFontSize(font, @floatFromInt(dpi.scale(TITLE_SIZE, ui_scale)));
         const title_text = "Quit Architect?";
@@ -329,25 +292,6 @@ pub const QuitConfirmComponent = struct {
         const message_size = textureSize(self.message_tex.?);
         self.message_w = message_size.x;
         self.message_h = message_size.y;
-
-        const quit_text = "Quit";
-        const quit_fg = theme.foreground;
-        const quit_color = c.SDL_Color{ .r = quit_fg.r, .g = quit_fg.g, .b = quit_fg.b, .a = 255 };
-        const quit_surface = c.TTF_RenderText_Blended(font, quit_text, quit_text.len, quit_color) orelse return error.SurfaceFailed;
-        defer c.SDL_DestroySurface(quit_surface);
-        self.quit_tex = c.SDL_CreateTextureFromSurface(renderer, quit_surface) orelse return error.TextureFailed;
-        const quit_size = textureSize(self.quit_tex.?);
-        self.quit_w = quit_size.x;
-        self.quit_h = quit_size.y;
-
-        const cancel_text = "Cancel";
-        const cancel_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const cancel_surface = c.TTF_RenderText_Blended(font, cancel_text, cancel_text.len, cancel_color) orelse return error.SurfaceFailed;
-        defer c.SDL_DestroySurface(cancel_surface);
-        self.cancel_tex = c.SDL_CreateTextureFromSurface(renderer, cancel_surface) orelse return error.TextureFailed;
-        const cancel_size = textureSize(self.cancel_tex.?);
-        self.cancel_w = cancel_size.x;
-        self.cancel_h = cancel_size.y;
 
         self.dirty = false;
     }
