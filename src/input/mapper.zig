@@ -145,9 +145,9 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
                 break :blk 3;
             },
             c.SDLK_RETURN => blk: {
-                // Shift+Enter: send carriage return (fallback until protocol negotiation)
-                buf[0] = '\r';
-                break :blk 1;
+                // Shift+Enter: send CSI u encoding (ESC [ 13 ; 2 u)
+                @memcpy(buf[0..7], "\x1b[13;2u");
+                break :blk 7;
             },
             else => 0,
         };
