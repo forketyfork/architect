@@ -23,6 +23,7 @@ pub const UiHost = struct {
 
     view_mode: app_state.ViewMode,
     focused_session: usize,
+    focused_cwd: ?[]const u8,
 
     sessions: []const SessionUiInfo,
     theme: *const colors.Theme,
@@ -33,6 +34,12 @@ pub const UiAction = union(enum) {
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
+    SwitchWorktree: SwitchWorktreeAction,
+};
+
+pub const SwitchWorktreeAction = struct {
+    session: usize,
+    path: []const u8,
 };
 
 pub const UiAssets = struct {

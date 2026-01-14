@@ -115,12 +115,13 @@ src/
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │
     ├── components/
-    │   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
-    │   ├── toast.zig            # Toast notification display
-    │   ├── escape_hold.zig      # ESC hold-to-collapse indicator
-    │   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
-    │   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
-    │   ├── restart_buttons.zig  # Dead session restart buttons
+│   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
+│   ├── worktree_overlay.zig # Git worktree picker (T pill)
+│   ├── toast.zig            # Toast notification display
+│   ├── escape_hold.zig      # ESC hold-to-collapse indicator
+│   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
+│   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
+│   ├── restart_buttons.zig  # Dead session restart buttons
     │   ├── quit_confirm.zig     # Quit confirmation dialog
     │   └── marquee_label.zig    # Reusable scrolling text label
     │
@@ -173,6 +174,8 @@ union(enum) {
     RestartSession: usize,        // Restart dead session at index
     RequestCollapseFocused: void, // Collapse current fullscreen to grid
     ConfirmQuit: void,            // Confirm quit despite running processes
+    OpenConfig: void,             // Open config file (Cmd+,)
+    SwitchWorktree: struct { session: usize, path: []const u8 }, // Relaunch session in another worktree
 }
 ```
 
@@ -186,6 +189,7 @@ struct {
     cell_w, cell_h: c_int,
     view_mode: ViewMode,
     focused_session: usize,
+    focused_cwd: ?[]const u8,
     sessions: []SessionUiInfo,  // dead/spawned flags per session
 }
 ```
@@ -212,6 +216,7 @@ struct {
 
 Components that consume events:
 - `HelpOverlayComponent`: ? pill click, overlay dismiss
+- `WorktreeOverlayComponent`: T pill, Cmd+O, Cmd+digit to relaunch in worktree; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), and displays paths relative to the primary worktree
 - `EscapeHoldComponent`: ESC key down/up for hold-to-collapse
 - `RestartButtonsComponent`: Restart button clicks
 - `QuitConfirmComponent`: Confirmation dialog buttons

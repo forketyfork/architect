@@ -314,6 +314,8 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
+    const worktree_component = try ui_mod.worktree_overlay.WorktreeOverlayComponent.create(allocator);
+    try ui.register(worktree_component);
     const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
     try ui.register(help_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
@@ -971,6 +973,34 @@ pub fn main() !void {
                     std.debug.print("Failed to get config path: {}\n", .{err});
                 }
             },
+            .SwitchWorktree => |switch_action| {
+                defer allocator.free(switch_action.path);
+                if (switch_action.session >= sessions.len) continue;
+
+                var session = &sessions[switch_action.session];
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+
+                const path_z = allocator.alloc(u8, switch_action.path.len + 1) catch {
+                    ui.showToast("Failed to switch worktree", now);
+                    continue;
+                };
+                defer allocator.free(path_z);
+                @memcpy(path_z[0..switch_action.path.len], switch_action.path);
+                path_z[switch_action.path.len] = 0;
+
+                session.relaunchWithDir(path_z[0..switch_action.path.len :0], &loop) catch |err| {
+                    std.debug.print("Failed to relaunch session {d} in worktree: {}\n", .{ switch_action.session, err });
+                    ui.showToast("Could not switch worktree", now);
+                    continue;
+                };
+
+                session.status = .running;
+                session.attention = false;
+                ui.showToast("Switched worktree", now);
+            },
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
@@ -1282,6 +1312,8 @@ fn makeUiHost(
         };
     }
 
+    const focused_cwd = sessions[anim_state.focused_session].cwd_path;
+
     return .{
         .now_ms = now,
         .window_w = render_width,
@@ -1293,6 +1325,7 @@ fn makeUiHost(
         .cell_h = cell_height_pixels,
         .view_mode = anim_state.mode,
         .focused_session = anim_state.focused_session,
+        .focused_cwd = focused_cwd,
         .sessions = buffer[0..sessions.len],
         .theme = theme,
     };

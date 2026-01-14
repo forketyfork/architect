@@ -1,13 +1,12 @@
 const std = @import("std");
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
-const easing = @import("../../anim/easing.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
-const font_mod = @import("../../font.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
+const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
 const FontWithFallbacks = struct {
     main: *c.TTF_Font,
@@ -98,19 +97,13 @@ fn closeFontWithFallbacks(fonts: FontWithFallbacks) void {
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
-    state: State = .Closed,
-    start_time: i64 = 0,
-    start_size: c_int = HELP_BUTTON_SIZE_SMALL,
-    target_size: c_int = HELP_BUTTON_SIZE_SMALL,
+    overlay: ExpandingOverlay = ExpandingOverlay.init(0, HELP_BUTTON_MARGIN, HELP_BUTTON_SIZE_SMALL, HELP_BUTTON_SIZE_LARGE, HELP_BUTTON_ANIMATION_DURATION_MS),
     cache: ?*Cache = null,
     first_frame: FirstFrameGuard = .{},
-
     const HELP_BUTTON_SIZE_SMALL: c_int = 40;
     const HELP_BUTTON_SIZE_LARGE: c_int = 400;
     const HELP_BUTTON_MARGIN: c_int = 20;
     const HELP_BUTTON_ANIMATION_DURATION_MS: i64 = 200;
-
-    pub const State = enum { Closed, Expanding, Open, Collapsing };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(HelpOverlayComponent);
@@ -135,20 +128,20 @@ pub const HelpOverlayComponent = struct {
 
         const mouse_x: c_int = @intFromFloat(event.button.x);
         const mouse_y: c_int = @intFromFloat(event.button.y);
-        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+        const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const inside = geom.containsPoint(rect, mouse_x, mouse_y);
 
         if (inside) {
-            switch (self.state) {
-                .Closed => self.startExpanding(host.now_ms),
-                .Open => self.startCollapsing(host.now_ms),
+            switch (self.overlay.state) {
+                .Closed => self.overlay.startExpanding(host.now_ms),
+                .Open => self.overlay.startCollapsing(host.now_ms),
                 else => {},
             }
             return true;
         }
 
-        if (self.state == .Open and !inside) {
-            self.startCollapsing(host.now_ms);
+        if (self.overlay.state == .Open and !inside) {
+            self.overlay.startCollapsing(host.now_ms);
             return true;
         }
 
@@ -157,25 +150,25 @@ pub const HelpOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+        const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (self.isAnimating() and self.isComplete(host.now_ms)) {
-            self.state = switch (self.state) {
+        if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
+            self.overlay.state = switch (self.overlay.state) {
                 .Expanding => .Open,
                 .Collapsing => .Closed,
-                else => self.state,
+                else => self.overlay.state,
             };
-            if (self.state == .Open) self.first_frame.markTransition();
+            if (self.overlay.state == .Open) self.first_frame.markTransition();
         }
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        const rect = self.getRect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+        const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -195,11 +188,11 @@ pub const HelpOverlayComponent = struct {
 
         // Pre-warm cached text while the button is expanding so the content is
         // ready once the panel fully opens.
-        if (self.state != .Closed) {
+        if (self.overlay.state != .Closed) {
             _ = self.ensureCache(renderer, host.ui_scale, assets, host.theme);
         }
 
-        switch (self.state) {
+        switch (self.overlay.state) {
             .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets, host.theme),
             .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets, host.theme),
         }
@@ -398,47 +391,6 @@ pub const HelpOverlayComponent = struct {
         return cache;
     }
 
-    fn startExpanding(self: *HelpOverlayComponent, now: i64) void {
-        self.state = .Expanding;
-        self.start_time = now;
-        self.start_size = HELP_BUTTON_SIZE_SMALL;
-        self.target_size = HELP_BUTTON_SIZE_LARGE;
-    }
-
-    fn startCollapsing(self: *HelpOverlayComponent, now: i64) void {
-        self.state = .Collapsing;
-        self.start_time = now;
-        self.start_size = HELP_BUTTON_SIZE_LARGE;
-        self.target_size = HELP_BUTTON_SIZE_SMALL;
-    }
-
-    fn isAnimating(self: *HelpOverlayComponent) bool {
-        return self.state == .Expanding or self.state == .Collapsing;
-    }
-
-    fn isComplete(self: *HelpOverlayComponent, now: i64) bool {
-        const elapsed = now - self.start_time;
-        return elapsed >= HELP_BUTTON_ANIMATION_DURATION_MS;
-    }
-
-    fn getRect(self: *HelpOverlayComponent, now: i64, window_width: c_int, window_height: c_int, ui_scale: f32) geom.Rect {
-        _ = window_height;
-        const margin = dpi.scale(HELP_BUTTON_MARGIN, ui_scale);
-        const size = self.getCurrentSize(now, ui_scale);
-        const x = window_width - margin - size;
-        const y = margin;
-        return geom.Rect{ .x = x, .y = y, .w = size, .h = size };
-    }
-
-    fn getCurrentSize(self: *HelpOverlayComponent, now: i64, ui_scale: f32) c_int {
-        const elapsed = now - self.start_time;
-        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, HELP_BUTTON_ANIMATION_DURATION_MS));
-        const eased = easing.easeInOutCubic(progress);
-        const size_diff = self.target_size - self.start_size;
-        const unscaled = self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
-        return dpi.scale(unscaled, ui_scale);
-    }
-
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.deinit(renderer);
@@ -446,7 +398,7 @@ pub const HelpOverlayComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.isAnimating() or self.first_frame.wantsFrame();
+        return self.overlay.isAnimating() or self.first_frame.wantsFrame();
     }
 
     const vtable = UiComponent.VTable{
