@@ -26,12 +26,14 @@ pub const WorktreeOverlayComponent = struct {
     create_error: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
     cache: ?*Cache = null,
+    flow_animation_start_ms: i64 = 0,
 
     const BUTTON_SIZE_SMALL: c_int = 40;
     const BUTTON_SIZE_LARGE: c_int = 400;
     const BUTTON_MARGIN: c_int = 20;
     const BUTTON_ANIMATION_DURATION_MS: i64 = 200;
     const MAX_WORKTREES: usize = 9;
+    const MAX_NON_ROOT_WORKTREES: usize = 8;
     const MODAL_WIDTH: c_int = 520;
     const MODAL_HEIGHT: c_int = 220;
     const MODAL_RADIUS: c_int = 12;
@@ -246,10 +248,13 @@ pub const WorktreeOverlayComponent = struct {
                 .Collapsing => .Closed,
                 else => self.overlay.state,
             };
-            if (self.overlay.state == .Open) self.first_frame.markTransition();
+            if (self.overlay.state == .Open) {
+                self.first_frame.markTransition();
+                self.flow_animation_start_ms = host.now_ms;
+            }
             if (self.overlay.state == .Closed) {
                 self.hovered_entry = null;
-                // keep creating modal alive even while pill is closed
+                self.flow_animation_start_ms = 0;
             }
         }
 
@@ -371,6 +376,8 @@ pub const WorktreeOverlayComponent = struct {
         });
         y_offset += title_tex.h + line_height;
 
+        const current_idx = self.findCurrentWorktreeIndex(host.focused_cwd);
+
         for (cache.entries, 0..) |entry_tex, idx| {
             if (self.hovered_entry) |hover_idx| {
                 if (hover_idx == idx) {
@@ -434,6 +441,13 @@ pub const WorktreeOverlayComponent = struct {
                 .h = @floatFromInt(entry_tex.path.h),
             });
 
+            if (current_idx) |current| {
+                if (current == idx and idx > 0) {
+                    const flow_y = y_offset + @divFloor(entry_tex.path.h, 2);
+                    self.renderFlowingLine(renderer, host, rect, flow_y, ui_scale, theme);
+                }
+            }
+
             y_offset += line_height;
         }
 
@@ -444,6 +458,83 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         self.first_frame.markDrawn();
+    }
+
+    fn findCurrentWorktreeIndex(self: *WorktreeOverlayComponent, cwd_opt: ?[]const u8) ?usize {
+        const cwd = cwd_opt orelse return null;
+        for (self.worktrees.items, 0..) |wt, i| {
+            if (std.mem.eql(u8, wt.abs_path, cwd)) {
+                return i + 1;
+            }
+        }
+        return null;
+    }
+
+    fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+        if (self.flow_animation_start_ms == 0) {
+            self.flow_animation_start_ms = host.now_ms;
+        }
+
+        const elapsed_ms = host.now_ms - self.flow_animation_start_ms;
+        const time: f32 = @as(f32, @floatFromInt(elapsed_ms)) / 1000.0;
+
+        const padding: c_int = dpi.scale(20, ui_scale);
+        const start_x: f32 = @floatFromInt(rect.x + padding);
+        const end_x: f32 = @floatFromInt(rect.x + rect.w - padding);
+        const width = end_x - start_x;
+        const base_y: f32 = @floatFromInt(y);
+
+        const num_points: usize = @as(usize, @intFromFloat(width / 3.0));
+        const point_spacing = width / @as(f32, @floatFromInt(num_points - 1));
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+        const flow_speed = 0.5;
+        const flow_offset = time * flow_speed;
+
+        const accent = theme.accent;
+
+        const diffusion_layers = 9;
+        var layer: usize = 0;
+        while (layer < diffusion_layers) : (layer += 1) {
+            const layer_f: f32 = @floatFromInt(layer);
+            const center: f32 = @as(f32, @floatFromInt(diffusion_layers - 1)) / 2.0;
+            const layer_offset = (layer_f - center) * 1.2;
+            const dist_from_center = @abs(layer_f - center);
+            const layer_alpha_mult = 1.0 - (dist_from_center / (center + 1.0));
+
+            var prev_x: f32 = start_x;
+            var prev_y: f32 = base_y + layer_offset;
+
+            for (0..num_points) |i| {
+                const x = start_x + @as(f32, @floatFromInt(i)) * point_spacing;
+                const normalized_x = (@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(num_points - 1)));
+
+                const wave1 = @sin((normalized_x * 8.0 + flow_offset) * std.math.pi);
+                const wave2 = @sin((normalized_x * 13.0 - flow_offset * 1.3) * std.math.pi) * 0.6;
+                const wave3 = @cos((normalized_x * 21.0 + flow_offset * 0.7) * std.math.pi) * 0.4;
+                const wave4 = @sin((normalized_x * 34.0 - flow_offset * 0.5) * std.math.pi) * 0.3;
+
+                const combined_wave = (wave1 + wave2 + wave3 + wave4) / 2.3;
+                const amplitude: f32 = @as(f32, @floatFromInt(dpi.scale(3, ui_scale)));
+                const y_val = base_y + combined_wave * amplitude + layer_offset;
+
+                if (i > 0) {
+                    const segment_progress = @abs(@sin((normalized_x * 5.0 - flow_offset * 2.0) * std.math.pi));
+                    const alpha_base: f32 = 100.0;
+                    const alpha_var: f32 = 40.0;
+                    const base_alpha = alpha_base + segment_progress * alpha_var;
+                    const final_alpha = base_alpha * layer_alpha_mult * 0.4;
+                    const alpha: u8 = @intFromFloat(@min(255.0, final_alpha));
+
+                    _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, alpha);
+                    _ = c.SDL_RenderLine(renderer, prev_x, prev_y, x, y_val);
+                }
+
+                prev_x = x;
+                prev_y = y_val;
+            }
+        }
     }
 
     fn emitSwitch(_: *WorktreeOverlayComponent, actions: *types.UiActionQueue, session_idx: usize, abs_path: []const u8) void {
@@ -479,9 +570,50 @@ pub const WorktreeOverlayComponent = struct {
         self.setDisplayBase(cwd);
 
         _ = self.collectFromGitMetadata(cwd);
+        self.sortWorktrees();
         self.available = self.worktrees.items.len > 0;
         if (!self.available and self.last_error == null) {
             self.setError("No worktrees found");
+        }
+    }
+
+    fn sortWorktrees(self: *WorktreeOverlayComponent) void {
+        if (self.worktrees.items.len == 0) return;
+
+        var root_idx: ?usize = null;
+        for (self.worktrees.items, 0..) |wt, i| {
+            if (std.mem.eql(u8, wt.display, "[repository root]")) {
+                root_idx = i;
+                break;
+            }
+        }
+
+        if (root_idx) |idx| {
+            if (idx != 0) {
+                const root = self.worktrees.items[idx];
+                var i = idx;
+                while (i > 0) : (i -= 1) {
+                    self.worktrees.items[i] = self.worktrees.items[i - 1];
+                }
+                self.worktrees.items[0] = root;
+            }
+        }
+
+        if (self.worktrees.items.len > 1) {
+            const Context = struct {
+                pub fn lessThan(_: @This(), a: Worktree, b: Worktree) bool {
+                    return std.mem.order(u8, a.display, b.display) == .lt;
+                }
+            };
+            std.mem.sort(Worktree, self.worktrees.items[1..], Context{}, Context.lessThan);
+        }
+
+        if (self.worktrees.items.len > MAX_WORKTREES) {
+            for (self.worktrees.items[MAX_WORKTREES..]) |wt| {
+                self.allocator.free(wt.abs_path);
+                self.allocator.free(wt.display);
+            }
+            self.worktrees.items.len = MAX_WORKTREES;
         }
     }
 
@@ -1085,12 +1217,10 @@ pub const WorktreeOverlayComponent = struct {
                 const duped = self.allocator.dupe(u8, derived) catch continue;
                 defer self.allocator.free(duped);
                 _ = self.appendWorktree(duped);
-                if (self.worktrees.items.len >= MAX_WORKTREES) break;
                 continue;
             };
             defer self.allocator.free(path);
             _ = self.appendWorktree(path);
-            if (self.worktrees.items.len >= MAX_WORKTREES) break;
         }
 
         return self.worktrees.items.len > 0;
@@ -1172,7 +1302,6 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn appendWorktree(self: *WorktreeOverlayComponent, abs_path: []const u8) bool {
-        if (self.worktrees.items.len >= MAX_WORKTREES) return false;
         for (self.worktrees.items) |existing| {
             if (std.mem.eql(u8, existing.abs_path, abs_path)) return false;
         }
@@ -1251,7 +1380,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.overlay.isAnimating() or self.first_frame.wantsFrame();
+        return self.overlay.isAnimating() or self.first_frame.wantsFrame() or self.overlay.state == .Open;
     }
 
     const vtable = UiComponent.VTable{
