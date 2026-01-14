@@ -1189,9 +1189,6 @@ pub const WorktreeOverlayComponent = struct {
         self.setDisplayBase(main_worktree);
 
         _ = self.appendWorktree(main_worktree);
-        if (!pathsEqual(main_worktree, cwd)) {
-            _ = self.appendWorktree(cwd);
-        }
 
         const worktrees_dir_buf = std.fs.path.join(self.allocator, &.{ ctx.commondir, "worktrees" }) catch {
             return self.worktrees.items.len > 0;
