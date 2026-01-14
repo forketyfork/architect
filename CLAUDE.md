@@ -30,6 +30,9 @@ If you are executing in a git worktree, stay within that worktree and do not att
 
 ## SDL3 Usage Notes
 
+### Window-close handling on macOS
+- When you handle Cmd+W yourself, set `SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE` to `"0"` so SDL does not emit `SDL_EVENT_QUIT` and bypass your custom close logic.
+
 ### Adding New SDL3 Key Codes
 When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. SDL3 constants are exposed through the c_import and must be explicitly re-exported in c.zig to be accessible throughout the codebase.
 
@@ -117,6 +120,8 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - `std.mem.span` rejects `[:0]const u8`; use `std.mem.sliceTo(ptr, 0)` when converting C strings to slices.
 - When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser’s backing memory causes use-after-free crashes.
 - Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
+- xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
+- Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
