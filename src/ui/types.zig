@@ -33,6 +33,7 @@ pub const UiAction = union(enum) {
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
+    DespawnSession: usize,
 };
 
 pub const UiAssets = struct {
