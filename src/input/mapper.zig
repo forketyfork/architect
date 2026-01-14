@@ -137,7 +137,7 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
     }
 
     // Shift-modified special keys (must come before unmodified handling)
-    if (mod & c.SDL_KMOD_SHIFT != 0) {
+    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
         const shift_result: usize = switch (key) {
             c.SDLK_TAB => blk: {
                 // Shift+Tab: send backtab (CSI Z)
@@ -145,9 +145,9 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
                 break :blk 3;
             },
             c.SDLK_RETURN => blk: {
-                // Shift+Enter: send CSI u encoding (ESC [ 13 ; 2 u)
-                @memcpy(buf[0..7], "\x1b[13;2u");
-                break :blk 7;
+                // Shift+Enter: send carriage return (fallback until protocol negotiation)
+                buf[0] = '\r';
+                break :blk 1;
             },
             else => 0,
         };
