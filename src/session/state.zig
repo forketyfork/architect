@@ -351,6 +351,16 @@ pub const SessionState = struct {
     pub fn restart(self: *SessionState) InitError!void {
         if (self.spawned and !self.dead) return;
 
+        self.resetForRespawn();
+        try self.ensureSpawned();
+    }
+
+    pub fn relaunchWithDir(self: *SessionState, working_dir: [:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+        self.resetForRespawn();
+        try self.ensureSpawnedWithDir(working_dir, loop_opt);
+    }
+
+    fn resetForRespawn(self: *SessionState) void {
         self.clearSelection();
         self.pending_write.clearAndFree(self.allocator);
         if (self.process_watcher) |*watcher| {
@@ -383,7 +393,6 @@ pub const SessionState = struct {
         self.scroll_velocity = 0.0;
         self.scroll_remainder = 0.0;
         self.last_scroll_time = 0;
-        try self.ensureSpawned();
     }
 
     pub fn clearSelection(self: *SessionState) void {
@@ -481,6 +490,10 @@ pub const SessionState = struct {
         self.cwd_basename = basenameForDisplay(new_path);
         self.cwd_dirty = true;
         self.dirty = true;
+    }
+
+    pub fn recordCwd(self: *SessionState, path: []const u8) !void {
+        try self.replaceCwdPath(path);
     }
 
     fn seedCwd(self: *SessionState, working_dir: ?[:0]const u8) !void {

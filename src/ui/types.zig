@@ -23,6 +23,8 @@ pub const UiHost = struct {
 
     view_mode: app_state.ViewMode,
     focused_session: usize,
+    focused_cwd: ?[]const u8,
+    focused_has_foreground_process: bool,
 
     sessions: []const SessionUiInfo,
     theme: *const colors.Theme,
@@ -33,7 +35,20 @@ pub const UiAction = union(enum) {
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
+    SwitchWorktree: SwitchWorktreeAction,
+    CreateWorktree: CreateWorktreeAction,
     DespawnSession: usize,
+};
+
+pub const SwitchWorktreeAction = struct {
+    session: usize,
+    path: []const u8,
+};
+
+pub const CreateWorktreeAction = struct {
+    session: usize,
+    base_path: []const u8,
+    name: []const u8,
 };
 
 pub const UiAssets = struct {

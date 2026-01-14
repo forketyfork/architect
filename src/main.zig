@@ -314,6 +314,8 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
+    const worktree_component = try ui_mod.worktree_overlay.WorktreeOverlayComponent.create(allocator);
+    try ui.register(worktree_component);
     const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
     try ui.register(help_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
@@ -593,8 +595,8 @@ pub fn main() !void {
                         var notification_buf: [64]u8 = undefined;
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch "Font size changed";
                         ui.showToast(notification_msg, now);
-                    } else if ((key == c.SDLK_T or key == c.SDLK_N) and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_T) "⌘T" else "⌘N", now);
+                    } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
                         if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
@@ -1022,6 +1024,70 @@ pub fn main() !void {
                     std.debug.print("Failed to get config path: {}\n", .{err});
                 }
             },
+            .SwitchWorktree => |switch_action| {
+                defer allocator.free(switch_action.path);
+                if (switch_action.session >= sessions.len) continue;
+
+                var session = &sessions[switch_action.session];
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                changeSessionDirectory(session, allocator, switch_action.path) catch |err| {
+                    std.debug.print("Failed to change directory for session {d}: {}\n", .{ switch_action.session, err });
+                    ui.showToast("Could not switch worktree", now);
+                    continue;
+                };
+
+                session.status = .running;
+                session.attention = false;
+                ui.showToast("Switched worktree", now);
+            },
+            .CreateWorktree => |create_action| {
+                defer allocator.free(create_action.base_path);
+                defer allocator.free(create_action.name);
+                if (create_action.session >= sessions.len) continue;
+                var session = &sessions[create_action.session];
+
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                const command = buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
+                    std.debug.print("Failed to build worktree command: {}\n", .{err});
+                    ui.showToast("Could not create worktree", now);
+                    continue;
+                };
+                defer allocator.free(command);
+
+                session.sendInput(command) catch |err| {
+                    std.debug.print("Failed to send worktree command: {}\n", .{err});
+                    ui.showToast("Could not create worktree", now);
+                    continue;
+                };
+
+                // Update cwd to the new worktree path for UI purposes.
+                const new_path = std.fs.path.join(allocator, &.{ create_action.base_path, ".architect", create_action.name }) catch null;
+                if (new_path) |abs| {
+                    session.recordCwd(abs) catch {};
+                    allocator.free(abs);
+                }
+
+                session.status = .running;
+                session.attention = false;
+                ui.showToast("Creating worktree…", now);
+            },
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
@@ -1334,6 +1400,10 @@ fn makeUiHost(
         };
     }
 
+    const focused_session = &sessions[anim_state.focused_session];
+    const focused_cwd = focused_session.cwd_path;
+    const focused_has_foreground_process = focused_session.hasForegroundProcess();
+
     return .{
         .now_ms = now,
         .window_w = render_width,
@@ -1345,6 +1415,8 @@ fn makeUiHost(
         .cell_h = cell_height_pixels,
         .view_mode = anim_state.mode,
         .focused_session = anim_state.focused_session,
+        .focused_cwd = focused_cwd,
+        .focused_has_foreground_process = focused_has_foreground_process,
         .sessions = buffer[0..sessions.len],
         .theme = theme,
     };
@@ -1928,19 +2000,56 @@ fn resetScrollIfNeeded(session: *SessionState) void {
     }
 }
 
-fn shellQuotePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-
+fn appendQuotedPath(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8) !void {
     try buf.append(allocator, '\'');
     for (path) |ch| switch (ch) {
         '\'' => try buf.appendSlice(allocator, "'\"'\"'"),
         else => try buf.append(allocator, ch),
     };
     try buf.append(allocator, '\'');
+}
+
+fn shellQuotePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    try appendQuotedPath(&buf, allocator, path);
     try buf.append(allocator, ' ');
 
     return buf.toOwnedSlice(allocator);
+}
+
+fn changeSessionDirectory(session: *SessionState, allocator: std.mem.Allocator, path: []const u8) !void {
+    var command: std.ArrayList(u8) = .empty;
+    defer command.deinit(allocator);
+
+    try command.appendSlice(allocator, "cd -- ");
+    try appendQuotedPath(&command, allocator, path);
+    try command.append(allocator, '\n');
+
+    try session.sendInput(command.items);
+    try session.recordCwd(path);
+}
+
+fn buildCreateWorktreeCommand(allocator: std.mem.Allocator, base_path: []const u8, name: []const u8) ![]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    errdefer cmd.deinit(allocator);
+
+    try cmd.appendSlice(allocator, "cd -- ");
+    try appendQuotedPath(&cmd, allocator, base_path);
+    try cmd.appendSlice(allocator, " && mkdir -p .architect && git worktree add ");
+
+    const target_rel = try std.fmt.allocPrint(allocator, ".architect/{s}", .{name});
+    defer allocator.free(target_rel);
+
+    try appendQuotedPath(&cmd, allocator, target_rel);
+    try cmd.appendSlice(allocator, " -b ");
+    try appendQuotedPath(&cmd, allocator, name);
+    try cmd.appendSlice(allocator, " && cd -- ");
+    try appendQuotedPath(&cmd, allocator, target_rel);
+    try cmd.appendSlice(allocator, "\n");
+
+    return cmd.toOwnedSlice(allocator);
 }
 
 fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const u8) !void {

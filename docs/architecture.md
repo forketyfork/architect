@@ -115,12 +115,13 @@ src/
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │
     ├── components/
-    │   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
-    │   ├── toast.zig            # Toast notification display
-    │   ├── escape_hold.zig      # ESC hold-to-collapse indicator
-    │   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
-    │   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
-    │   ├── restart_buttons.zig  # Dead session restart buttons
+│   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
+│   ├── worktree_overlay.zig # Git worktree picker (T pill)
+│   ├── toast.zig            # Toast notification display
+│   ├── escape_hold.zig      # ESC hold-to-collapse indicator
+│   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
+│   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
+│   ├── restart_buttons.zig  # Dead session restart buttons
     │   ├── quit_confirm.zig     # Quit confirmation dialog
     │   └── marquee_label.zig    # Reusable scrolling text label
     │
@@ -173,6 +174,9 @@ union(enum) {
     RestartSession: usize,        // Restart dead session at index
     RequestCollapseFocused: void, // Collapse current fullscreen to grid
     ConfirmQuit: void,            // Confirm quit despite running processes
+    OpenConfig: void,             // Open config file (Cmd+,)
+    SwitchWorktree: struct { session: usize, path: []const u8 }, // cd the focused shell into another worktree (no respawn)
+    CreateWorktree: struct { session: usize, base_path: []const u8, name: []const u8 }, // mkdir -p .architect && git worktree add .architect/<name> -b <name> && cd there
 }
 ```
 
@@ -186,6 +190,8 @@ struct {
     cell_w, cell_h: c_int,
     view_mode: ViewMode,
     focused_session: usize,
+    focused_cwd: ?[]const u8,
+    focused_has_foreground_process: bool,
     sessions: []SessionUiInfo,  // dead/spawned flags per session
 }
 ```
@@ -211,7 +217,8 @@ struct {
 6. `ui.hitTest()` used for cursor changes in full view
 
 Components that consume events:
-- `HelpOverlayComponent`: ? pill click, overlay dismiss
+- `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay
+- `WorktreeOverlayComponent`: ⌘T pill, Cmd+T, Cmd+1–9 to cd the focused shell into a worktree; Cmd+0 opens a creation modal that builds `.architect/<name>` via `git worktree add -b <name>` and cds into it; pill is hidden when a foreground process is running; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), highlights rows on hover with a gradient, supports click selection, limits the list to 9 entries, and displays paths relative to the primary worktree
 - `EscapeHoldComponent`: ESC key down/up for hold-to-collapse
 - `RestartButtonsComponent`: Restart button clicks
 - `QuitConfirmComponent`: Confirmation dialog buttons
