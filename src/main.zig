@@ -1102,6 +1102,37 @@ pub fn main() !void {
                 session.attention = false;
                 ui.showToast("Creating worktree…", now);
             },
+            .RemoveWorktree => |remove_action| {
+                defer allocator.free(remove_action.path);
+                if (remove_action.session >= sessions.len) continue;
+                var session = &sessions[remove_action.session];
+
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                const command = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
+                    std.debug.print("Failed to build remove worktree command: {}\n", .{err});
+                    ui.showToast("Could not remove worktree", now);
+                    continue;
+                };
+                defer allocator.free(command);
+
+                session.sendInput(command) catch |err| {
+                    std.debug.print("Failed to send remove worktree command: {}\n", .{err});
+                    ui.showToast("Could not remove worktree", now);
+                    continue;
+                };
+
+                session.status = .running;
+                session.attention = false;
+                ui.showToast("Removing worktree…", now);
+            },
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
@@ -2084,6 +2115,17 @@ fn buildCreateWorktreeCommand(allocator: std.mem.Allocator, base_path: []const u
     try appendQuotedPath(&cmd, allocator, name);
     try cmd.appendSlice(allocator, " && cd -- ");
     try appendQuotedPath(&cmd, allocator, target_rel);
+    try cmd.appendSlice(allocator, "\n");
+
+    return cmd.toOwnedSlice(allocator);
+}
+
+fn buildRemoveWorktreeCommand(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    errdefer cmd.deinit(allocator);
+
+    try cmd.appendSlice(allocator, "git worktree remove ");
+    try appendQuotedPath(&cmd, allocator, path);
     try cmd.appendSlice(allocator, "\n");
 
     return cmd.toOwnedSlice(allocator);

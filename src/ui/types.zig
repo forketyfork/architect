@@ -37,6 +37,7 @@ pub const UiAction = union(enum) {
     OpenConfig: void,
     SwitchWorktree: SwitchWorktreeAction,
     CreateWorktree: CreateWorktreeAction,
+    RemoveWorktree: RemoveWorktreeAction,
     DespawnSession: usize,
 };
 
@@ -49,6 +50,11 @@ pub const CreateWorktreeAction = struct {
     session: usize,
     base_path: []const u8,
     name: []const u8,
+};
+
+pub const RemoveWorktreeAction = struct {
+    session: usize,
+    path: []const u8,
 };
 
 pub const UiAssets = struct {
