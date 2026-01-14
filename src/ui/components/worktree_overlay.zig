@@ -488,10 +488,11 @@ pub const WorktreeOverlayComponent = struct {
                     _ = c.SDL_RenderLine(renderer, x2, y1, x1, y2);
 
                     if (is_hovered) {
-                        _ = c.SDL_RenderLine(renderer, x1 + 1, y1, x2 + 1, y2);
-                        _ = c.SDL_RenderLine(renderer, x2 + 1, y1, x1 + 1, y2);
-                        _ = c.SDL_RenderLine(renderer, x1, y1 + 1, x2, y2 + 1);
-                        _ = c.SDL_RenderLine(renderer, x2, y1 + 1, x1, y2 + 1);
+                        const BOLD_LINE_OFFSET: f32 = 1.0;
+                        _ = c.SDL_RenderLine(renderer, x1 + BOLD_LINE_OFFSET, y1, x2 + BOLD_LINE_OFFSET, y2);
+                        _ = c.SDL_RenderLine(renderer, x2 + BOLD_LINE_OFFSET, y1, x1 + BOLD_LINE_OFFSET, y2);
+                        _ = c.SDL_RenderLine(renderer, x1, y1 + BOLD_LINE_OFFSET, x2, y2 + BOLD_LINE_OFFSET);
+                        _ = c.SDL_RenderLine(renderer, x2, y1 + BOLD_LINE_OFFSET, x1, y2 + BOLD_LINE_OFFSET);
                     }
                 }
             }
@@ -1038,6 +1039,15 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
+    fn clearPendingRemoval(self: *WorktreeOverlayComponent) void {
+        self.confirming_removal = false;
+        self.pending_removal_index = null;
+        if (self.pending_removal_path) |path| {
+            self.allocator.free(path);
+            self.pending_removal_path = null;
+        }
+    }
+
     fn setCreateError(self: *WorktreeOverlayComponent, msg: []const u8) void {
         if (self.create_error) |err| self.allocator.free(err);
         self.create_error = self.allocator.dupe(u8, msg) catch null;
@@ -1175,21 +1185,11 @@ pub const WorktreeOverlayComponent = struct {
             if (self.pending_removal_path) |path| {
                 self.emitRemove(actions, host.focused_session, path);
             }
-            self.confirming_removal = false;
-            self.pending_removal_index = null;
-            if (self.pending_removal_path) |path| {
-                self.allocator.free(path);
-                self.pending_removal_path = null;
-            }
+            self.clearPendingRemoval();
             return true;
         }
         if (inCancel) {
-            self.confirming_removal = false;
-            self.pending_removal_index = null;
-            if (self.pending_removal_path) |path| {
-                self.allocator.free(path);
-                self.pending_removal_path = null;
-            }
+            self.clearPendingRemoval();
             return true;
         }
 
@@ -1199,12 +1199,7 @@ pub const WorktreeOverlayComponent = struct {
             return true;
         }
 
-        self.confirming_removal = false;
-        self.pending_removal_index = null;
-        if (self.pending_removal_path) |path| {
-            self.allocator.free(path);
-            self.pending_removal_path = null;
-        }
+        self.clearPendingRemoval();
         return true;
     }
 
