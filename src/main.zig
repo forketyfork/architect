@@ -974,7 +974,7 @@ pub fn main() !void {
         );
         ui.update(&ui_update_host);
 
-        while (ui.popAction()) |action| switch (action) {
+        ui_action_loop: while (ui.popAction()) |action| switch (action) {
             .RestartSession => |idx| {
                 if (idx < sessions.len) {
                     try sessions[idx].restart();
@@ -1101,6 +1101,55 @@ pub fn main() !void {
                 session.status = .running;
                 session.attention = false;
                 ui.showToast("Creating worktree…", now);
+            },
+            .RemoveWorktree => |remove_action| {
+                defer allocator.free(remove_action.path);
+                if (remove_action.session >= sessions.len) continue;
+                var session = &sessions[remove_action.session];
+
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                for (sessions, 0..) |*other_session, idx| {
+                    if (idx == remove_action.session) continue;
+                    if (!other_session.spawned or other_session.dead) continue;
+
+                    const other_cwd = other_session.cwd_path orelse continue;
+                    if (std.mem.eql(u8, other_cwd, remove_action.path)) {
+                        ui.showToast("Worktree in use by another session", now);
+                        continue :ui_action_loop;
+                    }
+                    if (std.mem.startsWith(u8, other_cwd, remove_action.path)) {
+                        const suffix = other_cwd[remove_action.path.len..];
+                        if (suffix.len > 0 and suffix[0] == '/') {
+                            ui.showToast("Worktree in use by another session", now);
+                            continue :ui_action_loop;
+                        }
+                    }
+                }
+
+                const command = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
+                    std.debug.print("Failed to build remove worktree command: {}\n", .{err});
+                    ui.showToast("Could not remove worktree", now);
+                    continue;
+                };
+                defer allocator.free(command);
+
+                session.sendInput(command) catch |err| {
+                    std.debug.print("Failed to send remove worktree command: {}\n", .{err});
+                    ui.showToast("Could not remove worktree", now);
+                    continue;
+                };
+
+                session.status = .running;
+                session.attention = false;
+                ui.showToast("Removing worktree…", now);
             },
         };
 
@@ -2084,6 +2133,17 @@ fn buildCreateWorktreeCommand(allocator: std.mem.Allocator, base_path: []const u
     try appendQuotedPath(&cmd, allocator, name);
     try cmd.appendSlice(allocator, " && cd -- ");
     try appendQuotedPath(&cmd, allocator, target_rel);
+    try cmd.appendSlice(allocator, "\n");
+
+    return cmd.toOwnedSlice(allocator);
+}
+
+fn buildRemoveWorktreeCommand(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    errdefer cmd.deinit(allocator);
+
+    try cmd.appendSlice(allocator, "git worktree remove ");
+    try appendQuotedPath(&cmd, allocator, path);
     try cmd.appendSlice(allocator, "\n");
 
     return cmd.toOwnedSlice(allocator);

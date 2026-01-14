@@ -21,7 +21,11 @@ pub const WorktreeOverlayComponent = struct {
     available: bool = false,
     focused_busy: bool = false,
     hovered_entry: ?usize = null,
+    hovered_remove_btn: ?usize = null,
     creating: bool = false,
+    confirming_removal: bool = false,
+    pending_removal_index: ?usize = null,
+    pending_removal_path: ?[]const u8 = null,
     escape_pressed: bool = false,
     create_input: std.ArrayList(u8) = .empty,
     create_error: ?[]const u8 = null,
@@ -31,7 +35,7 @@ pub const WorktreeOverlayComponent = struct {
     cursor_blink_start_ms: i64 = 0,
 
     const BUTTON_SIZE_SMALL: c_int = 40;
-    const BUTTON_SIZE_LARGE: c_int = 400;
+    const BUTTON_SIZE_LARGE: c_int = 480;
     const BUTTON_MARGIN: c_int = 20;
     const BUTTON_ANIMATION_DURATION_MS: i64 = 200;
     const MAX_WORKTREES: usize = 9;
@@ -101,6 +105,7 @@ pub const WorktreeOverlayComponent = struct {
         if (self.last_cwd) |cwd| self.allocator.free(cwd);
         if (self.display_base) |base| self.allocator.free(base);
         if (self.last_error) |err| self.allocator.free(err);
+        if (self.pending_removal_path) |path| self.allocator.free(path);
         self.worktrees.deinit(self.allocator);
         self.create_input.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -125,11 +130,20 @@ pub const WorktreeOverlayComponent = struct {
                     const handled = self.handleCreateModalClick(host, event, actions);
                     if (handled) return true;
                 }
+                if (self.confirming_removal) {
+                    const handled = self.handleRemoveModalClick(host, event, actions);
+                    if (handled) return true;
+                }
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
                 const inside = geom.containsPoint(rect, mouse_x, mouse_y);
                 if (inside and self.overlay.state == .Open) {
+                    if (self.removeButtonIndexAtPoint(host, mouse_x, mouse_y)) |idx| {
+                        const wt_idx = idx - 1;
+                        self.startRemoveModal(wt_idx);
+                        return true;
+                    }
                     if (self.entryIndexAtPoint(host, mouse_y)) |idx| {
                         if (idx == 0) {
                             self.startCreateModal(host);
@@ -162,12 +176,16 @@ pub const WorktreeOverlayComponent = struct {
             c.SDL_EVENT_MOUSE_MOTION => {
                 if (self.overlay.state != .Open) return false;
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-                const inside = geom.containsPoint(rect, @intFromFloat(event.motion.x), @intFromFloat(event.motion.y));
+                const mouse_x: c_int = @intFromFloat(event.motion.x);
+                const mouse_y: c_int = @intFromFloat(event.motion.y);
+                const inside = geom.containsPoint(rect, mouse_x, mouse_y);
                 if (!inside) {
                     self.hovered_entry = null;
+                    self.hovered_remove_btn = null;
                     return false;
                 }
-                self.hovered_entry = self.entryIndexAtPoint(host, @intFromFloat(event.motion.y));
+                self.hovered_remove_btn = self.removeButtonIndexAtPoint(host, mouse_x, mouse_y);
+                self.hovered_entry = self.entryIndexAtPoint(host, mouse_y);
             },
             c.SDL_EVENT_KEY_DOWN => {
                 if (self.creating) {
@@ -289,11 +307,18 @@ pub const WorktreeOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.available and !self.creating) return;
+        if (!self.available and !self.creating and !self.confirming_removal) return;
 
         if (self.creating) {
             _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
             self.renderCreateModal(renderer, ui_host, assets, ui_host.theme);
+            self.first_frame.markDrawn();
+            return;
+        }
+
+        if (self.confirming_removal) {
+            _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
+            self.renderRemoveModal(renderer, ui_host, assets, ui_host.theme);
             self.first_frame.markDrawn();
             return;
         }
@@ -436,12 +461,41 @@ pub const WorktreeOverlayComponent = struct {
                 .h = @floatFromInt(entry_tex.hotkey.h),
             });
 
+            const path_x_offset = if (idx > 0) dpi.scale(32, ui_scale) else 0;
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - entry_tex.path.w),
+                .x = @floatFromInt(rect.x + rect.w - padding - entry_tex.path.w - path_x_offset),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.path.w),
                 .h = @floatFromInt(entry_tex.path.h),
             });
+
+            if (idx > 0) {
+                if (self.removeButtonRect(host, idx)) |btn_rect| {
+                    const is_hovered = if (self.hovered_remove_btn) |h| h == idx else false;
+                    const btn_alpha: u8 = if (is_hovered) 255 else 160;
+                    _ = c.SDL_SetRenderDrawColor(renderer, theme.foreground.r, theme.foreground.g, theme.foreground.b, btn_alpha);
+
+                    const cross_size: c_int = @divFloor(btn_rect.w * 6, 10);
+                    const cross_x = btn_rect.x + @divFloor(btn_rect.w - cross_size, 2);
+                    const cross_y = btn_rect.y + @divFloor(btn_rect.h - cross_size, 2);
+
+                    const x1: f32 = @floatFromInt(cross_x);
+                    const y1: f32 = @floatFromInt(cross_y);
+                    const x2: f32 = @floatFromInt(cross_x + cross_size);
+                    const y2: f32 = @floatFromInt(cross_y + cross_size);
+
+                    _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
+                    _ = c.SDL_RenderLine(renderer, x2, y1, x1, y2);
+
+                    if (is_hovered) {
+                        const BOLD_LINE_OFFSET: f32 = 1.0;
+                        _ = c.SDL_RenderLine(renderer, x1 + BOLD_LINE_OFFSET, y1, x2 + BOLD_LINE_OFFSET, y2);
+                        _ = c.SDL_RenderLine(renderer, x2 + BOLD_LINE_OFFSET, y1, x1 + BOLD_LINE_OFFSET, y2);
+                        _ = c.SDL_RenderLine(renderer, x1, y1 + BOLD_LINE_OFFSET, x2, y2 + BOLD_LINE_OFFSET);
+                        _ = c.SDL_RenderLine(renderer, x2, y1 + BOLD_LINE_OFFSET, x1, y2 + BOLD_LINE_OFFSET);
+                    }
+                }
+            }
 
             if (current_idx) |current| {
                 if (current == idx and idx > 0) {
@@ -571,6 +625,13 @@ pub const WorktreeOverlayComponent = struct {
         actions.append(.{ .CreateWorktree = .{ .session = session_idx, .base_path = base_copy, .name = name_copy } }) catch {
             actions.allocator.free(base_copy);
             actions.allocator.free(name_copy);
+        };
+    }
+
+    fn emitRemove(_: *WorktreeOverlayComponent, actions: *types.UiActionQueue, session_idx: usize, abs_path: []const u8) void {
+        const path_copy = actions.allocator.dupe(u8, abs_path) catch return;
+        actions.append(.{ .RemoveWorktree = .{ .session = session_idx, .path = path_copy } }) catch {
+            actions.allocator.free(path_copy);
         };
     }
 
@@ -712,7 +773,8 @@ pub const WorktreeOverlayComponent = struct {
             };
 
             const path_slice = if (idx == 0) NEW_WORKTREE_LABEL else self.worktrees.items[idx - 1].display;
-            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing;
+            const remove_button_space = if (idx > 0) dpi.scale(32, ui_scale) else 0;
+            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - remove_button_space;
 
             var path_buf: [256]u8 = undefined;
             const truncated_path = truncateTextLeft(path_slice, entry_fonts.main, max_path_width, &path_buf) catch path_slice;
@@ -771,6 +833,13 @@ pub const WorktreeOverlayComponent = struct {
         }
         self.worktrees.clearRetainingCapacity();
         self.hovered_entry = null;
+        self.hovered_remove_btn = null;
+        if (self.pending_removal_path) |path| {
+            self.allocator.free(path);
+            self.pending_removal_path = null;
+        }
+        self.pending_removal_index = null;
+        self.confirming_removal = false;
     }
 
     fn clearDisplayBase(self: *WorktreeOverlayComponent) void {
@@ -950,11 +1019,32 @@ pub const WorktreeOverlayComponent = struct {
         self.cursor_blink_start_ms = host.now_ms;
     }
 
+    fn startRemoveModal(self: *WorktreeOverlayComponent, wt_idx: usize) void {
+        if (wt_idx >= self.worktrees.items.len) return;
+        const worktree = self.worktrees.items[wt_idx];
+        self.confirming_removal = true;
+        self.pending_removal_index = wt_idx;
+        if (self.pending_removal_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.pending_removal_path = self.allocator.dupe(u8, worktree.abs_path) catch null;
+        self.escape_pressed = false;
+    }
+
     fn clearCreateInput(self: *WorktreeOverlayComponent) void {
         self.create_input.clearAndFree(self.allocator);
         if (self.create_error) |err| {
             self.allocator.free(err);
             self.create_error = null;
+        }
+    }
+
+    fn clearPendingRemoval(self: *WorktreeOverlayComponent) void {
+        self.confirming_removal = false;
+        self.pending_removal_index = null;
+        if (self.pending_removal_path) |path| {
+            self.allocator.free(path);
+            self.pending_removal_path = null;
         }
     }
 
@@ -1080,6 +1170,39 @@ pub const WorktreeOverlayComponent = struct {
         return true;
     }
 
+    fn handleRemoveModalClick(self: *WorktreeOverlayComponent, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
+        if (!self.confirming_removal or self.cache == null) return false;
+        const layout = self.createModalLayout(host);
+        const x: f32 = event.button.x;
+        const y: f32 = event.button.y;
+
+        const inConfirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
+            y >= layout.confirm.y and y <= layout.confirm.y + layout.confirm.h;
+        const inCancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
+            y >= layout.cancel.y and y <= layout.cancel.y + layout.cancel.h;
+
+        if (inConfirm) {
+            if (self.pending_removal_path) |path| {
+                self.emitRemove(actions, host.focused_session, path);
+            }
+            self.clearPendingRemoval();
+            return true;
+        }
+        if (inCancel) {
+            self.clearPendingRemoval();
+            return true;
+        }
+
+        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+            y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
+        if (inModal) {
+            return true;
+        }
+
+        self.clearPendingRemoval();
+        return true;
+    }
+
     fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = self.cache orelse return;
         const layout = self.createModalLayout(host);
@@ -1182,6 +1305,68 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
+    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+        const cache = self.cache orelse return;
+        const layout = self.createModalLayout(host);
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        const backdrop = c.SDL_FRect{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(host.window_w),
+            .h = @floatFromInt(host.window_h),
+        };
+        _ = c.SDL_RenderFillRect(renderer, &backdrop);
+
+        const sel = theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
+        _ = c.SDL_RenderFillRect(renderer, &layout.modal);
+        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
+        primitives.drawRoundedBorder(renderer, geom.Rect{
+            .x = @intFromFloat(layout.modal.x),
+            .y = @intFromFloat(layout.modal.y),
+            .w = @intFromFloat(layout.modal.w),
+            .h = @intFromFloat(layout.modal.h),
+        }, MODAL_RADIUS);
+
+        const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
+        const title_tex = makeTextTexture(renderer, cache.title_fonts.main, "Remove worktree", title_color) catch null;
+        if (title_tex) |tex| {
+            defer c.SDL_DestroyTexture(tex.tex);
+            const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+            const title_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(10, host.ui_scale)));
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                .x = title_x,
+                .y = title_y,
+                .w = @floatFromInt(tex.w),
+                .h = @floatFromInt(tex.h),
+            });
+        }
+
+        if (self.pending_removal_index) |wt_idx| {
+            if (wt_idx < self.worktrees.items.len) {
+                const worktree = self.worktrees.items[wt_idx];
+                const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
+                const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
+                const message_tex = makeTextTexture(renderer, cache.entry_fonts.main, worktree.display, message_color) catch null;
+                if (message_tex) |tex| {
+                    defer c.SDL_DestroyTexture(tex.tex);
+                    const message_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+                    _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                        .x = message_x,
+                        .y = message_y,
+                        .w = @floatFromInt(tex.w),
+                        .h = @floatFromInt(tex.h),
+                    });
+                }
+            }
+        }
+
+        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Remove", .danger, theme, host.ui_scale);
+        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+    }
+
     fn entryCount(self: *WorktreeOverlayComponent) usize {
         return self.worktrees.items.len + 1; // +1 for "New worktree…"
     }
@@ -1198,6 +1383,39 @@ pub const WorktreeOverlayComponent = struct {
         const idx = @as(usize, @intCast(@divFloor(rel, line_height)));
         if (idx >= self.entryCount()) return null;
         return idx;
+    }
+
+    fn removeButtonRect(self: *WorktreeOverlayComponent, host: *const types.UiHost, entry_idx: usize) ?geom.Rect {
+        if (entry_idx == 0) return null;
+        if (self.cache == null) return null;
+        const cache = self.cache.?;
+        const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+        const padding: c_int = dpi.scale(20, host.ui_scale);
+        const line_height: c_int = dpi.scale(28, host.ui_scale);
+        const start_y = rect.y + padding + cache.title.h + line_height;
+        const entry_y = start_y + @as(c_int, @intCast(entry_idx)) * line_height;
+
+        const button_size: c_int = dpi.scale(16, host.ui_scale);
+        const button_x = rect.x + rect.w - padding - button_size - dpi.scale(8, host.ui_scale);
+        const button_y = entry_y + @divFloor(line_height - button_size, 2);
+
+        return geom.Rect{
+            .x = button_x,
+            .y = button_y,
+            .w = button_size,
+            .h = button_size,
+        };
+    }
+
+    fn removeButtonIndexAtPoint(self: *WorktreeOverlayComponent, host: *const types.UiHost, x: c_int, y: c_int) ?usize {
+        if (self.overlay.state != .Open) return null;
+        const entry_idx = self.entryIndexAtPoint(host, y) orelse return null;
+        if (entry_idx == 0) return null;
+        const button_rect = self.removeButtonRect(host, entry_idx) orelse return null;
+        if (geom.containsPoint(button_rect, x, y)) {
+            return entry_idx;
+        }
+        return null;
     }
 
     const GitContext = struct {
