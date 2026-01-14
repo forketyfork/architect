@@ -37,6 +37,7 @@ pub const UiAction = union(enum) {
     OpenConfig: void,
     SwitchWorktree: SwitchWorktreeAction,
     CreateWorktree: CreateWorktreeAction,
+    DespawnSession: usize,
 };
 
 pub const SwitchWorktreeAction = struct {
