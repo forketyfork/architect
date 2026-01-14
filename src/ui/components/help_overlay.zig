@@ -427,7 +427,7 @@ pub const HelpOverlayComponent = struct {
         return self.overlay.isAnimating() or self.first_frame.wantsFrame();
     }
 
-    const vtable = UiComponent.VTable{
+    pub const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .hitTest = hitTest,
         .update = update,

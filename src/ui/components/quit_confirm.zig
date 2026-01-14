@@ -133,7 +133,11 @@ pub const QuitConfirmComponent = struct {
                     self.visible = false;
                     return true;
                 }
-                if (geom.containsPoint(modal, mouse_x, mouse_y)) return true;
+                if (geom.containsPoint(modal, mouse_x, mouse_y)) {
+                    return true;
+                }
+                self.visible = false;
+                return true;
             },
             else => {},
         }

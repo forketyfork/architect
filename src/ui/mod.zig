@@ -6,6 +6,7 @@ pub const UiAssets = @import("types.zig").UiAssets;
 pub const SessionUiInfo = @import("types.zig").SessionUiInfo;
 pub const help_overlay = @import("components/help_overlay.zig");
 pub const worktree_overlay = @import("components/worktree_overlay.zig");
+pub const pill_group = @import("components/pill_group.zig");
 pub const toast = @import("components/toast.zig");
 pub const escape_hold = @import("components/escape_hold.zig");
 pub const restart_buttons = @import("components/restart_buttons.zig");
