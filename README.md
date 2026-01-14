@@ -92,7 +92,7 @@ See [Setup](#setup) section below for building from source.
   - Type in the focused terminal
   - Visual feedback indicator appears briefly when hotkeys are pressed
 - **Keyboard Navigation**: Move the grid focus with ⌘↑/↓/←/→ and open the on-screen shortcut overlay via the ? pill in the top-right corner
-- **Scrollback in Place**: Hover any terminal and use the mouse wheel to scroll history; typing snaps back to live output and a yellow strip in grid view shows when you're scrolled (10 MB per terminal, matching Ghostty's default)
+- **Scrollback in Place**: Hover any terminal and use the mouse wheel or a trackpad to scroll history; small high-precision gestures accumulate via SDL's integer wheel deltas, typing snaps back to live output, and a yellow strip in grid view shows when you're scrolled (10 MB per terminal, matching Ghostty's default)
 - **High-Quality Rendering**: SDL_ttf font rendering with SFNSMono (default system monospace font on macOS), glyph caching, vsync-aligned presentation (renders at display refresh rate), and cached grid tiles to reduce redraw work
 - **Persistent State**: Automatically saves and restores window position/size and font size; user configuration is read-only and edited via Cmd+,
 - **Font Size Adjustment**: Use Cmd+Plus/Minus (8–96px) to adjust font size (saved automatically)

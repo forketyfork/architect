@@ -888,8 +888,12 @@ pub fn main() !void {
                     );
 
                     if (hovered_session) |session_idx| {
-                        const raw_delta = scaled_event.wheel.y;
-                        const scroll_delta = -@as(isize, @intFromFloat(raw_delta * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
+                        const ticks_per_notch: isize = SCROLL_LINES_PER_TICK;
+                        const wheel_ticks: isize = if (scaled_event.wheel.integer_y != 0)
+                            @as(isize, @intCast(scaled_event.wheel.integer_y)) * ticks_per_notch
+                        else
+                            @as(isize, @intFromFloat(scaled_event.wheel.y * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
+                        const scroll_delta = -wheel_ticks;
                         if (scroll_delta != 0) {
                             scrollSession(&sessions[session_idx], scroll_delta, now);
                             // If the wheel event originates from a touch/trackpad
