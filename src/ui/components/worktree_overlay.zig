@@ -21,6 +21,7 @@ pub const WorktreeOverlayComponent = struct {
     focused_busy: bool = false,
     hovered_entry: ?usize = null,
     creating: bool = false,
+    escape_pressed: bool = false,
     create_input: std.ArrayList(u8) = .empty,
     create_error: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
@@ -103,6 +104,14 @@ pub const WorktreeOverlayComponent = struct {
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
+
+        if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
+            const key = event.key.key;
+            if (key == c.SDLK_ESCAPE) {
+                self.escape_pressed = false;
+                return true;
+            }
+        }
 
         if (!self.available) return false;
 
@@ -221,6 +230,7 @@ pub const WorktreeOverlayComponent = struct {
                 self.destroyCache();
                 self.hovered_entry = null;
                 self.creating = false;
+                self.escape_pressed = false;
                 self.clearCreateInput();
                 if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
                     self.overlay.startCollapsing(host.now_ms);
@@ -448,6 +458,7 @@ pub const WorktreeOverlayComponent = struct {
         self.hovered_entry = null;
         self.clearCreateInput();
         self.creating = false;
+        self.escape_pressed = false;
 
         self.setDisplayBase(cwd);
 
@@ -462,7 +473,7 @@ pub const WorktreeOverlayComponent = struct {
         const rel = std.fs.path.relative(self.allocator, base, abs) catch {
             return self.allocator.dupe(u8, abs);
         };
-        if (rel.len == 0) return self.allocator.dupe(u8, ".");
+        if (rel.len == 0) return self.allocator.dupe(u8, "[repository root]");
         return rel;
     }
 
@@ -706,6 +717,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn startCreateModal(self: *WorktreeOverlayComponent, host: *const types.UiHost) void {
         self.creating = true;
+        self.escape_pressed = false;
         self.clearCreateInput();
         self.overlay.startCollapsing(host.now_ms);
     }
@@ -746,10 +758,12 @@ pub const WorktreeOverlayComponent = struct {
                 self.emitCreate(actions, host.focused_session, base, self.create_input.items);
                 self.overlay.startCollapsing(host.now_ms);
                 self.creating = false;
+                self.escape_pressed = false;
                 self.clearCreateInput();
                 return true;
             },
             c.SDLK_ESCAPE => {
+                self.escape_pressed = true;
                 self.creating = false;
                 self.clearCreateInput();
                 return true;
@@ -785,6 +799,7 @@ pub const WorktreeOverlayComponent = struct {
         }
         if (inCancel) {
             self.creating = false;
+            self.escape_pressed = false;
             self.clearCreateInput();
             return true;
         }
@@ -795,16 +810,15 @@ pub const WorktreeOverlayComponent = struct {
         const cache = self.cache orelse return;
         const layout = self.createModalLayout(host);
 
-        // Dim background
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 120);
-        const outer = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(outer.x),
-            .y = @floatFromInt(outer.y),
-            .w = @floatFromInt(outer.w),
-            .h = @floatFromInt(outer.h),
-        });
+        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        const backdrop = c.SDL_FRect{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(host.window_w),
+            .h = @floatFromInt(host.window_h),
+        };
+        _ = c.SDL_RenderFillRect(renderer, &backdrop);
 
         // Modal background
         const sel = theme.selection;
