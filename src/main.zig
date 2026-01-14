@@ -974,7 +974,7 @@ pub fn main() !void {
         );
         ui.update(&ui_update_host);
 
-        while (ui.popAction()) |action| switch (action) {
+        ui_action_loop: while (ui.popAction()) |action| switch (action) {
             .RestartSession => |idx| {
                 if (idx < sessions.len) {
                     try sessions[idx].restart();
@@ -1114,6 +1114,24 @@ pub fn main() !void {
                 if (!session.spawned or session.dead) {
                     ui.showToast("Start the shell first", now);
                     continue;
+                }
+
+                for (sessions, 0..) |*other_session, idx| {
+                    if (idx == remove_action.session) continue;
+                    if (!other_session.spawned or other_session.dead) continue;
+
+                    const other_cwd = other_session.cwd_path orelse continue;
+                    if (std.mem.eql(u8, other_cwd, remove_action.path)) {
+                        ui.showToast("Worktree in use by another session", now);
+                        continue :ui_action_loop;
+                    }
+                    if (std.mem.startsWith(u8, other_cwd, remove_action.path)) {
+                        const suffix = other_cwd[remove_action.path.len..];
+                        if (suffix.len > 0 and suffix[0] == '/') {
+                            ui.showToast("Worktree in use by another session", now);
+                            continue :ui_action_loop;
+                        }
+                    }
                 }
 
                 const command = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
