@@ -194,7 +194,7 @@ pub const HelpOverlayComponent = struct {
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 245);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
             .y = @floatFromInt(rect.y),
@@ -409,6 +409,11 @@ pub const HelpOverlayComponent = struct {
         };
 
         self.cache = cache;
+
+        const line_height: c_int = 28;
+        const content_height = (2 * 20) + title_tex.h + line_height + @as(c_int, @intCast(shortcuts.len)) * line_height;
+        self.overlay.setContentHeight(content_height);
+
         return cache;
     }
 

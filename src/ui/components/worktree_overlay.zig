@@ -297,7 +297,7 @@ pub const WorktreeOverlayComponent = struct {
         if (!self.creating) {
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
             const sel = ui_host.theme.selection;
-            _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
+            _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 245);
             const bg_rect = c.SDL_FRect{
                 .x = @floatFromInt(rect.x),
                 .y = @floatFromInt(rect.y),
@@ -374,33 +374,49 @@ pub const WorktreeOverlayComponent = struct {
         for (cache.entries, 0..) |entry_tex, idx| {
             if (self.hovered_entry) |hover_idx| {
                 if (hover_idx == idx) {
-                    const highlight_rect = c.SDL_FRect{
-                        .x = @floatFromInt(rect.x + padding),
-                        .y = @as(f32, @floatFromInt(y_offset)),
-                        .w = @floatFromInt(rect.w - 2 * padding),
-                        .h = @as(f32, @floatFromInt(line_height)),
+                    const highlight_y = @as(f32, @floatFromInt(y_offset - dpi.scale(4, ui_scale)));
+                    const highlight_h = @as(f32, @floatFromInt(line_height));
+                    const fade_width: f32 = @as(f32, @floatFromInt(dpi.scale(40, ui_scale)));
+                    const rect_x: f32 = @floatFromInt(rect.x);
+                    const rect_w: f32 = @floatFromInt(rect.w);
+
+                    const center_rect = c.SDL_FRect{
+                        .x = rect_x + fade_width,
+                        .y = highlight_y,
+                        .w = rect_w - 2.0 * fade_width,
+                        .h = highlight_h,
                     };
-                    const sel = theme.selection;
-                    // Base fill
-                    _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 110);
-                    _ = c.SDL_RenderFillRect(renderer, &highlight_rect);
-                    // Gradient overlay (top to bottom)
-                    const grad_top = c.SDL_FRect{
-                        .x = highlight_rect.x,
-                        .y = highlight_rect.y,
-                        .w = highlight_rect.w,
-                        .h = highlight_rect.h / 2.0,
-                    };
-                    _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 70);
-                    _ = c.SDL_RenderFillRect(renderer, &grad_top);
-                    const grad_bottom = c.SDL_FRect{
-                        .x = highlight_rect.x,
-                        .y = highlight_rect.y + highlight_rect.h / 2.0,
-                        .w = highlight_rect.w,
-                        .h = highlight_rect.h / 2.0,
-                    };
-                    _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 45);
-                    _ = c.SDL_RenderFillRect(renderer, &grad_bottom);
+
+                    const acc = theme.accent;
+                    _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 40);
+                    _ = c.SDL_RenderFillRect(renderer, &center_rect);
+
+                    const strips_count = 6;
+                    var i: usize = 0;
+                    while (i < strips_count) : (i += 1) {
+                        const progress = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(strips_count));
+                        const strip_w = fade_width / @as(f32, @floatFromInt(strips_count));
+
+                        const left_alpha = @as(u8, @intFromFloat(40.0 * progress));
+                        const left_strip = c.SDL_FRect{
+                            .x = rect_x + @as(f32, @floatFromInt(i)) * strip_w,
+                            .y = highlight_y,
+                            .w = strip_w,
+                            .h = highlight_h,
+                        };
+                        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, left_alpha);
+                        _ = c.SDL_RenderFillRect(renderer, &left_strip);
+
+                        const right_alpha = @as(u8, @intFromFloat(40.0 * (1.0 - progress)));
+                        const right_strip = c.SDL_FRect{
+                            .x = rect_x + rect_w - fade_width + @as(f32, @floatFromInt(i)) * strip_w,
+                            .y = highlight_y,
+                            .w = strip_w,
+                            .h = highlight_h,
+                        };
+                        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, right_alpha);
+                        _ = c.SDL_RenderFillRect(renderer, &right_strip);
+                    }
                 }
             }
 
@@ -527,6 +543,10 @@ pub const WorktreeOverlayComponent = struct {
         };
         errdefer self.allocator.free(entries);
 
+        const padding = dpi.scale(20, ui_scale);
+        const overlay_width = dpi.scale(BUTTON_SIZE_LARGE, ui_scale);
+        const hotkey_spacing = dpi.scale(10, ui_scale);
+
         for (0..entry_count) |idx| {
             var key_buf: [8]u8 = undefined;
             const digit: u8 = @as(u8, @intCast(idx % 10));
@@ -540,8 +560,13 @@ pub const WorktreeOverlayComponent = struct {
                 self.allocator.destroy(cache);
                 return null;
             };
+
             const path_slice = if (idx == 0) NEW_WORKTREE_LABEL else self.worktrees.items[idx - 1].display;
-            const path_tex = makeTextTexture(renderer, entry_fonts.main, path_slice, entry_color) catch {
+            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing;
+
+            var path_buf: [256]u8 = undefined;
+            const truncated_path = truncateTextLeft(path_slice, entry_fonts.main, max_path_width, &path_buf) catch path_slice;
+            const path_tex = makeTextTexture(renderer, entry_fonts.main, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
@@ -569,6 +594,11 @@ pub const WorktreeOverlayComponent = struct {
         };
 
         self.cache = cache;
+
+        const line_height: c_int = 28;
+        const content_height = (2 * 20) + title_tex.h + line_height + @as(c_int, @intCast(entry_count)) * line_height;
+        self.overlay.setContentHeight(content_height);
+
         return cache;
     }
 
@@ -628,6 +658,53 @@ pub const WorktreeOverlayComponent = struct {
         const a = a_opt.?;
         const b = b_opt.?;
         return std.mem.eql(u8, a, b);
+    }
+
+    fn truncateTextLeft(text: []const u8, font: *c.TTF_Font, max_width: c_int, buf: []u8) ![]const u8 {
+        const ellipsis = "...";
+        var text_w: c_int = 0;
+        var text_h: c_int = 0;
+        _ = c.TTF_GetStringSize(font, text.ptr, text.len, &text_w, &text_h);
+
+        if (text_w <= max_width) {
+            if (text.len >= buf.len) return error.TextTooLong;
+            @memcpy(buf[0..text.len], text);
+            return buf[0..text.len];
+        }
+
+        var ellipsis_w: c_int = 0;
+        var ellipsis_h: c_int = 0;
+        _ = c.TTF_GetStringSize(font, ellipsis.ptr, ellipsis.len, &ellipsis_w, &ellipsis_h);
+
+        var byte_offset: usize = 0;
+        while (byte_offset < text.len) {
+            const remaining = text[byte_offset..];
+            const test_len = ellipsis.len + remaining.len;
+            if (test_len >= buf.len) {
+                byte_offset += 1;
+                continue;
+            }
+
+            @memcpy(buf[0..ellipsis.len], ellipsis);
+            @memcpy(buf[ellipsis.len..test_len], remaining);
+
+            var test_w: c_int = 0;
+            var test_h: c_int = 0;
+            _ = c.TTF_GetStringSize(font, buf.ptr, test_len, &test_w, &test_h);
+
+            if (test_w <= max_width) {
+                return buf[0..test_len];
+            }
+
+            byte_offset += 1;
+        }
+
+        if (ellipsis.len < buf.len) {
+            @memcpy(buf[0..ellipsis.len], ellipsis);
+            return buf[0..ellipsis.len];
+        }
+
+        return text[0..@min(text.len, buf.len)];
     }
 
     fn makeTextTexture(
@@ -735,12 +812,21 @@ pub const WorktreeOverlayComponent = struct {
         self.create_error = self.allocator.dupe(u8, msg) catch null;
     }
 
+    fn isValidNameChar(ch: u8) bool {
+        return (ch >= 'a' and ch <= 'z') or
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '-' or ch == '_';
+    }
+
     fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8) void {
         const MAX_LEN: usize = 64;
-        const remaining = if (self.create_input.items.len >= MAX_LEN) 0 else MAX_LEN - self.create_input.items.len;
-        const to_take = @min(text.len, remaining);
-        if (to_take == 0) return;
-        _ = self.create_input.appendSlice(self.allocator, text[0..to_take]) catch {};
+        for (text) |ch| {
+            if (self.create_input.items.len >= MAX_LEN) break;
+            if (isValidNameChar(ch)) {
+                _ = self.create_input.append(self.allocator, ch) catch {};
+            }
+        }
     }
 
     fn handleCreateModalKey(self: *WorktreeOverlayComponent, event: *const c.SDL_Event, host: *const types.UiHost, actions: *types.UiActionQueue) bool {
@@ -857,7 +943,7 @@ pub const WorktreeOverlayComponent = struct {
             .h = @intFromFloat(layout.input.h),
         }, 6);
 
-        const input_text = if (self.create_input.items.len == 0) "branch-name" else self.create_input.items;
+        const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
         const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
         const input_tex = makeTextTexture(renderer, cache.entry_fonts.main, input_text, input_color) catch null;

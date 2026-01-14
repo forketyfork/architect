@@ -13,6 +13,7 @@ pub const ExpandingOverlay = struct {
     small_size: c_int,
     large_size: c_int,
     duration_ms: i64,
+    content_height: c_int = 0,
 
     pub const State = enum { Closed, Expanding, Open, Collapsing };
 
@@ -26,6 +27,10 @@ pub const ExpandingOverlay = struct {
             .start_size = small,
             .target_size = small,
         };
+    }
+
+    pub fn setContentHeight(self: *ExpandingOverlay, height: c_int) void {
+        self.content_height = height;
     }
 
     pub fn startExpanding(self: *ExpandingOverlay, now: i64) void {
@@ -67,6 +72,27 @@ pub const ExpandingOverlay = struct {
         const spacing = dpi.scale(self.small_size + self.margin, ui_scale);
         const x = window_width - margin - size - @as(c_int, @intCast(self.slot)) * spacing;
         const y = margin;
-        return geom.Rect{ .x = x, .y = y, .w = size, .h = size };
+
+        const height = blk: {
+            if (self.content_height == 0) {
+                break :blk size;
+            }
+
+            const small = dpi.scale(self.small_size, ui_scale);
+            const large = dpi.scale(self.large_size, ui_scale);
+            const target_height = dpi.scale(self.content_height, ui_scale);
+
+            switch (self.state) {
+                .Closed => break :blk small,
+                .Open => break :blk target_height,
+                .Expanding, .Collapsing => {
+                    const progress = @as(f32, @floatFromInt(size - small)) / @as(f32, @floatFromInt(large - small));
+                    const height_diff = target_height - small;
+                    break :blk small + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(height_diff)) * progress));
+                },
+            }
+        };
+
+        return geom.Rect{ .x = x, .y = y, .w = size, .h = height };
     }
 };
