@@ -20,6 +20,9 @@ const shortcuts = [_]Shortcut{
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
     .{ .key = "⌘↵", .desc = "Expand focused terminal" },
+    .{ .key = "⌘T", .desc = "Open worktree picker" },
+    .{ .key = "⌘?", .desc = "Open help" },
+    .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
     .{ .key = "⌘K", .desc = "Clear terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },
@@ -124,25 +127,42 @@ pub const HelpOverlayComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, _: *types.UiActionQueue) bool {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (event.type != c.SDL_EVENT_MOUSE_BUTTON_DOWN) return false;
+        switch (event.type) {
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                const mouse_x: c_int = @intFromFloat(event.button.x);
+                const mouse_y: c_int = @intFromFloat(event.button.y);
+                const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
+                const inside = geom.containsPoint(rect, mouse_x, mouse_y);
 
-        const mouse_x: c_int = @intFromFloat(event.button.x);
-        const mouse_y: c_int = @intFromFloat(event.button.y);
-        const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-        const inside = geom.containsPoint(rect, mouse_x, mouse_y);
+                if (inside) {
+                    switch (self.overlay.state) {
+                        .Closed => self.overlay.startExpanding(host.now_ms),
+                        .Open => self.overlay.startCollapsing(host.now_ms),
+                        else => {},
+                    }
+                    return true;
+                }
 
-        if (inside) {
-            switch (self.overlay.state) {
-                .Closed => self.overlay.startExpanding(host.now_ms),
-                .Open => self.overlay.startCollapsing(host.now_ms),
-                else => {},
-            }
-            return true;
-        }
-
-        if (self.overlay.state == .Open and !inside) {
-            self.overlay.startCollapsing(host.now_ms);
-            return true;
+                if (self.overlay.state == .Open and !inside) {
+                    self.overlay.startCollapsing(host.now_ms);
+                    return true;
+                }
+            },
+            c.SDL_EVENT_KEY_DOWN => {
+                const key = event.key.key;
+                const mod = event.key.mod;
+                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
+                if (has_gui and !has_blocking_mod and key == c.SDLK_SLASH) {
+                    if (self.overlay.state == .Open) {
+                        self.overlay.startCollapsing(host.now_ms);
+                    } else {
+                        self.overlay.startExpanding(host.now_ms);
+                    }
+                    return true;
+                }
+            },
+            else => {},
         }
 
         return false;
@@ -200,14 +220,14 @@ pub const HelpOverlayComponent = struct {
 
     fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const font_path = assets.font_path orelse return;
-        const font_size = dpi.scale(@max(16, @min(32, @divFloor(rect.h * 3, 4))), ui_scale);
+        const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
         defer closeFontWithFallbacks(fonts);
 
-        const question_mark: [2]u8 = .{ '?', 0 };
+        const question_mark = "⌘?";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.main, &question_mark, 1, fg_color) orelse return;
+        const surface = c.TTF_RenderText_Blended(fonts.main, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;

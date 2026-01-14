@@ -437,6 +437,10 @@ pub const SessionState = struct {
         self.dirty = true;
     }
 
+    pub fn recordCwd(self: *SessionState, path: []const u8) !void {
+        try self.replaceCwdPath(path);
+    }
+
     fn seedCwd(self: *SessionState, working_dir: ?[:0]const u8) !void {
         if (working_dir) |dir| {
             try self.replaceCwdPath(sliceToZ(dir));
