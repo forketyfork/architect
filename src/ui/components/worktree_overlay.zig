@@ -7,6 +7,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
+const button = @import("button.zig");
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -1161,8 +1162,8 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Buttons
-        renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Confirm", theme, true, host.ui_scale);
-        renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", theme, false, host.ui_scale);
+        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
+        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
 
         // Error message
         if (self.create_error) |err| {
@@ -1179,42 +1180,6 @@ pub const WorktreeOverlayComponent = struct {
                 });
             }
         }
-    }
-
-    fn renderButton(renderer: *c.SDL_Renderer, font: *c.TTF_Font, rect: c.SDL_FRect, label: []const u8, theme: *const @import("../../colors.zig").Theme, primary: bool, ui_scale: f32) void {
-        if (primary) {
-            const acc = theme.accent;
-            _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        } else {
-            const bg = theme.background;
-            _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
-        }
-        _ = c.SDL_RenderFillRect(renderer, &rect);
-        if (primary) {
-            const bright = theme.palette[9];
-            _ = c.SDL_SetRenderDrawColor(renderer, bright.r, bright.g, bright.b, 255);
-        } else {
-            const acc = theme.accent;
-            _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        }
-        primitives.drawRoundedBorder(renderer, geom.Rect{
-            .x = @intFromFloat(rect.x),
-            .y = @intFromFloat(rect.y),
-            .w = @intFromFloat(rect.w),
-            .h = @intFromFloat(rect.h),
-        }, dpi.scale(8, ui_scale));
-
-        const fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const tex = makeTextTexture(renderer, font, label, fg) catch return;
-        defer c.SDL_DestroyTexture(tex.tex);
-        const text_x = rect.x + (rect.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
-        const text_y = rect.y + (rect.h - @as(f32, @floatFromInt(tex.h))) / 2.0;
-        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-            .x = text_x,
-            .y = text_y,
-            .w = @floatFromInt(tex.w),
-            .h = @floatFromInt(tex.h),
-        });
     }
 
     fn entryCount(self: *WorktreeOverlayComponent) usize {
