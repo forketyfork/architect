@@ -136,6 +136,24 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, buf: []u8) usize 
         };
     }
 
+    // Shift-modified special keys (must come before unmodified handling)
+    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
+        const shift_result: usize = switch (key) {
+            c.SDLK_TAB => blk: {
+                // Shift+Tab: send backtab (CSI Z)
+                @memcpy(buf[0..3], "\x1b[Z");
+                break :blk 3;
+            },
+            c.SDLK_RETURN => blk: {
+                // Shift+Enter: send CSI u encoding (ESC [ 13 ; 2 u)
+                @memcpy(buf[0..7], "\x1b[13;2u");
+                break :blk 7;
+            },
+            else => 0,
+        };
+        if (shift_result > 0) return shift_result;
+    }
+
     return switch (key) {
         c.SDLK_RETURN => blk: {
             buf[0] = '\r';
@@ -308,4 +326,18 @@ test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
     try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
+}
+
+test "encodeKeyWithMod - shift+tab (backtab)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_SHIFT, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[Z", buf[0..n]);
+}
+
+test "encodeKeyWithMod - shift+enter (CSI u)" {
+    var buf: [8]u8 = undefined;
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, &buf);
+    try std.testing.expectEqual(@as(usize, 7), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[13;2u", buf[0..n]);
 }
