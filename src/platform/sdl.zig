@@ -41,6 +41,8 @@ pub fn init(
         // Keep press-and-hold behavior in repeat mode instead of showing the accent picker.
         std.debug.print("Disabling SDL_HINT_MAC_PRESS_AND_HOLD\n", .{});
         _ = c.SDL_SetHint(c.SDL_HINT_MAC_PRESS_AND_HOLD, "0");
+        // Prevent Cmd+W from generating SDL_QUIT, allowing us to handle it ourselves
+        _ = c.SDL_SetHint(c.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
     }
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {

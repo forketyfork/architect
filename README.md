@@ -87,6 +87,7 @@ See [Setup](#setup) section below for building from source.
 - **Real-Time I/O**: Non-blocking PTY communication with live updates
 - **Interactive Control**:
   - Click any grid cell or press ⌘+Return in grid view to expand
+  - Press ⌘W to delete the focused terminal (prompts if a process is running)
   - Hold Esc for ~700ms to collapse back to grid; a quick tap is forwarded to the terminal; the hold ring waits a short moment before appearing to avoid flashes, then runs its full fill-and-pulse animation
   - Type in the focused terminal
   - Visual feedback indicator appears briefly when hotkeys are pressed

@@ -23,6 +23,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘↵", .desc = "Expand focused terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
     .{ .key = "⌘K", .desc = "Clear terminal" },
+    .{ .key = "⌘W", .desc = "Delete terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },
     .{ .key = "Drag (full view)", .desc = "Select text" },
     .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
@@ -106,7 +107,7 @@ pub const HelpOverlayComponent = struct {
     first_frame: FirstFrameGuard = .{},
 
     const HELP_BUTTON_SIZE_SMALL: c_int = 40;
-    const HELP_BUTTON_SIZE_LARGE: c_int = 400;
+    const HELP_BUTTON_SIZE_LARGE: c_int = 440;
     const HELP_BUTTON_MARGIN: c_int = 20;
     const HELP_BUTTON_ANIMATION_DURATION_MS: i64 = 200;
 

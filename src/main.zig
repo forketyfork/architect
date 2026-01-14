@@ -328,6 +328,8 @@ pub fn main() !void {
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
     try ui.register(quit_confirm_component.asComponent());
+    const confirm_dialog_component = try ui_mod.confirm_dialog.ConfirmDialogComponent.init(allocator);
+    try ui.register(confirm_dialog_component.asComponent());
     const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
     try ui.register(global_shortcuts_component);
 
@@ -501,10 +503,41 @@ pub fn main() !void {
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
-                    if (has_gui and !has_blocking_mod and (key == c.SDLK_Q or key == c.SDLK_W)) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (key == c.SDLK_Q) "⌘Q" else "⌘W", now);
+                    if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                             running = false;
+                        }
+                        continue;
+                    }
+
+                    if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘W", now);
+                        const session_idx = anim_state.focused_session;
+                        const session = &sessions[session_idx];
+
+                        if (!session.spawned) {
+                            continue;
+                        }
+
+                        if (session.hasForegroundProcess()) {
+                            confirm_dialog_component.show(
+                                "Delete Terminal?",
+                                "A process is running. Delete anyway?",
+                                "Delete",
+                                "Cancel",
+                                .{ .DespawnSession = session_idx },
+                            );
+                        } else {
+                            if (anim_state.mode == .Full) {
+                                if (animations_enabled) {
+                                    startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                                } else {
+                                    anim_state.mode = .Grid;
+                                }
+                            }
+                            session.deinit(allocator);
+                            session.dirty = true;
                         }
                         continue;
                     }
@@ -604,7 +637,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows, &loop);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].dirty = true;
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
@@ -618,7 +651,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows);
+                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows, &loop);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -635,7 +668,7 @@ pub fn main() !void {
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
                         const clicked_session = anim_state.focused_session;
-                        try sessions[clicked_session].ensureSpawned();
+                        try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
@@ -696,7 +729,7 @@ pub fn main() !void {
                             .h = cell_height_pixels,
                         };
 
-                        try sessions[clicked_session].ensureSpawned();
+                        try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
                         sessions[clicked_session].status = .running;
                         sessions[clicked_session].attention = false;
@@ -928,6 +961,20 @@ pub fn main() !void {
                     std.debug.print("UI requested restart: {d}\n", .{idx});
                 }
             },
+            .DespawnSession => |idx| {
+                if (idx < sessions.len) {
+                    if (anim_state.mode == .Full and anim_state.focused_session == idx) {
+                        if (animations_enabled) {
+                            startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                        } else {
+                            anim_state.mode = .Grid;
+                        }
+                    }
+                    sessions[idx].deinit(allocator);
+                    sessions[idx].dirty = true;
+                    std.debug.print("UI requested despawn: {d}\n", .{idx});
+                }
+            },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
                     if (animations_enabled) {
@@ -1142,6 +1189,7 @@ fn navigateGrid(
     show_animation: bool,
     grid_cols: usize,
     grid_rows: usize,
+    loop: *xev.Loop,
 ) !void {
     const current_row: usize = anim_state.focused_session / grid_cols;
     const current_col: usize = anim_state.focused_session % grid_cols;
@@ -1200,9 +1248,9 @@ fn navigateGrid(
     const new_session: usize = new_row * grid_cols + new_col;
     if (new_session != anim_state.focused_session) {
         if (anim_state.mode == .Full) {
-            try sessions[new_session].ensureSpawned();
+            try sessions[new_session].ensureSpawnedWithLoop(loop);
         } else if (show_animation) {
-            try sessions[new_session].ensureSpawned();
+            try sessions[new_session].ensureSpawnedWithLoop(loop);
         }
         sessions[anim_state.focused_session].clearSelection();
         sessions[new_session].clearSelection();

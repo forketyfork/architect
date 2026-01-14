@@ -78,6 +78,16 @@ pub const SessionState = struct {
     process_watcher: ?xev.Process = null,
     /// Completion structure for process wait callback.
     process_completion: xev.Completion = .{},
+    /// Context for disambiguating process exit callbacks.
+    process_wait_ctx: WaitContext = undefined,
+    /// Incremented whenever a new watcher is armed to ignore stale completions.
+    process_generation: usize = 0,
+
+    const WaitContext = struct {
+        session: *SessionState,
+        generation: usize,
+        pid: posix.pid_t,
+    };
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
         DivisionByZero,
@@ -134,6 +144,9 @@ pub const SessionState = struct {
     pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         if (self.spawned) return;
 
+        // Bump generation to invalidate any stale callbacks from a previous shell.
+        self.process_generation +%= 1;
+
         const shell = try shell_mod.Shell.spawn(
             self.shell_path,
             self.pty_size,
@@ -171,11 +184,17 @@ pub const SessionState = struct {
             var process = try xev.Process.init(shell.child_pid);
             errdefer process.deinit();
 
+            self.process_wait_ctx = .{
+                .session = self,
+                .generation = self.process_generation,
+                .pid = shell.child_pid,
+            };
+
             process.wait(
                 loop,
                 &self.process_completion,
-                SessionState,
-                self,
+                WaitContext,
+                &self.process_wait_ctx,
                 processExitCallback,
             );
 
@@ -232,8 +251,16 @@ pub const SessionState = struct {
             watcher.deinit();
             self.process_watcher = null;
         }
+        self.process_generation +%= 1;
 
         if (self.spawned) {
+            if (self.shell) |*shell| {
+                if (!self.dead) {
+                    _ = std.c.kill(shell.child_pid, std.c.SIG.TERM);
+                }
+                shell.deinit();
+                self.shell = null;
+            }
             if (self.stream) |*stream| {
                 stream.deinit();
                 self.stream = null;
@@ -241,10 +268,6 @@ pub const SessionState = struct {
             if (self.terminal) |*terminal| {
                 terminal.deinit(allocator);
                 self.terminal = null;
-            }
-            if (self.shell) |*shell| {
-                shell.deinit();
-                self.shell = null;
             }
 
             self.spawned = false;
@@ -267,12 +290,20 @@ pub const SessionState = struct {
     };
 
     fn processExitCallback(
-        self_opt: ?*SessionState,
+        ctx_opt: ?*WaitContext,
         _: *xev.Loop,
         _: *xev.Completion,
         r: xev.Process.WaitError!u32,
     ) xev.CallbackAction {
-        const self = self_opt orelse return .disarm;
+        const ctx = ctx_opt orelse return .disarm;
+        const self = ctx.session;
+
+        // Ignore completions from stale watchers (after despawn/restart) or mismatched PID.
+        const shell = self.shell orelse return .disarm;
+        if (ctx.generation != self.process_generation or ctx.pid != shell.child_pid) {
+            return .disarm;
+        }
+
         const exit_code = r catch |err| {
             log.err("process wait error for session {d}: {}", .{ self.id, err });
             return .disarm;
@@ -308,6 +339,7 @@ pub const SessionState = struct {
             watcher.deinit();
             self.process_watcher = null;
         }
+        self.process_generation +%= 1;
         if (self.spawned) {
             if (self.stream) |*stream| {
                 stream.deinit();

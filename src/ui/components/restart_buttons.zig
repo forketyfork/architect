@@ -60,7 +60,7 @@ pub const RestartButtonsComponent = struct {
         if (clicked_session >= host.sessions.len) return false;
 
         const session_info = host.sessions[clicked_session];
-        if (!session_info.dead) return false;
+        if (!session_info.dead or !session_info.spawned) return false;
 
         const cell_rect = geom.Rect{
             .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
@@ -86,7 +86,7 @@ pub const RestartButtonsComponent = struct {
         if (session_idx >= host.sessions.len) return false;
 
         const session_info = host.sessions[session_idx];
-        if (!session_info.dead) return false;
+        if (!session_info.dead or !session_info.spawned) return false;
 
         const cell_rect = geom.Rect{
             .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
@@ -109,7 +109,7 @@ pub const RestartButtonsComponent = struct {
         }
 
         for (host.sessions, 0..) |info, i| {
-            if (!info.dead) continue;
+            if (!info.dead or !info.spawned) continue;
             const grid_row: c_int = @intCast(i / host.grid_cols);
             const grid_col: c_int = @intCast(i % host.grid_cols);
             const cell_rect = geom.Rect{
