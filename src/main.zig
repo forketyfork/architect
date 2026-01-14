@@ -314,10 +314,26 @@ pub fn main() !void {
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
 
-    const worktree_component = try ui_mod.worktree_overlay.WorktreeOverlayComponent.create(allocator);
+    const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
+    worktree_comp_ptr.* = .{ .allocator = allocator };
+    const worktree_component = ui_mod.UiComponent{
+        .ptr = worktree_comp_ptr,
+        .vtable = &ui_mod.worktree_overlay.WorktreeOverlayComponent.vtable,
+        .z_index = 1000,
+    };
     try ui.register(worktree_component);
-    const help_component = try ui_mod.help_overlay.HelpOverlayComponent.create(allocator);
+
+    const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
+    help_comp_ptr.* = .{ .allocator = allocator };
+    const help_component = ui_mod.UiComponent{
+        .ptr = help_comp_ptr,
+        .vtable = &ui_mod.help_overlay.HelpOverlayComponent.vtable,
+        .z_index = 1000,
+    };
     try ui.register(help_component);
+
+    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, worktree_comp_ptr);
+    try ui.register(pill_group_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
     ui.toast_component = toast_component;

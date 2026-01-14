@@ -27,6 +27,7 @@ pub const WorktreeOverlayComponent = struct {
     last_error: ?[]const u8 = null,
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
+    cursor_blink_start_ms: i64 = 0,
 
     const BUTTON_SIZE_SMALL: c_int = 40;
     const BUTTON_SIZE_LARGE: c_int = 400;
@@ -205,7 +206,7 @@ pub const WorktreeOverlayComponent = struct {
             c.SDL_EVENT_TEXT_INPUT => {
                 if (!self.creating) return false;
                 const text = std.mem.span(event.text.text);
-                self.appendCreateText(text);
+                self.appendCreateText(text, host.now_ms);
                 return true;
             },
             else => {},
@@ -462,12 +463,28 @@ pub const WorktreeOverlayComponent = struct {
 
     fn findCurrentWorktreeIndex(self: *WorktreeOverlayComponent, cwd_opt: ?[]const u8) ?usize {
         const cwd = cwd_opt orelse return null;
+
+        var best_match: ?usize = null;
+        var best_match_len: usize = 0;
+
         for (self.worktrees.items, 0..) |wt, i| {
             if (std.mem.eql(u8, wt.abs_path, cwd)) {
-                return i + 1;
+                if (wt.abs_path.len > best_match_len) {
+                    best_match = i + 1;
+                    best_match_len = wt.abs_path.len;
+                }
+            } else if (std.mem.startsWith(u8, cwd, wt.abs_path)) {
+                const suffix = cwd[wt.abs_path.len..];
+                if (suffix.len > 0 and suffix[0] == '/') {
+                    if (wt.abs_path.len > best_match_len) {
+                        best_match = i + 1;
+                        best_match_len = wt.abs_path.len;
+                    }
+                }
             }
         }
-        return null;
+
+        return best_match;
     }
 
     fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
@@ -929,6 +946,7 @@ pub const WorktreeOverlayComponent = struct {
         self.escape_pressed = false;
         self.clearCreateInput();
         self.overlay.startCollapsing(host.now_ms);
+        self.cursor_blink_start_ms = host.now_ms;
     }
 
     fn clearCreateInput(self: *WorktreeOverlayComponent) void {
@@ -951,18 +969,23 @@ pub const WorktreeOverlayComponent = struct {
             ch == '-' or ch == '_';
     }
 
-    fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8) void {
+    fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8, now_ms: i64) void {
         const MAX_LEN: usize = 64;
         for (text) |ch| {
             if (self.create_input.items.len >= MAX_LEN) break;
             if (isValidNameChar(ch)) {
                 _ = self.create_input.append(self.allocator, ch) catch {};
+                self.cursor_blink_start_ms = now_ms;
             }
         }
     }
 
     fn handleCreateModalKey(self: *WorktreeOverlayComponent, event: *const c.SDL_Event, host: *const types.UiHost, actions: *types.UiActionQueue) bool {
         const key = event.key.key;
+        const mod = event.key.mod;
+        const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+        const has_alt = (mod & c.SDL_KMOD_ALT) != 0;
+
         switch (key) {
             c.SDLK_RETURN, c.SDLK_KP_ENTER => {
                 if (self.create_input.items.len == 0) {
@@ -987,13 +1010,35 @@ pub const WorktreeOverlayComponent = struct {
                 return true;
             },
             c.SDLK_BACKSPACE => {
-                if (self.create_input.items.len > 0) {
-                    self.create_input.items.len -= 1;
+                self.cursor_blink_start_ms = host.now_ms;
+                if (has_gui) {
+                    self.create_input.clearRetainingCapacity();
+                } else if (has_alt) {
+                    self.deleteLastWord();
+                } else {
+                    if (self.create_input.items.len > 0) {
+                        self.create_input.items.len -= 1;
+                    }
                 }
                 return true;
             },
             else => return false,
         }
+    }
+
+    fn deleteLastWord(self: *WorktreeOverlayComponent) void {
+        if (self.create_input.items.len == 0) return;
+
+        var i = self.create_input.items.len;
+        while (i > 0 and (self.create_input.items[i - 1] == '-' or self.create_input.items[i - 1] == '_')) {
+            i -= 1;
+        }
+
+        while (i > 0 and self.create_input.items[i - 1] != '-' and self.create_input.items[i - 1] != '_') {
+            i -= 1;
+        }
+
+        self.create_input.items.len = i;
     }
 
     fn handleCreateModalClick(self: *WorktreeOverlayComponent, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -1021,7 +1066,17 @@ pub const WorktreeOverlayComponent = struct {
             self.clearCreateInput();
             return true;
         }
-        return false;
+
+        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+            y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
+        if (inModal) {
+            return true;
+        }
+
+        self.creating = false;
+        self.escape_pressed = false;
+        self.clearCreateInput();
+        return true;
     }
 
     fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
@@ -1079,15 +1134,30 @@ pub const WorktreeOverlayComponent = struct {
         const placeholder = self.create_input.items.len == 0;
         const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
         const input_tex = makeTextTexture(renderer, cache.entry_fonts.main, input_text, input_color) catch null;
+        const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
+        var text_width: f32 = 0;
+        var text_height: f32 = 0;
         if (input_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
-            const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
+            text_width = @floatFromInt(tex.w);
+            text_height = @floatFromInt(tex.h);
             _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
                 .x = layout.input.x + input_pad,
                 .y = layout.input.y + input_pad,
-                .w = @floatFromInt(tex.w),
-                .h = @floatFromInt(tex.h),
+                .w = text_width,
+                .h = text_height,
             });
+        }
+
+        const elapsed_ms = host.now_ms - self.cursor_blink_start_ms;
+        const blink_period_ms: i64 = 1000;
+        const blink_phase = @mod(elapsed_ms, blink_period_ms);
+        if (blink_phase < blink_period_ms / 2) {
+            const cursor_x = layout.input.x + input_pad + (if (placeholder) 0.0 else text_width + 2.0);
+            const cursor_y = layout.input.y + input_pad;
+            const cursor_h = if (text_height > 0) text_height else @as(f32, @floatFromInt(dpi.scale(16, host.ui_scale)));
+            _ = c.SDL_SetRenderDrawColor(renderer, theme.foreground.r, theme.foreground.g, theme.foreground.b, 255);
+            _ = c.SDL_RenderLine(renderer, cursor_x, cursor_y, cursor_x, cursor_y + cursor_h);
         }
 
         // Buttons
@@ -1377,10 +1447,10 @@ pub const WorktreeOverlayComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.overlay.isAnimating() or self.first_frame.wantsFrame() or self.overlay.state == .Open;
+        return self.overlay.isAnimating() or self.first_frame.wantsFrame() or self.overlay.state == .Open or self.creating;
     }
 
-    const vtable = UiComponent.VTable{
+    pub const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .hitTest = hitTest,
         .update = update,
