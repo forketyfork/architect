@@ -679,6 +679,67 @@ pub fn main() !void {
                         } else {
                             ui.showToast("All terminals in use", now);
                         }
+                    } else if (worktree_comp_ptr.overlay.state == .Closed and input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows) != null) {
+                        const target_idx = input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows).?;
+                        const hotkey_label = switch (target_idx) {
+                            0 => "⌘1",
+                            1 => "⌘2",
+                            2 => "⌘3",
+                            3 => "⌘4",
+                            4 => "⌘5",
+                            5 => "⌘6",
+                            6 => "⌘7",
+                            7 => "⌘8",
+                            8 => "⌘9",
+                            9 => "⌘0",
+                            else => "⌘?",
+                        };
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
+
+                        if (anim_state.mode == .Grid) {
+                            try sessions[target_idx].ensureSpawnedWithLoop(&loop);
+                            sessions[target_idx].status = .running;
+                            sessions[target_idx].attention = false;
+
+                            const grid_row: c_int = @intCast(target_idx / grid_cols);
+                            const grid_col: c_int = @intCast(target_idx % grid_cols);
+                            const start_rect = Rect{
+                                .x = grid_col * cell_width_pixels,
+                                .y = grid_row * cell_height_pixels,
+                                .w = cell_width_pixels,
+                                .h = cell_height_pixels,
+                            };
+                            const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+
+                            anim_state.focused_session = target_idx;
+                            if (animations_enabled) {
+                                anim_state.mode = .Expanding;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = start_rect;
+                                anim_state.target_rect = target_rect;
+                            } else {
+                                anim_state.mode = .Full;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = target_rect;
+                                anim_state.target_rect = target_rect;
+                                anim_state.previous_session = target_idx;
+                            }
+                            std.debug.print("Expanding session via hotkey: {d}\n", .{target_idx});
+                        } else if (anim_state.mode == .Full and target_idx != anim_state.focused_session) {
+                            try sessions[target_idx].ensureSpawnedWithLoop(&loop);
+                            sessions[anim_state.focused_session].clearSelection();
+                            sessions[target_idx].clearSelection();
+                            sessions[target_idx].status = .running;
+                            sessions[target_idx].attention = false;
+                            anim_state.focused_session = target_idx;
+
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, target_idx, grid_cols, grid_rows);
+                            ui.showToast(notification_msg, now);
+                            std.debug.print("Switched to session via hotkey: {d}\n", .{target_idx});
+                        }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
                             if (config.ui.show_hotkey_feedback) {
@@ -1242,7 +1303,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, font_paths.symbol_fallback, font_paths.emoji_fallback, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();

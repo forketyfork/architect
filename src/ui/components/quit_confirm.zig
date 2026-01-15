@@ -6,10 +6,11 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const button = @import("button.zig");
+const font_utils = @import("../font_utils.zig");
 
 pub const QuitConfirmComponent = struct {
     allocator: std.mem.Allocator,
-    font: ?*c.TTF_Font = null,
+    fonts: ?font_utils.FontWithFallbacks = null,
     font_path: ?[:0]const u8 = null,
     visible: bool = false,
     dirty: bool = true,
@@ -53,7 +54,7 @@ pub const QuitConfirmComponent = struct {
     pub fn destroy(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer) void {
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.font) |f| c.TTF_CloseFont(f);
+        if (self.fonts) |fonts| fonts.close();
         self.allocator.destroy(self);
         _ = renderer;
     }
@@ -149,9 +150,9 @@ pub const QuitConfirmComponent = struct {
         if (assets.font_path) |path| {
             if (self.font_path == null or !std.mem.eql(u8, self.font_path.?, path)) {
                 self.font_path = path;
-                if (self.font) |f| {
-                    c.TTF_CloseFont(f);
-                    self.font = null;
+                if (self.fonts) |fonts| {
+                    fonts.close();
+                    self.fonts = null;
                 }
                 self.dirty = true;
             }
@@ -213,14 +214,14 @@ pub const QuitConfirmComponent = struct {
     fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
-        if (self.font) |font| {
+        if (self.fonts) |fonts| {
             const cancel_rect = c.SDL_FRect{
                 .x = @floatFromInt(buttons.cancel.x),
                 .y = @floatFromInt(buttons.cancel.y),
                 .w = @floatFromInt(buttons.cancel.w),
                 .h = @floatFromInt(buttons.cancel.h),
             };
-            button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale);
+            button.renderButton(renderer, fonts.main, cancel_rect, "Cancel", .default, theme, ui_scale);
 
             const quit_rect = c.SDL_FRect{
                 .x = @floatFromInt(buttons.quit.x),
@@ -228,7 +229,7 @@ pub const QuitConfirmComponent = struct {
                 .w = @floatFromInt(buttons.quit.w),
                 .h = @floatFromInt(buttons.quit.h),
             };
-            button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale);
+            button.renderButton(renderer, fonts.main, quit_rect, "Quit", .danger, theme, ui_scale);
         }
     }
 
@@ -262,11 +263,11 @@ pub const QuitConfirmComponent = struct {
     fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null) return;
         const font_path = self.font_path orelse return error.FontPathNotSet;
-        if (self.font == null) {
-            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(dpi.scale(BODY_SIZE, ui_scale))) orelse return error.FontUnavailable;
+        if (self.fonts == null) {
+            self.fonts = font_utils.openFontWithFallbacks(font_path, null, null, dpi.scale(BODY_SIZE, ui_scale)) catch return error.FontUnavailable;
         }
 
-        const font = self.font.?;
+        const font = self.fonts.?.main;
 
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);

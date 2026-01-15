@@ -8,6 +8,7 @@ const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const button = @import("button.zig");
+const font_utils = @import("../font_utils.zig");
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -78,14 +79,8 @@ pub const WorktreeOverlayComponent = struct {
         key_color: c.SDL_Color,
         title_color: c.SDL_Color,
         entry_color: c.SDL_Color,
-        title_fonts: FontWithFallbacks,
-        entry_fonts: FontWithFallbacks,
-    };
-
-    const FontWithFallbacks = struct {
-        main: *c.TTF_Font,
-        symbol: ?*c.TTF_Font,
-        emoji: ?*c.TTF_Font,
+        title_fonts: font_utils.FontWithFallbacks,
+        entry_fonts: font_utils.FontWithFallbacks,
     };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
@@ -359,8 +354,8 @@ pub const WorktreeOverlayComponent = struct {
     fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const font_path = assets.font_path orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
-        defer closeFontWithFallbacks(fonts);
+        const fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
+        defer fonts.close();
 
         const glyph = "⌘T";
         const fg = theme.foreground;
@@ -723,23 +718,23 @@ pub const WorktreeOverlayComponent = struct {
         const cache = self.allocator.create(Cache) catch return null;
         errdefer self.allocator.destroy(cache);
 
-        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
+        const title_fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(title_fonts);
+        errdefer title_fonts.close();
 
-        const entry_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, entry_font_size) catch {
-            closeFontWithFallbacks(title_fonts);
+        const entry_fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, entry_font_size) catch {
+            title_fonts.close();
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(entry_fonts);
+        errdefer entry_fonts.close();
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.main, TITLE, title_color) catch {
-            closeFontWithFallbacks(entry_fonts);
-            closeFontWithFallbacks(title_fonts);
+            entry_fonts.close();
+            title_fonts.close();
             self.allocator.destroy(cache);
             return null;
         };
@@ -749,8 +744,8 @@ pub const WorktreeOverlayComponent = struct {
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
             c.SDL_DestroyTexture(title_tex.tex);
-            closeFontWithFallbacks(entry_fonts);
-            closeFontWithFallbacks(title_fonts);
+            entry_fonts.close();
+            title_fonts.close();
             self.allocator.destroy(cache);
             return null;
         };
@@ -769,8 +764,8 @@ pub const WorktreeOverlayComponent = struct {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(entry_fonts);
-                closeFontWithFallbacks(title_fonts);
+                entry_fonts.close();
+                title_fonts.close();
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -785,8 +780,8 @@ pub const WorktreeOverlayComponent = struct {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(entry_fonts);
-                closeFontWithFallbacks(title_fonts);
+                entry_fonts.close();
+                title_fonts.close();
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -821,8 +816,8 @@ pub const WorktreeOverlayComponent = struct {
             c.SDL_DestroyTexture(cache.title.tex);
             destroyEntryTextures(cache.entries);
             self.allocator.free(cache.entries);
-            closeFontWithFallbacks(cache.entry_fonts);
-            closeFontWithFallbacks(cache.title_fonts);
+            cache.entry_fonts.close();
+            cache.title_fonts.close();
             self.allocator.destroy(cache);
             self.cache = null;
         }
@@ -1597,50 +1592,6 @@ pub const WorktreeOverlayComponent = struct {
             return gitdir_path[0 .. gitdir_path.len - suffix.len];
         }
         return std.fs.path.dirname(gitdir_path) orelse gitdir_path;
-    }
-
-    fn openFontWithFallbacks(
-        font_path: [:0]const u8,
-        symbol_path: ?[:0]const u8,
-        emoji_path: ?[:0]const u8,
-        size: c_int,
-    ) !FontWithFallbacks {
-        const main = c.TTF_OpenFont(font_path.ptr, @floatFromInt(size)) orelse return error.FontUnavailable;
-        errdefer c.TTF_CloseFont(main);
-
-        var symbol: ?*c.TTF_Font = null;
-        if (symbol_path) |path| {
-            symbol = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-            if (symbol) |s| {
-                if (!c.TTF_AddFallbackFont(main, s)) {
-                    c.TTF_CloseFont(s);
-                    symbol = null;
-                }
-            }
-        }
-
-        var emoji: ?*c.TTF_Font = null;
-        if (emoji_path) |path| {
-            emoji = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-            if (emoji) |e| {
-                if (!c.TTF_AddFallbackFont(main, e)) {
-                    c.TTF_CloseFont(e);
-                    emoji = null;
-                }
-            }
-        }
-
-        return FontWithFallbacks{
-            .main = main,
-            .symbol = symbol,
-            .emoji = emoji,
-        };
-    }
-
-    fn closeFontWithFallbacks(fonts: FontWithFallbacks) void {
-        if (fonts.symbol) |s| c.TTF_CloseFont(s);
-        if (fonts.emoji) |e| c.TTF_CloseFont(e);
-        c.TTF_CloseFont(fonts.main);
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {

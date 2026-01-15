@@ -3,6 +3,7 @@ const c = @import("../../c.zig");
 const types = @import("../types.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const UiComponent = @import("../component.zig").UiComponent;
+const font_utils = @import("../font_utils.zig");
 
 pub const ToastComponent = struct {
     allocator: std.mem.Allocator,
@@ -13,9 +14,7 @@ pub const ToastComponent = struct {
     message: [256]u8 = undefined,
     message_len: usize = 0,
 
-    font: ?*c.TTF_Font = null,
-    symbol_fallback: ?*c.TTF_Font = null,
-    emoji_fallback: ?*c.TTF_Font = null,
+    fonts: ?font_utils.FontWithFallbacks = null,
     texture: ?*c.SDL_Texture = null,
     tex_w: c_int = 0,
     tex_h: c_int = 0,
@@ -59,17 +58,9 @@ pub const ToastComponent = struct {
             c.SDL_DestroyTexture(tex);
             self.texture = null;
         }
-        if (self.emoji_fallback) |f| {
-            c.TTF_CloseFont(f);
-            self.emoji_fallback = null;
-        }
-        if (self.symbol_fallback) |f| {
-            c.TTF_CloseFont(f);
-            self.symbol_fallback = null;
-        }
-        if (self.font) |f| {
-            c.TTF_CloseFont(f);
-            self.font = null;
+        if (self.fonts) |fonts| {
+            fonts.close();
+            self.fonts = null;
         }
         self.allocator.destroy(self);
         _ = renderer;
@@ -144,31 +135,15 @@ pub const ToastComponent = struct {
         if (!self.dirty and self.texture != null) return;
 
         const font_path = assets.font_path orelse return error.FontPathNotSet;
-        if (self.font == null) {
-            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
-            if (self.font == null) return error.FontUnavailable;
-
-            if (assets.symbol_fallback_path) |symbol_path| {
-                self.symbol_fallback = c.TTF_OpenFont(symbol_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
-                if (self.symbol_fallback) |s| {
-                    if (!c.TTF_AddFallbackFont(self.font.?, s)) {
-                        c.TTF_CloseFont(s);
-                        self.symbol_fallback = null;
-                    }
-                }
-            }
-
-            if (assets.emoji_fallback_path) |emoji_path| {
-                self.emoji_fallback = c.TTF_OpenFont(emoji_path.ptr, @floatFromInt(NOTIFICATION_FONT_SIZE));
-                if (self.emoji_fallback) |e| {
-                    if (!c.TTF_AddFallbackFont(self.font.?, e)) {
-                        c.TTF_CloseFont(e);
-                        self.emoji_fallback = null;
-                    }
-                }
-            }
+        if (self.fonts == null) {
+            self.fonts = font_utils.openFontWithFallbacks(
+                font_path,
+                assets.symbol_fallback_path,
+                assets.emoji_fallback_path,
+                NOTIFICATION_FONT_SIZE,
+            ) catch return error.FontUnavailable;
         }
-        const toast_font = self.font.?;
+        const toast_font = self.fonts.?.main;
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 

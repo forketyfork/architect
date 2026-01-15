@@ -10,6 +10,7 @@ const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const dpi = @import("../ui/scale.zig");
+const font_utils = @import("../ui/font_utils.zig");
 
 const log = std.log.scoped(.render);
 
@@ -46,6 +47,8 @@ pub fn render(
     window_height: c_int,
     ui_scale: f32,
     font_path: [:0]const u8,
+    symbol_fallback_path: ?[:0]const u8,
+    emoji_fallback_path: ?[:0]const u8,
     theme: *const colors.Theme,
     grid_font_scale: f32,
 ) RenderError!void {
@@ -71,12 +74,12 @@ pub fn render(
                     .h = cell_height_pixels,
                 };
 
-                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path, theme);
+                try renderGridSessionCached(renderer, session, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, i);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.focused_session], full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -87,14 +90,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningLeft) -offset else offset;
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
             else
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -105,14 +108,14 @@ pub fn render(
             const pan_offset = if (anim_state.mode == .PanningUp) -offset else offset;
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.previous_session], prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
             else
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
-            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.focused_session], new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -136,12 +139,12 @@ pub fn render(
                         .h = cell_height_pixels,
                     };
 
-                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path, theme);
+                    try renderGridSessionCached(renderer, session, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, i);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
-            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path, theme);
+            try renderSession(renderer, &sessions[anim_state.focused_session], animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, null);
         },
     }
 }
@@ -160,11 +163,14 @@ fn renderSession(
     is_grid_view: bool,
     ui_scale: f32,
     font_path: [:0]const u8,
+    symbol_fallback_path: ?[:0]const u8,
+    emoji_fallback_path: ?[:0]const u8,
     theme: *const colors.Theme,
+    grid_index: ?usize,
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows, theme);
     if (is_grid_view) {
-        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, theme);
+        renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, grid_index orelse 0);
     }
     renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme);
 }
@@ -591,7 +597,10 @@ fn renderGridSessionCached(
     current_time_ms: i64,
     ui_scale: f32,
     font_path: [:0]const u8,
+    symbol_fallback_path: ?[:0]const u8,
+    emoji_fallback_path: ?[:0]const u8,
     theme: *const colors.Theme,
+    grid_index: usize,
 ) RenderError!void {
     const can_cache = ensureCacheTexture(renderer, session, rect.w, rect.h);
 
@@ -616,13 +625,13 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, theme);
+            renderCwdBar(renderer, session, rect, current_time_ms, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, grid_index);
             renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, true, theme);
             return;
         }
     }
 
-    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path, theme);
+    try renderSession(renderer, session, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, ui_scale, font_path, symbol_fallback_path, emoji_fallback_path, theme, grid_index);
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {
@@ -658,11 +667,11 @@ fn renderCwdBar(
     current_time: i64,
     ui_scale: f32,
     font_path: [:0]const u8,
+    symbol_fallback_path: ?[:0]const u8,
+    emoji_fallback_path: ?[:0]const u8,
     theme: *const colors.Theme,
+    grid_index: usize,
 ) void {
-    const cwd_path = session.cwd_path orelse return;
-    const cwd_basename = session.cwd_basename orelse return;
-
     const bar_height = dpi.scale(CWD_BAR_HEIGHT, ui_scale);
     const padding = dpi.scale(CWD_PADDING, ui_scale);
     const fade_width = dpi.scale(FADE_WIDTH, ui_scale);
@@ -686,17 +695,62 @@ fn renderCwdBar(
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
     const font_px = dpi.scale(CWD_FONT_SIZE, ui_scale);
-    if (session.cwd_font == null or session.cwd_font_size != font_px) {
-        if (session.cwd_font) |font| {
-            c.TTF_CloseFont(font);
+    if (session.cwd_fonts == null or session.cwd_font_size != font_px) {
+        if (session.cwd_fonts) |fonts| {
+            fonts.close();
         }
-        session.cwd_font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(font_px));
+        session.cwd_fonts = font_utils.openFontWithFallbacks(font_path, symbol_fallback_path, emoji_fallback_path, font_px) catch null;
         session.cwd_font_size = font_px;
     }
-    const cwd_font = session.cwd_font orelse return;
+    const cwd_font = if (session.cwd_fonts) |fonts| fonts.main else return;
 
     const fg = theme.foreground;
+    const dimmed_fg = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 180 };
+
+    var hotkey_width: c_int = 0;
+    if (grid_index <= 9) {
+        const hotkey_str: []const u8 = switch (grid_index) {
+            0 => "1",
+            1 => "2",
+            2 => "3",
+            3 => "4",
+            4 => "5",
+            5 => "6",
+            6 => "7",
+            7 => "8",
+            8 => "9",
+            9 => "0",
+            else => "",
+        };
+
+        const hotkey_surface = c.TTF_RenderText_Blended(cwd_font, hotkey_str.ptr, hotkey_str.len, dimmed_fg) orelse return;
+        defer c.SDL_DestroySurface(hotkey_surface);
+
+        const hotkey_texture = c.SDL_CreateTextureFromSurface(renderer, hotkey_surface) orelse return;
+        defer c.SDL_DestroyTexture(hotkey_texture);
+
+        var hotkey_w_f: f32 = 0;
+        var hotkey_h_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(hotkey_texture, &hotkey_w_f, &hotkey_h_f);
+        hotkey_width = @intFromFloat(hotkey_w_f);
+        const hotkey_height: c_int = @intFromFloat(hotkey_h_f);
+
+        const hotkey_x = bar_rect.x + bar_rect.w - hotkey_width - padding;
+        const hotkey_y = bar_rect.y + @divFloor(bar_rect.h - hotkey_height, 2);
+
+        _ = c.SDL_RenderTexture(renderer, hotkey_texture, null, &c.SDL_FRect{
+            .x = @floatFromInt(hotkey_x),
+            .y = @floatFromInt(hotkey_y),
+            .w = hotkey_w_f,
+            .h = hotkey_h_f,
+        });
+    }
+
+    const cwd_path = session.cwd_path orelse return;
+    const cwd_basename = session.cwd_basename orelse return;
+
     const text_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+    const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - (if (hotkey_width > 0) padding else @as(c_int, 0));
 
     var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
     const basename_with_slash = blk: {
@@ -743,7 +797,7 @@ fn renderCwdBar(
     const basename_width_f: f32 = @floatFromInt(basename_width);
     const basename_height_f: f32 = @floatFromInt(text_height);
 
-    const basename_x = bar_rect.x + bar_rect.w - basename_width - padding;
+    const basename_x = content_right_edge - basename_width;
     const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
 
     _ = c.SDL_RenderTexture(renderer, basename_texture, null, &c.SDL_FRect{
