@@ -87,6 +87,7 @@ pub const SessionState = struct {
         session: *SessionState,
         generation: usize,
         pid: posix.pid_t,
+        orphaned: bool = false,
     };
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
@@ -258,7 +259,8 @@ pub const SessionState = struct {
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            self.allocator.destroy(ctx);
+            // Mark as orphaned; the callback will free the context when it fires.
+            ctx.orphaned = true;
             self.process_wait_ctx = null;
         }
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
@@ -307,6 +309,13 @@ pub const SessionState = struct {
         r: xev.Process.WaitError!u32,
     ) xev.CallbackAction {
         const ctx = ctx_opt orelse return .disarm;
+
+        // If the session was deinited, free the context and bail.
+        if (ctx.orphaned) {
+            ctx.session.allocator.destroy(ctx);
+            return .disarm;
+        }
+
         const self = ctx.session;
 
         // Ignore completions from stale watchers (after despawn/restart) or mismatched PID.
@@ -368,7 +377,8 @@ pub const SessionState = struct {
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            self.allocator.destroy(ctx);
+            // Mark as orphaned; the callback will free the context when it fires.
+            ctx.orphaned = true;
             self.process_wait_ctx = null;
         }
         // Wrap intentionally: generation just invalidates prior watchers.
