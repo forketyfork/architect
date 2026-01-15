@@ -1,0 +1,12 @@
+# xterm-ghostty terminfo for Architect terminal
+# Capabilities: 256 colors, 24-bit truecolor (Tc/RGB), kitty keyboard protocol
+#
+# This terminfo is automatically compiled and installed by Architect
+# to ~/.cache/architect/terminfo on first run.
+#
+# Manual compile: tic -x -o <output_dir> xterm-ghostty.terminfo
+
+xterm-ghostty|Architect terminal with truecolor and kitty keyboard,
+	Tc,
+	RGB,
+	use=xterm-256color,

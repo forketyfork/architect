@@ -1480,7 +1480,9 @@ pub const WorktreeOverlayComponent = struct {
         const file = try std.fs.openFileAbsolute(path, .{});
         defer file.close();
         const contents = try file.readToEndAlloc(self.allocator, 4096);
-        return std.mem.trim(u8, contents, " \t\r\n");
+        defer self.allocator.free(contents);
+        const trimmed = std.mem.trim(u8, contents, " \t\r\n");
+        return self.allocator.dupe(u8, trimmed);
     }
 
     fn findGitContext(self: *WorktreeOverlayComponent, cwd: []const u8) !?GitContext {
