@@ -103,6 +103,7 @@ See [Setup](#setup) section below for building from source.
 - **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
 - **Legible Cursor**: The block cursor keeps the underlying glyph visible for easier caret tracking
 - **Hold-to-Repeat on macOS**: Holding a key repeats characters instead of showing the system accent picker, matching terminal expectations
+- **macOS Input Source Restore**: Respects the system “Automatically switch to a document’s input source” setting, restoring the last input language when returning to Architect
 - **Kitty Keyboard Protocol**: Applications can opt into enhanced key handling via the kitty keyboard protocol; modifier keys like Shift+Enter send CSI-u sequences only when the protocol is enabled, falling back to legacy encoding otherwise
 
 ## Prerequisites

@@ -53,6 +53,14 @@ pub fn build(b: *std.Build) void {
 
     if (target.result.os.tag == .macos) {
         exe.linkSystemLibrary("proc");
+        exe.linkFramework("Carbon");
+        exe.linkFramework("CoreFoundation");
+        exe.linkFramework("AppKit");
+
+        if (findSdkRoot()) |sdk_root| {
+            const framework_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
+            exe.addFrameworkPath(.{ .cwd_relative = framework_path });
+        }
     }
 
     if (std.posix.getenv("SDL3_INCLUDE_PATH")) |sdl3_include| {
@@ -86,4 +94,25 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+fn findSdkRoot() ?[]const u8 {
+    if (std.posix.getenv("SDKROOT")) |sdk_root| {
+        return sdk_root;
+    }
+
+    const candidates = [_][]const u8{
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    };
+
+    for (candidates) |candidate| {
+        if (std.fs.openDirAbsolute(candidate, .{})) |dir_const| {
+            var dir = dir_const;
+            dir.close();
+            return candidate;
+        } else |_| {}
+    }
+
+    return null;
 }
