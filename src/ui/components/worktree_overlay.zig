@@ -50,6 +50,7 @@ pub const WorktreeOverlayComponent = struct {
 
     const TITLE = "Git Worktrees";
     const NEW_WORKTREE_LABEL = "New worktree…";
+    const REPOSITORY_ROOT_LABEL = "[repository root]";
 
     const Worktree = struct {
         abs_path: []const u8,
@@ -391,6 +392,7 @@ pub const WorktreeOverlayComponent = struct {
 
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
+        const trailing_gutter: c_int = dpi.scale(32, ui_scale);
         var y_offset: c_int = rect.y + padding;
 
         const title_tex = cache.title;
@@ -461,7 +463,7 @@ pub const WorktreeOverlayComponent = struct {
                 .h = @floatFromInt(entry_tex.hotkey.h),
             });
 
-            const path_x_offset = if (idx > 0) dpi.scale(32, ui_scale) else 0;
+            const path_x_offset = trailing_gutter;
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
                 .x = @floatFromInt(rect.x + rect.w - padding - entry_tex.path.w - path_x_offset),
                 .y = @floatFromInt(y_offset),
@@ -469,7 +471,7 @@ pub const WorktreeOverlayComponent = struct {
                 .h = @floatFromInt(entry_tex.path.h),
             });
 
-            if (idx > 0) {
+            if (self.entryHasRemoveButton(idx)) {
                 if (self.removeButtonRect(host, idx)) |btn_rect| {
                     const is_hovered = if (self.hovered_remove_btn) |h| h == idx else false;
                     const btn_alpha: u8 = if (is_hovered) 255 else 160;
@@ -661,7 +663,7 @@ pub const WorktreeOverlayComponent = struct {
 
         var root_idx: ?usize = null;
         for (self.worktrees.items, 0..) |wt, i| {
-            if (std.mem.eql(u8, wt.display, "[repository root]")) {
+            if (std.mem.eql(u8, wt.display, REPOSITORY_ROOT_LABEL)) {
                 root_idx = i;
                 break;
             }
@@ -700,7 +702,7 @@ pub const WorktreeOverlayComponent = struct {
         const rel = std.fs.path.relative(self.allocator, base, abs) catch {
             return self.allocator.dupe(u8, abs);
         };
-        if (rel.len == 0) return self.allocator.dupe(u8, "[repository root]");
+        if (rel.len == 0) return self.allocator.dupe(u8, REPOSITORY_ROOT_LABEL);
         return rel;
     }
 
@@ -757,6 +759,7 @@ pub const WorktreeOverlayComponent = struct {
         const padding = dpi.scale(20, ui_scale);
         const overlay_width = dpi.scale(BUTTON_SIZE_LARGE, ui_scale);
         const hotkey_spacing = dpi.scale(10, ui_scale);
+        const trailing_gutter = dpi.scale(32, ui_scale);
 
         for (0..entry_count) |idx| {
             var key_buf: [8]u8 = undefined;
@@ -773,8 +776,7 @@ pub const WorktreeOverlayComponent = struct {
             };
 
             const path_slice = if (idx == 0) NEW_WORKTREE_LABEL else self.worktrees.items[idx - 1].display;
-            const remove_button_space = if (idx > 0) dpi.scale(32, ui_scale) else 0;
-            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - remove_button_space;
+            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - trailing_gutter;
 
             var path_buf: [256]u8 = undefined;
             const truncated_path = truncateTextLeft(path_slice, entry_fonts.main, max_path_width, &path_buf) catch path_slice;
@@ -1385,8 +1387,22 @@ pub const WorktreeOverlayComponent = struct {
         return idx;
     }
 
+    fn entryIsRepositoryRoot(self: *WorktreeOverlayComponent, entry_idx: usize) bool {
+        if (entry_idx == 0) return false;
+        const wt_idx = entry_idx - 1;
+        if (wt_idx >= self.worktrees.items.len) return false;
+        const base = self.display_base orelse return false;
+        return std.mem.eql(u8, self.worktrees.items[wt_idx].abs_path, base);
+    }
+
+    fn entryHasRemoveButton(self: *WorktreeOverlayComponent, entry_idx: usize) bool {
+        if (entry_idx == 0) return false;
+        if (entry_idx - 1 >= self.worktrees.items.len) return false;
+        return !self.entryIsRepositoryRoot(entry_idx);
+    }
+
     fn removeButtonRect(self: *WorktreeOverlayComponent, host: *const types.UiHost, entry_idx: usize) ?geom.Rect {
-        if (entry_idx == 0) return null;
+        if (!self.entryHasRemoveButton(entry_idx)) return null;
         if (self.cache == null) return null;
         const cache = self.cache.?;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -1397,7 +1413,8 @@ pub const WorktreeOverlayComponent = struct {
 
         const button_size: c_int = dpi.scale(16, host.ui_scale);
         const button_x = rect.x + rect.w - padding - button_size - dpi.scale(8, host.ui_scale);
-        const button_y = entry_y + @divFloor(line_height - button_size, 2);
+        const entry_tex = cache.entries[entry_idx];
+        const button_y = entry_y + @divFloor(entry_tex.path.h - button_size, 2);
 
         return geom.Rect{
             .x = button_x,
@@ -1410,7 +1427,7 @@ pub const WorktreeOverlayComponent = struct {
     fn removeButtonIndexAtPoint(self: *WorktreeOverlayComponent, host: *const types.UiHost, x: c_int, y: c_int) ?usize {
         if (self.overlay.state != .Open) return null;
         const entry_idx = self.entryIndexAtPoint(host, y) orelse return null;
-        if (entry_idx == 0) return null;
+        if (!self.entryHasRemoveButton(entry_idx)) return null;
         const button_rect = self.removeButtonRect(host, entry_idx) orelse return null;
         if (geom.containsPoint(button_rect, x, y)) {
             return entry_idx;
