@@ -472,9 +472,6 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
-                        input_source_tracker.capture() catch |err| {
-                            log.warn("Failed to capture input source: {}", .{err});
-                        };
                         if (text_input_active) {
                             platform.stopTextInput(sdl.window);
                             text_input_active = false;

@@ -39,7 +39,9 @@ pub const InputSourceTracker = if (is_macos) struct {
             c.kTISPropertyInputSourceID,
         ) orelse return Error.GetInputSourceIdFailed;
 
-        const id_retained = @as(c.CFStringRef, @ptrCast(c.CFRetain(id_raw)));
+        const id_retained_any = c.CFRetain(id_raw) orelse
+            return Error.GetInputSourceIdFailed;
+        const id_retained = @as(c.CFStringRef, @ptrCast(id_retained_any));
 
         self.releaseSource();
         self.releaseId();
@@ -125,14 +127,14 @@ pub const InputSourceTracker = if (is_macos) struct {
         const type_id = c.CFGetTypeID(value);
         if (type_id == c.CFNumberGetTypeID()) {
             var number: i64 = 0;
-            if (c.CFNumberGetValue(@ptrCast(value), c.kCFNumberSInt64Type, &number) != 0) {
+            if (c.CFNumberGetValue(@ptrCast(value), c.kCFNumberSInt64Type, &number) == 1) {
                 return number != 0;
             }
             return false;
         }
 
         if (type_id == c.CFBooleanGetTypeID()) {
-            return c.CFBooleanGetValue(@ptrCast(value)) != 0;
+            return c.CFBooleanGetValue(@ptrCast(value)) == 1;
         }
 
         return false;

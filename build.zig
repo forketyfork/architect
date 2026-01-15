@@ -107,9 +107,9 @@ fn findSdkRoot() ?[]const u8 {
     };
 
     for (candidates) |candidate| {
-        if (std.fs.openDirAbsolute(candidate, .{})) |dir| {
-            var mutable_dir = dir;
-            mutable_dir.close();
+        if (std.fs.openDirAbsolute(candidate, .{})) |dir_const| {
+            var dir = dir_const;
+            dir.close();
             return candidate;
         } else |_| {}
     }
