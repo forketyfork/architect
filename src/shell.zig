@@ -9,18 +9,169 @@ const libc = @cImport({
 
 const log = std.log.scoped(.shell);
 
-var warned_env_defaults: bool = false;
+// POSIX wait status macros (not available in std.c)
+fn wifexited(status: c_int) bool {
+    return (status & 0x7f) == 0;
+}
 
-const DEFAULT_TERM = "xterm-256color";
+fn wexitstatus(status: c_int) u8 {
+    return @intCast((status >> 8) & 0xff);
+}
+
+var warned_env_defaults: bool = false;
+var terminfo_setup_done: bool = false;
+var terminfo_available: bool = false;
+var terminfo_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+var terminfo_dir_z: ?[:0]const u8 = null;
+var tic_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+const FALLBACK_TERM = "xterm-256color";
+const ARCHITECT_TERM = "xterm-ghostty";
 const DEFAULT_COLORTERM = "truecolor";
 const DEFAULT_LANG = "en_US.UTF-8";
 const DEFAULT_TERM_PROGRAM = "Architect";
+
+// Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
+const ARCHITECT_TERMINFO_SRC = @embedFile("assets/terminfo/xterm-ghostty.terminfo");
 
 fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
     if (posix.getenv(name) != null) return;
     if (libc.setenv(name, value, 1) != 0) {
         std.c._exit(1);
     }
+}
+
+fn setEnv(name: [:0]const u8, value: [:0]const u8) void {
+    if (libc.setenv(name, value, 1) != 0) {
+        std.c._exit(1);
+    }
+}
+
+/// Ensure xterm-ghostty terminfo is compiled and available.
+/// Installs to ~/.cache/architect/terminfo. Must be called from parent process before fork.
+pub fn ensureTerminfoSetup() void {
+    if (terminfo_setup_done) return;
+    terminfo_setup_done = true;
+
+    // Install to ~/.cache/architect/terminfo
+    const home = posix.getenv("HOME") orelse {
+        log.warn("HOME not set, cannot install terminfo, falling back to {s}", .{FALLBACK_TERM});
+        return;
+    };
+
+    const cache_dir_z = std.fmt.bufPrintZ(&terminfo_dir_buf, "{s}/.cache/architect/terminfo", .{home}) catch {
+        log.warn("Failed to format terminfo cache path", .{});
+        return;
+    };
+    const cache_dir = cache_dir_z[0..cache_dir_z.len];
+
+    // Create cache directory structure (including parents)
+    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Create ~/.cache first if needed
+    const dot_cache = std.fmt.bufPrint(&parent_buf, "{s}/.cache", .{home}) catch return;
+    std.fs.makeDirAbsolute(dot_cache) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("Failed to create .cache dir: {}", .{err});
+            return;
+        },
+    };
+
+    // Create ~/.cache/architect (parent of terminfo dir)
+    var architect_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const architect_dir = std.fmt.bufPrint(&architect_buf, "{s}/.cache/architect", .{home}) catch return;
+    std.fs.makeDirAbsolute(architect_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("Failed to create architect cache dir: {}", .{err});
+            return;
+        },
+    };
+
+    // Create terminfo dir
+    std.fs.makeDirAbsolute(cache_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("Failed to create terminfo cache dir: {}", .{err});
+            return;
+        },
+    };
+
+    // Create x subdir for terminfo entries
+    var x_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const x_dir = std.fmt.bufPrint(&x_dir_buf, "{s}/x", .{cache_dir}) catch return;
+    std.fs.makeDirAbsolute(x_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("Failed to create terminfo x dir: {}", .{err});
+            return;
+        },
+    };
+
+    // Write terminfo source to temp file (need null-terminated paths for execve)
+    var src_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src_path_z = std.fmt.bufPrintZ(&src_path_buf, "{s}/xterm-ghostty.ti", .{cache_dir}) catch return;
+
+    const src_file = std.fs.createFileAbsolute(src_path_z, .{}) catch |err| {
+        log.warn("Failed to create terminfo source file: {}", .{err});
+        return;
+    };
+    defer src_file.close();
+    src_file.writeAll(ARCHITECT_TERMINFO_SRC) catch |err| {
+        log.warn("Failed to write terminfo source: {}", .{err});
+        return;
+    };
+
+    const tic_path = findExecutableInPath("tic") orelse {
+        log.warn("tic not found in PATH, falling back to {s}", .{FALLBACK_TERM});
+        return;
+    };
+
+    // Compile with tic
+    const tic_argv = [_:null]?[*:0]const u8{
+        tic_path.ptr,
+        "-x",
+        "-o",
+        cache_dir_z.ptr,
+        src_path_z.ptr,
+        null,
+    };
+
+    const fork_result = std.c.fork();
+    if (fork_result == 0) {
+        // Child: exec tic
+        _ = std.c.execve(tic_path.ptr, &tic_argv, @ptrCast(std.c.environ));
+        std.c._exit(1);
+    } else if (fork_result > 0) {
+        // Parent: wait for tic to complete
+        var status: c_int = 0;
+        _ = std.c.waitpid(fork_result, &status, 0);
+
+        if (wifexited(status) and wexitstatus(status) == 0) {
+            log.info("Successfully compiled {s} terminfo to {s}", .{ ARCHITECT_TERM, cache_dir_z });
+            terminfo_dir_z = cache_dir_z;
+            terminfo_available = true;
+        } else {
+            log.warn("tic failed to compile terminfo (status={}), falling back to {s}", .{ status, FALLBACK_TERM });
+        }
+    } else {
+        log.warn("Failed to fork for tic, falling back to {s}", .{FALLBACK_TERM});
+    }
+}
+
+fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
+    const path_env = posix.getenv("PATH") orelse return null;
+    const path_env_slice = std.mem.sliceTo(path_env, 0);
+    var it = std.mem.splitScalar(u8, path_env_slice, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = std.fmt.bufPrintZ(&tic_path_buf, "{s}/{s}", .{ dir, name }) catch continue;
+        if (std.fs.cwd().statFile(candidate)) |_| {
+            return candidate;
+        } else |_| {}
+    }
+    return null;
 }
 
 pub const Shell = struct {
@@ -36,6 +187,9 @@ pub const Shell = struct {
     const NAME_SOCK: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
 
     pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
+        // Ensure terminfo is set up (parent process, before fork)
+        ensureTerminfoSetup();
+
         const pty_instance = try pty_mod.Pty.open(size);
         errdefer {
             var pty_copy = pty_instance;
@@ -59,7 +213,16 @@ pub const Shell = struct {
 
             // Finder launches provide a nearly empty environment; seed common
             // terminal vars so shells behave like real terminals (color, terminfo).
-            setDefaultEnv("TERM", DEFAULT_TERM);
+            // Use xterm-ghostty if terminfo is available for kitty keyboard protocol support.
+            if (terminfo_available) {
+                if (terminfo_dir_z) |dir| {
+                    // We installed to cache, set TERMINFO to point there
+                    setEnv("TERMINFO", dir);
+                }
+                setEnv("TERM", ARCHITECT_TERM);
+            } else {
+                setEnv("TERM", FALLBACK_TERM);
+            }
             setDefaultEnv("COLORTERM", DEFAULT_COLORTERM);
             setDefaultEnv("LANG", DEFAULT_LANG);
             setDefaultEnv("TERM_PROGRAM", DEFAULT_TERM_PROGRAM);
@@ -86,7 +249,7 @@ pub const Shell = struct {
         if (!warned_env_defaults) {
             warned_env_defaults = true;
             if (posix.getenv("TERM") == null or posix.getenv("LANG") == null) {
-                log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ DEFAULT_TERM, DEFAULT_LANG });
+                log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ FALLBACK_TERM, DEFAULT_LANG });
             }
         }
 

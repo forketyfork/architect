@@ -1684,8 +1684,15 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod)
             focused.scroll_remainder = 0.0;
         }
     }
-    var buf: [8]u8 = undefined;
-    const n = input.encodeKeyWithMod(key, mod, &buf);
+
+    // Check if kitty keyboard protocol is enabled (any non-zero flags value)
+    const kitty_enabled = if (focused.terminal) |*terminal|
+        terminal.screens.active.kitty_keyboard.current().int() != 0
+    else
+        false;
+
+    var buf: [16]u8 = undefined;
+    const n = input.encodeKeyWithMod(key, mod, kitty_enabled, &buf);
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
     }

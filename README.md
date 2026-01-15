@@ -103,6 +103,7 @@ See [Setup](#setup) section below for building from source.
 - **Working Directory Bar**: Grid tiles show the session’s current working directory with a marquee for long paths
 - **Legible Cursor**: The block cursor keeps the underlying glyph visible for easier caret tracking
 - **Hold-to-Repeat on macOS**: Holding a key repeats characters instead of showing the system accent picker, matching terminal expectations
+- **Kitty Keyboard Protocol**: Applications can opt into enhanced key handling via the kitty keyboard protocol; modifier keys like Shift+Enter send CSI-u sequences only when the protocol is enabled, falling back to legacy encoding otherwise
 
 ## Prerequisites
 
@@ -622,6 +623,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
 - Text selection in full view with clipboard copy/paste (drag, ⌘C / ⌘V)
 - Cmd+Click to open hyperlinks (OSC 8) in your default browser
+- Kitty keyboard protocol negotiation (query response and conditional CSI-u encoding for Shift+Enter/Tab/Backspace)
 
 ## Known Limitations
 
