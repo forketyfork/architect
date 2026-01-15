@@ -9,6 +9,7 @@ const notify = @import("session/notify.zig");
 const session_state = @import("session/state.zig");
 const vt_stream = @import("vt_stream.zig");
 const platform = @import("platform/sdl.zig");
+const macos_input = @import("platform/macos_input_source.zig");
 const input = @import("input/mapper.zig");
 const renderer_mod = @import("render/renderer.zig");
 const shell_mod = @import("shell.zig");
@@ -180,6 +181,14 @@ pub fn main() !void {
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
+    var text_input_active = true;
+    var input_source_tracker = macos_input.InputSourceTracker.init();
+    defer input_source_tracker.deinit();
+    if (builtin.os.tag == .macos) {
+        input_source_tracker.capture() catch |err| {
+            log.warn("Failed to capture input source: {}", .{err});
+        };
+    }
 
     const arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
     defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
@@ -460,6 +469,37 @@ pub fn main() !void {
                     persistence.save(allocator) catch |err| {
                         std.debug.print("Failed to save persistence: {}\n", .{err});
                     };
+                },
+                c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                    if (builtin.os.tag == .macos) {
+                        input_source_tracker.capture() catch |err| {
+                            log.warn("Failed to capture input source: {}", .{err});
+                        };
+                        if (text_input_active) {
+                            platform.stopTextInput(sdl.window);
+                            text_input_active = false;
+                        }
+                    }
+                },
+                c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                    if (builtin.os.tag == .macos) {
+                        input_source_tracker.restore() catch |err| {
+                            log.warn("Failed to restore input source: {}", .{err});
+                        };
+                        // Reset text input so macOS restores the per-document input source.
+                        if (text_input_active) {
+                            platform.stopTextInput(sdl.window);
+                        }
+                        platform.startTextInput(sdl.window);
+                        text_input_active = true;
+                    }
+                },
+                c.SDL_EVENT_KEYMAP_CHANGED => {
+                    if (builtin.os.tag == .macos) {
+                        input_source_tracker.capture() catch |err| {
+                            log.warn("Failed to capture input source: {}", .{err});
+                        };
+                    }
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
