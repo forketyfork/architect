@@ -941,6 +941,7 @@ pub fn main() !void {
                     );
 
                     if (hovered_session) |session_idx| {
+                        var session = &sessions[session_idx];
                         const ticks_per_notch: isize = SCROLL_LINES_PER_TICK;
                         const wheel_ticks: isize = if (scaled_event.wheel.integer_y != 0)
                             @as(isize, @intCast(scaled_event.wheel.integer_y)) * ticks_per_notch
@@ -948,12 +949,43 @@ pub fn main() !void {
                             @as(isize, @intFromFloat(scaled_event.wheel.y * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
                         const scroll_delta = -wheel_ticks;
                         if (scroll_delta != 0) {
-                            scrollSession(&sessions[session_idx], scroll_delta, now);
-                            // If the wheel event originates from a touch/trackpad
-                            // contact (SDL_TOUCH_MOUSEID), keep inertia suppressed
-                            // until the contact is released.
-                            if (scaled_event.wheel.which == c.SDL_TOUCH_MOUSEID) {
-                                sessions[session_idx].scroll_inertia_allowed = false;
+                            // Check if terminal has mouse tracking enabled and we should forward scroll to app
+                            const should_forward = blk: {
+                                if (anim_state.mode != .Full) break :blk false;
+                                if (session.is_scrolled) break :blk false;
+                                const terminal = session.terminal orelse break :blk false;
+                                // Check if any mouse tracking mode is enabled
+                                const mouse_tracking = terminal.modes.get(.mouse_event_normal) or
+                                    terminal.modes.get(.mouse_event_button) or
+                                    terminal.modes.get(.mouse_event_any) or
+                                    terminal.modes.get(.mouse_event_x10);
+                                break :blk mouse_tracking;
+                            };
+
+                            if (should_forward) {
+                                // Forward scroll to terminal as mouse events
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |cell| {
+                                    const terminal = session.terminal.?;
+                                    const sgr_format = terminal.modes.get(.mouse_format_sgr);
+                                    const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
+                                    const count = @abs(scroll_delta);
+                                    var buf: [32]u8 = undefined;
+                                    var i: usize = 0;
+                                    while (i < count) : (i += 1) {
+                                        const n = input.encodeMouseScroll(direction, cell.col, cell.row, sgr_format, &buf);
+                                        if (n > 0) {
+                                            session.sendInput(buf[0..n]) catch {};
+                                        }
+                                    }
+                                }
+                            } else {
+                                scrollSession(session, scroll_delta, now);
+                                // If the wheel event originates from a touch/trackpad
+                                // contact (SDL_TOUCH_MOUSEID), keep inertia suppressed
+                                // until the contact is released.
+                                if (scaled_event.wheel.which == c.SDL_TOUCH_MOUSEID) {
+                                    session.scroll_inertia_allowed = false;
+                                }
                             }
                         }
                     }
@@ -1733,6 +1765,40 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod)
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
     }
+}
+
+const CellPosition = struct { col: u16, row: u16 };
+
+/// Convert mouse coordinates to terminal cell position for full-screen view.
+/// Returns null if the mouse is outside the terminal area.
+fn fullViewCellFromMouse(
+    mouse_x: c_int,
+    mouse_y: c_int,
+    render_width: c_int,
+    render_height: c_int,
+    font: *const font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+) ?CellPosition {
+    const padding = renderer_mod.TERMINAL_PADDING;
+    const origin_x: c_int = padding;
+    const origin_y: c_int = padding;
+    const drawable_w: c_int = render_width - padding * 2;
+    const drawable_h: c_int = render_height - padding * 2;
+    if (drawable_w <= 0 or drawable_h <= 0) return null;
+
+    const cell_w: c_int = font.cell_width;
+    const cell_h: c_int = font.cell_height;
+    if (cell_w == 0 or cell_h == 0) return null;
+
+    if (mouse_x < origin_x or mouse_y < origin_y) return null;
+    if (mouse_x >= origin_x + drawable_w or mouse_y >= origin_y + drawable_h) return null;
+
+    const col = @as(u16, @intCast(@divFloor(mouse_x - origin_x, cell_w)));
+    const row = @as(u16, @intCast(@divFloor(mouse_y - origin_y, cell_h)));
+    if (col >= term_cols or row >= term_rows) return null;
+
+    return .{ .col = col, .row = row };
 }
 
 fn fullViewPinFromMouse(
