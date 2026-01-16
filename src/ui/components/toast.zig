@@ -3,7 +3,7 @@ const c = @import("../../c.zig");
 const types = @import("../types.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const UiComponent = @import("../component.zig").UiComponent;
-const font_cache = @import("../font_cache.zig");
+const font_cache = @import("../../font_cache.zig");
 
 pub const ToastComponent = struct {
     allocator: std.mem.Allocator,
@@ -135,8 +135,8 @@ pub const ToastComponent = struct {
         if (!self.active) return;
         if (!self.dirty and self.texture != null) return;
 
-        const fonts = cache.get(NOTIFICATION_FONT_SIZE) orelse return error.FontUnavailable;
-        const toast_font = fonts.main;
+        const fonts = try cache.get(NOTIFICATION_FONT_SIZE);
+        const toast_font = fonts.regular;
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 

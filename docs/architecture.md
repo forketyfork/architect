@@ -60,7 +60,7 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 - Reports `needsFrame()` when any component requires animation
 
 **UiAssets** provides shared rendering resources:
-- `FontCache` stores configured UI fonts keyed by pixel size, so components and the CWD bar reuse a single loaded font set instead of opening per-component instances.
+- `FontCache` stores configured fonts keyed by pixel size, so terminal rendering and UI components reuse a single loaded font set instead of opening per-component instances.
 
 ### Session cleanup
 - `main.zig` tracks how many sessions were constructed and uses a single defer to deinitialize exactly those instances on any exit path.
@@ -77,6 +77,7 @@ src/
 ├── config.zig            # TOML config persistence
 ├── geom.zig              # Rect + point containment
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
+├── font_cache.zig        # Shared font cache (terminal + UI)
 ├── font_paths.zig        # Font path resolution for bundled fonts
 ├── shell.zig             # Shell process spawning
 ├── pty.zig               # PTY abstractions
@@ -114,7 +115,6 @@ src/
     ├── root.zig          # UiRoot: component registry, dispatch
     ├── component.zig     # UiComponent vtable interface
     ├── types.zig         # UiHost, UiAction, UiAssets, SessionUiInfo
-    ├── font_cache.zig    # Shared UI font cache (fallback-aware)
     ├── scale.zig         # DPI scaling helper
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │

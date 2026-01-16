@@ -171,12 +171,12 @@ pub const HelpOverlayComponent = struct {
     fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = cache.get(font_size) orelse return;
+        const fonts = cache.get(font_size) catch return;
 
         const question_mark = "⌘?";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.main, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
+        const surface = c.TTF_RenderText_Blended(fonts.regular, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
@@ -291,19 +291,19 @@ pub const HelpOverlayComponent = struct {
         const cache = self.allocator.create(Cache) catch return null;
         errdefer self.allocator.destroy(cache);
 
-        const title_fonts = cache_store.get(title_font_size) orelse {
+        const title_fonts = cache_store.get(title_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
 
-        const key_fonts = cache_store.get(key_font_size) orelse {
+        const key_fonts = cache_store.get(key_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
 
         const title_text = "Keyboard Shortcuts";
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.main, title_text, title_color) catch {
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, title_text, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -313,7 +313,7 @@ pub const HelpOverlayComponent = struct {
 
         var shortcut_tex: [shortcuts.len]ShortcutTex = undefined;
         for (shortcuts, 0..) |shortcut, idx| {
-            const key_tex = makeTextTexture(renderer, key_fonts.main, shortcut.key, key_color) catch {
+            const key_tex = makeTextTexture(renderer, key_fonts.regular, shortcut.key, key_color) catch {
                 for (shortcut_tex[0..idx]) |st| {
                     c.SDL_DestroyTexture(st.key.tex);
                     c.SDL_DestroyTexture(st.desc.tex);
@@ -322,7 +322,7 @@ pub const HelpOverlayComponent = struct {
                 self.allocator.destroy(cache);
                 return null;
             };
-            const desc_tex = makeTextTexture(renderer, key_fonts.main, shortcut.desc, desc_color) catch {
+            const desc_tex = makeTextTexture(renderer, key_fonts.regular, shortcut.desc, desc_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 for (shortcut_tex[0..idx]) |st| {
                     c.SDL_DestroyTexture(st.key.tex);

@@ -5,7 +5,7 @@ const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
-const font_cache = @import("../font_cache.zig");
+const font_cache = @import("../../font_cache.zig");
 
 pub const ConfirmDialogComponent = struct {
     allocator: std.mem.Allocator,
@@ -310,10 +310,10 @@ pub const ConfirmDialogComponent = struct {
 
     fn ensureTextures(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null and self.confirm_tex != null and self.cancel_tex != null) return;
-        const title_fonts = cache.get(self.title_font_size) orelse return error.FontUnavailable;
-        const body_fonts = cache.get(self.body_font_size) orelse return error.FontUnavailable;
-        const title_font = title_fonts.main;
-        const body_font = body_fonts.main;
+        const title_fonts = try cache.get(self.title_font_size);
+        const body_fonts = try cache.get(self.body_font_size);
+        const title_font = title_fonts.regular;
+        const body_font = body_fonts.regular;
 
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);

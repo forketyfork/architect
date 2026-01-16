@@ -10,7 +10,7 @@ const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const dpi = @import("../ui/scale.zig");
-const font_cache_mod = @import("../ui/font_cache.zig");
+const font_cache_mod = @import("../font_cache.zig");
 const input = @import("../input/mapper.zig");
 
 const log = std.log.scoped(.render);
@@ -692,8 +692,8 @@ fn renderCwdBar(
         session.cwd_font_size = font_px;
         session.cwd_dirty = true;
     }
-    const fonts = font_cache.get(font_px) orelse return;
-    const cwd_font = fonts.main;
+    const fonts = font_cache.get(font_px) catch return;
+    const cwd_font = fonts.regular;
 
     const fg = theme.foreground;
     const dimmed_fg = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 180 };

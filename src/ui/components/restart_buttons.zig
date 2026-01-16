@@ -4,7 +4,7 @@ const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
-const font_cache = @import("../font_cache.zig");
+const font_cache = @import("../../font_cache.zig");
 
 pub const RestartButtonsComponent = struct {
     allocator: std.mem.Allocator,
@@ -185,8 +185,8 @@ pub const RestartButtonsComponent = struct {
     fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
-        const fonts = cache.get(RESTART_BUTTON_FONT_SIZE) orelse return error.FontUnavailable;
-        const icon_font = fonts.main;
+        const fonts = try cache.get(RESTART_BUTTON_FONT_SIZE);
+        const icon_font = fonts.regular;
 
         const restart_text = "Restart";
         const fg = theme.foreground;
