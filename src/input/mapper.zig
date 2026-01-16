@@ -477,6 +477,84 @@ test "encodeKeyWithMod - ctrl+tab kitty mode" {
     try std.testing.expectEqualSlices(u8, "\x1b[9;5u", buf[0..n]);
 }
 
+pub const MouseScrollDirection = enum { up, down };
+
+/// Encodes a mouse scroll event for terminal mouse tracking.
+/// When sgr_format is true, uses SGR format: CSI < button ; col ; row M
+/// When sgr_format is false, uses X10 format: CSI M <button+32> <col+33> <row+33>
+/// Button 64 = scroll up, 65 = scroll down (in both formats)
+/// col and row are 0-based inputs; encoding adjusts as needed.
+pub fn encodeMouseScroll(
+    direction: MouseScrollDirection,
+    col: u16,
+    row: u16,
+    sgr_format: bool,
+    buf: []u8,
+) usize {
+    const button: u8 = switch (direction) {
+        .up => 64,
+        .down => 65,
+    };
+
+    if (sgr_format) {
+        // SGR mouse format: ESC [ < button ; col ; row M (1-based coordinates)
+        const result = std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}M", .{ button, col + 1, row + 1 }) catch return 0;
+        return result.len;
+    } else {
+        // X10 mouse format: ESC [ M <button+32> <col+33> <row+33>
+        // Clamp coordinates so (coord + 33) fits in a single byte.
+        const x10_offset: u16 = 33;
+        const x10_coord_max: u16 = 255 - x10_offset;
+        const x = @min(col, x10_coord_max) + x10_offset;
+        const y = @min(row, x10_coord_max) + x10_offset;
+        if (buf.len < 6) return 0;
+        buf[0] = '\x1b';
+        buf[1] = '[';
+        buf[2] = 'M';
+        buf[3] = button + 32;
+        buf[4] = @intCast(x);
+        buf[5] = @intCast(y);
+        return 6;
+    }
+}
+
+test "encodeMouseScroll - scroll up SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseScroll(.up, 0, 0, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<64;1;1M", buf[0..n]);
+}
+
+test "encodeMouseScroll - scroll down SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseScroll(.down, 0, 0, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<65;1;1M", buf[0..n]);
+}
+
+test "encodeMouseScroll - with position SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseScroll(.up, 10, 5, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<64;11;6M", buf[0..n]);
+}
+
+test "encodeMouseScroll - scroll up X10" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseScroll(.up, 0, 0, false, &buf);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[M", buf[0..3]);
+    try std.testing.expectEqual(@as(u8, 64 + 32), buf[3]); // button
+    try std.testing.expectEqual(@as(u8, 33), buf[4]); // col + 33
+    try std.testing.expectEqual(@as(u8, 33), buf[5]); // row + 33
+}
+
+test "encodeMouseScroll - scroll down X10 with position" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseScroll(.down, 10, 5, false, &buf);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqual(@as(u8, 65 + 32), buf[3]); // button
+    try std.testing.expectEqual(@as(u8, 10 + 33), buf[4]); // col + 33
+    try std.testing.expectEqual(@as(u8, 5 + 33), buf[5]); // row + 33
+}
+
 test "terminalSwitchShortcut - cmd+1 returns 0" {
     try std.testing.expectEqual(@as(?usize, 0), terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI, 9));
 }

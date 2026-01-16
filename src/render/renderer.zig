@@ -209,7 +209,7 @@ fn renderSessionContent(
     const cursor = screen.cursor;
     const cursor_col: usize = cursor.x;
     const cursor_row: usize = cursor.y;
-    const should_render_cursor = !session.is_scrolled and is_focused and !session.dead and cursor_visible;
+    const should_render_cursor = !session.is_viewing_scrollback and is_focused and !session.dead and cursor_visible;
     const pages = screen.pages;
 
     const base_cell_width = font.cell_width;
@@ -250,7 +250,7 @@ fn renderSessionContent(
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
-            const list_cell = pages.getCell(if (session.is_scrolled)
+            const list_cell = pages.getCell(if (session.is_viewing_scrollback)
                 .{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
             else
                 .{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse continue;
@@ -305,7 +305,7 @@ fn renderSessionContent(
             }
 
             if (active_selection) |sel| {
-                const point_tag = if (session.is_scrolled)
+                const point_tag = if (session.is_viewing_scrollback)
                     ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
                 else
                     ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
@@ -326,7 +326,7 @@ fn renderSessionContent(
 
             if (session.hovered_link_start) |link_start| {
                 if (session.hovered_link_end) |link_end| {
-                    const point_for_link = if (session.is_scrolled)
+                    const point_for_link = if (session.is_viewing_scrollback)
                         ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
                     else
                         ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
@@ -504,7 +504,7 @@ fn renderSessionOverlays(
         }
     }
 
-    if (is_grid_view and session.is_scrolled) {
+    if (is_grid_view and session.is_viewing_scrollback) {
         const yellow = theme.palette[3];
         _ = c.SDL_SetRenderDrawColor(renderer, yellow.r, yellow.g, yellow.b, 220);
         const indicator_rect = c.SDL_FRect{
