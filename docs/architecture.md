@@ -48,7 +48,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - Terminal cell content with HarfBuzz-shaped text runs
 - Grid cell backgrounds and borders (focused/unfocused)
 - Expand/collapse/panning animations with eased interpolation
-- Attention borders (pulsing yellow for awaiting approval, solid blue for done)
+- Attention borders (pulsing yellow for awaiting approval, solid green for done)
 - CWD bar with marquee scrolling for long paths
 - Scrollback indicator strip
 
@@ -79,7 +79,7 @@ src/
 ├── geom.zig              # Rect + point containment
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
 ├── font_cache.zig        # Shared font cache (terminal + UI)
-├── font_paths.zig        # Font path resolution for bundled fonts
+├── font_paths.zig        # Font path resolution for system fonts
 ├── shell.zig             # Shell process spawning
 ├── pty.zig               # PTY abstractions
 ├── cwd.zig               # macOS working directory detection
@@ -137,6 +137,12 @@ src/
     └── gestures/
         └── hold.zig      # Reusable hold gesture detector
 ```
+
+## Asset Layout
+
+`assets/` stores runtime assets that are embedded or packaged, including:
+- `assets/macos/Architect.icns` for the macOS bundle icon
+- `assets/terminfo.zig` module embedding `assets/terminfo/xterm-ghostty.terminfo` for `src/shell.zig`
 
 ## Key Types
 
@@ -276,7 +282,7 @@ Sessions are lazily spawned: only session 0 starts on launch; others spawn on fi
 
 External tools (AI assistants) signal state changes via Unix domain socket:
 ```
-${XDG_RUNTIME_DIR}/architect_notify_<pid>.sock
+${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock
 ```
 
 Protocol: Single-line JSON
@@ -355,4 +361,4 @@ Coordinates multiple pill overlays:
 - **SDL3**: Window management, rendering, input
 - **SDL3_ttf**: Font rendering with HarfBuzz shaping
 - **xev**: Event-driven async I/O for process watching
-- **Victor Mono Nerd Font**: Bundled monospace font with ligatures
+- **System fonts**: Resolved from macOS font directories (default family is SFNSMono)

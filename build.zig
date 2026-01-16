@@ -17,6 +17,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const assets_mod = b.createModule(.{
+        .root_source_file = b.path("assets/terminfo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("assets", assets_mod);
 
     if (b.lazyDependency("ghostty", .{
         .target = target,

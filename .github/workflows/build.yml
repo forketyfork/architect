@@ -10,7 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!*.md'
+              - '!docs/**'
+
   build-matrix:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -81,7 +98,19 @@ jobs:
 
   build:
     name: build
-    needs: build-matrix
+    needs: [changes, build-matrix]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Matrix build succeeded"
+      - name: Check result
+        run: |
+          if [[ "${{ needs.changes.outputs.code }}" == "false" ]]; then
+            echo "Documentation-only change, skipping build"
+            exit 0
+          fi
+          if [[ "${{ needs.build-matrix.result }}" == "success" ]]; then
+            echo "Build succeeded"
+            exit 0
+          fi
+          echo "Build failed"
+          exit 1

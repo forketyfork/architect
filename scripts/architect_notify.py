@@ -77,7 +77,9 @@ def state_from_notification(raw: str) -> str | None:
     if ntype:
         if ntype in VALID_STATES:
             return ntype
-        if "approval" in ntype or "permission" in ntype or ("input" in ntype and "await" in ntype):
+        if "approval" in ntype or "permission" in ntype or (
+            "input" in ntype and "await" in ntype
+        ):
             return "awaiting_approval"
         if "complete" in ntype or ntype.endswith("-done"):
             return "done"
