@@ -76,7 +76,7 @@ enqueue() {
         return
     fi
 
-    if echo "$seen_list" | grep -Fxq "$dep"; then
+    if printf '%s\n' "$seen_list" | grep -Fxq "$dep"; then
         return
     fi
 
@@ -104,11 +104,19 @@ while IFS= read -r dep; do
 done <<< "$initial_deps"
 
 echo "Found dependencies:"
-printf '  %s\n' $initial_deps
+while IFS= read -r dep; do
+    [ -z "$dep" ] && continue
+    printf '  %s\n' "$dep"
+done <<< "$initial_deps"
 
 while [ -n "$queue" ]; do
-    lib_path=$(printf '%s\n' "$queue" | head -n1)
-    queue=$(printf '%s\n' "$queue" | tail -n +2)
+    if [[ "$queue" == *$'\n'* ]]; then
+        lib_path="${queue%%$'\n'*}"
+        queue="${queue#*$'\n'}"
+    else
+        lib_path="$queue"
+        queue=""
+    fi
 
     lib_name=$(basename "$lib_path")
     dest="$LIB_DIR/$lib_name"
@@ -130,11 +138,11 @@ while [ -n "$queue" ]; do
     done <<< "$nested_list"
 done
 
-for original in $seen_list; do
+while IFS= read -r original; do
     [ -z "$original" ] && continue
     name=$(basename "$original")
     install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect.bin" || true
-done
+done <<< "$seen_list"
 
 echo ""
 echo "Verifying final dependencies..."
@@ -144,6 +152,7 @@ if otool -L "$MACOS_DIR/architect.bin" | grep -q '/nix/store'; then
 fi
 
 remaining=0
+shopt -s nullglob
 for file in "$LIB_DIR"/*.dylib; do
     if otool -L "$file" | grep -q '/nix/store'; then
         echo "Warning: Nix store references remain in $file"
@@ -151,6 +160,7 @@ for file in "$LIB_DIR"/*.dylib; do
         remaining=1
     fi
 done
+shopt -u nullglob
 
 if [ $remaining -eq 0 ]; then
     echo "All bundled libraries patched to use @executable_path/lib"

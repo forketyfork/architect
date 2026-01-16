@@ -66,11 +66,13 @@ just test
 zig build test
 ```
 
-Check formatting:
+Check formatting and script linting:
 ```bash
 just lint
 # or
 zig fmt --check src/
+shellcheck scripts/*.sh scripts/verify-setup.sh
+ruff check scripts/*.py
 ```
 
 Format code:
@@ -112,7 +114,7 @@ Examples:
 
 1. Copy the helper script:
    ```bash
-   cp architect_notify.py ~/.claude/architect_notify.py
+   cp scripts/architect_notify.py ~/.claude/architect_notify.py
    chmod +x ~/.claude/architect_notify.py
    ```
 
@@ -148,7 +150,7 @@ Examples:
 
 1. Copy the helper script:
    ```bash
-   cp architect_notify.py ~/.codex/architect_notify.py
+   cp scripts/architect_notify.py ~/.codex/architect_notify.py
    chmod +x ~/.codex/architect_notify.py
    ```
 
@@ -161,8 +163,8 @@ Examples:
 
 1. Copy the notification scripts:
    ```bash
-   cp architect_notify.py ~/.gemini/architect_notify.py
-   cp architect_hook_gemini.py ~/.gemini/architect_hook.py
+   cp scripts/architect_notify.py ~/.gemini/architect_notify.py
+   cp scripts/architect_hook_gemini.py ~/.gemini/architect_hook.py
    chmod +x ~/.gemini/architect_notify.py ~/.gemini/architect_hook.py
    ```
 
