@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
+Architect is a terminal multiplexer displaying interactive sessions in a grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -71,6 +71,7 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 src/
 ├── main.zig              # Entry point, frame loop, event dispatch
 ├── c.zig                 # C bindings (SDL3, TTF, etc.)
+├── colors.zig            # Theme and color palette management (ANSI 16/256)
 ├── config.zig            # TOML config persistence
 ├── geom.zig              # Rect + point containment
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
@@ -115,15 +116,19 @@ src/
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │
     ├── components/
-│   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
-│   ├── worktree_overlay.zig # Git worktree picker (T pill)
-│   ├── toast.zig            # Toast notification display
-│   ├── escape_hold.zig      # ESC hold-to-collapse indicator
-│   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
-│   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
-│   ├── restart_buttons.zig  # Dead session restart buttons
-    │   ├── quit_confirm.zig     # Quit confirmation dialog
-    │   └── marquee_label.zig    # Reusable scrolling text label
+    │   ├── button.zig            # Reusable styled button rendering helper
+    │   ├── confirm_dialog.zig    # Generic confirmation dialog component
+    │   ├── escape_hold.zig       # ESC hold-to-collapse indicator
+    │   ├── expanding_overlay.zig # Expanding overlay animation state helper
+    │   ├── global_shortcuts.zig  # Global keyboard shortcuts (e.g., Cmd+,)
+    │   ├── help_overlay.zig      # Keyboard shortcut overlay (? pill)
+    │   ├── hotkey_indicator.zig  # Hotkey visual feedback indicator
+    │   ├── marquee_label.zig     # Reusable scrolling text label
+    │   ├── pill_group.zig        # Pill overlay coordinator (collapses others)
+    │   ├── quit_confirm.zig      # Quit confirmation dialog
+    │   ├── restart_buttons.zig   # Dead session restart buttons
+    │   ├── toast.zig             # Toast notification display
+    │   └── worktree_overlay.zig  # Git worktree picker (T pill)
     │
     └── gestures/
         └── hold.zig      # Reusable hold gesture detector
@@ -156,6 +161,20 @@ done             → AI assistant task completed (solid border)
 - `start_rect` → `target_rect` interpolation
 - `focused_session` and `previous_session` for panning
 
+### Theme (`colors.zig`)
+```zig
+struct {
+    background: SDL_Color,   // Terminal background
+    foreground: SDL_Color,   // Default text color
+    selection: SDL_Color,    // Selection highlight
+    accent: SDL_Color,       // UI accent (focus indicators, pills)
+    palette: [16]SDL_Color,  // ANSI 16-color palette
+}
+```
+- Created from config via `Theme.fromConfig()`
+- Provides `getPaletteColor(idx)` for 0-15 palette access
+- `get256ColorWithTheme(idx, theme)` handles full 256-color mode (16-231: color cube, 232-255: grayscale)
+
 ### UI Component Interface
 ```zig
 VTable {
@@ -171,12 +190,14 @@ VTable {
 ### UiAction (UI→App mutations)
 ```zig
 union(enum) {
-    RestartSession: usize,        // Restart dead session at index
-    RequestCollapseFocused: void, // Collapse current fullscreen to grid
-    ConfirmQuit: void,            // Confirm quit despite running processes
-    OpenConfig: void,             // Open config file (Cmd+,)
-    SwitchWorktree: struct { session: usize, path: []const u8 }, // cd the focused shell into another worktree (no respawn)
-    CreateWorktree: struct { session: usize, base_path: []const u8, name: []const u8 }, // mkdir -p .architect && git worktree add .architect/<name> -b <name> && cd there
+    RestartSession: usize,         // Restart dead session at index
+    RequestCollapseFocused: void,  // Collapse current fullscreen to grid
+    ConfirmQuit: void,             // Confirm quit despite running processes
+    OpenConfig: void,              // Open config file (Cmd+,)
+    SwitchWorktree: SwitchWorktreeAction,  // cd the focused shell into another worktree (no respawn)
+    CreateWorktree: CreateWorktreeAction,  // git worktree add .architect/<name> -b <name> && cd there
+    RemoveWorktree: RemoveWorktreeAction,  // Remove a git worktree
+    DespawnSession: usize,         // Despawn/kill a session at index
 }
 ```
 
@@ -193,6 +214,7 @@ struct {
     focused_cwd: ?[]const u8,
     focused_has_foreground_process: bool,
     sessions: []SessionUiInfo,  // dead/spawned flags per session
+    theme: *const Theme,        // Active color theme
 }
 ```
 
@@ -218,10 +240,13 @@ struct {
 
 Components that consume events:
 - `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay
-- `WorktreeOverlayComponent`: ⌘T pill, Cmd+T, Cmd+1–9 to cd the focused shell into a worktree; Cmd+0 opens a creation modal that builds `.architect/<name>` via `git worktree add -b <name>` and cds into it; pill is hidden when a foreground process is running; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), highlights rows on hover with a gradient, supports click selection, limits the list to 9 entries, and displays paths relative to the primary worktree
+- `WorktreeOverlayComponent`: ⌘T pill, Cmd+T, Cmd+1–9 to cd the focused shell into a worktree; Cmd+0 opens a creation modal that builds `.architect/<name>` via `git worktree add -b <name>` and cds into it; pill is hidden when a foreground process is running; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), highlights rows on hover with a gradient, supports click selection, limits the list to 9 entries, and displays paths relative to the primary worktree; includes delete (×) button to remove non-root worktrees
 - `EscapeHoldComponent`: ESC key down/up for hold-to-collapse
 - `RestartButtonsComponent`: Restart button clicks
-- `QuitConfirmComponent`: Confirmation dialog buttons
+- `QuitConfirmComponent`: Quit confirmation dialog buttons
+- `ConfirmDialogComponent`: Generic confirmation dialog (used by worktree removal, etc.)
+- `PillGroupComponent`: Coordinates pill overlays (collapses one when another expands)
+- `GlobalShortcutsComponent`: Handles global shortcuts like Cmd+, to open config
 
 ## Rendering Order
 
@@ -272,6 +297,32 @@ return self.active or self.first_frame.wantsFrame();
 // At end of render:
 self.first_frame.markDrawn();
 ```
+
+## Reusable UI Primitives
+
+### Button (`button.zig`)
+Renders themed buttons with three variants:
+- `default`: Selection background with accent border
+- `primary`: Accent fill with blue border
+- `danger`: Red fill with bright-red border
+
+### ExpandingOverlay (`expanding_overlay.zig`)
+Animation state helper for pill-style overlays that expand/collapse:
+- Tracks `State` (Closed, Expanding, Open, Collapsing)
+- Calculates interpolated size and rect for animation frames
+- Used by `HelpOverlayComponent` and `WorktreeOverlayComponent`
+
+### ConfirmDialog (`confirm_dialog.zig`)
+Generic modal confirmation dialog:
+- Configurable title, message, confirm/cancel labels
+- Emits a `UiAction` on confirm
+- Modal overlay blocks all other input
+- Used for worktree removal and other destructive actions
+
+### PillGroup (`pill_group.zig`)
+Coordinates multiple pill overlays:
+- When one pill starts expanding, collapses any other open pill
+- Prevents multiple overlays from being expanded simultaneously
 
 ## DPI Scaling
 

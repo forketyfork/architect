@@ -2,6 +2,10 @@
 
 Guidance for any code agent working on the Architect repo. Keep this file instruction-oriented—refer to `README.md` for product details.
 
+## Documentation
+
+- Architecture overview lives in `docs/architecture.md`. Read it to understand the app architecture.
+
 ## Quick Workflow
 1. Read the task and skim `README.md` for expected behavior; avoid duplicating that content here.
 2. Ghostty is fetched via Zig package manager; run `just setup` only if you want to pre-cache the tarball before building.
@@ -96,7 +100,6 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 - Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`’s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
-- Architecture overview lives in `docs/architecture.md`—consult it before structural changes.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
 - Cursor rendering: set the cursor’s background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
 - ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty’s app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn’t support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
