@@ -78,14 +78,7 @@ pub const WorktreeOverlayComponent = struct {
         key_color: c.SDL_Color,
         title_color: c.SDL_Color,
         entry_color: c.SDL_Color,
-        title_fonts: FontWithFallbacks,
-        entry_fonts: FontWithFallbacks,
-    };
-
-    const FontWithFallbacks = struct {
-        main: *c.TTF_Font,
-        symbol: ?*c.TTF_Font,
-        emoji: ?*c.TTF_Font,
+        font_generation: u64,
     };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
@@ -357,15 +350,14 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
-        const font_path = assets.font_path orelse return;
+        const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
-        defer closeFontWithFallbacks(fonts);
+        const fonts = cache.get(font_size) catch return;
 
         const glyph = "⌘T";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.main, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
+        const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
@@ -707,14 +699,14 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
-        const font_path = assets.font_path orelse return null;
+        const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
         const fg = theme.foreground;
         const entry_count = self.entryCount();
 
         if (self.cache) |cache| {
-            if (cache.title_font_size == title_font_size and cache.entry_font_size == entry_font_size and cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and cache.ui_scale == ui_scale and cache.entries.len == entry_count) {
+            if (cache.title_font_size == title_font_size and cache.entry_font_size == entry_font_size and cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and cache.ui_scale == ui_scale and cache.entries.len == entry_count and cache.font_generation == cache_store.generation) {
                 return cache;
             }
             self.destroyCache();
@@ -723,23 +715,18 @@ pub const WorktreeOverlayComponent = struct {
         const cache = self.allocator.create(Cache) catch return null;
         errdefer self.allocator.destroy(cache);
 
-        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
+        const title_fonts = cache_store.get(title_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(title_fonts);
 
-        const entry_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, entry_font_size) catch {
-            closeFontWithFallbacks(title_fonts);
+        const entry_fonts = cache_store.get(entry_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(entry_fonts);
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.main, TITLE, title_color) catch {
-            closeFontWithFallbacks(entry_fonts);
-            closeFontWithFallbacks(title_fonts);
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, TITLE, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -749,8 +736,6 @@ pub const WorktreeOverlayComponent = struct {
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
             c.SDL_DestroyTexture(title_tex.tex);
-            closeFontWithFallbacks(entry_fonts);
-            closeFontWithFallbacks(title_fonts);
             self.allocator.destroy(cache);
             return null;
         };
@@ -765,12 +750,10 @@ pub const WorktreeOverlayComponent = struct {
             var key_buf: [8]u8 = undefined;
             const digit: u8 = @as(u8, @intCast(idx % 10));
             const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch key_buf[0..0];
-            const key_tex = makeTextTexture(renderer, entry_fonts.main, key_slice, key_color) catch {
+            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(entry_fonts);
-                closeFontWithFallbacks(title_fonts);
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -779,14 +762,12 @@ pub const WorktreeOverlayComponent = struct {
             const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - trailing_gutter;
 
             var path_buf: [256]u8 = undefined;
-            const truncated_path = truncateTextLeft(path_slice, entry_fonts.main, max_path_width, &path_buf) catch path_slice;
-            const path_tex = makeTextTexture(renderer, entry_fonts.main, truncated_path, entry_color) catch {
+            const truncated_path = truncateTextLeft(path_slice, entry_fonts.regular, max_path_width, &path_buf) catch path_slice;
+            const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(entry_fonts);
-                closeFontWithFallbacks(title_fonts);
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -803,8 +784,7 @@ pub const WorktreeOverlayComponent = struct {
             .key_color = key_color,
             .title_color = title_color,
             .entry_color = entry_color,
-            .title_fonts = title_fonts,
-            .entry_fonts = entry_fonts,
+            .font_generation = cache_store.generation,
         };
 
         self.cache = cache;
@@ -821,8 +801,6 @@ pub const WorktreeOverlayComponent = struct {
             c.SDL_DestroyTexture(cache.title.tex);
             destroyEntryTextures(cache.entries);
             self.allocator.free(cache.entries);
-            closeFontWithFallbacks(cache.entry_fonts);
-            closeFontWithFallbacks(cache.title_fonts);
             self.allocator.destroy(cache);
             self.cache = null;
         }
@@ -1205,8 +1183,11 @@ pub const WorktreeOverlayComponent = struct {
         return true;
     }
 
-    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = self.cache orelse return;
+        const font_cache = assets.font_cache orelse return;
+        const title_fonts = font_cache.get(cache.title_font_size) catch return;
+        const entry_fonts = font_cache.get(cache.entry_font_size) catch return;
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -1232,7 +1213,7 @@ pub const WorktreeOverlayComponent = struct {
         }, MODAL_RADIUS);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, cache.title_fonts.main, "Create worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Create worktree", title_color) catch null;
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1259,7 +1240,7 @@ pub const WorktreeOverlayComponent = struct {
         const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
         const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const input_tex = makeTextTexture(renderer, cache.entry_fonts.main, input_text, input_color) catch null;
+        const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch null;
         const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
         var text_width: f32 = 0;
         var text_height: f32 = 0;
@@ -1287,12 +1268,12 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Buttons
-        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
-        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale);
 
         // Error message
         if (self.create_error) |err| {
-            const err_tex = makeTextTexture(renderer, cache.entry_fonts.main, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch null;
+            const err_tex = makeTextTexture(renderer, entry_fonts.regular, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch null;
             if (err_tex) |tex| {
                 defer c.SDL_DestroyTexture(tex.tex);
                 const err_x = layout.input.x;
@@ -1307,8 +1288,11 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = self.cache orelse return;
+        const font_cache = assets.font_cache orelse return;
+        const title_fonts = font_cache.get(cache.title_font_size) catch return;
+        const entry_fonts = font_cache.get(cache.entry_font_size) catch return;
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -1333,7 +1317,7 @@ pub const WorktreeOverlayComponent = struct {
         }, MODAL_RADIUS);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, cache.title_fonts.main, "Remove worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch null;
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1351,7 +1335,7 @@ pub const WorktreeOverlayComponent = struct {
                 const worktree = self.worktrees.items[wt_idx];
                 const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
                 const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
-                const message_tex = makeTextTexture(renderer, cache.entry_fonts.main, worktree.display, message_color) catch null;
+                const message_tex = makeTextTexture(renderer, entry_fonts.regular, worktree.display, message_color) catch null;
                 if (message_tex) |tex| {
                     defer c.SDL_DestroyTexture(tex.tex);
                     const message_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1365,8 +1349,8 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Remove", .danger, theme, host.ui_scale);
-        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Remove", .danger, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale);
     }
 
     fn entryCount(self: *WorktreeOverlayComponent) usize {
@@ -1597,50 +1581,6 @@ pub const WorktreeOverlayComponent = struct {
             return gitdir_path[0 .. gitdir_path.len - suffix.len];
         }
         return std.fs.path.dirname(gitdir_path) orelse gitdir_path;
-    }
-
-    fn openFontWithFallbacks(
-        font_path: [:0]const u8,
-        symbol_path: ?[:0]const u8,
-        emoji_path: ?[:0]const u8,
-        size: c_int,
-    ) !FontWithFallbacks {
-        const main = c.TTF_OpenFont(font_path.ptr, @floatFromInt(size)) orelse return error.FontUnavailable;
-        errdefer c.TTF_CloseFont(main);
-
-        var symbol: ?*c.TTF_Font = null;
-        if (symbol_path) |path| {
-            symbol = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-            if (symbol) |s| {
-                if (!c.TTF_AddFallbackFont(main, s)) {
-                    c.TTF_CloseFont(s);
-                    symbol = null;
-                }
-            }
-        }
-
-        var emoji: ?*c.TTF_Font = null;
-        if (emoji_path) |path| {
-            emoji = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-            if (emoji) |e| {
-                if (!c.TTF_AddFallbackFont(main, e)) {
-                    c.TTF_CloseFont(e);
-                    emoji = null;
-                }
-            }
-        }
-
-        return FontWithFallbacks{
-            .main = main,
-            .symbol = symbol,
-            .emoji = emoji,
-        };
-    }
-
-    fn closeFontWithFallbacks(fonts: FontWithFallbacks) void {
-        if (fonts.symbol) |s| c.TTF_CloseFont(s);
-        if (fonts.emoji) |e| c.TTF_CloseFont(e);
-        c.TTF_CloseFont(fonts.main);
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {

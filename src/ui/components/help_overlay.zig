@@ -8,17 +8,12 @@ const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
-const FontWithFallbacks = struct {
-    main: *c.TTF_Font,
-    symbol: ?*c.TTF_Font,
-    emoji: ?*c.TTF_Font,
-};
-
 const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
     .{ .key = "Click terminal", .desc = "Expand to full screen" },
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
+    .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a terminal" },
     .{ .key = "⌘↵", .desc = "Expand focused terminal" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘?", .desc = "Open help" },
@@ -45,59 +40,13 @@ const ShortcutTex = struct {
 };
 
 const Cache = struct {
-    ui_scale: f32,
     title_font_size: c_int,
     key_font_size: c_int,
-    title_fonts: FontWithFallbacks,
-    key_fonts: FontWithFallbacks,
     title: TextTex,
     shortcuts: [shortcuts.len]ShortcutTex,
     theme_fg: c.SDL_Color,
+    font_generation: u64,
 };
-
-fn openFontWithFallbacks(
-    font_path: [:0]const u8,
-    symbol_path: ?[:0]const u8,
-    emoji_path: ?[:0]const u8,
-    size: c_int,
-) !FontWithFallbacks {
-    const main = c.TTF_OpenFont(font_path.ptr, @floatFromInt(size)) orelse return error.FontUnavailable;
-    errdefer c.TTF_CloseFont(main);
-
-    var symbol: ?*c.TTF_Font = null;
-    if (symbol_path) |path| {
-        symbol = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-        if (symbol) |s| {
-            if (!c.TTF_AddFallbackFont(main, s)) {
-                c.TTF_CloseFont(s);
-                symbol = null;
-            }
-        }
-    }
-
-    var emoji: ?*c.TTF_Font = null;
-    if (emoji_path) |path| {
-        emoji = c.TTF_OpenFont(path.ptr, @floatFromInt(size));
-        if (emoji) |e| {
-            if (!c.TTF_AddFallbackFont(main, e)) {
-                c.TTF_CloseFont(e);
-                emoji = null;
-            }
-        }
-    }
-
-    return FontWithFallbacks{
-        .main = main,
-        .symbol = symbol,
-        .emoji = emoji,
-    };
-}
-
-fn closeFontWithFallbacks(fonts: FontWithFallbacks) void {
-    if (fonts.symbol) |s| c.TTF_CloseFont(s);
-    if (fonts.emoji) |e| c.TTF_CloseFont(e);
-    c.TTF_CloseFont(fonts.main);
-}
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -220,15 +169,14 @@ pub const HelpOverlayComponent = struct {
     }
 
     fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
-        const font_path = assets.font_path orelse return;
+        const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
-        defer closeFontWithFallbacks(fonts);
+        const fonts = cache.get(font_size) catch return;
 
         const question_mark = "⌘?";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.main, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
+        const surface = c.TTF_RenderText_Blended(fonts.regular, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
         defer c.SDL_DestroySurface(surface);
 
         const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
@@ -318,15 +266,13 @@ pub const HelpOverlayComponent = struct {
                 c.SDL_DestroyTexture(shortcut_tex.key.tex);
                 c.SDL_DestroyTexture(shortcut_tex.desc.tex);
             }
-            closeFontWithFallbacks(cache.title_fonts);
-            closeFontWithFallbacks(cache.key_fonts);
             self.allocator.destroy(cache);
             self.cache = null;
         }
     }
 
     fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
-        const font_path = assets.font_path orelse return null;
+        const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const key_font_size: c_int = dpi.scale(16, ui_scale);
         const fg = theme.foreground;
@@ -334,7 +280,8 @@ pub const HelpOverlayComponent = struct {
         if (self.cache) |cache| {
             if (cache.title_font_size == title_font_size and
                 cache.key_font_size == key_font_size and
-                cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b)
+                cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and
+                cache.font_generation == cache_store.generation)
             {
                 return cache;
             }
@@ -344,24 +291,19 @@ pub const HelpOverlayComponent = struct {
         const cache = self.allocator.create(Cache) catch return null;
         errdefer self.allocator.destroy(cache);
 
-        const title_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
+        const title_fonts = cache_store.get(title_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(title_fonts);
 
-        const key_fonts = openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, key_font_size) catch {
-            closeFontWithFallbacks(title_fonts);
+        const key_fonts = cache_store.get(key_font_size) catch {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer closeFontWithFallbacks(key_fonts);
 
         const title_text = "Keyboard Shortcuts";
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.main, title_text, title_color) catch {
-            closeFontWithFallbacks(key_fonts);
-            closeFontWithFallbacks(title_fonts);
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, title_text, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -371,26 +313,22 @@ pub const HelpOverlayComponent = struct {
 
         var shortcut_tex: [shortcuts.len]ShortcutTex = undefined;
         for (shortcuts, 0..) |shortcut, idx| {
-            const key_tex = makeTextTexture(renderer, key_fonts.main, shortcut.key, key_color) catch {
+            const key_tex = makeTextTexture(renderer, key_fonts.regular, shortcut.key, key_color) catch {
                 for (shortcut_tex[0..idx]) |st| {
                     c.SDL_DestroyTexture(st.key.tex);
                     c.SDL_DestroyTexture(st.desc.tex);
                 }
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(key_fonts);
-                closeFontWithFallbacks(title_fonts);
                 self.allocator.destroy(cache);
                 return null;
             };
-            const desc_tex = makeTextTexture(renderer, key_fonts.main, shortcut.desc, desc_color) catch {
+            const desc_tex = makeTextTexture(renderer, key_fonts.regular, shortcut.desc, desc_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 for (shortcut_tex[0..idx]) |st| {
                     c.SDL_DestroyTexture(st.key.tex);
                     c.SDL_DestroyTexture(st.desc.tex);
                 }
                 c.SDL_DestroyTexture(title_tex.tex);
-                closeFontWithFallbacks(key_fonts);
-                closeFontWithFallbacks(title_fonts);
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -398,14 +336,12 @@ pub const HelpOverlayComponent = struct {
         }
 
         cache.* = .{
-            .ui_scale = ui_scale,
             .title_font_size = title_font_size,
             .key_font_size = key_font_size,
-            .title_fonts = title_fonts,
-            .key_fonts = key_fonts,
             .title = title_tex,
             .shortcuts = shortcut_tex,
             .theme_fg = fg,
+            .font_generation = cache_store.generation,
         };
 
         self.cache = cache;

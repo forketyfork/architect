@@ -31,6 +31,43 @@ pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
     return mode != .Grid and mode != .Collapsing;
 }
 
+/// Returns terminal index (0-9) for Cmd+1..9,0 shortcuts.
+/// Cmd+1 returns 0, Cmd+2 returns 1, ..., Cmd+9 returns 8, Cmd+0 returns 9.
+pub fn terminalSwitchShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, max_terminals: usize) ?usize {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
+    if ((mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
+
+    const idx: ?usize = if (key >= c.SDLK_1 and key <= c.SDLK_9)
+        @intCast(key - c.SDLK_1)
+    else if (key == c.SDLK_0)
+        9
+    else
+        null;
+
+    if (idx) |i| {
+        if (i < max_terminals) return i;
+    }
+    return null;
+}
+
+const terminal_hotkey_labels = [_][]const u8{
+    "⌘1",
+    "⌘2",
+    "⌘3",
+    "⌘4",
+    "⌘5",
+    "⌘6",
+    "⌘7",
+    "⌘8",
+    "⌘9",
+    "⌘0",
+};
+
+pub fn terminalHotkeyLabel(index: usize) ?[]const u8 {
+    if (index >= terminal_hotkey_labels.len) return null;
+    return terminal_hotkey_labels[index];
+}
+
 /// Compute CSI-u modifier value from SDL modifiers.
 /// Returns modifier+1 as per kitty keyboard protocol.
 fn computeCsiModifier(mod: c.SDL_Keymod) u8 {
@@ -516,4 +553,48 @@ test "encodeMouseScroll - scroll down X10 with position" {
     try std.testing.expectEqual(@as(u8, 65 + 32), buf[3]); // button
     try std.testing.expectEqual(@as(u8, 10 + 33), buf[4]); // col + 33
     try std.testing.expectEqual(@as(u8, 5 + 33), buf[5]); // row + 33
+}
+
+test "terminalSwitchShortcut - cmd+1 returns 0" {
+    try std.testing.expectEqual(@as(?usize, 0), terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI, 9));
+}
+
+test "terminalSwitchShortcut - cmd+9 returns 8" {
+    try std.testing.expectEqual(@as(?usize, 8), terminalSwitchShortcut(c.SDLK_9, c.SDL_KMOD_GUI, 9));
+}
+
+test "terminalSwitchShortcut - cmd+0 returns 9" {
+    try std.testing.expectEqual(@as(?usize, 9), terminalSwitchShortcut(c.SDLK_0, c.SDL_KMOD_GUI, 10));
+}
+
+test "terminalSwitchShortcut - cmd+0 returns null when max is 9" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_0, c.SDL_KMOD_GUI, 9) == null);
+}
+
+test "terminalSwitchShortcut - without gui modifier returns null" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_1, 0, 9) == null);
+}
+
+test "terminalSwitchShortcut - with shift modifier returns null" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT, 9) == null);
+}
+
+test "terminalSwitchShortcut - with ctrl modifier returns null" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL, 9) == null);
+}
+
+test "terminalSwitchShortcut - non-digit key returns null" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_A, c.SDL_KMOD_GUI, 9) == null);
+}
+
+test "terminalHotkeyLabel - index 0 returns cmd+1" {
+    try std.testing.expectEqualStrings("⌘1", terminalHotkeyLabel(0).?);
+}
+
+test "terminalHotkeyLabel - index 9 returns cmd+0" {
+    try std.testing.expectEqualStrings("⌘0", terminalHotkeyLabel(9).?);
+}
+
+test "terminalHotkeyLabel - out of range returns null" {
+    try std.testing.expect(terminalHotkeyLabel(10) == null);
 }

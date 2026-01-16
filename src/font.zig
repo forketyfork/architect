@@ -18,6 +18,15 @@ pub const Variant = enum(u2) {
     bold_italic,
 };
 
+pub const Faces = struct {
+    regular: *c.TTF_Font,
+    bold: ?*c.TTF_Font = null,
+    italic: ?*c.TTF_Font = null,
+    bold_italic: ?*c.TTF_Font = null,
+    symbol: ?*c.TTF_Font = null,
+    emoji: ?*c.TTF_Font = null,
+};
+
 const GlyphKey = struct {
     hash: u64,
     color: u32,
@@ -43,6 +52,7 @@ pub const Font = struct {
     allocator: std.mem.Allocator,
     cell_width: c_int,
     cell_height: c_int,
+    owns_fonts: bool,
 
     /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
     const MAX_GLYPH_CACHE_ENTRIES: usize = 4096;
@@ -88,6 +98,14 @@ pub const Font = struct {
     pub const InitError = error{
         FontLoadFailed,
     } || std.mem.Allocator.Error;
+
+    pub fn initFromFaces(
+        allocator: std.mem.Allocator,
+        renderer: *c.SDL_Renderer,
+        faces: Faces,
+    ) InitError!Font {
+        return initWithFaces(allocator, renderer, faces, false);
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -184,6 +202,7 @@ pub const Font = struct {
             .allocator = allocator,
             .cell_width = cell_width,
             .cell_height = cell_height,
+            .owns_fonts = true,
         };
     }
 
@@ -193,12 +212,45 @@ pub const Font = struct {
             c.SDL_DestroyTexture(entry.texture);
         }
         self.glyph_cache.deinit();
-        c.TTF_CloseFont(self.font);
-        if (self.bold_font) |f| c.TTF_CloseFont(f);
-        if (self.italic_font) |f| c.TTF_CloseFont(f);
-        if (self.bold_italic_font) |f| c.TTF_CloseFont(f);
-        if (self.symbol_fallback) |f| c.TTF_CloseFont(f);
-        if (self.emoji_fallback) |f| c.TTF_CloseFont(f);
+        if (self.owns_fonts) {
+            c.TTF_CloseFont(self.font);
+            if (self.bold_font) |f| c.TTF_CloseFont(f);
+            if (self.italic_font) |f| c.TTF_CloseFont(f);
+            if (self.bold_italic_font) |f| c.TTF_CloseFont(f);
+            if (self.symbol_fallback) |f| c.TTF_CloseFont(f);
+            if (self.emoji_fallback) |f| c.TTF_CloseFont(f);
+        }
+    }
+
+    fn initWithFaces(
+        allocator: std.mem.Allocator,
+        renderer: *c.SDL_Renderer,
+        faces: Faces,
+        owns_fonts: bool,
+    ) InitError!Font {
+        var cell_width: c_int = 0;
+        var cell_height: c_int = 0;
+        if (!c.TTF_GetStringSize(faces.regular, "M", 1, &cell_width, &cell_height)) {
+            log.err("TTF_GetStringSize failed: {s}", .{c.SDL_GetError()});
+            return error.FontLoadFailed;
+        }
+
+        log.debug("Font cell dimensions: {d}x{d}", .{ cell_width, cell_height });
+
+        return Font{
+            .font = faces.regular,
+            .bold_font = faces.bold,
+            .italic_font = faces.italic,
+            .bold_italic_font = faces.bold_italic,
+            .symbol_fallback = faces.symbol,
+            .emoji_fallback = faces.emoji,
+            .renderer = renderer,
+            .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
+            .allocator = allocator,
+            .cell_width = cell_width,
+            .cell_height = cell_height,
+            .owns_fonts = owns_fonts,
+        };
     }
 
     pub const RenderGlyphError = error{

@@ -6,11 +6,13 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const button = @import("button.zig");
+const font_cache = @import("../../font_cache.zig");
 
 pub const QuitConfirmComponent = struct {
     allocator: std.mem.Allocator,
-    font: ?*c.TTF_Font = null,
-    font_path: ?[:0]const u8 = null,
+    font_generation: u64 = 0,
+    title_font_size: c_int = 0,
+    body_font_size: c_int = 0,
     visible: bool = false,
     dirty: bool = true,
     process_count: usize = 0,
@@ -53,7 +55,6 @@ pub const QuitConfirmComponent = struct {
     pub fn destroy(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer) void {
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
-        if (self.font) |f| c.TTF_CloseFont(f);
         self.allocator.destroy(self);
         _ = renderer;
     }
@@ -146,19 +147,18 @@ pub const QuitConfirmComponent = struct {
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *QuitConfirmComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.visible) return;
-        if (assets.font_path) |path| {
-            if (self.font_path == null or !std.mem.eql(u8, self.font_path.?, path)) {
-                self.font_path = path;
-                if (self.font) |f| {
-                    c.TTF_CloseFont(f);
-                    self.font = null;
-                }
-                self.dirty = true;
-            }
+        const cache = assets.font_cache orelse return;
+        const title_font_size = dpi.scale(TITLE_SIZE, host.ui_scale);
+        const body_font_size = dpi.scale(BODY_SIZE, host.ui_scale);
+        if (self.title_font_size != title_font_size or self.body_font_size != body_font_size or self.font_generation != cache.generation) {
+            self.title_font_size = title_font_size;
+            self.body_font_size = body_font_size;
+            self.font_generation = cache.generation;
+            self.dirty = true;
         }
-        if (self.font_path == null) return;
 
-        self.ensureTextures(renderer, host.ui_scale, host.theme) catch return;
+        self.ensureTextures(renderer, host.theme, cache) catch return;
+        const body_fonts = cache.get(self.body_font_size) catch return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
@@ -185,7 +185,7 @@ pub const QuitConfirmComponent = struct {
         primitives.drawRoundedBorder(renderer, modal, dpi.scale(MODAL_RADIUS, host.ui_scale));
 
         self.renderText(renderer, modal, host.ui_scale);
-        self.renderButtons(renderer, modal, host.ui_scale, host.theme);
+        self.renderButtons(renderer, modal, host.ui_scale, host.theme, body_fonts.regular);
     }
 
     fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
@@ -210,26 +210,24 @@ pub const QuitConfirmComponent = struct {
         _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
     }
 
-    fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme, font: *c.TTF_Font) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
-        if (self.font) |font| {
-            const cancel_rect = c.SDL_FRect{
-                .x = @floatFromInt(buttons.cancel.x),
-                .y = @floatFromInt(buttons.cancel.y),
-                .w = @floatFromInt(buttons.cancel.w),
-                .h = @floatFromInt(buttons.cancel.h),
-            };
-            button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale);
+        const cancel_rect = c.SDL_FRect{
+            .x = @floatFromInt(buttons.cancel.x),
+            .y = @floatFromInt(buttons.cancel.y),
+            .w = @floatFromInt(buttons.cancel.w),
+            .h = @floatFromInt(buttons.cancel.h),
+        };
+        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale);
 
-            const quit_rect = c.SDL_FRect{
-                .x = @floatFromInt(buttons.quit.x),
-                .y = @floatFromInt(buttons.quit.y),
-                .w = @floatFromInt(buttons.quit.w),
-                .h = @floatFromInt(buttons.quit.h),
-            };
-            button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale);
-        }
+        const quit_rect = c.SDL_FRect{
+            .x = @floatFromInt(buttons.quit.x),
+            .y = @floatFromInt(buttons.quit.y),
+            .w = @floatFromInt(buttons.quit.w),
+            .h = @floatFromInt(buttons.quit.h),
+        };
+        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale);
     }
 
     fn modalRect(self: *QuitConfirmComponent, host: *const types.UiHost) geom.Rect {
@@ -259,23 +257,20 @@ pub const QuitConfirmComponent = struct {
         };
     }
 
-    fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) !void {
+    fn ensureTextures(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null) return;
-        const font_path = self.font_path orelse return error.FontPathNotSet;
-        if (self.font == null) {
-            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(dpi.scale(BODY_SIZE, ui_scale))) orelse return error.FontUnavailable;
-        }
-
-        const font = self.font.?;
+        const title_fonts = try cache.get(self.title_font_size);
+        const body_fonts = try cache.get(self.body_font_size);
+        const title_font = title_fonts.regular;
+        const body_font = body_fonts.regular;
 
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
 
-        _ = c.TTF_SetFontSize(font, @floatFromInt(dpi.scale(TITLE_SIZE, ui_scale)));
         const title_text = "Quit Architect?";
         const fg = theme.foreground;
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_surface = c.TTF_RenderText_Blended(font, title_text, title_text.len, title_color) orelse return error.SurfaceFailed;
+        const title_surface = c.TTF_RenderText_Blended(title_font, title_text, title_text.len, title_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(title_surface);
         self.title_tex = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return error.TextureFailed;
         const title_size = textureSize(self.title_tex.?);
@@ -284,9 +279,8 @@ pub const QuitConfirmComponent = struct {
 
         var message_buf: [128]u8 = undefined;
         const message = self.makeMessage(&message_buf);
-        _ = c.TTF_SetFontSize(font, @floatFromInt(dpi.scale(BODY_SIZE, ui_scale)));
         const message_slice = std.mem.sliceTo(message, 0);
-        const message_surface = c.TTF_RenderText_Blended(font, message_slice.ptr, @intCast(message_slice.len), title_color) orelse return error.SurfaceFailed;
+        const message_surface = c.TTF_RenderText_Blended(body_font, message_slice.ptr, @intCast(message_slice.len), title_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(message_surface);
         self.message_tex = c.SDL_CreateTextureFromSurface(renderer, message_surface) orelse return error.TextureFailed;
         const message_size = textureSize(self.message_tex.?);
