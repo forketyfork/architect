@@ -4,14 +4,14 @@ const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
+const font_cache = @import("../../font_cache.zig");
 
 pub const RestartButtonsComponent = struct {
     allocator: std.mem.Allocator,
-    font: ?*c.TTF_Font = null,
+    font_generation: u64 = 0,
     texture: ?*c.SDL_Texture = null,
     tex_w: c_int = 0,
     tex_h: c_int = 0,
-    font_path: ?[:0]const u8 = null,
 
     const RESTART_BUTTON_FONT_SIZE: c_int = 20;
     const RESTART_BUTTON_HEIGHT: c_int = 40;
@@ -37,10 +37,6 @@ pub const RestartButtonsComponent = struct {
         if (self.texture) |tex| {
             c.SDL_DestroyTexture(tex);
             self.texture = null;
-        }
-        if (self.font) |f| {
-            c.TTF_CloseFont(f);
-            self.font = null;
         }
         self.allocator.destroy(self);
         _ = renderer;
@@ -104,8 +100,15 @@ pub const RestartButtonsComponent = struct {
         const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
         if (host.view_mode != .Grid) return;
 
-        if (assets.font_path) |path| {
-            self.font_path = path;
+        const cache = assets.font_cache orelse return;
+        if (self.font_generation != cache.generation) {
+            self.font_generation = cache.generation;
+            if (self.texture) |tex| {
+                c.SDL_DestroyTexture(tex);
+                self.texture = null;
+                self.tex_w = 0;
+                self.tex_h = 0;
+            }
         }
 
         for (host.sessions, 0..) |info, i| {
@@ -118,12 +121,12 @@ pub const RestartButtonsComponent = struct {
                 .w = host.cell_w,
                 .h = host.cell_h,
             };
-            self.renderButton(renderer, cell_rect, host.theme);
+            self.renderButton(renderer, cell_rect, host.theme, cache);
         }
     }
 
-    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const @import("../../colors.zig").Theme) void {
-        self.ensureTexture(renderer, theme) catch return;
+    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) void {
+        self.ensureTexture(renderer, theme, cache) catch return;
         const text_width = self.tex_w;
         const text_height = self.tex_h;
         const button_w = text_width + RESTART_BUTTON_PADDING * 2;
@@ -179,15 +182,11 @@ pub const RestartButtonsComponent = struct {
         };
     }
 
-    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme) !void {
+    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
-        const font_path = self.font_path orelse return error.FontPathNotSet;
-        if (self.font == null) {
-            self.font = c.TTF_OpenFont(font_path.ptr, @floatFromInt(RESTART_BUTTON_FONT_SIZE));
-            if (self.font == null) return error.FontUnavailable;
-        }
-        const icon_font = self.font.?;
+        const fonts = try cache.get(RESTART_BUTTON_FONT_SIZE);
+        const icon_font = fonts.regular;
 
         const restart_text = "Restart";
         const fg = theme.foreground;

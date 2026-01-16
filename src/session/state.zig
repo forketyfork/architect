@@ -39,7 +39,6 @@ pub const SessionState = struct {
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
     cache_h: c_int = 0,
-    cwd_font: ?*c.TTF_Font = null,
     cwd_basename_tex: ?*c.SDL_Texture = null,
     cwd_parent_tex: ?*c.SDL_Texture = null,
     cwd_basename_w: c_int = 0,
@@ -241,12 +240,7 @@ pub const SessionState = struct {
             self.cwd_parent_w = 0;
             self.cwd_parent_h = 0;
         }
-
-        if (self.cwd_font) |font| {
-            c.TTF_CloseFont(font);
-            self.cwd_font = null;
-            self.cwd_font_size = 0;
-        }
+        self.cwd_font_size = 0;
 
         if (self.cwd_path) |path| {
             allocator.free(path);

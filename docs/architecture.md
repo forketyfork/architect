@@ -59,6 +59,9 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - Renders all components in z-order after the scene
 - Reports `needsFrame()` when any component requires animation
 
+**UiAssets** provides shared rendering resources:
+- `FontCache` stores configured fonts keyed by pixel size, so terminal rendering and UI components reuse a single loaded font set instead of opening per-component instances.
+
 ### Session cleanup
 - `main.zig` tracks how many sessions were constructed and uses a single defer to deinitialize exactly those instances on any exit path.
 - `SessionState.deinit` is idempotent: textures, fonts, watchers, and buffers are nulled/cleared after destruction so double-invocation during error unwinding cannot double-free GPU resources.
@@ -75,6 +78,7 @@ src/
 ├── config.zig            # TOML config persistence
 ├── geom.zig              # Rect + point containment
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
+├── font_cache.zig        # Shared font cache (terminal + UI)
 ├── font_paths.zig        # Font path resolution for bundled fonts
 ├── shell.zig             # Shell process spawning
 ├── pty.zig               # PTY abstractions

@@ -19,6 +19,7 @@ const font_paths_mod = @import("font_paths.zig");
 const config_mod = @import("config.zig");
 const colors_mod = @import("colors.zig");
 const ui_mod = @import("ui/mod.zig");
+const font_cache_mod = @import("font_cache.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const open_url = @import("os/open.zig");
@@ -74,6 +75,26 @@ fn findNextFreeSession(sessions: []const SessionState, current_idx: usize) ?usiz
         }
     }
     return null;
+}
+
+fn initSharedFont(
+    allocator: std.mem.Allocator,
+    renderer: *c.SDL_Renderer,
+    cache: *font_cache_mod.FontCache,
+    size: c_int,
+) font_mod.Font.InitError!font_mod.Font {
+    const faces = cache.get(size) catch |err| switch (err) {
+        error.FontUnavailable => return error.FontLoadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return font_mod.Font.initFromFaces(allocator, renderer, .{
+        .regular = faces.regular,
+        .bold = faces.bold,
+        .italic = faces.italic,
+        .bold_italic = faces.bold_italic,
+        .symbol = faces.symbol,
+        .emoji = faces.emoji,
+    });
 }
 
 fn handleQuitRequest(
@@ -215,38 +236,27 @@ pub fn main() !void {
     var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font.family);
     defer font_paths.deinit();
 
-    var font = try font_mod.Font.init(
-        allocator,
-        renderer,
-        font_paths.regular.ptr,
-        font_paths.bold.ptr,
-        font_paths.italic.ptr,
-        font_paths.bold_italic.ptr,
-        if (font_paths.symbol_fallback) |f| f.ptr else null,
-        if (font_paths.emoji_fallback) |f| f.ptr else null,
-        scaledFontSize(font_size, ui_scale),
+    var shared_font_cache = font_cache_mod.FontCache.init(allocator);
+    defer shared_font_cache.deinit();
+    shared_font_cache.setPaths(
+        font_paths.regular,
+        font_paths.bold,
+        font_paths.italic,
+        font_paths.bold_italic,
+        font_paths.symbol_fallback,
+        font_paths.emoji_fallback,
     );
+
+    var font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(font_size, ui_scale));
     defer font.deinit();
 
-    var ui_font = try font_mod.Font.init(
-        allocator,
-        renderer,
-        font_paths.regular.ptr,
-        font_paths.bold.ptr,
-        font_paths.italic.ptr,
-        font_paths.bold_italic.ptr,
-        if (font_paths.symbol_fallback) |f| f.ptr else null,
-        if (font_paths.emoji_fallback) |f| f.ptr else null,
-        scaledFontSize(UI_FONT_SIZE, ui_scale),
-    );
+    var ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(UI_FONT_SIZE, ui_scale));
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
-    ui.assets.font_path = font_paths.regular;
-    ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
-    ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
+    ui.assets.font_cache = &shared_font_cache;
 
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
@@ -424,28 +434,8 @@ pub fn main() !void {
                     if (ui_scale != prev_scale) {
                         font.deinit();
                         ui_font.deinit();
-                        font = try font_mod.Font.init(
-                            allocator,
-                            renderer,
-                            font_paths.regular.ptr,
-                            font_paths.bold.ptr,
-                            font_paths.italic.ptr,
-                            font_paths.bold_italic.ptr,
-                            if (font_paths.symbol_fallback) |f| f.ptr else null,
-                            if (font_paths.emoji_fallback) |f| f.ptr else null,
-                            scaledFontSize(font_size, ui_scale),
-                        );
-                        ui_font = try font_mod.Font.init(
-                            allocator,
-                            renderer,
-                            font_paths.regular.ptr,
-                            font_paths.bold.ptr,
-                            font_paths.italic.ptr,
-                            font_paths.bold_italic.ptr,
-                            if (font_paths.symbol_fallback) |f| f.ptr else null,
-                            if (font_paths.emoji_fallback) |f| f.ptr else null,
-                            scaledFontSize(UI_FONT_SIZE, ui_scale),
-                        );
+                        font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(font_size, ui_scale));
+                        ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(UI_FONT_SIZE, ui_scale));
                         ui.assets.ui_font = &ui_font;
                         const new_term_size = calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
                         full_cols = new_term_size.cols;
@@ -556,6 +546,10 @@ pub fn main() !void {
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+                    const terminal_shortcut: ?usize = if (worktree_comp_ptr.overlay.state == .Closed)
+                        input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows)
+                    else
+                        null;
 
                     if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
@@ -616,17 +610,7 @@ pub fn main() !void {
                         const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
                         if (target_size != font_size) {
-                            const new_font = try font_mod.Font.init(
-                                allocator,
-                                renderer,
-                                font_paths.regular.ptr,
-                                font_paths.bold.ptr,
-                                font_paths.italic.ptr,
-                                font_paths.bold_italic.ptr,
-                                if (font_paths.symbol_fallback) |f| f.ptr else null,
-                                if (font_paths.emoji_fallback) |f| f.ptr else null,
-                                scaledFontSize(target_size, ui_scale),
-                            );
+                            const new_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(target_size, ui_scale));
                             font.deinit();
                             font = new_font;
                             font_size = target_size;
@@ -678,6 +662,54 @@ pub fn main() !void {
                             ui.showToast(notification_msg, now);
                         } else {
                             ui.showToast("All terminals in use", now);
+                        }
+                    } else if (terminal_shortcut) |idx| {
+                        const hotkey_label = input.terminalHotkeyLabel(idx) orelse "⌘?";
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
+
+                        if (anim_state.mode == .Grid) {
+                            try sessions[idx].ensureSpawnedWithLoop(&loop);
+                            sessions[idx].status = .running;
+                            sessions[idx].attention = false;
+
+                            const grid_row: c_int = @intCast(idx / grid_cols);
+                            const grid_col: c_int = @intCast(idx % grid_cols);
+                            const start_rect = Rect{
+                                .x = grid_col * cell_width_pixels,
+                                .y = grid_row * cell_height_pixels,
+                                .w = cell_width_pixels,
+                                .h = cell_height_pixels,
+                            };
+                            const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+
+                            anim_state.focused_session = idx;
+                            if (animations_enabled) {
+                                anim_state.mode = .Expanding;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = start_rect;
+                                anim_state.target_rect = target_rect;
+                            } else {
+                                anim_state.mode = .Full;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = target_rect;
+                                anim_state.target_rect = target_rect;
+                                anim_state.previous_session = idx;
+                            }
+                            std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
+                        } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
+                            try sessions[idx].ensureSpawnedWithLoop(&loop);
+                            sessions[anim_state.focused_session].clearSelection();
+                            sessions[idx].clearSelection();
+                            sessions[idx].status = .running;
+                            sessions[idx].attention = false;
+                            anim_state.focused_session = idx;
+
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, idx, grid_cols, grid_rows);
+                            ui.showToast(notification_msg, now);
+                            std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -1242,7 +1274,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, &shared_font_cache, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();
