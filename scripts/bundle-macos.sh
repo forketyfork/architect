@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ $# -ne 2 ]; then
+if [[ $# -ne 2 ]]; then
     echo "Usage: $0 <executable> <output-dir>"
     exit 1
 fi
@@ -42,7 +42,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </plist>
 EOF
 
-if [ -f "$ICON_SOURCE" ]; then
+if [[ -f "$ICON_SOURCE" ]]; then
     cp "$ICON_SOURCE" "$RESOURCES_DIR/${APP_NAME}.icns"
     echo "Added app icon: $ICON_SOURCE"
 else
@@ -67,11 +67,11 @@ queue=""
 
 enqueue() {
     local dep="$1"
-    if [ -z "$dep" ]; then
+    if [[ -z "$dep" ]]; then
         return
     fi
 
-    if [ ! -f "$dep" ]; then
+    if [[ ! -f "$dep" ]]; then
         echo "Warning: $dep not found, skipping"
         return
     fi
@@ -82,7 +82,7 @@ enqueue() {
 
     seen_list="$seen_list
 $dep"
-    if [ -z "$queue" ]; then
+    if [[ -z "$queue" ]]; then
         queue="$dep"
     else
         queue="$queue
@@ -93,23 +93,23 @@ $dep"
 echo "Analyzing dynamic library dependencies..."
 initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
 
-if [ -z "$initial_deps" ]; then
+if [[ -z "$initial_deps" ]]; then
     echo "No Nix store dependencies found"
     exit 0
 fi
 
 while IFS= read -r dep; do
-    [ -z "$dep" ] && continue
+    [[ -z "$dep" ]] && continue
     enqueue "$dep"
 done <<< "$initial_deps"
 
 echo "Found dependencies:"
 while IFS= read -r dep; do
-    [ -z "$dep" ] && continue
+    [[ -z "$dep" ]] && continue
     printf '  %s\n' "$dep"
 done <<< "$initial_deps"
 
-while [ -n "$queue" ]; do
+while [[ -n "$queue" ]]; do
     if [[ "$queue" == *$'\n'* ]]; then
         lib_path="${queue%%$'\n'*}"
         queue="${queue#*$'\n'}"
@@ -121,7 +121,7 @@ while [ -n "$queue" ]; do
     lib_name=$(basename "$lib_path")
     dest="$LIB_DIR/$lib_name"
 
-    if [ ! -f "$dest" ]; then
+    if [[ ! -f "$dest" ]]; then
         echo "Copying $lib_name..."
         cp "$lib_path" "$dest"
         chmod 644 "$dest"
@@ -131,7 +131,7 @@ while [ -n "$queue" ]; do
 
     nested_list=$(otool -L "$lib_path" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
     while IFS= read -r nested_dep; do
-        [ -z "$nested_dep" ] && continue
+        [[ -z "$nested_dep" ]] && continue
         nested_name=$(basename "$nested_dep")
         install_name_tool -change "$nested_dep" "@executable_path/lib/$nested_name" "$dest"
         enqueue "$nested_dep"
@@ -139,7 +139,7 @@ while [ -n "$queue" ]; do
 done
 
 while IFS= read -r original; do
-    [ -z "$original" ] && continue
+    [[ -z "$original" ]] && continue
     name=$(basename "$original")
     install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect.bin" || true
 done <<< "$seen_list"
@@ -162,7 +162,7 @@ for file in "$LIB_DIR"/*.dylib; do
 done
 shopt -u nullglob
 
-if [ $remaining -eq 0 ]; then
+if [[ $remaining -eq 0 ]]; then
     echo "All bundled libraries patched to use @executable_path/lib"
 fi
 
