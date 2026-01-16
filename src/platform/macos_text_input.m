@@ -22,7 +22,6 @@ static AccessibleTextInputView* g_textView = NULL;
 static id g_textDidChangeObserver = nil;
 static id g_windowDidBecomeKeyObserver = nil;
 static NSWindow* g_window = NULL;
-static NSInteger g_lastPasteboardChangeCount = 0;
 
 // Custom NSTextView subclass that captures external text input but forwards
 // regular keyboard events to SDL's view
@@ -202,9 +201,6 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
         g_callback = callback;
         g_userdata = userdata;
 
-        // Initialize pasteboard change count to avoid pasting stale content
-        g_lastPasteboardChangeCount = [[NSPasteboard generalPasteboard] changeCount];
-
         NSWindow* window = (__bridge NSWindow*)nswindow;
         g_window = window;
         NSView* contentView = [window contentView];
@@ -271,19 +267,6 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
                     NSTextInputContext* ctx = [g_textView inputContext];
                     if (ctx) {
                         [ctx activate];
-                    }
-
-                    // Check if external input source (emoji picker, etc.) put text on pasteboard
-                    NSPasteboard* pb = [NSPasteboard generalPasteboard];
-                    NSInteger currentChangeCount = [pb changeCount];
-                    if (currentChangeCount != g_lastPasteboardChangeCount) {
-                        NSString* pbText = [pb stringForType:NSPasteboardTypeString];
-                        g_lastPasteboardChangeCount = currentChangeCount;
-
-                        // Send the pasteboard text through our callback
-                        if (pbText && pbText.length > 0 && g_callback) {
-                            g_callback([pbText UTF8String], g_userdata);
-                        }
                     }
                 }
             }];
