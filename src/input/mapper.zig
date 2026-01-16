@@ -50,6 +50,24 @@ pub fn terminalSwitchShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, max_termina
     return null;
 }
 
+const terminal_hotkey_digits = [_][]const u8{
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "0",
+};
+
+pub fn terminalHotkeyDigit(index: usize) ?[]const u8 {
+    if (index >= terminal_hotkey_digits.len) return null;
+    return terminal_hotkey_digits[index];
+}
+
 /// Compute CSI-u modifier value from SDL modifiers.
 /// Returns modifier+1 as per kitty keyboard protocol.
 fn computeCsiModifier(mod: c.SDL_Keymod) u8 {
@@ -489,4 +507,16 @@ test "terminalSwitchShortcut - with ctrl modifier returns null" {
 
 test "terminalSwitchShortcut - non-digit key returns null" {
     try std.testing.expect(terminalSwitchShortcut(c.SDLK_A, c.SDL_KMOD_GUI, 9) == null);
+}
+
+test "terminalHotkeyDigit - index 0 returns 1" {
+    try std.testing.expectEqualStrings("1", terminalHotkeyDigit(0).?);
+}
+
+test "terminalHotkeyDigit - index 9 returns 0" {
+    try std.testing.expectEqualStrings("0", terminalHotkeyDigit(9).?);
+}
+
+test "terminalHotkeyDigit - out of range returns null" {
+    try std.testing.expect(terminalHotkeyDigit(10) == null);
 }

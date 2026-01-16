@@ -8,7 +8,6 @@ const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const button = @import("button.zig");
-const font_utils = @import("../font_utils.zig");
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
@@ -79,8 +78,7 @@ pub const WorktreeOverlayComponent = struct {
         key_color: c.SDL_Color,
         title_color: c.SDL_Color,
         entry_color: c.SDL_Color,
-        title_fonts: font_utils.FontWithFallbacks,
-        entry_fonts: font_utils.FontWithFallbacks,
+        font_generation: u64,
     };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
@@ -352,10 +350,9 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
-        const font_path = assets.font_path orelse return;
+        const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, font_size) catch return;
-        defer fonts.close();
+        const fonts = cache.get(font_size) orelse return;
 
         const glyph = "⌘T";
         const fg = theme.foreground;
@@ -702,14 +699,14 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
-        const font_path = assets.font_path orelse return null;
+        const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
         const fg = theme.foreground;
         const entry_count = self.entryCount();
 
         if (self.cache) |cache| {
-            if (cache.title_font_size == title_font_size and cache.entry_font_size == entry_font_size and cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and cache.ui_scale == ui_scale and cache.entries.len == entry_count) {
+            if (cache.title_font_size == title_font_size and cache.entry_font_size == entry_font_size and cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and cache.ui_scale == ui_scale and cache.entries.len == entry_count and cache.font_generation == cache_store.generation) {
                 return cache;
             }
             self.destroyCache();
@@ -718,23 +715,18 @@ pub const WorktreeOverlayComponent = struct {
         const cache = self.allocator.create(Cache) catch return null;
         errdefer self.allocator.destroy(cache);
 
-        const title_fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, title_font_size) catch {
+        const title_fonts = cache_store.get(title_font_size) orelse {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer title_fonts.close();
 
-        const entry_fonts = font_utils.openFontWithFallbacks(font_path, assets.symbol_fallback_path, assets.emoji_fallback_path, entry_font_size) catch {
-            title_fonts.close();
+        const entry_fonts = cache_store.get(entry_font_size) orelse {
             self.allocator.destroy(cache);
             return null;
         };
-        errdefer entry_fonts.close();
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.main, TITLE, title_color) catch {
-            entry_fonts.close();
-            title_fonts.close();
             self.allocator.destroy(cache);
             return null;
         };
@@ -744,8 +736,6 @@ pub const WorktreeOverlayComponent = struct {
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
             c.SDL_DestroyTexture(title_tex.tex);
-            entry_fonts.close();
-            title_fonts.close();
             self.allocator.destroy(cache);
             return null;
         };
@@ -764,8 +754,6 @@ pub const WorktreeOverlayComponent = struct {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                entry_fonts.close();
-                title_fonts.close();
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -780,8 +768,6 @@ pub const WorktreeOverlayComponent = struct {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
-                entry_fonts.close();
-                title_fonts.close();
                 self.allocator.destroy(cache);
                 return null;
             };
@@ -798,8 +784,7 @@ pub const WorktreeOverlayComponent = struct {
             .key_color = key_color,
             .title_color = title_color,
             .entry_color = entry_color,
-            .title_fonts = title_fonts,
-            .entry_fonts = entry_fonts,
+            .font_generation = cache_store.generation,
         };
 
         self.cache = cache;
@@ -816,8 +801,6 @@ pub const WorktreeOverlayComponent = struct {
             c.SDL_DestroyTexture(cache.title.tex);
             destroyEntryTextures(cache.entries);
             self.allocator.free(cache.entries);
-            cache.entry_fonts.close();
-            cache.title_fonts.close();
             self.allocator.destroy(cache);
             self.cache = null;
         }
@@ -1200,8 +1183,11 @@ pub const WorktreeOverlayComponent = struct {
         return true;
     }
 
-    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = self.cache orelse return;
+        const font_cache = assets.font_cache orelse return;
+        const title_fonts = font_cache.get(cache.title_font_size) orelse return;
+        const entry_fonts = font_cache.get(cache.entry_font_size) orelse return;
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -1227,7 +1213,7 @@ pub const WorktreeOverlayComponent = struct {
         }, MODAL_RADIUS);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, cache.title_fonts.main, "Create worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.main, "Create worktree", title_color) catch null;
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1254,7 +1240,7 @@ pub const WorktreeOverlayComponent = struct {
         const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
         const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const input_tex = makeTextTexture(renderer, cache.entry_fonts.main, input_text, input_color) catch null;
+        const input_tex = makeTextTexture(renderer, entry_fonts.main, input_text, input_color) catch null;
         const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
         var text_width: f32 = 0;
         var text_height: f32 = 0;
@@ -1282,12 +1268,12 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Buttons
-        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
-        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.main, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
 
         // Error message
         if (self.create_error) |err| {
-            const err_tex = makeTextTexture(renderer, cache.entry_fonts.main, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch null;
+            const err_tex = makeTextTexture(renderer, entry_fonts.main, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch null;
             if (err_tex) |tex| {
                 defer c.SDL_DestroyTexture(tex.tex);
                 const err_x = layout.input.x;
@@ -1302,8 +1288,11 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, _: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
         const cache = self.cache orelse return;
+        const font_cache = assets.font_cache orelse return;
+        const title_fonts = font_cache.get(cache.title_font_size) orelse return;
+        const entry_fonts = font_cache.get(cache.entry_font_size) orelse return;
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -1328,7 +1317,7 @@ pub const WorktreeOverlayComponent = struct {
         }, MODAL_RADIUS);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, cache.title_fonts.main, "Remove worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.main, "Remove worktree", title_color) catch null;
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1346,7 +1335,7 @@ pub const WorktreeOverlayComponent = struct {
                 const worktree = self.worktrees.items[wt_idx];
                 const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
                 const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
-                const message_tex = makeTextTexture(renderer, cache.entry_fonts.main, worktree.display, message_color) catch null;
+                const message_tex = makeTextTexture(renderer, entry_fonts.main, worktree.display, message_color) catch null;
                 if (message_tex) |tex| {
                     defer c.SDL_DestroyTexture(tex.tex);
                     const message_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1360,8 +1349,8 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        button.renderButton(renderer, cache.entry_fonts.main, layout.confirm, "Remove", .danger, theme, host.ui_scale);
-        button.renderButton(renderer, cache.entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.main, layout.confirm, "Remove", .danger, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.main, layout.cancel, "Cancel", .default, theme, host.ui_scale);
     }
 
     fn entryCount(self: *WorktreeOverlayComponent) usize {

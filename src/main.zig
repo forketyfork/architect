@@ -19,6 +19,7 @@ const font_paths_mod = @import("font_paths.zig");
 const config_mod = @import("config.zig");
 const colors_mod = @import("colors.zig");
 const ui_mod = @import("ui/mod.zig");
+const font_cache_mod = @import("ui/font_cache.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const open_url = @import("os/open.zig");
@@ -241,12 +242,17 @@ pub fn main() !void {
     );
     defer ui_font.deinit();
 
+    var ui_font_cache = font_cache_mod.FontCache.init(allocator);
+    defer ui_font_cache.deinit();
+    ui_font_cache.setPaths(font_paths.regular, font_paths.symbol_fallback, font_paths.emoji_fallback);
+
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
     ui.assets.font_path = font_paths.regular;
     ui.assets.symbol_fallback_path = font_paths.symbol_fallback;
     ui.assets.emoji_fallback_path = font_paths.emoji_fallback;
+    ui.assets.font_cache = &ui_font_cache;
 
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
@@ -679,66 +685,57 @@ pub fn main() !void {
                         } else {
                             ui.showToast("All terminals in use", now);
                         }
-                    } else if (worktree_comp_ptr.overlay.state == .Closed and input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows) != null) {
-                        const target_idx = input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows).?;
-                        const hotkey_label = switch (target_idx) {
-                            0 => "⌘1",
-                            1 => "⌘2",
-                            2 => "⌘3",
-                            3 => "⌘4",
-                            4 => "⌘5",
-                            5 => "⌘6",
-                            6 => "⌘7",
-                            7 => "⌘8",
-                            8 => "⌘9",
-                            9 => "⌘0",
-                            else => "⌘?",
-                        };
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
+                    } else if (worktree_comp_ptr.overlay.state == .Closed) {
+                        if (input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows)) |idx| {
+                            const hotkey_digit = input.terminalHotkeyDigit(idx) orelse "?";
+                            var hotkey_buf: [8]u8 = undefined;
+                            const hotkey_label = std.fmt.bufPrint(&hotkey_buf, "⌘{s}", .{hotkey_digit}) catch "⌘?";
+                            if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
 
-                        if (anim_state.mode == .Grid) {
-                            try sessions[target_idx].ensureSpawnedWithLoop(&loop);
-                            sessions[target_idx].status = .running;
-                            sessions[target_idx].attention = false;
+                            if (anim_state.mode == .Grid) {
+                                try sessions[idx].ensureSpawnedWithLoop(&loop);
+                                sessions[idx].status = .running;
+                                sessions[idx].attention = false;
 
-                            const grid_row: c_int = @intCast(target_idx / grid_cols);
-                            const grid_col: c_int = @intCast(target_idx % grid_cols);
-                            const start_rect = Rect{
-                                .x = grid_col * cell_width_pixels,
-                                .y = grid_row * cell_height_pixels,
-                                .w = cell_width_pixels,
-                                .h = cell_height_pixels,
-                            };
-                            const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                                const grid_row: c_int = @intCast(idx / grid_cols);
+                                const grid_col: c_int = @intCast(idx % grid_cols);
+                                const start_rect = Rect{
+                                    .x = grid_col * cell_width_pixels,
+                                    .y = grid_row * cell_height_pixels,
+                                    .w = cell_width_pixels,
+                                    .h = cell_height_pixels,
+                                };
+                                const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                            anim_state.focused_session = target_idx;
-                            if (animations_enabled) {
-                                anim_state.mode = .Expanding;
-                                anim_state.start_time = now;
-                                anim_state.start_rect = start_rect;
-                                anim_state.target_rect = target_rect;
-                            } else {
-                                anim_state.mode = .Full;
-                                anim_state.start_time = now;
-                                anim_state.start_rect = target_rect;
-                                anim_state.target_rect = target_rect;
-                                anim_state.previous_session = target_idx;
+                                anim_state.focused_session = idx;
+                                if (animations_enabled) {
+                                    anim_state.mode = .Expanding;
+                                    anim_state.start_time = now;
+                                    anim_state.start_rect = start_rect;
+                                    anim_state.target_rect = target_rect;
+                                } else {
+                                    anim_state.mode = .Full;
+                                    anim_state.start_time = now;
+                                    anim_state.start_rect = target_rect;
+                                    anim_state.target_rect = target_rect;
+                                    anim_state.previous_session = idx;
+                                }
+                                std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
+                            } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
+                                try sessions[idx].ensureSpawnedWithLoop(&loop);
+                                sessions[anim_state.focused_session].clearSelection();
+                                sessions[idx].clearSelection();
+                                sessions[idx].status = .running;
+                                sessions[idx].attention = false;
+                                anim_state.focused_session = idx;
+
+                                const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                                const notification_buf = try allocator.alloc(u8, buf_size);
+                                defer allocator.free(notification_buf);
+                                const notification_msg = try formatGridNotification(notification_buf, idx, grid_cols, grid_rows);
+                                ui.showToast(notification_msg, now);
+                                std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
                             }
-                            std.debug.print("Expanding session via hotkey: {d}\n", .{target_idx});
-                        } else if (anim_state.mode == .Full and target_idx != anim_state.focused_session) {
-                            try sessions[target_idx].ensureSpawnedWithLoop(&loop);
-                            sessions[anim_state.focused_session].clearSelection();
-                            sessions[target_idx].clearSelection();
-                            sessions[target_idx].status = .running;
-                            sessions[target_idx].attention = false;
-                            anim_state.focused_session = target_idx;
-
-                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
-                            const notification_buf = try allocator.alloc(u8, buf_size);
-                            defer allocator.free(notification_buf);
-                            const notification_msg = try formatGridNotification(notification_buf, target_idx, grid_cols, grid_rows);
-                            ui.showToast(notification_msg, now);
-                            std.debug.print("Switched to session via hotkey: {d}\n", .{target_idx});
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -1303,7 +1300,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, font_paths.regular, font_paths.symbol_fallback, font_paths.emoji_fallback, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, ui_scale, &ui_font_cache, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             last_render_ns = std.time.nanoTimestamp();

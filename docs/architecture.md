@@ -59,6 +59,9 @@ Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 
 - Renders all components in z-order after the scene
 - Reports `needsFrame()` when any component requires animation
 
+**UiAssets** provides shared rendering resources:
+- `FontCache` stores configured UI fonts keyed by pixel size, so components and the CWD bar reuse a single loaded font set instead of opening per-component instances.
+
 ### Session cleanup
 - `main.zig` tracks how many sessions were constructed and uses a single defer to deinitialize exactly those instances on any exit path.
 - `SessionState.deinit` is idempotent: textures, fonts, watchers, and buffers are nulled/cleared after destruction so double-invocation during error unwinding cannot double-free GPU resources.
@@ -111,6 +114,7 @@ src/
     ├── root.zig          # UiRoot: component registry, dispatch
     ├── component.zig     # UiComponent vtable interface
     ├── types.zig         # UiHost, UiAction, UiAssets, SessionUiInfo
+    ├── font_cache.zig    # Shared UI font cache (fallback-aware)
     ├── scale.zig         # DPI scaling helper
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │

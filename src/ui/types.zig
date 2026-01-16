@@ -3,6 +3,7 @@ const c = @import("../c.zig");
 const app_state = @import("../app/app_state.zig");
 const font_mod = @import("../font.zig");
 const colors = @import("../colors.zig");
+const font_cache = @import("font_cache.zig");
 
 pub const SessionUiInfo = struct {
     dead: bool,
@@ -62,6 +63,7 @@ pub const UiAssets = struct {
     font_path: ?[:0]const u8 = null,
     symbol_fallback_path: ?[:0]const u8 = null,
     emoji_fallback_path: ?[:0]const u8 = null,
+    font_cache: ?*font_cache.FontCache = null,
 };
 
 pub const UiActionQueue = struct {

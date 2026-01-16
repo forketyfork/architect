@@ -8,7 +8,6 @@ const pty_mod = @import("../pty.zig");
 const app_state = @import("../app/app_state.zig");
 const c = @import("../c.zig");
 const fs = std.fs;
-const font_utils = @import("../ui/font_utils.zig");
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
 const mac = if (builtin.os.tag == .macos)
@@ -40,7 +39,6 @@ pub const SessionState = struct {
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
     cache_h: c_int = 0,
-    cwd_fonts: ?font_utils.FontWithFallbacks = null,
     cwd_basename_tex: ?*c.SDL_Texture = null,
     cwd_parent_tex: ?*c.SDL_Texture = null,
     cwd_basename_w: c_int = 0,
@@ -242,12 +240,7 @@ pub const SessionState = struct {
             self.cwd_parent_w = 0;
             self.cwd_parent_h = 0;
         }
-
-        if (self.cwd_fonts) |fonts| {
-            fonts.close();
-            self.cwd_fonts = null;
-            self.cwd_font_size = 0;
-        }
+        self.cwd_font_size = 0;
 
         if (self.cwd_path) |path| {
             allocator.free(path);
