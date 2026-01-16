@@ -23,57 +23,23 @@ static id g_textDidChangeObserver = nil;
 static id g_windowDidBecomeKeyObserver = nil;
 static NSWindow* g_window = NULL;
 
-// Custom NSTextView subclass that captures external text input but forwards
-// regular keyboard events to SDL's view
-@interface AccessibleTextInputView : NSTextView <NSTextViewDelegate, NSTextInputClient>
-@property (nonatomic, weak) NSView* sdlContentView;
-@property (nonatomic, strong) NSTextInputContext* customInputContext;
+// Custom NSTextView subclass that captures external text input
+// SDL receives keyboard events through its own mechanism
+@interface AccessibleTextInputView : NSTextView <NSTextViewDelegate>
 @end
 
 @implementation AccessibleTextInputView
-
-- (instancetype)initWithFrame:(NSRect)frameRect {
-    self = [super initWithFrame:frameRect];
-    if (self) {
-        // Create input context immediately so the text input system can find us
-        self.customInputContext = [[NSTextInputContext alloc] initWithClient:self];
-    }
-    return self;
-}
 
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
 
-- (BOOL)becomeFirstResponder {
-    return [super becomeFirstResponder];
-}
-
-- (BOOL)resignFirstResponder {
-    // Always refuse to resign - we want to stay the first responder so external
-    // input sources (emoji picker, dictation) can send text to us
-    return NO;
-}
-
-// Forward keyboard events to SDL's content view for key handling (shortcuts, etc.)
+// Intercept Cmd+V for paste - external apps like Superwhisper simulate this
+// after putting text on the pasteboard. SDL receives other keys through its own mechanism.
 - (void)keyDown:(NSEvent*)event {
-    // Intercept Cmd+V (paste) - handle it ourselves since SDL won't receive it properly
-    // when we're the first responder. This also enables apps like Superwhisper that
-    // simulate Cmd+V after putting text on the pasteboard.
     NSEventModifierFlags cmdOnly = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (cmdOnly == NSEventModifierFlagCommand && event.keyCode == 9) { // 'v' key
+    if (cmdOnly == NSEventModifierFlagCommand && event.keyCode == 9) { // Cmd+V
         [self paste:nil];
-        return;
-    }
-
-    if (self.sdlContentView) {
-        [self.sdlContentView keyDown:event];
-    }
-}
-
-- (void)keyUp:(NSEvent*)event {
-    if (self.sdlContentView) {
-        [self.sdlContentView keyUp:event];
     }
 }
 
@@ -86,11 +52,11 @@ static NSWindow* g_window = NULL;
     }
 }
 
-- (void)flagsChanged:(NSEvent*)event {
-    if (self.sdlContentView) {
-        [self.sdlContentView flagsChanged:event];
-    }
-}
+// Prevent NSTextView from handling editing commands - SDL handles these
+- (void)deleteBackward:(id)sender {}
+- (void)deleteForward:(id)sender {}
+- (void)deleteWordBackward:(id)sender {}
+- (void)deleteWordForward:(id)sender {}
 
 // Pass mouse events through to SDL's view underneath
 - (NSView*)hitTest:(NSPoint)point {
@@ -103,19 +69,8 @@ static NSWindow* g_window = NULL;
 
 
 
-// Provide our own input context since NSTextView's default one is null in this configuration
-- (NSTextInputContext*)inputContext {
-    return self.customInputContext;
-}
 
-// Override both insertText variants - some apps use the older one without replacementRange
-- (void)insertText:(id)string {
-    [self insertText:string replacementRange:NSMakeRange(NSNotFound, 0)];
-}
-
-// Override insertText to capture all text input (keyboard and external)
-// We forward everything through our callback since SDL can't receive insertText
-// when we're the first responder
+// Override insertText to capture text input from external sources
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     NSString* text = nil;
     if ([string isKindOfClass:[NSAttributedString class]]) {
@@ -128,7 +83,6 @@ static NSWindow* g_window = NULL;
         g_callback([text UTF8String], g_userdata);
     }
 
-    // Clear the text view after processing to keep it empty
     [self setString:@""];
 }
 
@@ -213,21 +167,20 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
         // This ensures it's the target for accessibility-based text input
         NSRect frame = contentView.bounds;
         g_textView = [[AccessibleTextInputView alloc] initWithFrame:frame];
-        g_textView.sdlContentView = contentView;
 
         // Configure the text view
         [g_textView setEditable:YES];
-        [g_textView setSelectable:NO];
+        [g_textView setSelectable:YES];
         [g_textView setRichText:NO];
         [g_textView setImportsGraphics:NO];
         [g_textView setAllowsUndo:NO];
+        [g_textView setInsertionPointColor:[NSColor clearColor]];  // Hide cursor
 
         // Make it nearly transparent but still functional
-        // Note: alpha=0 causes inputContext to be null, breaking text input
-        [g_textView setAlphaValue:0.01];  // Nearly invisible but functional
+        // Note: alpha=0 causes issues with text input
+        [g_textView setAlphaValue:0.01];
         [g_textView setBackgroundColor:[NSColor clearColor]];
         [g_textView setDrawsBackground:NO];
-
 
         // Auto-resize with the window
         [g_textView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
@@ -237,6 +190,17 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
 
         // Make it the first responder so external input sources can find it
         [window makeFirstResponder:g_textView];
+
+        // Reclaim first responder when window becomes key again
+        g_windowDidBecomeKeyObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSWindowDidBecomeKeyNotification
+            object:window
+            queue:[NSOperationQueue mainQueue]
+            usingBlock:^(NSNotification* note) {
+                if (g_textView && g_window) {
+                    [g_window makeFirstResponder:g_textView];
+                }
+            }];
 
         // Observe text changes as a fallback
         g_textDidChangeObserver = [[NSNotificationCenter defaultCenter]
@@ -251,25 +215,6 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
                 }
             }];
 
-        // Reclaim first responder when window becomes key again
-        // This is critical for receiving text from emoji picker, dictation, etc.
-        g_windowDidBecomeKeyObserver = [[NSNotificationCenter defaultCenter]
-            addObserverForName:NSWindowDidBecomeKeyNotification
-            object:window
-            queue:[NSOperationQueue mainQueue]
-            usingBlock:^(NSNotification* note) {
-                if (g_textView && g_window) {
-                    id firstResponder = [g_window firstResponder];
-                    if (firstResponder != g_textView) {
-                        [g_window makeFirstResponder:g_textView];
-                    }
-                    // Activate the input context to signal we're ready for input
-                    NSTextInputContext* ctx = [g_textView inputContext];
-                    if (ctx) {
-                        [ctx activate];
-                    }
-                }
-            }];
 
     }
 }
