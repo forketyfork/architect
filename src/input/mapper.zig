@@ -465,9 +465,11 @@ pub fn encodeMouseScroll(
         return result.len;
     } else {
         // X10 mouse format: ESC [ M <button+32> <col+33> <row+33>
-        // Coordinates are limited to 223 (255 - 32) in X10 format
-        const x = @min(col, 222) + 33;
-        const y = @min(row, 222) + 33;
+        // Clamp coordinates so (coord + 33) fits in a single byte.
+        const x10_offset: u16 = 33;
+        const x10_coord_max: u16 = 255 - x10_offset;
+        const x = @min(col, x10_coord_max) + x10_offset;
+        const y = @min(row, x10_coord_max) + x10_offset;
         if (buf.len < 6) return 0;
         buf[0] = '\x1b';
         buf[1] = '[';

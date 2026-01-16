@@ -34,7 +34,7 @@ pub const SessionState = struct {
     output_buf: [4096]u8,
     status: app_state.SessionStatus = .running,
     attention: bool = false,
-    is_scrolled: bool = false,
+    is_viewing_scrollback: bool = false,
     dirty: bool = true,
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
