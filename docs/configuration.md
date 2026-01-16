@@ -216,3 +216,4 @@ Or remove the entire directory:
 ```bash
 rm -rf ~/.config/architect
 ```
+
