@@ -127,6 +127,10 @@ pub fn stopTextInput(window: *c.SDL_Window) void {
     _ = c.SDL_StopTextInput(window);
 }
 
+pub fn setTextInputArea(window: *c.SDL_Window, rect: ?*const c.SDL_Rect, cursor: c_int) void {
+    _ = c.SDL_SetTextInputArea(window, rect, cursor);
+}
+
 pub fn deinit(p: *Platform) void {
     c.SDL_DestroyRenderer(p.renderer);
     c.SDL_DestroyWindow(p.window);
