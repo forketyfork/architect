@@ -699,7 +699,7 @@ fn renderCwdBar(
     const dimmed_fg = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 180 };
 
     var hotkey_width: c_int = 0;
-    if (input.terminalHotkeyDigit(grid_index)) |hotkey_str| {
+    if (input.terminalHotkeyLabel(grid_index)) |hotkey_str| {
         const hotkey_surface = c.TTF_RenderText_Blended(cwd_font, hotkey_str.ptr, hotkey_str.len, dimmed_fg) orelse return;
         defer c.SDL_DestroySurface(hotkey_surface);
 

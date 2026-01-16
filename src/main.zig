@@ -546,6 +546,10 @@ pub fn main() !void {
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+                    const terminal_shortcut: ?usize = if (worktree_comp_ptr.overlay.state == .Closed)
+                        input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows)
+                    else
+                        null;
 
                     if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
@@ -659,57 +663,53 @@ pub fn main() !void {
                         } else {
                             ui.showToast("All terminals in use", now);
                         }
-                    } else if (worktree_comp_ptr.overlay.state == .Closed) {
-                        if (input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows)) |idx| {
-                            const hotkey_digit = input.terminalHotkeyDigit(idx) orelse "?";
-                            var hotkey_buf: [8]u8 = undefined;
-                            const hotkey_label = std.fmt.bufPrint(&hotkey_buf, "⌘{s}", .{hotkey_digit}) catch "⌘?";
-                            if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
+                    } else if (terminal_shortcut) |idx| {
+                        const hotkey_label = input.terminalHotkeyLabel(idx) orelse "⌘?";
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
 
-                            if (anim_state.mode == .Grid) {
-                                try sessions[idx].ensureSpawnedWithLoop(&loop);
-                                sessions[idx].status = .running;
-                                sessions[idx].attention = false;
+                        if (anim_state.mode == .Grid) {
+                            try sessions[idx].ensureSpawnedWithLoop(&loop);
+                            sessions[idx].status = .running;
+                            sessions[idx].attention = false;
 
-                                const grid_row: c_int = @intCast(idx / grid_cols);
-                                const grid_col: c_int = @intCast(idx % grid_cols);
-                                const start_rect = Rect{
-                                    .x = grid_col * cell_width_pixels,
-                                    .y = grid_row * cell_height_pixels,
-                                    .w = cell_width_pixels,
-                                    .h = cell_height_pixels,
-                                };
-                                const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                            const grid_row: c_int = @intCast(idx / grid_cols);
+                            const grid_col: c_int = @intCast(idx % grid_cols);
+                            const start_rect = Rect{
+                                .x = grid_col * cell_width_pixels,
+                                .y = grid_row * cell_height_pixels,
+                                .w = cell_width_pixels,
+                                .h = cell_height_pixels,
+                            };
+                            const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
 
-                                anim_state.focused_session = idx;
-                                if (animations_enabled) {
-                                    anim_state.mode = .Expanding;
-                                    anim_state.start_time = now;
-                                    anim_state.start_rect = start_rect;
-                                    anim_state.target_rect = target_rect;
-                                } else {
-                                    anim_state.mode = .Full;
-                                    anim_state.start_time = now;
-                                    anim_state.start_rect = target_rect;
-                                    anim_state.target_rect = target_rect;
-                                    anim_state.previous_session = idx;
-                                }
-                                std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
-                            } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
-                                try sessions[idx].ensureSpawnedWithLoop(&loop);
-                                sessions[anim_state.focused_session].clearSelection();
-                                sessions[idx].clearSelection();
-                                sessions[idx].status = .running;
-                                sessions[idx].attention = false;
-                                anim_state.focused_session = idx;
-
-                                const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
-                                const notification_buf = try allocator.alloc(u8, buf_size);
-                                defer allocator.free(notification_buf);
-                                const notification_msg = try formatGridNotification(notification_buf, idx, grid_cols, grid_rows);
-                                ui.showToast(notification_msg, now);
-                                std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
+                            anim_state.focused_session = idx;
+                            if (animations_enabled) {
+                                anim_state.mode = .Expanding;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = start_rect;
+                                anim_state.target_rect = target_rect;
+                            } else {
+                                anim_state.mode = .Full;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = target_rect;
+                                anim_state.target_rect = target_rect;
+                                anim_state.previous_session = idx;
                             }
+                            std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
+                        } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
+                            try sessions[idx].ensureSpawnedWithLoop(&loop);
+                            sessions[anim_state.focused_session].clearSelection();
+                            sessions[idx].clearSelection();
+                            sessions[idx].status = .running;
+                            sessions[idx].attention = false;
+                            anim_state.focused_session = idx;
+
+                            const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
+                            const notification_buf = try allocator.alloc(u8, buf_size);
+                            defer allocator.free(notification_buf);
+                            const notification_msg = try formatGridNotification(notification_buf, idx, grid_cols, grid_rows);
+                            ui.showToast(notification_msg, now);
+                            std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
