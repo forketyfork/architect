@@ -57,6 +57,12 @@ pub fn build(b: *std.Build) void {
         exe.linkFramework("CoreFoundation");
         exe.linkFramework("AppKit");
 
+        // Compile the Objective-C accessibility helper
+        exe.addCSourceFile(.{
+            .file = b.path("src/platform/macos_text_input.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
+
         if (findSdkRoot()) |sdk_root| {
             const framework_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
             exe.addFrameworkPath(.{ .cwd_relative = framework_path });

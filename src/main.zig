@@ -10,6 +10,7 @@ const session_state = @import("session/state.zig");
 const vt_stream = @import("vt_stream.zig");
 const platform = @import("platform/sdl.zig");
 const macos_input = @import("platform/macos_input_source.zig");
+const macos_text_input = @import("platform/macos_text_input.zig");
 const input = @import("input/mapper.zig");
 const renderer_mod = @import("render/renderer.zig");
 const shell_mod = @import("shell.zig");
@@ -202,7 +203,24 @@ pub fn main() !void {
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
-    var text_input_active = true;
+    // Set initial text input area to cover the window. This helps external input
+    // sources (emoji picker, speech-to-text) know where to deliver text.
+    const initial_rect = c.SDL_Rect{ .x = 0, .y = 0, .w = persistence.window.width, .h = persistence.window.height };
+    platform.setTextInputArea(sdl.window, &initial_rect, 0);
+
+    // Initialize the accessible text input helper on macOS.
+    // This creates a hidden text view that exposes proper accessibility attributes,
+    // allowing external input sources (emoji picker, speech-to-text) to find us.
+    var accessible_text_input = if (builtin.os.tag == .macos) blk: {
+        const props = c.SDL_GetWindowProperties(sdl.window);
+        log.debug("SDL window properties ID: {d}", .{props});
+        const nswindow = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
+        log.debug("NSWindow pointer: {?}", .{nswindow});
+        break :blk macos_text_input.AccessibleTextInput.init(allocator, nswindow);
+    } else macos_text_input.AccessibleTextInput.init(allocator, null);
+    defer accessible_text_input.deinit();
+    accessible_text_input.start();
+
     var input_source_tracker = macos_input.InputSourceTracker.init();
     defer input_source_tracker.deinit();
     if (builtin.os.tag == .macos) {
@@ -450,6 +468,10 @@ pub fn main() !void {
                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
 
+                    // Update text input area to match new window size
+                    const resize_rect = c.SDL_Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                    platform.setTextInputArea(sdl.window, &resize_rect, 0);
+
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
                     persistence.window.width = window_width_points;
@@ -461,24 +483,24 @@ pub fn main() !void {
                     };
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
-                    if (builtin.os.tag == .macos) {
-                        if (text_input_active) {
-                            platform.stopTextInput(sdl.window);
-                            text_input_active = false;
-                        }
-                    }
+                    log.debug("SDL_EVENT_WINDOW_FOCUS_LOST", .{});
+                    // Note: We intentionally do NOT stop text input on focus loss.
+                    // Stopping text input removes SDL's field editor, which prevents
+                    // external input sources (emoji picker, speech-to-text apps) from
+                    // delivering text to our window. These tools send insertText: to
+                    // the key window's first responder, which requires the field editor
+                    // to still be active.
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                    log.debug("SDL_EVENT_WINDOW_FOCUS_GAINED", .{});
                     if (builtin.os.tag == .macos) {
                         input_source_tracker.restore() catch |err| {
                             log.warn("Failed to restore input source: {}", .{err});
                         };
-                        // Reset text input so macOS restores the per-document input source.
-                        if (text_input_active) {
-                            platform.stopTextInput(sdl.window);
-                        }
-                        platform.startTextInput(sdl.window);
-                        text_input_active = true;
+                        // Note: We do NOT restart text input here anymore. Stopping and
+                        // restarting recreates SDL's field editor, which can cause race
+                        // conditions with external input sources (emoji picker, speech-to-text)
+                        // that send insertText: when focus changes.
                     }
                 },
                 c.SDL_EVENT_KEYMAP_CHANGED => {
@@ -490,12 +512,24 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
+                    if (scaled_event.text.text) |text_ptr| {
+                        const text = std.mem.sliceTo(text_ptr, 0);
+                        log.debug("SDL_EVENT_TEXT_INPUT: len={d} text=\"{s}\"", .{ text.len, text });
+                    } else {
+                        log.debug("SDL_EVENT_TEXT_INPUT: null text", .{});
+                    }
                     handleTextInput(focused, scaled_event.text.text) catch |err| {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
                 },
                 c.SDL_EVENT_TEXT_EDITING => {
                     const focused = &sessions[anim_state.focused_session];
+                    if (scaled_event.edit.text) |text_ptr| {
+                        const text = std.mem.sliceTo(text_ptr, 0);
+                        log.debug("SDL_EVENT_TEXT_EDITING: len={d} edit_len={d} text=\"{s}\"", .{ text.len, scaled_event.edit.length, text });
+                    } else {
+                        log.debug("SDL_EVENT_TEXT_EDITING: null text", .{});
+                    }
                     // Some macOS input methods (emoji picker) may deliver committed text via TEXT_EDITING.
                     if (scaled_event.edit.text != null and scaled_event.edit.length == 0) {
                         handleTextInput(focused, scaled_event.edit.text) catch |err| {
@@ -1031,6 +1065,18 @@ pub fn main() !void {
                     }
                 },
                 else => {},
+            }
+        }
+
+        // Poll for text from the accessible text input helper (macOS only).
+        // This receives text from external sources like emoji picker and speech-to-text.
+        if (accessible_text_input.pollText()) |text| {
+            defer allocator.free(text);
+            const focused = &sessions[anim_state.focused_session];
+            if (focused.spawned and !focused.dead) {
+                focused.sendInput(text) catch |err| {
+                    log.err("Failed to send accessible text input: {}", .{err});
+                };
             }
         }
 
