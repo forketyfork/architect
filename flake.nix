@@ -44,6 +44,8 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             just
+            ruff
+            shellcheck
             zig.packages.${system}."0.15.2"
             pkg-config
             gw

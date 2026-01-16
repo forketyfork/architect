@@ -1,6 +1,7 @@
 // Shell process wrapper: spawns a login shell connected to a PTY and provides
 // minimal read/write/wait helpers for the main event loop.
 const std = @import("std");
+const assets = @import("assets");
 const posix = std.posix;
 const pty_mod = @import("pty.zig");
 const libc = @cImport({
@@ -32,7 +33,7 @@ const DEFAULT_LANG = "en_US.UTF-8";
 const DEFAULT_TERM_PROGRAM = "Architect";
 
 // Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
-const ARCHITECT_TERMINFO_SRC = @embedFile("assets/terminfo/xterm-ghostty.terminfo");
+const ARCHITECT_TERMINFO_SRC = assets.xterm_ghostty;
 
 fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
     if (posix.getenv(name) != null) return;

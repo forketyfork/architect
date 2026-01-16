@@ -138,6 +138,12 @@ src/
         └── hold.zig      # Reusable hold gesture detector
 ```
 
+## Asset Layout
+
+`assets/` stores runtime assets that are embedded or packaged, including:
+- `assets/macos/Architect.icns` for the macOS bundle icon
+- `assets/terminfo.zig` module embedding `assets/terminfo/xterm-ghostty.terminfo` for `src/shell.zig`
+
 ## Key Types
 
 ### View Modes (`app_state.ViewMode`)
