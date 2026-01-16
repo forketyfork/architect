@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Architect is a terminal multiplexer displaying 9 interactive sessions in a 3×3 grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
+Architect is a terminal multiplexer displaying interactive sessions in a grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
