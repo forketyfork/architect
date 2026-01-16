@@ -116,19 +116,19 @@ src/
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │
     ├── components/
-    │   ├── button.zig           # Reusable styled button rendering helper
-    │   ├── confirm_dialog.zig   # Generic confirmation dialog component
-    │   ├── escape_hold.zig      # ESC hold-to-collapse indicator
-    │   ├── expanding_overlay.zig# Expanding overlay animation state helper
-    │   ├── global_shortcuts.zig # Global keyboard shortcuts (e.g., Cmd+,)
-    │   ├── help_overlay.zig     # Keyboard shortcut overlay (? pill)
-    │   ├── hotkey_indicator.zig # Hotkey visual feedback indicator
-    │   ├── marquee_label.zig    # Reusable scrolling text label
-    │   ├── pill_group.zig       # Pill overlay coordinator (collapses others)
-    │   ├── quit_confirm.zig     # Quit confirmation dialog
-    │   ├── restart_buttons.zig  # Dead session restart buttons
-    │   ├── toast.zig            # Toast notification display
-    │   └── worktree_overlay.zig # Git worktree picker (T pill)
+    │   ├── button.zig            # Reusable styled button rendering helper
+    │   ├── confirm_dialog.zig    # Generic confirmation dialog component
+    │   ├── escape_hold.zig       # ESC hold-to-collapse indicator
+    │   ├── expanding_overlay.zig # Expanding overlay animation state helper
+    │   ├── global_shortcuts.zig  # Global keyboard shortcuts (e.g., Cmd+,)
+    │   ├── help_overlay.zig      # Keyboard shortcut overlay (? pill)
+    │   ├── hotkey_indicator.zig  # Hotkey visual feedback indicator
+    │   ├── marquee_label.zig     # Reusable scrolling text label
+    │   ├── pill_group.zig        # Pill overlay coordinator (collapses others)
+    │   ├── quit_confirm.zig      # Quit confirmation dialog
+    │   ├── restart_buttons.zig   # Dead session restart buttons
+    │   ├── toast.zig             # Toast notification display
+    │   └── worktree_overlay.zig  # Git worktree picker (T pill)
     │
     └── gestures/
         └── hold.zig      # Reusable hold gesture detector
