@@ -400,6 +400,10 @@ pub fn main() !void {
         var processed_event = false;
         while (c.SDL_PollEvent(&event)) {
             if (anim_state.focused_session != last_focused_session) {
+                const previous_session = last_focused_session;
+                clearImeComposition(&sessions[previous_session], &ime_composition) catch |err| {
+                    std.debug.print("Failed to clear IME composition: {}\n", .{err});
+                };
                 ime_composition.reset();
                 last_focused_session = anim_state.focused_session;
             }
@@ -2361,6 +2365,10 @@ fn sendDeleteInput(session: *SessionState, count: usize) !void {
 
 fn clearImeComposition(session: *SessionState, ime: *ImeComposition) !void {
     if (ime.codepoints == 0) return;
+    if (!session.spawned or session.dead) {
+        ime.codepoints = 0;
+        return;
+    }
 
     try sendDeleteInput(session, ime.codepoints);
     ime.codepoints = 0;
@@ -2385,8 +2393,8 @@ fn handleTextEditing(
     }
 
     resetScrollIfNeeded(session);
-    const treat_as_commit = length == 0 and start == 0;
-    if (treat_as_commit) {
+    const is_committed_text = length == 0 and start == 0;
+    if (is_committed_text) {
         try clearImeComposition(session, ime);
         try session.sendInput(text);
         return;

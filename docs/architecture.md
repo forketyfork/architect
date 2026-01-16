@@ -251,6 +251,7 @@ struct {
 Text input notes:
 - `SDL_EVENT_TEXT_INPUT` is treated as committed text for the focused session.
 - `SDL_EVENT_TEXT_EDITING` updates are treated as preedit; the prior composition is removed with delete (0x7f) before inserting the latest composition, so macOS IME/dictation updates replace in place.
+- When focus switches between sessions, any in-flight preedit text is cleared from the previously focused session.
 
 Components that consume events:
 - `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay
