@@ -108,6 +108,7 @@ Common settings include font family, theme colors, and grid rows/cols. Remove th
 ## Documentation
 
 - `docs/architecture.md`: architecture overview and system boundaries.
+- `docs/configuration.md`: detailed configuration reference for `config.toml` and `persistence.toml`.
 - `docs/development.md`: build, test, release, and assistant hook setup.
 - `CLAUDE.md`: agent guidelines for code assistants.
 
