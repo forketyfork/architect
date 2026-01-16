@@ -12,6 +12,10 @@
 // Callback function type for delivering text to Zig code
 typedef void (*TextInputCallback)(const char* text, void* userdata);
 
+// Constants
+static const CGFloat kTextViewAlpha = 0.01;  // Nearly transparent but still functional for text input
+static const unsigned short kKeyCodeV = 9;   // macOS virtual key code for 'V' key
+
 // Forward declaration
 @class AccessibleTextInputView;
 
@@ -38,7 +42,7 @@ static NSWindow* g_window = NULL;
 // after putting text on the pasteboard. SDL receives other keys through its own mechanism.
 - (void)keyDown:(NSEvent*)event {
     NSEventModifierFlags cmdOnly = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (cmdOnly == NSEventModifierFlagCommand && event.keyCode == 9) { // Cmd+V
+    if (cmdOnly == NSEventModifierFlagCommand && event.keyCode == kKeyCodeV) {
         [self paste:nil];
     }
 }
@@ -176,9 +180,7 @@ void macos_text_input_init(void* nswindow, TextInputCallback callback, void* use
         [g_textView setAllowsUndo:NO];
         [g_textView setInsertionPointColor:[NSColor clearColor]];  // Hide cursor
 
-        // Make it nearly transparent but still functional
-        // Note: alpha=0 causes issues with text input
-        [g_textView setAlphaValue:0.01];
+        [g_textView setAlphaValue:kTextViewAlpha];
         [g_textView setBackgroundColor:[NSColor clearColor]];
         [g_textView setDrawsBackground:NO];
 

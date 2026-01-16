@@ -20,7 +20,7 @@ const c = if (is_macos) struct {
 const MAX_TEXT_SIZE = 4096;
 
 pub const AccessibleTextInput = if (is_macos) struct {
-    pending_text: ?[]u8 = null,
+    pending_text: std.ArrayList(u8),
     allocator: std.mem.Allocator,
     nswindow: ?*anyopaque,
 
@@ -28,11 +28,11 @@ pub const AccessibleTextInput = if (is_macos) struct {
     var global_instance: ?*AccessibleTextInput = null;
 
     pub fn init(allocator: std.mem.Allocator, nswindow: ?*anyopaque) AccessibleTextInput {
-        const self = AccessibleTextInput{
+        return .{
+            .pending_text = .empty,
             .allocator = allocator,
             .nswindow = nswindow,
         };
-        return self;
     }
 
     /// Must be called after init, once the struct is at its final memory location.
@@ -44,10 +44,7 @@ pub const AccessibleTextInput = if (is_macos) struct {
 
     pub fn deinit(self: *AccessibleTextInput) void {
         c.macos_text_input_deinit();
-        if (self.pending_text) |text| {
-            self.allocator.free(text);
-            self.pending_text = null;
-        }
+        self.pending_text.deinit(self.allocator);
         global_instance = null;
     }
 
@@ -69,8 +66,12 @@ pub const AccessibleTextInput = if (is_macos) struct {
     /// Poll for pending text input. Returns the text and clears the pending state.
     /// Caller must free the returned slice.
     pub fn pollText(self: *AccessibleTextInput) ?[]u8 {
-        const text = self.pending_text;
-        self.pending_text = null;
+        if (self.pending_text.items.len == 0) return null;
+        const text = self.pending_text.toOwnedSlice(self.allocator) catch {
+            log.err("Failed to convert pending text to owned slice", .{});
+            self.pending_text.clearRetainingCapacity();
+            return null;
+        };
         return text;
     }
 
@@ -82,14 +83,9 @@ pub const AccessibleTextInput = if (is_macos) struct {
         const text = std.mem.sliceTo(text_ptr, 0);
         if (text.len == 0) return;
 
-        // Free any existing pending text
-        if (instance.pending_text) |old| {
-            instance.allocator.free(old);
-        }
-
-        // Store the new text
-        instance.pending_text = instance.allocator.dupe(u8, text) catch {
-            log.err("Failed to allocate text buffer", .{});
+        // Append to pending text buffer (preserves earlier chunks)
+        instance.pending_text.appendSlice(instance.allocator, text) catch {
+            log.err("Failed to append to text buffer", .{});
             return;
         };
     }

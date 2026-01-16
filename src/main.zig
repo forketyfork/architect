@@ -2373,6 +2373,10 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
     try handleTextSlice(session, text);
 }
 
+// Control characters for backspace filtering in text input
+const CTRL_BACKSPACE: u8 = 0x08; // ASCII backspace
+const CTRL_DELETE: u8 = 0x7f; // ASCII delete
+
 fn handleTextSlice(session: *SessionState, text: []const u8) !void {
     if (!session.spawned or session.dead) return;
     if (text.len == 0) return;
@@ -2382,7 +2386,7 @@ fn handleTextSlice(session: *SessionState, text: []const u8) !void {
     var sent_any = false;
     while (idx < text.len) : (idx += 1) {
         const ch = text[idx];
-        if (ch == 8 or ch == 0x7f) {
+        if (ch == CTRL_BACKSPACE or ch == CTRL_DELETE) {
             if (idx > start) {
                 if (!sent_any) resetScrollIfNeeded(session);
                 try session.sendInput(text[start..idx]);
