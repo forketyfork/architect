@@ -50,6 +50,14 @@ const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
 const CursorKind = enum { arrow, ibeam, pointer };
 
+const ImeComposition = struct {
+    codepoints: usize = 0,
+
+    fn reset(self: *ImeComposition) void {
+        self.codepoints = 0;
+    }
+};
+
 fn countForegroundProcesses(sessions: []const SessionState) usize {
     var total: usize = 0;
     for (sessions) |*session| {
@@ -332,6 +340,8 @@ pub fn main() !void {
         .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
     };
+    var ime_composition = ImeComposition{};
+    var last_focused_session: usize = anim_state.focused_session;
 
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
     worktree_comp_ptr.* = .{ .allocator = allocator };
@@ -389,6 +399,10 @@ pub fn main() !void {
         var event: c.SDL_Event = undefined;
         var processed_event = false;
         while (c.SDL_PollEvent(&event)) {
+            if (anim_state.focused_session != last_focused_session) {
+                ime_composition.reset();
+                last_focused_session = anim_state.focused_session;
+            }
             processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
             const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
@@ -467,6 +481,7 @@ pub fn main() !void {
                             text_input_active = false;
                         }
                     }
+                    ime_composition.reset();
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
                     if (builtin.os.tag == .macos) {
@@ -490,18 +505,21 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    handleTextInput(focused, scaled_event.text.text) catch |err| {
+                    handleTextInput(focused, &ime_composition, scaled_event.text.text) catch |err| {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
                 },
                 c.SDL_EVENT_TEXT_EDITING => {
                     const focused = &sessions[anim_state.focused_session];
-                    // Some macOS input methods (emoji picker) may deliver committed text via TEXT_EDITING.
-                    if (scaled_event.edit.text != null and scaled_event.edit.length == 0) {
-                        handleTextInput(focused, scaled_event.edit.text) catch |err| {
-                            std.debug.print("Edit input failed: {}\n", .{err});
-                        };
-                    }
+                    handleTextEditing(
+                        focused,
+                        &ime_composition,
+                        scaled_event.edit.text,
+                        scaled_event.edit.start,
+                        scaled_event.edit.length,
+                    ) catch |err| {
+                        std.debug.print("Edit input failed: {}\n", .{err});
+                    };
                 },
                 c.SDL_EVENT_DROP_FILE => {
                     const drop_path_ptr = scaled_event.drop.data;
@@ -2323,7 +2341,63 @@ fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const
     }
 }
 
-fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
+fn countImeCodepoints(text: []const u8) usize {
+    return std.unicode.utf8CountCodepoints(text) catch text.len;
+}
+
+fn sendDeleteInput(session: *SessionState, count: usize) !void {
+    if (count == 0) return;
+
+    var buf: [16]u8 = undefined;
+    @memset(buf[0..], 0x7f);
+
+    var remaining: usize = count;
+    while (remaining > 0) {
+        const chunk: usize = @min(remaining, buf.len);
+        try session.sendInput(buf[0..chunk]);
+        remaining -= chunk;
+    }
+}
+
+fn clearImeComposition(session: *SessionState, ime: *ImeComposition) !void {
+    if (ime.codepoints == 0) return;
+
+    try sendDeleteInput(session, ime.codepoints);
+    ime.codepoints = 0;
+}
+
+fn handleTextEditing(
+    session: *SessionState,
+    ime: *ImeComposition,
+    text_ptr: [*c]const u8,
+    start: c_int,
+    length: c_int,
+) !void {
+    if (!session.spawned or session.dead) return;
+    if (text_ptr == null) return;
+
+    const text = std.mem.sliceTo(text_ptr, 0);
+    if (text.len == 0) {
+        if (ime.codepoints == 0) return;
+        resetScrollIfNeeded(session);
+        try clearImeComposition(session, ime);
+        return;
+    }
+
+    resetScrollIfNeeded(session);
+    const treat_as_commit = length == 0 and start == 0;
+    if (treat_as_commit) {
+        try clearImeComposition(session, ime);
+        try session.sendInput(text);
+        return;
+    }
+
+    try clearImeComposition(session, ime);
+    try session.sendInput(text);
+    ime.codepoints = countImeCodepoints(text);
+}
+
+fn handleTextInput(session: *SessionState, ime: *ImeComposition, text_ptr: [*c]const u8) !void {
     if (!session.spawned or session.dead) return;
     if (text_ptr == null) return;
 
@@ -2331,6 +2405,7 @@ fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
     if (text.len == 0) return;
 
     resetScrollIfNeeded(session);
+    try clearImeComposition(session, ime);
     try session.sendInput(text);
 }
 

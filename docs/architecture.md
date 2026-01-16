@@ -248,6 +248,10 @@ struct {
 5. If consumed, skip app handlers; otherwise continue to main event switch
 6. `ui.hitTest()` used for cursor changes in full view
 
+Text input notes:
+- `SDL_EVENT_TEXT_INPUT` is treated as committed text for the focused session.
+- `SDL_EVENT_TEXT_EDITING` updates are treated as preedit; the prior composition is removed with delete (0x7f) before inserting the latest composition, so macOS IME/dictation updates replace in place.
+
 Components that consume events:
 - `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay
 - `WorktreeOverlayComponent`: ⌘T pill, Cmd+T, Cmd+1–9 to cd the focused shell into a worktree; Cmd+0 opens a creation modal that builds `.architect/<name>` via `git worktree add -b <name>` and cds into it; pill is hidden when a foreground process is running; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), highlights rows on hover with a gradient, supports click selection, limits the list to 9 entries, and displays paths relative to the primary worktree; includes delete (×) button to remove non-root worktrees
