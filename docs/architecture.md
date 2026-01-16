@@ -241,6 +241,7 @@ struct {
 4. `ui.handleEvent()` dispatches to components (topmost-first by z-index)
 5. If consumed, skip app handlers; otherwise continue to main event switch
 6. `ui.hitTest()` used for cursor changes in full view
+7. Text input filters out backspace control bytes (0x08/0x7f) so backspace comes from key events only
 
 Components that consume events:
 - `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay

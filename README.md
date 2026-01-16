@@ -624,6 +624,7 @@ The application uses cubic ease-in-out interpolation to smoothly transition betw
 - Claude Code integration via Unix domain sockets
 - Scrolling back through terminal history (mouse wheel) with a grid indicator when a pane is scrolled
 - Text selection in full view with clipboard copy/paste (drag, ⌘C / ⌘V)
+- macOS accessibility text input for external sources (emoji picker, speech-to-text)
 - Cmd+Click to open hyperlinks (OSC 8) in your default browser
 - Kitty keyboard protocol negotiation (query response and conditional CSI-u encoding for Shift+Enter/Tab/Backspace)
 

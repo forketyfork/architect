@@ -1073,11 +1073,9 @@ pub fn main() !void {
         if (accessible_text_input.pollText()) |text| {
             defer allocator.free(text);
             const focused = &sessions[anim_state.focused_session];
-            if (focused.spawned and !focused.dead) {
-                focused.sendInput(text) catch |err| {
-                    log.err("Failed to send accessible text input: {}", .{err});
-                };
-            }
+            handleTextSlice(focused, text) catch |err| {
+                log.err("Failed to send accessible text input: {}", .{err});
+            };
         }
 
         try loop.run(.no_wait);
@@ -2370,14 +2368,34 @@ fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const
 }
 
 fn handleTextInput(session: *SessionState, text_ptr: [*c]const u8) !void {
-    if (!session.spawned or session.dead) return;
     if (text_ptr == null) return;
-
     const text = std.mem.sliceTo(text_ptr, 0);
+    try handleTextSlice(session, text);
+}
+
+fn handleTextSlice(session: *SessionState, text: []const u8) !void {
+    if (!session.spawned or session.dead) return;
     if (text.len == 0) return;
 
-    resetScrollIfNeeded(session);
-    try session.sendInput(text);
+    var start: usize = 0;
+    var idx: usize = 0;
+    var sent_any = false;
+    while (idx < text.len) : (idx += 1) {
+        const ch = text[idx];
+        if (ch == 8 or ch == 0x7f) {
+            if (idx > start) {
+                if (!sent_any) resetScrollIfNeeded(session);
+                try session.sendInput(text[start..idx]);
+                sent_any = true;
+            }
+            start = idx + 1;
+        }
+    }
+
+    if (start < text.len) {
+        if (!sent_any) resetScrollIfNeeded(session);
+        try session.sendInput(text[start..]);
+    }
 }
 
 fn clearTerminal(session: *SessionState) void {
