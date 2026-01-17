@@ -652,7 +652,7 @@ pub fn main() !void {
                         var notification_buf: [64]u8 = undefined;
                         const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch "Font size changed";
                         ui.showToast(notification_msg, now);
-                    } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and anim_state.mode == .Full) {
+                    } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
                         if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
