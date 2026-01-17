@@ -24,6 +24,8 @@ const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const open_url = @import("os/open.zig");
 const url_matcher = @import("url_matcher.zig");
+const cli = @import("cli.zig");
+const hook_manager = @import("hook_manager.zig");
 
 const log = std.log.scoped(.main);
 
@@ -121,6 +123,61 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Handle CLI commands (hook install/uninstall/status, help, version)
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const command = cli.parse(args) catch |err| {
+        const stderr = std.io.getStdErr().writer();
+        cli.printError(err, stderr) catch {};
+        std.process.exit(1);
+    };
+
+    switch (command) {
+        .help => {
+            const stdout = std.io.getStdOut().writer();
+            cli.printUsage(stdout) catch {};
+            return;
+        },
+        .version => {
+            const stdout = std.io.getStdOut().writer();
+            stdout.writeAll("Architect 0.35.0\n") catch {};
+            return;
+        },
+        .hook => |h| {
+            const stdout = std.io.getStdOut().writer();
+            switch (h.action) {
+                .install => {
+                    if (h.tool) |tool| {
+                        hook_manager.install(allocator, tool, stdout) catch |err| {
+                            const stderr = std.io.getStdErr().writer();
+                            stderr.print("Error: {}\n", .{err}) catch {};
+                            std.process.exit(1);
+                        };
+                    }
+                },
+                .uninstall => {
+                    if (h.tool) |tool| {
+                        hook_manager.uninstall(allocator, tool, stdout) catch |err| {
+                            const stderr = std.io.getStdErr().writer();
+                            stderr.print("Error: {}\n", .{err}) catch {};
+                            std.process.exit(1);
+                        };
+                    }
+                },
+                .status => {
+                    hook_manager.status(allocator, stdout) catch |err| {
+                        const stderr = std.io.getStdErr().writer();
+                        stderr.print("Error: {}\n", .{err}) catch {};
+                        std.process.exit(1);
+                    };
+                },
+            }
+            return;
+        },
+        .gui => {}, // Continue with GUI initialization
+    }
 
     // Socket listener relays external "awaiting approval / done" signals from
     // shells (or other tools) into the UI thread without blocking rendering.

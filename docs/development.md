@@ -97,6 +97,35 @@ Each release includes:
 
 Architect exposes a Unix domain socket to let external tools (Claude Code, Codex, Gemini CLI, etc.) signal UI states.
 
+### Automated Installation
+
+The easiest way to set up hooks is using the built-in CLI commands:
+
+```bash
+# Install hook for Claude Code
+architect hook install claude
+
+# Install hook for Codex
+architect hook install codex
+
+# Install hook for Gemini CLI
+architect hook install gemini
+
+# Check which hooks are installed
+architect hook status
+
+# Uninstall a hook
+architect hook uninstall claude
+```
+
+These commands automatically:
+1. Copy the notification scripts to the tool's config directory
+2. Update the tool's configuration file with the appropriate hooks
+
+### Manual Installation
+
+If you prefer manual setup or need custom configuration, follow the instructions below.
+
 ### Socket Protocol
 
 - Socket: `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock`

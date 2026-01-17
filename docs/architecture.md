@@ -28,7 +28,9 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 ## Runtime Flow
 
-**main.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
+**main.zig** first checks command-line arguments via `cli.zig`. If a CLI command is detected (e.g., `architect hook install claude`), it handles the command and exits without starting the GUI. Otherwise, it proceeds with the normal application lifecycle.
+
+In **GUI mode**, main.zig owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
 
 1. Polls SDL events and scales coordinates to render space.
 2. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
@@ -72,7 +74,9 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 ```
 src/
-├── main.zig              # Entry point, frame loop, event dispatch
+├── main.zig              # Entry point, frame loop, event dispatch, CLI routing
+├── cli.zig               # CLI argument parser (hook, help, version commands)
+├── hook_manager.zig      # AI assistant hook installation/uninstallation
 ├── c.zig                 # C bindings (SDL3, TTF, etc.)
 ├── colors.zig            # Theme and color palette management (ANSI 16/256)
 ├── config.zig            # TOML config persistence

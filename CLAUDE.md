@@ -131,6 +131,7 @@ const result = row * GRID_COLS + grid_col;  // Works correctly
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
 - Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}`. The helper `scripts/architect_notify.py` is available if needed.
+- Use `architect hook install claude` (or `codex`/`gemini`) to automatically set up hooks for AI assistants.
 
 ## Done? Share
 - Provide a concise summary of edits, test/build outcomes, and documentation updates.
