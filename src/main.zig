@@ -654,7 +654,13 @@ pub fn main() !void {
                         ui.showToast(notification_msg, now);
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
-                        if (findNextFreeSession(sessions, anim_state.focused_session)) |next_free_idx| {
+                        // In grid mode, the focused slot might be unspawned - use it directly
+                        const target_idx: ?usize = if (!focused.spawned)
+                            anim_state.focused_session
+                        else
+                            findNextFreeSession(sessions, anim_state.focused_session);
+
+                        if (target_idx) |next_free_idx| {
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
                             const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
