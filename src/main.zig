@@ -129,29 +129,29 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     const command = cli.parse(args) catch |err| {
-        const stderr = std.io.getStdErr().writer();
+        const stderr = std.fs.File.stderr().deprecatedWriter();
         cli.printError(err, stderr) catch {};
         std.process.exit(1);
     };
 
     switch (command) {
         .help => {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = std.fs.File.stdout().deprecatedWriter();
             cli.printUsage(stdout) catch {};
             return;
         },
         .version => {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = std.fs.File.stdout().deprecatedWriter();
             stdout.writeAll("Architect 0.35.0\n") catch {};
             return;
         },
         .hook => |h| {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = std.fs.File.stdout().deprecatedWriter();
             switch (h.action) {
                 .install => {
                     if (h.tool) |tool| {
                         hook_manager.install(allocator, tool, stdout) catch |err| {
-                            const stderr = std.io.getStdErr().writer();
+                            const stderr = std.fs.File.stderr().deprecatedWriter();
                             stderr.print("Error: {}\n", .{err}) catch {};
                             std.process.exit(1);
                         };
@@ -160,7 +160,7 @@ pub fn main() !void {
                 .uninstall => {
                     if (h.tool) |tool| {
                         hook_manager.uninstall(allocator, tool, stdout) catch |err| {
-                            const stderr = std.io.getStdErr().writer();
+                            const stderr = std.fs.File.stderr().deprecatedWriter();
                             stderr.print("Error: {}\n", .{err}) catch {};
                             std.process.exit(1);
                         };
@@ -168,7 +168,7 @@ pub fn main() !void {
                 },
                 .status => {
                     hook_manager.status(allocator, stdout) catch |err| {
-                        const stderr = std.io.getStdErr().writer();
+                        const stderr = std.fs.File.stderr().deprecatedWriter();
                         stderr.print("Error: {}\n", .{err}) catch {};
                         std.process.exit(1);
                     };
@@ -1272,14 +1272,14 @@ pub fn main() !void {
                     continue;
                 }
 
-                const command = buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
+                const worktree_cmd = buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
                     std.debug.print("Failed to build worktree command: {}\n", .{err});
                     ui.showToast("Could not create worktree", now);
                     continue;
                 };
-                defer allocator.free(command);
+                defer allocator.free(worktree_cmd);
 
-                session.sendInput(command) catch |err| {
+                session.sendInput(worktree_cmd) catch |err| {
                     std.debug.print("Failed to send worktree command: {}\n", .{err});
                     ui.showToast("Could not create worktree", now);
                     continue;
@@ -1328,14 +1328,14 @@ pub fn main() !void {
                     }
                 }
 
-                const command = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
+                const remove_cmd = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
                     std.debug.print("Failed to build remove worktree command: {}\n", .{err});
                     ui.showToast("Could not remove worktree", now);
                     continue;
                 };
-                defer allocator.free(command);
+                defer allocator.free(remove_cmd);
 
-                session.sendInput(command) catch |err| {
+                session.sendInput(remove_cmd) catch |err| {
                     std.debug.print("Failed to send remove worktree command: {}\n", .{err});
                     ui.showToast("Could not remove worktree", now);
                     continue;

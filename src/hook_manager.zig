@@ -15,12 +15,21 @@ pub const HookError = error{
     JsonParseFailed,
     OutOfMemory,
     InvalidPath,
+    HookSkipped,
 };
 
 const ScriptInfo = struct {
     name: []const u8,
     dest_name: []const u8,
 };
+
+fn writeJsonToFile(file: std.fs.File, value: std.json.Value) !void {
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.fs.File.Writer.init(file, &write_buffer);
+    try std.json.Stringify.value(value, .{ .whitespace = .indent_2 }, &file_writer.interface);
+    try file_writer.interface.writeByte('\n');
+    try file_writer.interface.flush();
+}
 
 fn getScriptsForTool(tool: Tool) []const ScriptInfo {
     return switch (tool) {
@@ -40,38 +49,31 @@ fn getHomeDir() ?[]const u8 {
 
 fn findScriptsDir(allocator: std.mem.Allocator) !?[]u8 {
     // Try relative to executable first (for installed binaries)
-    const self_exe = std.fs.selfExePath(allocator) catch null;
-    if (self_exe) |exe_path| {
-        defer allocator.free(exe_path);
-        if (std.fs.path.dirname(exe_path)) |exe_dir| {
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_path = std.fs.selfExePath(&exe_buf) catch null;
+    if (exe_path) |path| {
+        if (std.fs.path.dirname(path)) |exe_dir| {
             // Check ../share/architect/scripts (standard install location)
             const share_path = try std.fs.path.join(allocator, &.{ exe_dir, "..", "share", "architect", "scripts" });
             defer allocator.free(share_path);
-            if (std.fs.cwd().openDir(share_path, .{})) |dir| {
-                dir.close();
-                var buf: [std.fs.max_path_bytes]u8 = undefined;
-                const resolved = std.fs.cwd().realpath(share_path, &buf) catch null;
-                if (resolved) |p| return try allocator.dupe(u8, p);
+            var resolve_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(share_path, &resolve_buf)) |p| {
+                return try allocator.dupe(u8, p);
             } else |_| {}
 
             // Check ../scripts (development layout)
             const dev_path = try std.fs.path.join(allocator, &.{ exe_dir, "..", "scripts" });
             defer allocator.free(dev_path);
-            if (std.fs.cwd().openDir(dev_path, .{})) |dir| {
-                dir.close();
-                var buf: [std.fs.max_path_bytes]u8 = undefined;
-                const resolved = std.fs.cwd().realpath(dev_path, &buf) catch null;
-                if (resolved) |p| return try allocator.dupe(u8, p);
+            if (std.fs.cwd().realpath(dev_path, &resolve_buf)) |p| {
+                return try allocator.dupe(u8, p);
             } else |_| {}
         }
     }
 
     // Try current working directory's scripts folder (for running from source)
-    if (std.fs.cwd().openDir("scripts", .{})) |dir| {
-        dir.close();
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const resolved = std.fs.cwd().realpath("scripts", &buf) catch null;
-        if (resolved) |p| return try allocator.dupe(u8, p);
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.fs.cwd().realpath("scripts", &cwd_buf)) |p| {
+        return try allocator.dupe(u8, p);
     } else |_| {}
 
     return null;
@@ -205,8 +207,7 @@ fn installClaudeHooks(allocator: std.mem.Allocator, config_path: []const u8, scr
     const out_file = std.fs.createFileAbsolute(config_path, .{}) catch return error.ConfigWriteFailed;
     defer out_file.close();
 
-    std.json.stringify(root, .{ .whitespace = .indent_2 }, out_file.writer()) catch return error.ConfigWriteFailed;
-    out_file.writer().writeByte('\n') catch return error.ConfigWriteFailed;
+    writeJsonToFile(out_file, root) catch return error.ConfigWriteFailed;
 }
 
 fn uninstallClaudeHooks(allocator: std.mem.Allocator, config_path: []const u8) !void {
@@ -239,8 +240,7 @@ fn uninstallClaudeHooks(allocator: std.mem.Allocator, config_path: []const u8) !
     const out_file = std.fs.createFileAbsolute(config_path, .{}) catch return;
     defer out_file.close();
 
-    std.json.stringify(root, .{ .whitespace = .indent_2 }, out_file.writer()) catch return;
-    out_file.writer().writeByte('\n') catch return;
+    writeJsonToFile(out_file, root) catch return;
 }
 
 // ============================================================================
@@ -275,24 +275,24 @@ fn installCodexHooks(allocator: std.mem.Allocator, config_path: []const u8, scri
     // Check if notify is already configured with architect
     if (std.mem.indexOf(u8, content, "notify") != null and std.mem.indexOf(u8, content, "architect") != null) {
         // Replace existing architect notify line
-        var new_content = std.ArrayList(u8).init(allocator);
-        defer new_content.deinit();
+        var new_content = std.ArrayList(u8){};
+        defer new_content.deinit(allocator);
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         var first = true;
         while (lines.next()) |line| {
             if (!first) {
-                try new_content.append('\n');
+                try new_content.append(allocator, '\n');
             }
             first = false;
 
             const trimmed = std.mem.trim(u8, line, " \t");
             if (std.mem.startsWith(u8, trimmed, "notify") and std.mem.indexOf(u8, line, "architect") != null) {
-                try new_content.appendSlice("notify = [\"python3\", \"");
-                try new_content.appendSlice(script_path);
-                try new_content.appendSlice("\"]");
+                try new_content.appendSlice(allocator, "notify = [\"python3\", \"");
+                try new_content.appendSlice(allocator, script_path);
+                try new_content.appendSlice(allocator, "\"]");
             } else {
-                try new_content.appendSlice(line);
+                try new_content.appendSlice(allocator, line);
             }
         }
 
@@ -301,7 +301,7 @@ fn installCodexHooks(allocator: std.mem.Allocator, config_path: []const u8, scri
         out_file.writeAll(new_content.items) catch return error.ConfigWriteFailed;
     } else if (std.mem.indexOf(u8, content, "notify")) |_| {
         // There's a different notify config - don't overwrite it
-        return;
+        return error.HookSkipped;
     } else {
         // Append notify line
         const out_file = std.fs.createFileAbsolute(config_path, .{ .truncate = false }) catch return error.ConfigWriteFailed;
@@ -326,8 +326,8 @@ fn uninstallCodexHooks(allocator: std.mem.Allocator, config_path: []const u8) !v
     const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
     defer allocator.free(content);
 
-    var new_content = std.ArrayList(u8).init(allocator);
-    defer new_content.deinit();
+    var new_content = std.ArrayList(u8){};
+    defer new_content.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     var first = true;
@@ -337,10 +337,10 @@ fn uninstallCodexHooks(allocator: std.mem.Allocator, config_path: []const u8) !v
             continue;
         }
         if (!first) {
-            try new_content.append('\n');
+            new_content.append(allocator, '\n') catch return;
         }
         first = false;
-        try new_content.appendSlice(line);
+        new_content.appendSlice(allocator, line) catch return;
     }
 
     const out_file = std.fs.createFileAbsolute(config_path, .{}) catch return;
@@ -387,8 +387,8 @@ fn installGeminiHooks(allocator: std.mem.Allocator, config_path: []const u8, scr
     if (root != .object) return error.JsonParseFailed;
 
     // Build commands
-    const after_cmd = try std.fmt.allocPrint(alloc, "python3 {s} done", .{script_path});
-    const notif_cmd = try std.fmt.allocPrint(alloc, "python3 {s} awaiting_approval", .{script_path});
+    const after_cmd = try std.fmt.allocPrint(alloc, "python3 {s} done || true", .{script_path});
+    const notif_cmd = try std.fmt.allocPrint(alloc, "python3 {s} awaiting_approval || true", .{script_path});
 
     // Create hooks structure
     var hooks: std.json.ObjectMap = undefined;
@@ -458,8 +458,7 @@ fn installGeminiHooks(allocator: std.mem.Allocator, config_path: []const u8, scr
     const out_file = std.fs.createFileAbsolute(config_path, .{}) catch return error.ConfigWriteFailed;
     defer out_file.close();
 
-    std.json.stringify(root, .{ .whitespace = .indent_2 }, out_file.writer()) catch return error.ConfigWriteFailed;
-    out_file.writer().writeByte('\n') catch return error.ConfigWriteFailed;
+    writeJsonToFile(out_file, root) catch return error.ConfigWriteFailed;
 }
 
 fn uninstallGeminiHooks(allocator: std.mem.Allocator, config_path: []const u8) !void {
@@ -502,8 +501,7 @@ fn uninstallGeminiHooks(allocator: std.mem.Allocator, config_path: []const u8) !
     const out_file = std.fs.createFileAbsolute(config_path, .{}) catch return;
     defer out_file.close();
 
-    std.json.stringify(root, .{ .whitespace = .indent_2 }, out_file.writer()) catch return;
-    out_file.writer().writeByte('\n') catch return;
+    writeJsonToFile(out_file, root) catch return;
 }
 
 // ============================================================================
@@ -568,6 +566,12 @@ pub fn install(allocator: std.mem.Allocator, tool: Tool, writer: anytype) !void 
             defer allocator.free(config_path);
 
             installCodexHooks(allocator, config_path, main_script_path) catch |err| {
+                if (err == error.HookSkipped) {
+                    try writer.print("\nSkipped: {s} already contains a 'notify' setting.\n", .{config_path});
+                    try writer.writeAll("Please manually add the Architect notifier to your existing notify configuration:\n");
+                    try writer.print("  notify = [\"python3\", \"{s}\"]\n", .{main_script_path});
+                    return;
+                }
                 try writer.print("Error updating {s}: {}\n", .{ config_path, err });
                 return;
             };
