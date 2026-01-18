@@ -31,7 +31,7 @@ pub fn Computed(comptime T: type) type {
         is_dirty: bool = true,
         node_id: tracker.NodeId,
         dependencies: []tracker.NodeId = &[_]tracker.NodeId{},
-        subscribers: std.ArrayList(tracker.Subscription) = .{},
+        subscribers: std.ArrayList(tracker.Subscription),
         /// User context passed to compute function
         context: ?*anyopaque = null,
 
@@ -44,17 +44,46 @@ pub fn Computed(comptime T: type) type {
             return .{
                 .allocator = allocator,
                 .compute_fn = compute_fn,
-                .node_id = signal_mod.Signal(T).init(allocator, undefined).node_id,
+                .node_id = signal_mod.generateNodeId(),
                 .context = context,
+                .subscribers = std.ArrayList(tracker.Subscription).init(allocator),
             };
         }
 
         /// Clean up resources.
         pub fn deinit(self: *Self) void {
+            // Unregister from all dependencies
+            self.unregisterFromDependencies();
             if (self.dependencies.len > 0) {
                 self.allocator.free(self.dependencies);
             }
             self.subscribers.deinit(self.allocator);
+        }
+
+        fn unregisterFromDependencies(self: *Self) void {
+            const callback = struct {
+                fn markDirtyCallback(ctx: ?*anyopaque) void {
+                    const computed: *Self = @ptrCast(@alignCast(ctx));
+                    computed.markDirty();
+                }
+            }.markDirtyCallback;
+
+            for (self.dependencies) |dep_id| {
+                tracker.unregisterObserver(dep_id, callback, self);
+            }
+        }
+
+        fn registerWithDependencies(self: *Self) void {
+            const callback = struct {
+                fn markDirtyCallback(ctx: ?*anyopaque) void {
+                    const computed: *Self = @ptrCast(@alignCast(ctx));
+                    computed.markDirty();
+                }
+            }.markDirtyCallback;
+
+            for (self.dependencies) |dep_id| {
+                tracker.registerObserver(dep_id, callback, self);
+            }
         }
 
         /// Get the computed value, recomputing if necessary.
@@ -92,6 +121,9 @@ pub fn Computed(comptime T: type) type {
         }
 
         fn recompute(self: *Self) void {
+            // Unregister from old dependencies
+            self.unregisterFromDependencies();
+
             // Free old dependencies
             if (self.dependencies.len > 0) {
                 self.allocator.free(self.dependencies);
@@ -101,12 +133,15 @@ pub fn Computed(comptime T: type) type {
             var tracking_ctx = tracker.TrackingContext.init(self.allocator);
             defer tracking_ctx.deinit();
 
-            _ = tracker.beginTracking(&tracking_ctx);
+            const previous_ctx = tracker.beginTracking(&tracking_ctx);
             const new_value = self.compute_fn(self);
-            tracker.endTracking(null);
+            tracker.endTracking(previous_ctx);
 
             // Store dependencies
             self.dependencies = tracking_ctx.consumeDependencies();
+
+            // Register with new dependencies
+            self.registerWithDependencies();
 
             // Check if value changed
             const changed = if (self.cached_value) |old| !std.meta.eql(old, new_value) else true;

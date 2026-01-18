@@ -97,16 +97,18 @@ pub fn ObservableArray(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        items: std.ArrayList(T) = .{},
+        items: std.ArrayList(T),
         length_signal: signal_mod.Signal(usize),
         node_id: tracker.NodeId,
-        subscribers: std.ArrayList(tracker.Subscription) = .{},
+        subscribers: std.ArrayList(tracker.Subscription),
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
+                .items = std.ArrayList(T).init(allocator),
                 .length_signal = signal_mod.Signal(usize).init(allocator, 0),
-                .node_id = signal_mod.Signal(T).init(allocator, undefined).node_id,
+                .node_id = signal_mod.generateNodeId(),
+                .subscribers = std.ArrayList(tracker.Subscription).init(allocator),
             };
         }
 
@@ -182,14 +184,15 @@ pub fn ObservableMap(comptime K: type, comptime V: type) type {
         map: std.AutoHashMap(K, V),
         size_signal: signal_mod.Signal(usize),
         node_id: tracker.NodeId,
-        subscribers: std.ArrayList(tracker.Subscription) = .{},
+        subscribers: std.ArrayList(tracker.Subscription),
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
                 .map = std.AutoHashMap(K, V).init(allocator),
                 .size_signal = signal_mod.Signal(usize).init(allocator, 0),
-                .node_id = signal_mod.Signal(V).init(allocator, undefined).node_id,
+                .node_id = signal_mod.generateNodeId(),
+                .subscribers = std.ArrayList(tracker.Subscription).init(allocator),
             };
         }
 

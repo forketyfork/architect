@@ -49,15 +49,45 @@ pub const Effect = struct {
     /// Clean up the effect and stop reacting.
     pub fn deinit(self: *Effect) void {
         self.is_disposed = true;
+        self.unregisterFromDependencies();
         if (self.dependencies.len > 0) {
             self.allocator.free(self.dependencies);
             self.dependencies = &[_]tracker.NodeId{};
         }
     }
 
+    fn unregisterFromDependencies(self: *Effect) void {
+        const callback = struct {
+            fn scheduleCallback(ctx: ?*anyopaque) void {
+                const effect: *Effect = @ptrCast(@alignCast(ctx));
+                effect.schedule();
+            }
+        }.scheduleCallback;
+
+        for (self.dependencies) |dep_id| {
+            tracker.unregisterObserver(dep_id, callback, self);
+        }
+    }
+
+    fn registerWithDependencies(self: *Effect) void {
+        const callback = struct {
+            fn scheduleCallback(ctx: ?*anyopaque) void {
+                const effect: *Effect = @ptrCast(@alignCast(ctx));
+                effect.schedule();
+            }
+        }.scheduleCallback;
+
+        for (self.dependencies) |dep_id| {
+            tracker.registerObserver(dep_id, callback, self);
+        }
+    }
+
     /// Manually trigger the effect to re-run.
     pub fn run(self: *Effect) void {
         if (self.is_disposed) return;
+
+        // Unregister from old dependencies
+        self.unregisterFromDependencies();
 
         // Free old dependencies
         if (self.dependencies.len > 0) {
@@ -68,12 +98,16 @@ pub const Effect = struct {
         var tracking_ctx = tracker.TrackingContext.init(self.allocator);
         defer tracking_ctx.deinit();
 
-        _ = tracker.beginTracking(&tracking_ctx);
+        const previous_ctx = tracker.beginTracking(&tracking_ctx);
         self.effect_fn(self.context);
-        tracker.endTracking(null);
+        tracker.endTracking(previous_ctx);
 
         // Store dependencies
         self.dependencies = tracking_ctx.consumeDependencies();
+
+        // Register with new dependencies
+        self.registerWithDependencies();
+
         self.is_scheduled = false;
     }
 

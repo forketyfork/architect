@@ -14,12 +14,11 @@
 const std = @import("std");
 const tracker = @import("tracker.zig");
 
-var next_node_id: tracker.NodeId = 1;
+var next_node_id: std.atomic.Value(tracker.NodeId) = std.atomic.Value(tracker.NodeId).init(1);
 
-fn generateNodeId() tracker.NodeId {
-    const id = next_node_id;
-    next_node_id += 1;
-    return id;
+/// Generate a unique node ID. Thread-safe.
+pub fn generateNodeId() tracker.NodeId {
+    return next_node_id.fetchAdd(1, .seq_cst);
 }
 
 /// Observable state container that notifies subscribers on change.
@@ -30,7 +29,7 @@ pub fn Signal(comptime T: type) type {
         allocator: std.mem.Allocator,
         value: T,
         node_id: tracker.NodeId,
-        subscribers: std.ArrayList(tracker.Subscription) = .{},
+        subscribers: std.ArrayList(tracker.Subscription),
 
         /// Initialize a signal with an initial value.
         pub fn init(allocator: std.mem.Allocator, initial_value: T) Self {
@@ -38,6 +37,7 @@ pub fn Signal(comptime T: type) type {
                 .allocator = allocator,
                 .value = initial_value,
                 .node_id = generateNodeId(),
+                .subscribers = std.ArrayList(tracker.Subscription).init(allocator),
             };
         }
 
@@ -102,6 +102,8 @@ pub fn Signal(comptime T: type) type {
             for (self.subscribers.items) |sub| {
                 tracker.notify(sub.callback, sub.ctx);
             }
+            // Also notify registered observers (computeds/effects)
+            tracker.notifyObservers(self.node_id);
         }
 
         fn canCompareEquality(comptime U: type) bool {
