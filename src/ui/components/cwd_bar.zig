@@ -131,34 +131,20 @@ pub const CwdBarComponent = struct {
 
         self.ensureCacheCapacity(host.sessions.len) catch return;
 
-        switch (host.view_mode) {
-            .Grid => {
-                for (host.sessions, 0..) |info, i| {
-                    if (!info.spawned) continue;
-                    const grid_row: c_int = @intCast(i / host.grid_cols);
-                    const grid_col: c_int = @intCast(i % host.grid_cols);
-                    const cell_rect = Rect{
-                        .x = grid_col * host.cell_w,
-                        .y = grid_row * host.cell_h,
-                        .w = host.cell_w,
-                        .h = host.cell_h,
-                    };
-                    self.renderCwdBar(renderer, i, info, cell_rect, host, cache, i);
-                }
-            },
-            .Full => {
-                const idx = host.focused_session;
-                if (idx < host.sessions.len) {
-                    const info = host.sessions[idx];
-                    if (info.spawned) {
-                        const full_rect = Rect{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
-                        self.renderCwdBar(renderer, idx, info, full_rect, host, cache, null);
-                    }
-                }
-            },
-            .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => {
-                // During animations, skip CWD bar rendering for simplicity
-            },
+        // CWD bar is only shown in Grid view (not full view or during animations)
+        if (host.view_mode != .Grid) return;
+
+        for (host.sessions, 0..) |info, i| {
+            if (!info.spawned) continue;
+            const grid_row: c_int = @intCast(i / host.grid_cols);
+            const grid_col: c_int = @intCast(i % host.grid_cols);
+            const cell_rect = Rect{
+                .x = grid_col * host.cell_w,
+                .y = grid_row * host.cell_h,
+                .w = host.cell_w,
+                .h = host.cell_h,
+            };
+            self.renderCwdBar(renderer, i, info, cell_rect, host, cache, i);
         }
     }
 
@@ -363,13 +349,13 @@ pub const CwdBarComponent = struct {
             const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
             const elapsed_ms: f32 = @floatFromInt(@mod(host.now_ms, cycle_ms_i64));
 
-            const scroll_offset: c_int = blk2: {
-                if (elapsed_ms < idle_ms) break :blk2 0;
+            const scroll_offset: c_int = calc_scroll: {
+                if (elapsed_ms < idle_ms) break :calc_scroll 0;
                 if (elapsed_ms < idle_ms + scroll_ms) {
                     const progress = (elapsed_ms - idle_ms) / scroll_ms;
-                    break :blk2 @intFromFloat(progress * scroll_range_f);
+                    break :calc_scroll @intFromFloat(progress * scroll_range_f);
                 }
-                break :blk2 scroll_range;
+                break :calc_scroll scroll_range;
             };
 
             const parent_x = basename_x - parent_width + scroll_offset;
