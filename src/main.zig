@@ -379,6 +379,8 @@ pub fn main() !void {
     try ui.register(confirm_dialog_component.asComponent());
     const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
     try ui.register(global_shortcuts_component);
+    const cwd_bar_component = try ui_mod.cwd_bar.CwdBarComponent.init(allocator);
+    try ui.register(cwd_bar_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -1597,6 +1599,8 @@ fn makeUiHost(
         buffer[i] = .{
             .dead = session.dead,
             .spawned = session.spawned,
+            .cwd_path = session.cwd_path,
+            .cwd_basename = session.cwd_basename,
         };
     }
 

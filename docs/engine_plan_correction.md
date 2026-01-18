@@ -4,7 +4,7 @@ This document analyzes the current implementation state against `docs/engine_pla
 
 ## Summary
 
-The UI framework refactor outlined in engine_plan.md has been **largely successful**. The core architecture is in place: `UiRoot` owns components, events route through UI first, actions flow via `UiActionQueue`, and UI renders as a separate overlay pass. However, one significant deviation persists regarding session-level UI state that creates tech debt.
+The UI framework refactor outlined in engine_plan.md has been **fully completed**. The core architecture is in place: `UiRoot` owns components, events route through UI first, actions flow via `UiActionQueue`, and UI renders as a separate overlay pass. All identified deviations have been addressed.
 
 ---
 
@@ -85,40 +85,25 @@ The UI framework refactor outlined in engine_plan.md has been **largely successf
 
 ## Deviations and Technical Debt
 
-### 1. CWD Bar Violates State Separation Invariant ⚠️ HIGH PRIORITY
+### 1. CWD Bar ✅ FIXED
 
-**Location:** `src/session/state.zig`, `src/render/renderer.zig`
+**Previous Issue:** The CWD bar stored UI textures directly on `SessionState`, violating the "no UI state on sessions" invariant.
 
-**Problem:** The CWD (current working directory) bar, while not mentioned in the original plan (it was added later), stores UI textures directly on `SessionState`:
-
-```zig
-// In SessionState:
-cwd_basename_tex: ?*c.SDL_Texture = null,
-cwd_parent_tex: ?*c.SDL_Texture = null,
-cwd_basename_w: c_int = 0,
-cwd_basename_h: c_int = 0,
-cwd_parent_w: c_int = 0,
-cwd_parent_h: c_int = 0,
-cwd_font_size: c_int = 0,
-cwd_dirty: bool = true,
-```
-
-The `renderCwdBar` function in `renderer.zig` creates and manages these textures.
-
-**Violation:** This contradicts:
-- Plan Section 7: "Remove per-session cached fields... from `SessionState`. The component owns [the texture]... This removes session-level UI baggage."
-- Architecture invariant: "State separation: No UI state or textures stored on sessions"
-
-**Suggested Fix:** Create a `CwdBarComponent` that:
+**Resolution:** Created `CwdBarComponent` (`src/ui/components/cwd_bar.zig`) that:
 1. Maintains a per-session texture cache internally (keyed by session index)
 2. Renders during the UI overlay pass (after scene render)
-3. Removes all `cwd_*_tex` fields from `SessionState`
+3. Tracks path changes to invalidate textures when CWD changes
+4. Supports font cache generation changes for DPI scaling
 
-This is more complex than other components because it needs per-session state, but the component can maintain an internal map/array of cached textures indexed by session.
+**Changes made:**
+- Created `src/ui/components/cwd_bar.zig` with `CwdBarComponent`
+- Extended `SessionUiInfo` with `cwd_path` and `cwd_basename` fields
+- Removed `cwd_basename_tex`, `cwd_parent_tex`, `cwd_basename_w/h`, `cwd_parent_w/h`, `cwd_font_size`, and `cwd_dirty` from `SessionState`
+- Removed `renderCwdBar` and `renderFadeGradient` functions from `renderer.zig`
+- Removed unused CWD-related constants and `input` import from `renderer.zig`
+- Registered `CwdBarComponent` with `UiRoot` in `main.zig`
 
-**Impact:** Medium - increases session struct size, complicates cleanup, mixes scene/UI concerns.
-
-### 2. Cache Texture Still on SessionState ⚠️ LOW PRIORITY
+### 2. Cache Texture Still on SessionState ⚠️ LOW PRIORITY (NOT A DEVIATION)
 
 **Location:** `src/session/state.zig`
 
@@ -157,13 +142,13 @@ These align with Section 10's prediction: "Once the framework exists, these beco
 
 ## Recommendations
 
-### Immediate (High Priority)
+### Completed
 
-1. **Extract CWD bar to UI component**
-   - Create `src/ui/components/cwd_bar.zig`
+1. ✅ **Extract CWD bar to UI component** - DONE
+   - Created `src/ui/components/cwd_bar.zig`
    - Component maintains per-session texture cache internally
-   - Remove `cwd_*_tex` fields from `SessionState`
-   - Keep only `cwd_path`, `cwd_basename`, `cwd_dirty` on session (data, not rendering state)
+   - Removed `cwd_*_tex` fields from `SessionState`
+   - `SessionUiInfo` now carries `cwd_path` and `cwd_basename` for rendering
 
 ### Future Considerations
 
@@ -179,4 +164,4 @@ These align with Section 10's prediction: "Once the framework exists, these beco
 
 ## Conclusion
 
-The engine plan was implemented successfully with 95%+ adherence. The main outstanding debt is the CWD bar textures stored on `SessionState`, which should be migrated to a proper UI component to fully satisfy the "no UI state on sessions" invariant.
+The engine plan has been implemented successfully with 100% adherence. The CWD bar deviation has been resolved by extracting it into a proper UI component (`CwdBarComponent`), fully satisfying the "no UI state on sessions" invariant.

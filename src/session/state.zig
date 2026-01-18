@@ -39,14 +39,6 @@ pub const SessionState = struct {
     cache_texture: ?*c.SDL_Texture = null,
     cache_w: c_int = 0,
     cache_h: c_int = 0,
-    cwd_basename_tex: ?*c.SDL_Texture = null,
-    cwd_parent_tex: ?*c.SDL_Texture = null,
-    cwd_basename_w: c_int = 0,
-    cwd_basename_h: c_int = 0,
-    cwd_parent_w: c_int = 0,
-    cwd_parent_h: c_int = 0,
-    cwd_font_size: c_int = 0,
-    cwd_dirty: bool = true,
     spawned: bool = false,
     dead: bool = false,
     shell_path: []const u8,
@@ -177,7 +169,6 @@ pub const SessionState = struct {
             &self.shell.?,
         );
         self.stream = stream;
-        self.cwd_dirty = true;
         self.dirty = true;
 
         if (loop_opt) |loop| {
@@ -226,21 +217,6 @@ pub const SessionState = struct {
 
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
-
-        if (self.cwd_basename_tex) |tex| {
-            c.SDL_DestroyTexture(tex);
-            self.cwd_basename_tex = null;
-            self.cwd_basename_w = 0;
-            self.cwd_basename_h = 0;
-        }
-
-        if (self.cwd_parent_tex) |tex| {
-            c.SDL_DestroyTexture(tex);
-            self.cwd_parent_tex = null;
-            self.cwd_parent_w = 0;
-            self.cwd_parent_h = 0;
-        }
-        self.cwd_font_size = 0;
 
         if (self.cwd_path) |path| {
             allocator.free(path);
@@ -492,7 +468,6 @@ pub const SessionState = struct {
 
         self.cwd_path = new_path;
         self.cwd_basename = basenameForDisplay(new_path);
-        self.cwd_dirty = true;
         self.dirty = true;
     }
 
@@ -518,7 +493,6 @@ pub const SessionState = struct {
 
         self.cwd_path = try self.allocator.dupe(u8, path);
         self.cwd_basename = basenameForDisplay(self.cwd_path.?);
-        self.cwd_dirty = true;
         self.dirty = true;
     }
 
