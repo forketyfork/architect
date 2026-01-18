@@ -88,6 +88,29 @@ just build
 - Cmd+Click opening for OSC 8 hyperlinks
 - AI assistant status highlights (awaiting approval / done)
 - Kitty keyboard protocol support for enhanced key handling
+- Built-in CLI for managing AI assistant hooks
+
+## CLI Commands
+
+Architect includes CLI commands for managing AI assistant hooks:
+
+```bash
+# Install hook for an AI assistant
+architect hook install claude    # Claude Code
+architect hook install codex     # OpenAI Codex
+architect hook install gemini    # Google Gemini CLI
+
+# Remove an installed hook
+architect hook uninstall claude
+
+# Check installation status
+architect hook status
+
+# Show help
+architect help
+```
+
+The hooks enable visual status indicators in Architect when AI assistants are waiting for approval or have completed tasks.
 
 ## Configuration
 

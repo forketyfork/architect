@@ -24,6 +24,8 @@ const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const open_url = @import("os/open.zig");
 const url_matcher = @import("url_matcher.zig");
+const cli = @import("cli.zig");
+const hook_manager = @import("hook_manager.zig");
 
 const log = std.log.scoped(.main);
 
@@ -121,6 +123,61 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Handle CLI commands (hook install/uninstall/status, help, version)
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const command = cli.parse(args) catch |err| {
+        const stderr = std.fs.File.stderr().deprecatedWriter();
+        cli.printError(err, stderr) catch {};
+        std.process.exit(1);
+    };
+
+    switch (command) {
+        .help => {
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            cli.printUsage(stdout) catch {};
+            return;
+        },
+        .version => {
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            stdout.writeAll("Architect 0.35.0\n") catch {};
+            return;
+        },
+        .hook => |h| {
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            switch (h.action) {
+                .install => {
+                    if (h.tool) |tool| {
+                        hook_manager.install(allocator, tool, stdout) catch |err| {
+                            const stderr = std.fs.File.stderr().deprecatedWriter();
+                            stderr.print("Error: {}\n", .{err}) catch {};
+                            std.process.exit(1);
+                        };
+                    }
+                },
+                .uninstall => {
+                    if (h.tool) |tool| {
+                        hook_manager.uninstall(allocator, tool, stdout) catch |err| {
+                            const stderr = std.fs.File.stderr().deprecatedWriter();
+                            stderr.print("Error: {}\n", .{err}) catch {};
+                            std.process.exit(1);
+                        };
+                    }
+                },
+                .status => {
+                    hook_manager.status(allocator, stdout) catch |err| {
+                        const stderr = std.fs.File.stderr().deprecatedWriter();
+                        stderr.print("Error: {}\n", .{err}) catch {};
+                        std.process.exit(1);
+                    };
+                },
+            }
+            return;
+        },
+        .gui => {}, // Continue with GUI initialization
+    }
 
     // Socket listener relays external "awaiting approval / done" signals from
     // shells (or other tools) into the UI thread without blocking rendering.
@@ -1215,14 +1272,14 @@ pub fn main() !void {
                     continue;
                 }
 
-                const command = buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
+                const worktree_cmd = buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
                     std.debug.print("Failed to build worktree command: {}\n", .{err});
                     ui.showToast("Could not create worktree", now);
                     continue;
                 };
-                defer allocator.free(command);
+                defer allocator.free(worktree_cmd);
 
-                session.sendInput(command) catch |err| {
+                session.sendInput(worktree_cmd) catch |err| {
                     std.debug.print("Failed to send worktree command: {}\n", .{err});
                     ui.showToast("Could not create worktree", now);
                     continue;
@@ -1271,14 +1328,14 @@ pub fn main() !void {
                     }
                 }
 
-                const command = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
+                const remove_cmd = buildRemoveWorktreeCommand(allocator, remove_action.path) catch |err| {
                     std.debug.print("Failed to build remove worktree command: {}\n", .{err});
                     ui.showToast("Could not remove worktree", now);
                     continue;
                 };
-                defer allocator.free(command);
+                defer allocator.free(remove_cmd);
 
-                session.sendInput(command) catch |err| {
+                session.sendInput(remove_cmd) catch |err| {
                     std.debug.print("Failed to send remove worktree command: {}\n", .{err});
                     ui.showToast("Could not remove worktree", now);
                     continue;
