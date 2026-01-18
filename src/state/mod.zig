@@ -41,6 +41,7 @@
 //   count.set(3);
 //   state.tracker.endBatch();  // Effects run once here
 
+const std = @import("std");
 pub const tracker = @import("tracker.zig");
 pub const signal = @import("signal.zig");
 pub const computed = @import("computed.zig");
@@ -68,6 +69,16 @@ pub const beginBatch = tracker.beginBatch;
 pub const endBatch = tracker.endBatch;
 pub const untracked = tracker.untracked;
 pub const isTracking = tracker.isTracking;
+
+/// Initialize the reactive system. Call once at startup with a long-lived allocator.
+pub fn init(allocator: std.mem.Allocator) void {
+    tracker.initRegistry(allocator);
+}
+
+/// Clean up global reactive state. Call on shutdown if init() was called.
+pub fn deinit() void {
+    tracker.deinitRegistry();
+}
 
 test {
     @import("std").testing.refAllDecls(@This());

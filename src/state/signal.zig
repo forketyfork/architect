@@ -72,7 +72,7 @@ pub fn Signal(comptime T: type) type {
             self.set(new_value);
         }
 
-        /// Subscribe to changes. Returns an id for unsubscription.
+        /// Subscribe to changes.
         pub fn subscribe(self: *Self, callback: tracker.SubscriberFn, ctx: ?*anyopaque) !void {
             try self.subscribers.append(self.allocator, .{
                 .callback = callback,
@@ -108,9 +108,9 @@ pub fn Signal(comptime T: type) type {
 
         fn canCompareEquality(comptime U: type) bool {
             return switch (@typeInfo(U)) {
-                .pointer, .optional, .@"enum", .int, .float, .bool => true,
-                .@"struct" => @hasDecl(U, "eql") or !@hasDecl(U, "format"),
-                else => false,
+                .@"union" => |info| info.tag_type != null,
+                .@"opaque", .@"fn", .type, .noreturn => false,
+                else => true,
             };
         }
     };

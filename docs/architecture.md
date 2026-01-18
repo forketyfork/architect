@@ -257,7 +257,7 @@ The `src/state/` module provides reactive primitives for future state management
 - **Effect**: Side effects that re-run when dependencies change
 - **Transaction**: Batch updates for atomic state changes
 
-See `docs/state-management-refactor.md` for the migration plan.
+See `docs/state_management_refactor.md` for the migration plan.
 
 ## Input Routing
 

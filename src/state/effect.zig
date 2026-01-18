@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const tracker = @import("tracker.zig");
+const signal_mod = @import("signal.zig");
 
 /// Side effect that re-runs when tracked dependencies change.
 pub const Effect = struct {
@@ -136,12 +137,12 @@ pub fn EffectWithContext(comptime Context: type) type {
         const Self = @This();
 
         inner: Effect,
-        ctx: Context,
+        ctx: *Context,
 
         pub fn init(
             allocator: std.mem.Allocator,
             effect_fn: *const fn (*Context) void,
-            ctx: Context,
+            ctx: *Context,
         ) !Self {
             const wrapper = struct {
                 fn run(context: ?*anyopaque) void {
@@ -150,12 +151,10 @@ pub fn EffectWithContext(comptime Context: type) type {
                 }
             };
 
-            var result: Self = .{
+            return .{
                 .ctx = ctx,
-                .inner = undefined,
+                .inner = try Effect.init(allocator, wrapper.run, ctx),
             };
-            result.inner = try Effect.init(allocator, wrapper.run, &result.ctx);
-            return result;
         }
 
         pub fn deinit(self: *Self) void {
@@ -276,4 +275,33 @@ test "Effect stops after dispose" {
     effect.run(); // Should not run
 
     try std.testing.expectEqual(@as(u32, 1), run_count);
+}
+
+test "Effect reruns when dependencies change" {
+    tracker.initRegistry(std.testing.allocator);
+    defer tracker.deinitRegistry();
+
+    var sig = signal_mod.Signal(i32).init(std.testing.allocator, 0);
+    defer sig.deinit();
+
+    var run_count: u32 = 0;
+    const EffectFn = struct {
+        var signal_ptr: *signal_mod.Signal(i32) = undefined;
+
+        fn run(ctx: ?*anyopaque) void {
+            const count: *u32 = @ptrCast(@alignCast(ctx));
+            _ = signal_ptr.get();
+            count.* += 1;
+        }
+    };
+
+    EffectFn.signal_ptr = &sig;
+
+    var effect = try Effect.init(std.testing.allocator, EffectFn.run, &run_count);
+    defer effect.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), run_count);
+
+    sig.set(1);
+    try std.testing.expectEqual(@as(u32, 2), run_count);
 }

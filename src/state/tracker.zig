@@ -8,6 +8,7 @@
 // computations to properly track their own dependencies.
 
 const std = @import("std");
+const log = std.log.scoped(.state_tracker);
 
 /// Opaque handle identifying a reactive node (signal, computed, or effect).
 pub const NodeId = u64;
@@ -73,7 +74,10 @@ pub fn registerObserver(node_id: NodeId, callback: SubscriberFn, ctx: ?*anyopaqu
     if (!registry_initialized) return;
     const alloc = registry_allocator orelse return;
 
-    const entry = dependency_registry.getOrPut(node_id) catch return;
+    const entry = dependency_registry.getOrPut(node_id) catch |err| {
+        log.err("registerObserver getOrPut failed: {}", .{err});
+        return;
+    };
     if (!entry.found_existing) {
         entry.value_ptr.* = std.ArrayList(Subscription).init(alloc);
     }
@@ -83,7 +87,9 @@ pub fn registerObserver(node_id: NodeId, callback: SubscriberFn, ctx: ?*anyopaqu
         if (sub.callback == callback and sub.ctx == ctx) return;
     }
 
-    entry.value_ptr.append(alloc, .{ .callback = callback, .ctx = ctx }) catch {};
+    entry.value_ptr.append(alloc, .{ .callback = callback, .ctx = ctx }) catch |err| {
+        log.err("registerObserver append failed: {}", .{err});
+    };
 }
 
 /// Unregister an observer from a node.
@@ -137,12 +143,17 @@ pub const TrackingContext = struct {
         for (self.dependencies.items) |id| {
             if (id == node_id) return;
         }
-        self.dependencies.append(self.allocator, node_id) catch {};
+        self.dependencies.append(self.allocator, node_id) catch |err| {
+            log.err("track append failed: {}", .{err});
+        };
     }
 
     /// Get collected dependencies and clear the list.
     pub fn consumeDependencies(self: *TrackingContext) []NodeId {
-        const deps = self.dependencies.toOwnedSlice(self.allocator) catch &[_]NodeId{};
+        const deps = self.dependencies.toOwnedSlice(self.allocator) catch |err| {
+            log.err("consumeDependencies failed: {}", .{err});
+            return &[_]NodeId{};
+        };
         return deps;
     }
 };
@@ -201,6 +212,32 @@ pub fn endBatch() void {
     }
 }
 
+/// Get the number of pending notifications.
+pub fn pendingCount() usize {
+    if (!pending_notifications_initialized) return 0;
+    return pending_notifications.items.len;
+}
+
+/// Roll back a batch, discarding pending notifications appended after pending_len.
+pub fn rollbackBatch(pending_len: usize) void {
+    if (batch_depth == 0) return;
+
+    if (pending_notifications_initialized) {
+        if (pending_len < pending_notifications.items.len) {
+            pending_notifications.shrinkRetainingCapacity(pending_len);
+        }
+    }
+
+    batch_depth -= 1;
+    if (batch_depth == 0 and pending_notifications_initialized) {
+        if (pending_allocator) |alloc| {
+            pending_notifications.deinit(alloc);
+        }
+        pending_notifications_initialized = false;
+        pending_allocator = null;
+    }
+}
+
 /// Check if we're inside a batch.
 pub fn isBatching() bool {
     return batch_depth > 0;
@@ -213,7 +250,9 @@ pub fn notify(callback: SubscriberFn, ctx: ?*anyopaque) void {
             pending_notifications.append(alloc, .{
                 .callback = callback,
                 .ctx = ctx,
-            }) catch {};
+            }) catch |err| {
+                log.err("notify append failed: {}", .{err});
+            };
         }
     } else {
         callback(ctx);

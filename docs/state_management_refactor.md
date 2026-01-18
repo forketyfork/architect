@@ -71,6 +71,22 @@ src/state/
 └── store.zig         # Collections and transactions
 ```
 
+### Initialization and Lifecycle
+
+The reactive runtime requires a global dependency registry. Initialize it once at
+startup with a long-lived allocator, and tear it down on shutdown:
+
+```zig
+const state = @import("state/mod.zig");
+
+state.init(allocator);
+defer state.deinit();
+```
+
+Without calling `state.init`, `Computed` and `Effect` will not auto-update when
+dependencies change. Signals still notify direct subscribers, but dependency
+tracking will be inactive.
+
 ### Core Primitives
 
 #### Signal(T)
@@ -103,6 +119,18 @@ var logger = try Effect.init(allocator, struct {
 }.run, null);
 ```
 
+#### ComputedWithContext / EffectWithContext
+Convenience wrappers accept a stable context pointer:
+```zig
+var app_state: AppState = .{};
+var title = ComputedWithContext([]const u8, AppState).init(
+    allocator,
+    AppState.computeTitle,
+    &app_state,
+);
+```
+The context must outlive the computed/effect.
+
 #### Batching
 Group updates to minimize cascading reactions:
 ```zig
@@ -120,7 +148,7 @@ The refactoring will proceed in phases to minimize risk:
 #### Phase 1: Parallel Introduction (Current)
 - [x] Implement reactive primitives in `src/state/`
 - [x] Add comprehensive tests for core functionality
-- [ ] Document API and patterns
+- [x] Document API and patterns
 
 #### Phase 2: App State Migration
 - [ ] Create `AppStore` wrapping `ViewMode`, `focused_session`, animation state
@@ -150,7 +178,7 @@ The refactoring will proceed in phases to minimize risk:
 
 3. **Allocator-aware**: All primitives accept an allocator, following Zig conventions for memory management.
 
-4. **No global state in primitives**: Each signal/computed manages its own subscribers without a central registry.
+4. **Global registry for observers**: Signals keep local subscribers while the tracker maintains a global observer registry for computed/effect invalidation.
 
 5. **Batch semantics**: Batching defers notifications until the outermost batch ends, similar to MobX's `runInAction`.
 
@@ -170,7 +198,11 @@ The refactoring will proceed in phases to minimize risk:
 - **Existing UI components**: Continue using `UiHost` initially; migrate incrementally
 - **Renderer**: Can observe app state signals for automatic redraw triggers
 - **Configuration**: Signals can wrap config values for reactive updates
-- **Persistence**: Transaction API enables atomic save/restore
+- **Persistence**: Transaction API enables batched updates; rollback only cancels notifications (it does not restore prior values)
+
+### Threading Notes
+
+- Dependency tracking is thread-local. Reactive state should be read/written from a single thread unless a dedicated synchronization strategy is introduced.
 
 ## Acceptance Criteria
 
@@ -182,6 +214,7 @@ The refactoring will proceed in phases to minimize risk:
 - [x] `Effect` runs immediately and on dependency changes
 - [x] Batching defers notifications until batch ends
 - [x] All primitives pass unit tests
+- [x] Reactive registry initialized via `state.init(...)` in tests/examples
 - [ ] Build succeeds with `zig build`
 - [ ] Tests pass with `zig build test`
 

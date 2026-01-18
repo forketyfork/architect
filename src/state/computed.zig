@@ -177,12 +177,12 @@ pub fn ComputedWithContext(comptime T: type, comptime Context: type) type {
         const Self = @This();
 
         inner: Computed(T),
-        ctx: Context,
+        ctx: *Context,
 
         pub fn init(
             allocator: std.mem.Allocator,
             compute_fn: *const fn (*Context) T,
-            ctx: Context,
+            ctx: *Context,
         ) Self {
             const wrapper = struct {
                 fn compute(computed: *Computed(T)) T {
@@ -191,12 +191,10 @@ pub fn ComputedWithContext(comptime T: type, comptime Context: type) type {
                 }
             };
 
-            var result = Self{
+            return .{
                 .ctx = ctx,
-                .inner = Computed(T).init(allocator, wrapper.compute, null),
+                .inner = Computed(T).init(allocator, wrapper.compute, ctx),
             };
-            result.inner.context = &result.ctx;
-            return result;
         }
 
         pub fn get(self: *Self) T {
@@ -255,4 +253,29 @@ test "Computed tracks dependencies" {
 
     try std.testing.expectEqual(@as(i32, 3), sum.get());
     try std.testing.expectEqual(@as(usize, 2), sum.dependencies.len);
+}
+
+test "Computed updates when dependencies change" {
+    tracker.initRegistry(std.testing.allocator);
+    defer tracker.deinitRegistry();
+
+    var base = signal_mod.Signal(i32).init(std.testing.allocator, 2);
+    defer base.deinit();
+
+    const ComputeFn = struct {
+        var signal_ptr: *signal_mod.Signal(i32) = undefined;
+
+        fn compute(_: *Computed(i32)) i32 {
+            return signal_ptr.get() * 3;
+        }
+    };
+    ComputeFn.signal_ptr = &base;
+
+    var triple = Computed(i32).init(std.testing.allocator, ComputeFn.compute, null);
+    defer triple.deinit();
+
+    try std.testing.expectEqual(@as(i32, 6), triple.get());
+
+    base.set(4);
+    try std.testing.expectEqual(@as(i32, 12), triple.get());
 }

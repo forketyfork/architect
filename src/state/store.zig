@@ -20,8 +20,6 @@
 const std = @import("std");
 const tracker = @import("tracker.zig");
 const signal_mod = @import("signal.zig");
-const computed_mod = @import("computed.zig");
-const effect_mod = @import("effect.zig");
 
 /// Action decorator: wraps a mutation in a batch for efficient updates.
 pub fn action(
@@ -62,6 +60,7 @@ pub fn runInActionWithContext(
 pub const Transaction = struct {
     allocator: std.mem.Allocator,
     started: bool = false,
+    pending_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Transaction {
         return .{ .allocator = allocator };
@@ -69,6 +68,7 @@ pub const Transaction = struct {
 
     pub fn begin(self: *Transaction) void {
         if (!self.started) {
+            self.pending_len = tracker.pendingCount();
             tracker.beginBatch(self.allocator);
             self.started = true;
         }
@@ -82,10 +82,8 @@ pub const Transaction = struct {
     }
 
     pub fn rollback(self: *Transaction) void {
-        // In a full implementation, this would restore previous values.
-        // For now, just end the batch without triggering notifications.
         if (self.started) {
-            tracker.endBatch();
+            tracker.rollbackBatch(self.pending_len);
             self.started = false;
         }
     }
@@ -171,6 +169,7 @@ pub fn ObservableArray(comptime T: type) type {
             for (self.subscribers.items) |sub| {
                 tracker.notify(sub.callback, sub.ctx);
             }
+            tracker.notifyObservers(self.node_id);
         }
     };
 }
@@ -246,6 +245,7 @@ pub fn ObservableMap(comptime K: type, comptime V: type) type {
             for (self.subscribers.items) |sub| {
                 tracker.notify(sub.callback, sub.ctx);
             }
+            tracker.notifyObservers(self.node_id);
         }
     };
 }
@@ -308,4 +308,30 @@ test "Transaction batches updates" {
 
     // All notifications fired
     try std.testing.expectEqual(@as(u32, 3), notification_count);
+}
+
+test "Transaction rollback discards notifications" {
+    tracker.initRegistry(std.testing.allocator);
+    defer tracker.deinitRegistry();
+
+    var notification_count: u32 = 0;
+    const callback = struct {
+        fn cb(ctx: ?*anyopaque) void {
+            const count: *u32 = @ptrCast(@alignCast(ctx));
+            count.* += 1;
+        }
+    }.cb;
+
+    var sig = signal_mod.Signal(i32).init(std.testing.allocator, 0);
+    defer sig.deinit();
+
+    try sig.subscribe(callback, &notification_count);
+
+    var tx = Transaction.init(std.testing.allocator);
+    tx.begin();
+    sig.set(1);
+
+    tx.rollback();
+
+    try std.testing.expectEqual(@as(u32, 0), notification_count);
 }
