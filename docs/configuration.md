@@ -126,6 +126,7 @@ enabled = false  # Enable metrics collection overlay (default: false)
 
 When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-right corner. The overlay displays:
 - **Frames**: Total rendered frame count
+- **FPS**: Frames per second
 - **Glyph cache**: Number of cached glyph textures
 - **Glyph hits/s**: Glyph cache hits per second
 - **Glyph misses/s**: Glyph cache misses per second

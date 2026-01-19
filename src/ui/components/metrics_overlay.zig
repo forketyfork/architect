@@ -169,12 +169,16 @@ pub const MetricsOverlayComponent = struct {
         var line_count: usize = 0;
 
         const frame_count = metrics_ptr.get(.frame_count);
+        const fps = metrics_ptr.getRate(.frame_count, self.cached_elapsed_ms);
         const cache_size = metrics_ptr.get(.glyph_cache_size);
         const hit_rate = metrics_ptr.getRate(.glyph_cache_hits, self.cached_elapsed_ms);
         const miss_rate = metrics_ptr.getRate(.glyph_cache_misses, self.cached_elapsed_ms);
         const evict_rate = metrics_ptr.getRate(.glyph_cache_evictions, self.cached_elapsed_ms);
 
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Frames: {d}", .{frame_count}) catch "Frames: ?";
+        line_count += 1;
+
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "FPS: {d:.1}", .{fps}) catch "FPS: ?";
         line_count += 1;
 
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph cache: {d}", .{cache_size}) catch "Glyph cache: ?";
