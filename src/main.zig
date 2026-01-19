@@ -387,7 +387,7 @@ pub fn main() !void {
     try ui.register(global_shortcuts_component);
     const cwd_bar_component = try ui_mod.cwd_bar.CwdBarComponent.init(allocator);
     try ui.register(cwd_bar_component.asComponent());
-    const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator, config.metrics.enabled);
+    const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
     try ui.register(metrics_overlay_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async

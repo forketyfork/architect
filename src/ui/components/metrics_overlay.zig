@@ -10,7 +10,6 @@ pub const MetricsOverlayComponent = struct {
     allocator: std.mem.Allocator,
     visible: bool = false,
     first_frame: FirstFrameGuard = .{},
-    metrics_enabled: bool = false,
 
     font_generation: u64 = 0,
     texture: ?*c.SDL_Texture = null,
@@ -30,12 +29,9 @@ pub const MetricsOverlayComponent = struct {
     const MAX_LINES: usize = 8;
     const MAX_LINE_LENGTH: usize = 64;
 
-    pub fn init(allocator: std.mem.Allocator, metrics_enabled: bool) !*MetricsOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator) !*MetricsOverlayComponent {
         const comp = try allocator.create(MetricsOverlayComponent);
-        comp.* = .{
-            .allocator = allocator,
-            .metrics_enabled = metrics_enabled,
-        };
+        comp.* = .{ .allocator = allocator };
         return comp;
     }
 
@@ -62,19 +58,16 @@ pub const MetricsOverlayComponent = struct {
         _ = renderer;
     }
 
-    fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
-        _ = host;
-        const self: *MetricsOverlayComponent = @ptrCast(@alignCast(self_ptr));
+    fn handleEvent(_: *anyopaque, _: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         if (event.type == c.SDL_EVENT_KEY_DOWN) {
             const key_event = event.key;
             const mods = key_event.mod;
             const has_cmd = (mods & c.SDL_KMOD_GUI) != 0;
             const has_shift = (mods & c.SDL_KMOD_SHIFT) != 0;
+            const has_blocking = (mods & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
-            if (has_cmd and has_shift and key_event.key == c.SDLK_M) {
-                if (self.metrics_enabled) {
-                    actions.append(.{ .ToggleMetrics = {} }) catch {};
-                }
+            if (has_cmd and has_shift and !has_blocking and key_event.key == c.SDLK_M) {
+                actions.append(.{ .ToggleMetrics = {} }) catch {};
                 return true;
             }
         }
