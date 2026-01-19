@@ -128,6 +128,7 @@ When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-ri
 - **Frames**: Total rendered frame count
 - **FPS**: Frames per second
 - **Glyph cache**: Number of cached glyph textures
+- **Glyph hit rate**: Cache hit percentage (hits / total accesses)
 - **Glyph hits/s**: Glyph cache hits per second
 - **Glyph misses/s**: Glyph cache misses per second
 - **Glyph evictions/s**: Glyph cache evictions per second
