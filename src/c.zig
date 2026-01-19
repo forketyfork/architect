@@ -125,6 +125,7 @@ pub const SDLK_KP_MINUS = c_import.SDLK_KP_MINUS;
 pub const SDLK_A = c_import.SDLK_A;
 pub const SDLK_C = c_import.SDLK_C;
 pub const SDLK_K = c_import.SDLK_K;
+pub const SDLK_M = c_import.SDLK_M;
 pub const SDLK_N = c_import.SDLK_N;
 pub const SDLK_O = c_import.SDLK_O;
 pub const SDLK_T = c_import.SDLK_T;

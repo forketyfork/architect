@@ -16,3 +16,4 @@ pub const confirm_dialog = @import("components/confirm_dialog.zig");
 pub const hotkey_indicator = @import("components/hotkey_indicator.zig");
 pub const global_shortcuts = @import("components/global_shortcuts.zig");
 pub const cwd_bar = @import("components/cwd_bar.zig");
+pub const metrics_overlay = @import("components/metrics_overlay.zig");

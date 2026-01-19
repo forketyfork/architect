@@ -232,6 +232,10 @@ pub const Rendering = struct {
     vsync: bool = true,
 };
 
+pub const MetricsConfig = struct {
+    enabled: bool = false,
+};
+
 pub const Persistence = struct {
     const TerminalKeyPrefix = "terminal_";
 
@@ -437,6 +441,7 @@ pub const Config = struct {
     theme: ThemeConfig = .{},
     ui: UiConfig = .{},
     rendering: Rendering = .{},
+    metrics: MetricsConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -512,6 +517,10 @@ pub const Config = struct {
             \\# bright_magenta = "#C678DD"
             \\# bright_cyan = "#56B6C2"
             \\# bright_white = "#CDD6E0"
+            \\
+            \\# Metrics overlay (Cmd+Shift+M to toggle when enabled)
+            \\# [metrics]
+            \\# enabled = false
             \\
         ;
 

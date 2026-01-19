@@ -22,6 +22,7 @@ const ui_mod = @import("ui/mod.zig");
 const font_cache_mod = @import("font_cache.zig");
 const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
+const metrics_mod = @import("metrics.zig");
 const open_url = @import("os/open.zig");
 const url_matcher = @import("url_matcher.zig");
 
@@ -255,8 +256,13 @@ pub fn main() !void {
         font_paths.emoji_fallback,
     );
 
+    var metrics_storage: metrics_mod.Metrics = metrics_mod.Metrics.init();
+    const metrics_ptr: ?*metrics_mod.Metrics = if (config.metrics.enabled) &metrics_storage else null;
+    metrics_mod.global = metrics_ptr;
+
     var font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(font_size, ui_scale));
     defer font.deinit();
+    font.metrics = metrics_ptr;
 
     var ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(UI_FONT_SIZE, ui_scale));
     defer ui_font.deinit();
@@ -381,6 +387,8 @@ pub fn main() !void {
     try ui.register(global_shortcuts_component);
     const cwd_bar_component = try ui_mod.cwd_bar.CwdBarComponent.init(allocator);
     try ui.register(cwd_bar_component.asComponent());
+    const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
+    try ui.register(metrics_overlay_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -455,6 +463,7 @@ pub fn main() !void {
                         font.deinit();
                         ui_font.deinit();
                         font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(font_size, ui_scale));
+                        font.metrics = metrics_ptr;
                         ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(UI_FONT_SIZE, ui_scale));
                         ui.assets.ui_font = &ui_font;
                         const new_term_size = calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
@@ -637,6 +646,7 @@ pub fn main() !void {
                             const new_font = try initSharedFont(allocator, renderer, &shared_font_cache, scaledFontSize(target_size, ui_scale));
                             font.deinit();
                             font = new_font;
+                            font.metrics = metrics_ptr;
                             font_size = target_size;
 
                             const term_size = calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
@@ -1296,6 +1306,14 @@ pub fn main() !void {
                 session.attention = false;
                 ui.showToast("Removing worktree…", now);
             },
+            .ToggleMetrics => {
+                if (config.metrics.enabled) {
+                    metrics_overlay_component.toggle();
+                    if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧M", now);
+                } else {
+                    ui.showToast("Metrics disabled in config", now);
+                }
+            },
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
@@ -1353,6 +1371,7 @@ pub fn main() !void {
             try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
+            metrics_mod.increment(.frame_count);
             last_render_ns = std.time.nanoTimestamp();
         }
 
