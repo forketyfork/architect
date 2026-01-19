@@ -2,6 +2,7 @@
 // efficiently at varying scales.
 const std = @import("std");
 const c = @import("c.zig");
+const metrics_mod = @import("metrics.zig");
 
 const log = std.log.scoped(.font);
 
@@ -53,6 +54,7 @@ pub const Font = struct {
     cell_width: c_int,
     cell_height: c_int,
     owns_fonts: bool,
+    metrics: ?*metrics_mod.Metrics = null,
 
     /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
     const MAX_GLYPH_CACHE_ENTRIES: usize = 4096;
@@ -486,6 +488,7 @@ pub const Font = struct {
 
         if (self.glyph_cache.getEntry(key)) |entry| {
             entry.value_ptr.seq = self.nextSeq();
+            if (self.metrics) |m| m.increment(.glyph_cache_hits);
             return entry.value_ptr.texture;
         }
 
@@ -519,6 +522,10 @@ pub const Font = struct {
         _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_LINEAR);
 
         try self.glyph_cache.put(key, .{ .texture = texture, .seq = self.nextSeq() });
+        if (self.metrics) |m| {
+            m.increment(.glyph_cache_misses);
+            m.set(.glyph_cache_size, self.glyph_cache.count());
+        }
         self.evictIfNeeded();
         return texture;
     }
@@ -534,6 +541,7 @@ pub const Font = struct {
         if (findOldestKey(&self.glyph_cache)) |victim| {
             if (self.glyph_cache.fetchRemove(victim)) |removed| {
                 c.SDL_DestroyTexture(removed.value.texture);
+                if (self.metrics) |m| m.increment(.glyph_cache_evictions);
             }
         }
     }

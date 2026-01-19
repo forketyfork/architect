@@ -77,6 +77,7 @@ src/
 ├── colors.zig            # Theme and color palette management (ANSI 16/256)
 ├── config.zig            # TOML config persistence
 ├── geom.zig              # Rect + point containment
+├── metrics.zig           # Metrics collection framework (glyph cache stats, frame count)
 ├── font.zig              # Font rendering, glyph caching, HarfBuzz shaping
 ├── font_cache.zig        # Shared font cache (terminal + UI)
 ├── font_paths.zig        # Font path resolution for system fonts
@@ -128,6 +129,7 @@ src/
     │   ├── help_overlay.zig      # Keyboard shortcut overlay (? pill)
     │   ├── hotkey_indicator.zig  # Hotkey visual feedback indicator
     │   ├── marquee_label.zig     # Reusable scrolling text label
+    │   ├── metrics_overlay.zig   # Metrics overlay (Cmd+Shift+M)
     │   ├── pill_group.zig        # Pill overlay coordinator (collapses others)
     │   ├── quit_confirm.zig      # Quit confirmation dialog
     │   ├── restart_buttons.zig   # Dead session restart buttons
@@ -208,6 +210,7 @@ union(enum) {
     CreateWorktree: CreateWorktreeAction,  // git worktree add .architect/<name> -b <name> && cd there
     RemoveWorktree: RemoveWorktreeAction,  // Remove a git worktree
     DespawnSession: usize,         // Despawn/kill a session at index
+    ToggleMetrics: void,           // Toggle metrics overlay visibility
 }
 ```
 
@@ -262,6 +265,7 @@ Components that consume events:
 - `ConfirmDialogComponent`: Generic confirmation dialog (used by worktree removal, etc.)
 - `PillGroupComponent`: Coordinates pill overlays (collapses one when another expands)
 - `GlobalShortcutsComponent`: Handles global shortcuts like Cmd+, to open config
+- `MetricsOverlayComponent`: Cmd+Shift+M to toggle metrics overlay (when enabled in config)
 
 ## Rendering Order
 

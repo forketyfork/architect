@@ -42,6 +42,7 @@ pub const UiAction = union(enum) {
     CreateWorktree: CreateWorktreeAction,
     RemoveWorktree: RemoveWorktreeAction,
     DespawnSession: usize,
+    ToggleMetrics: void,
 };
 
 pub const SwitchWorktreeAction = struct {

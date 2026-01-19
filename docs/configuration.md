@@ -117,6 +117,22 @@ vsync = true  # Enable vertical sync (default: true)
 
 Disabling vsync may reduce input latency but can cause screen tearing.
 
+### Metrics Configuration
+
+```toml
+[metrics]
+enabled = false  # Enable metrics collection overlay (default: false)
+```
+
+When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the top-right corner. The overlay displays:
+- **Frames**: Total rendered frame count
+- **Cache size**: Number of cached glyph textures
+- **Hits/s**: Glyph cache hits per second
+- **Misses/s**: Glyph cache misses per second
+- **Evictions/s**: Cache evictions per second
+
+Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
+
 ### Complete Example
 
 ```toml
@@ -161,6 +177,9 @@ enable_animations = true
 
 [rendering]
 vsync = true
+
+[metrics]
+enabled = false
 ```
 
 ## persistence.toml
