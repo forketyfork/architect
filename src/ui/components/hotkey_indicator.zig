@@ -6,6 +6,8 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
+const log = std.log.scoped(.hotkey_indicator);
+
 pub const HotkeyIndicatorComponent = struct {
     allocator: std.mem.Allocator,
     font: *font_mod.Font,
@@ -187,7 +189,9 @@ pub const HotkeyIndicatorComponent = struct {
             const end = @min(idx + seq_len, label_slice.len);
             const cp_slice = label_slice[idx..end];
             const codepoint = std.unicode.utf8Decode(cp_slice) catch 0xFFFD;
-            self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch {};
+            self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch |err| {
+                log.debug("failed to render glyph U+{X:0>4}: {}", .{ codepoint, err });
+            };
             x += self.font.cell_width;
             idx = end;
         }

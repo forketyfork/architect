@@ -3,6 +3,8 @@ const c = @import("../../c.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 
+const log = std.log.scoped(.global_shortcuts);
+
 pub const GlobalShortcutsComponent = struct {
     allocator: std.mem.Allocator,
 
@@ -34,7 +36,9 @@ pub const GlobalShortcutsComponent = struct {
         const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
         if (key == c.SDLK_COMMA and has_gui and !has_blocking_mod) {
-            actions.append(.OpenConfig) catch {};
+            actions.append(.OpenConfig) catch |err| {
+                log.warn("failed to queue open config action: {}", .{err});
+            };
             return true;
         }
 

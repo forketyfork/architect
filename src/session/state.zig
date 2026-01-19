@@ -200,7 +200,9 @@ pub const SessionState = struct {
 
         log.debug("spawned session {d}", .{self.id});
 
-        self.processOutput() catch {};
+        self.processOutput() catch |err| {
+            log.warn("session {d}: initial output processing failed: {}", .{ self.id, err });
+        };
 
         self.seedCwd(working_dir) catch |err| {
             log.warn("failed to record cwd for session {d}: {}", .{ self.id, err });

@@ -3,6 +3,8 @@ const posix = std.posix;
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
 
+const log = std.log.scoped(.notify);
+
 pub const Notification = struct {
     session: usize,
     state: app_state.SessionStatus,
@@ -104,14 +106,18 @@ pub fn startNotifyThread(
             try posix.bind(fd, &addr.any, addr.getOsSockLen());
             try posix.listen(fd, 16);
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            _ = std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch {};
+            std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+                log.warn("failed to chmod notify socket: {}", .{err});
+            };
 
             // Make accept non-blocking so the loop can observe stop requests.
             const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch null;
             if (flags) |f| {
                 var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                 o_flags.NONBLOCK = true;
-                _ = posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
+                if (posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                    log.warn("failed to set socket non-blocking: {}", .{err});
+                }
             }
 
             while (!ctx.stop.load(.seq_cst)) {
@@ -128,7 +134,9 @@ pub fn startNotifyThread(
                 if (conn_flags) |f| {
                     var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                     o_flags.NONBLOCK = true;
-                    _ = posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags))) catch {};
+                    if (posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                        log.warn("failed to set connection non-blocking: {}", .{err});
+                    }
                 }
 
                 var buffer = std.ArrayList(u8){};
@@ -148,7 +156,9 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items)) |note| {
-                    ctx.queue.push(ctx.allocator, note) catch {};
+                    ctx.queue.push(ctx.allocator, note) catch |err| {
+                        log.warn("failed to queue notification for session {d}: {}", .{ note.session, err });
+                    };
                 }
             }
         }

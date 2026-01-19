@@ -6,6 +6,8 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const font_cache = @import("../../font_cache.zig");
 
+const log = std.log.scoped(.restart_buttons);
+
 pub const RestartButtonsComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
@@ -68,7 +70,9 @@ pub const RestartButtonsComponent = struct {
         const inside = geom.containsPoint(button_rect, mouse_x, mouse_y);
         if (!inside) return false;
 
-        actions.append(.{ .RestartSession = clicked_session }) catch {};
+        actions.append(.{ .RestartSession = clicked_session }) catch |err| {
+            log.warn("failed to queue restart action for session {d}: {}", .{ clicked_session, err });
+        };
         return true;
     }
 

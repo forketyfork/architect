@@ -228,11 +228,13 @@ pub const Shell = struct {
             setDefaultEnv("LANG", DEFAULT_LANG);
             setDefaultEnv("TERM_PROGRAM", DEFAULT_TERM_PROGRAM);
 
-            // Change to specified directory or home directory before spawning shell
-            if (working_dir) |dir| {
+            // Change to specified directory or home directory before spawning shell.
+            // Errors are intentionally ignored: we're in a forked child process where
+            // logging is impractical, and chdir failure is non-fatal (shell starts in
+            // the parent's cwd instead). Try working_dir first, fall back to HOME.
+            const target_dir = working_dir orelse posix.getenv("HOME");
+            if (target_dir) |dir| {
                 posix.chdir(dir) catch {};
-            } else if (posix.getenv("HOME")) |home| {
-                posix.chdir(home) catch {};
             }
 
             posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);

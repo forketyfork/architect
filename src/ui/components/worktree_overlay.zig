@@ -9,6 +9,8 @@ const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const button = @import("button.zig");
 
+const log = std.log.scoped(.worktree_overlay);
+
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
     overlay: ExpandingOverlay = ExpandingOverlay.init(1, BUTTON_MARGIN, BUTTON_SIZE_SMALL, BUTTON_SIZE_LARGE, BUTTON_ANIMATION_DURATION_MS),
@@ -1045,7 +1047,10 @@ pub const WorktreeOverlayComponent = struct {
         for (text) |ch| {
             if (self.create_input.items.len >= MAX_LEN) break;
             if (isValidNameChar(ch)) {
-                _ = self.create_input.append(self.allocator, ch) catch {};
+                self.create_input.append(self.allocator, ch) catch |err| {
+                    log.warn("failed to append text input: {}", .{err});
+                    break;
+                };
                 self.cursor_blink_start_ms = now_ms;
             }
         }

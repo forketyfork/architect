@@ -8,6 +8,8 @@ const dpi = @import("../scale.zig");
 const button = @import("button.zig");
 const font_cache = @import("../../font_cache.zig");
 
+const log = std.log.scoped(.quit_confirm);
+
 pub const QuitConfirmComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
@@ -98,7 +100,9 @@ pub const QuitConfirmComponent = struct {
                 const mod = event.key.mod;
                 const is_confirm = key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER or (key == c.SDLK_Q and (mod & c.SDL_KMOD_GUI) != 0);
                 if (is_confirm) {
-                    actions.append(.ConfirmQuit) catch {};
+                    actions.append(.ConfirmQuit) catch |err| {
+                        log.warn("failed to queue quit confirmation: {}", .{err});
+                    };
                     self.visible = false;
                     self.escape_pressed = false;
                     return true;
@@ -117,7 +121,9 @@ pub const QuitConfirmComponent = struct {
                 const modal = self.modalRect(host);
                 const buttons = self.buttonRects(modal, host.ui_scale);
                 if (geom.containsPoint(buttons.quit, mouse_x, mouse_y)) {
-                    actions.append(.ConfirmQuit) catch {};
+                    actions.append(.ConfirmQuit) catch |err| {
+                        log.warn("failed to queue quit confirmation: {}", .{err});
+                    };
                     self.visible = false;
                     return true;
                 }
