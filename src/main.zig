@@ -40,6 +40,7 @@ const UI_FONT_SIZE: c_int = 18;
 const ACTIVE_FRAME_NS: i128 = 16_666_667;
 const IDLE_FRAME_NS: i128 = 50_000_000;
 const MAX_IDLE_RENDER_GAP_NS: i128 = 250_000_000;
+const FOREGROUND_PROCESS_CACHE_MS: i64 = 150;
 const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
@@ -50,6 +51,26 @@ const SessionState = session_state.SessionState;
 const FontSizeDirection = input.FontSizeDirection;
 const GridNavDirection = input.GridNavDirection;
 const CursorKind = enum { arrow, ibeam, pointer };
+
+const ForegroundProcessCache = struct {
+    session_idx: ?usize = null,
+    last_check_ms: i64 = 0,
+    value: bool = false,
+
+    fn get(self: *ForegroundProcessCache, now_ms: i64, focused_session: usize, sessions: []const SessionState) bool {
+        if (self.session_idx != focused_session) {
+            self.session_idx = focused_session;
+            self.last_check_ms = 0;
+        }
+        if (self.last_check_ms == 0 or now_ms < self.last_check_ms or
+            now_ms - self.last_check_ms >= FOREGROUND_PROCESS_CACHE_MS)
+        {
+            self.value = sessions[focused_session].hasForegroundProcess();
+            self.last_check_ms = now_ms;
+        }
+        return self.value;
+    }
+};
 
 const ImeComposition = struct {
     codepoints: usize = 0,
@@ -336,6 +357,14 @@ pub fn main() !void {
 
     init_count = sessions.len;
 
+    const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
+    defer allocator.free(session_ui_info);
+
+    var render_cache = try renderer_mod.RenderCache.init(allocator, grid_count);
+    defer render_cache.deinit();
+
+    var foreground_cache = ForegroundProcessCache{};
+
     var running = true;
 
     var anim_state = AnimationState{
@@ -419,8 +448,7 @@ pub fn main() !void {
             }
             processed_event = true;
             var scaled_event = scaleEventToRender(&event, scale_x, scale_y);
-            const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
-            defer allocator.free(session_ui_info);
+            const focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
             const ui_host = makeUiHost(
                 now,
                 render_width,
@@ -433,6 +461,7 @@ pub fn main() !void {
                 &anim_state,
                 sessions,
                 session_ui_info,
+                focused_has_foreground_process,
                 &theme,
             );
 
@@ -618,7 +647,7 @@ pub fn main() !void {
                                 }
                             }
                             session.deinit(allocator);
-                            session.dirty = true;
+                            session.markDirty();
                         }
                         continue;
                     }
@@ -764,7 +793,7 @@ pub fn main() !void {
                             }
                             try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows, &loop);
                             const new_session = anim_state.focused_session;
-                            sessions[new_session].dirty = true;
+                            sessions[new_session].markDirty();
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
                             if (config.ui.show_hotkey_feedback) {
@@ -962,26 +991,26 @@ pub fn main() !void {
                                     focused.hovered_link_start = link_match.start_pin;
                                     focused.hovered_link_end = link_match.end_pin;
                                     allocator.free(link_match.url);
-                                    focused.dirty = true;
+                                    focused.markDirty();
                                 } else {
                                     desired_cursor = .ibeam;
                                     focused.hovered_link_start = null;
                                     focused.hovered_link_end = null;
-                                    focused.dirty = true;
+                                    focused.markDirty();
                                 }
                             } else {
                                 desired_cursor = .ibeam;
                                 if (focused.hovered_link_start != null) {
                                     focused.hovered_link_start = null;
                                     focused.hovered_link_end = null;
-                                    focused.dirty = true;
+                                    focused.markDirty();
                                 }
                             }
                         } else {
                             if (focused.hovered_link_start != null) {
                                 focused.hovered_link_start = null;
                                 focused.hovered_link_end = null;
-                                focused.dirty = true;
+                                focused.markDirty();
                             }
                         }
                     }
@@ -1080,7 +1109,6 @@ pub fn main() !void {
 
         try loop.run(.no_wait);
 
-        var any_session_dirty = false;
         var has_scroll_inertia = false;
         for (sessions) |*session| {
             session.checkAlive();
@@ -1088,9 +1116,9 @@ pub fn main() !void {
             try session.flushPendingWrites();
             session.updateCwd(now);
             updateScrollInertia(session, delta_time_s);
-            any_session_dirty = any_session_dirty or session.dirty;
             has_scroll_inertia = has_scroll_inertia or (session.scroll_velocity != 0.0);
         }
+        const any_session_dirty = render_cache.anyDirty(sessions);
 
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
@@ -1109,8 +1137,7 @@ pub fn main() !void {
             }
         }
 
-        const ui_update_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
-        defer allocator.free(ui_update_info);
+        var focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
         const ui_update_host = makeUiHost(
             now,
             render_width,
@@ -1122,7 +1149,8 @@ pub fn main() !void {
             grid_rows,
             &anim_state,
             sessions,
-            ui_update_info,
+            session_ui_info,
+            focused_has_foreground_process,
             &theme,
         );
         ui.update(&ui_update_host);
@@ -1144,7 +1172,7 @@ pub fn main() !void {
                         }
                     }
                     sessions[idx].deinit(allocator);
-                    sessions[idx].dirty = true;
+                    sessions[idx].markDirty();
                     std.debug.print("UI requested despawn: {d}\n", .{idx});
                 }
             },
@@ -1329,7 +1357,7 @@ pub fn main() !void {
                 };
                 anim_state.mode = next_mode;
                 if (previous_mode == .Collapsing and next_mode == .Grid and anim_state.focused_session < sessions.len) {
-                    sessions[anim_state.focused_session].dirty = true;
+                    sessions[anim_state.focused_session].markDirty();
                 }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
@@ -1350,8 +1378,7 @@ pub fn main() !void {
             });
         }
 
-        const ui_render_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
-        defer allocator.free(ui_render_info);
+        focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
         const ui_render_host = makeUiHost(
             now,
             render_width,
@@ -1363,7 +1390,8 @@ pub fn main() !void {
             grid_rows,
             &anim_state,
             sessions,
-            ui_render_info,
+            session_ui_info,
+            focused_has_foreground_process,
             &theme,
         );
 
@@ -1373,7 +1401,7 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, &render_cache, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             metrics_mod.increment(.frame_count);
@@ -1623,6 +1651,7 @@ fn makeUiHost(
     anim_state: *const AnimationState,
     sessions: []const SessionState,
     buffer: []ui_mod.SessionUiInfo,
+    focused_has_foreground_process: bool,
     theme: *const colors_mod.Theme,
 ) ui_mod.UiHost {
     for (sessions, 0..) |session, i| {
@@ -1636,7 +1665,6 @@ fn makeUiHost(
 
     const focused_session = &sessions[anim_state.focused_session];
     const focused_cwd = focused_session.cwd_path;
-    const focused_has_foreground_process = focused_session.hasForegroundProcess();
 
     return .{
         .now_ms = now,
@@ -1700,7 +1728,7 @@ fn scrollSession(session: *SessionState, delta: isize, now: i64) void {
         var pages = &terminal.screens.active.pages;
         pages.scroll(.{ .delta_row = delta });
         session.is_viewing_scrollback = (pages.viewport != .active);
-        session.dirty = true;
+        session.markDirty();
     }
 
     const sensitivity: f32 = 0.08;
@@ -1734,7 +1762,7 @@ fn updateScrollInertia(session: *SessionState, delta_time_s: f32) void {
             var pages = &terminal.screens.active.pages;
             pages.scroll(.{ .delta_row = scroll_lines });
             session.is_viewing_scrollback = (pages.viewport != .active);
-            session.dirty = true;
+            session.markDirty();
         }
 
         session.scroll_remainder = scroll_amount - @as(f32, @floatFromInt(scroll_lines));
@@ -1832,7 +1860,7 @@ fn applyTerminalResize(
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
 
-            session.dirty = true;
+            session.markDirty();
         }
     }
 }
@@ -1948,7 +1976,7 @@ fn beginSelection(session: *SessionState, pin: ghostty_vt.Pin) void {
     session.selection_anchor = pin;
     session.selection_pending = true;
     session.selection_dragging = false;
-    session.dirty = true;
+    session.markDirty();
 }
 
 fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
@@ -1962,7 +1990,7 @@ fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
         log.warn("session {d}: failed to start selection: {}", .{ session.id, err });
     };
-    session.dirty = true;
+    session.markDirty();
 }
 
 fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
@@ -1972,7 +2000,7 @@ fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
         log.warn("session {d}: failed to update selection: {}", .{ session.id, err });
     };
-    session.dirty = true;
+    session.markDirty();
 }
 
 fn endSelection(session: *SessionState) void {
@@ -2066,7 +2094,7 @@ fn selectWord(session: *SessionState, pin: ghostty_vt.Pin, is_viewing_scrollback
         log.err("failed to select word: {}", .{err});
         return;
     };
-    session.dirty = true;
+    session.markDirty();
 }
 
 /// Select the entire line at the given pin position.
@@ -2102,7 +2130,7 @@ fn selectLine(session: *SessionState, pin: ghostty_vt.Pin, is_viewing_scrollback
         log.err("failed to select line: {}", .{err});
         return;
     };
-    session.dirty = true;
+    session.markDirty();
 }
 
 const LinkMatch = struct {
@@ -2471,7 +2499,7 @@ fn clearTerminal(session: *SessionState) void {
     terminal.screens.active.clearSelection();
     terminal.eraseDisplay(ghostty_vt.EraseDisplay.scrollback, false);
     terminal.eraseDisplay(ghostty_vt.EraseDisplay.complete, false);
-    session.dirty = true;
+    session.markDirty();
 
     // Trigger shell redraw like Ghostty (FF) so the prompt is repainted at top.
     session.sendInput(&[_]u8{0x0C}) catch |err| {

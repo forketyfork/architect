@@ -103,19 +103,11 @@ The UI framework refactor outlined in engine_plan.md has been **fully completed*
 - Removed unused CWD-related constants and `input` import from `renderer.zig`
 - Registered `CwdBarComponent` with `UiRoot` in `main.zig`
 
-### 2. Cache Texture Still on SessionState ⚠️ LOW PRIORITY (NOT A DEVIATION)
+### 2. Renderer-Owned Cache ✅ RESOLVED
 
-**Location:** `src/session/state.zig`
+**Location:** `src/render/renderer.zig` (`RenderCache`)
 
-```zig
-cache_texture: ?*c.SDL_Texture = null,
-cache_w: c_int = 0,
-cache_h: c_int = 0,
-```
-
-**Analysis:** This is used by `renderGridSessionCached` in renderer.zig for caching terminal content in grid view. This is arguably **scene state**, not UI state, because it caches the terminal cell content itself (not UI overlays). The plan's invariant was about UI state/textures, and this cache is for the terminal scene.
-
-**Verdict:** Not a deviation - this is scene caching, not UI caching. No action needed.
+**Change:** The grid render cache now lives in the renderer as a per-session cache table, and `SessionState` exposes a `render_epoch` counter for invalidation. This keeps render resources owned by the renderer while preserving scene/UI separation.
 
 ---
 
@@ -153,7 +145,7 @@ These align with Section 10's prediction: "Once the framework exists, these beco
 ### Future Considerations
 
 1. **Document the scene vs UI texture distinction**
-   - `cache_texture` for terminal content = scene (OK on session)
+   - Terminal content caches = renderer-owned (`RenderCache`)
    - Text/label textures for bars/overlays = UI (should be in components)
 
 2. **Consider unifying pill overlays**
