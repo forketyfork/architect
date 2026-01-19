@@ -8,6 +8,8 @@ const HoldGesture = @import("../gestures/hold.zig").HoldGesture;
 const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
+const log = std.log.scoped(.escape_hold);
+
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
     gesture: HoldGesture = .{},
@@ -76,7 +78,9 @@ pub const EscapeHoldComponent = struct {
         if (!self.gesture.active) return;
         if (self.gesture.isComplete(host.now_ms) and !self.gesture.consumed) {
             self.gesture.consumed = true;
-            actions.append(.RequestCollapseFocused) catch {};
+            actions.append(.RequestCollapseFocused) catch |err| {
+                log.warn("failed to queue collapse action: {}", .{err});
+            };
         }
 
         if (self.gesture.consumed) {

@@ -52,28 +52,39 @@ This applies to all SDL3 constants: key codes (SDLK_*), modifier flags (SDL_KMOD
 ## Zig Language Gotchas
 
 ### Type Inference with Builtin Functions
-**Problem:** Zig's builtin functions like `@min`, `@max`, and `@clamp` infer result types from their operands. When using comptime constants, this can produce unexpectedly narrow types that cause silent integer wrapping.
+**Problem:** Zig's builtin functions like `@min`, `@max`, and `@clamp` infer result types from their operands. When both operands include small comptime constants, the result type can be unexpectedly narrow. If subsequent arithmetic also uses comptime constants, the entire expression stays in the narrow type and can overflow.
 
 **Example Bug:**
 ```zig
-// WRONG: @min infers u2 (2-bit type) from the constant 2, wrapping at 4
-const grid_col = @min(@as(usize, col_index), GRID_COLS - 1);  // if GRID_COLS=3
-const result = row * GRID_COLS + grid_col;  // 1*3+1 = 4, wraps to 0 in u2!
+const GRID_COLS = 3;  // comptime_int (not usize!)
+const GRID_ROWS = 3;
+
+// @min infers u2 from the comptime constant (GRID_COLS - 1 = 2)
+const grid_col = @min(@as(usize, col_index), GRID_COLS - 1);  // u2
+const grid_row = @min(@as(usize, row_index), GRID_ROWS - 1);  // u2
+
+// WRONG: entire expression stays u2 because GRID_COLS is comptime_int
+const result = grid_row * GRID_COLS + grid_col;
+// 1 * 3 + 2 = 5, but u2 max is 3 → panic in debug, wraps to 1 in release!
 ```
 
-**Solution:** Explicitly cast comptime constants to the desired type:
+**Solution:** Use explicit `: usize` annotation to force the result type:
 ```zig
-// CORRECT: Both operands are usize, result is usize
+const GRID_COLS = 3;
+const GRID_ROWS = 3;
+
+// Explicit usize annotation prevents narrow type inference
 const grid_col: usize = @min(@as(usize, col_index), @as(usize, GRID_COLS - 1));
-const result = row * GRID_COLS + grid_col;  // Works correctly
+const grid_row: usize = @min(@as(usize, row_index), @as(usize, GRID_ROWS - 1));
+const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 ```
 
 **When to be careful:**
 - Using `@min`, `@max`, `@clamp` with comptime integer literals or constants
-- Arithmetic operations where the result might exceed the inferred type's range
-- Index calculations, especially for grids or arrays (values 0-3 fit in u2, but 4+ wrap)
+- Subsequent arithmetic with comptime constants (they peer-resolve with narrow types)
+- Index calculations for grids or arrays
 
-**General rule:** When working with indices, sizes, or any value that might grow, explicitly annotate or cast to `usize` or an appropriate sized type.
+**General rule:** When calculating indices or sizes, add explicit `: usize` type annotations to `@min`/`@max` results.
 
 ### Naming collisions in large render functions
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent “local constant shadows” errors.

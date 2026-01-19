@@ -6,6 +6,8 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const font_cache = @import("../../font_cache.zig");
 
+const log = std.log.scoped(.restart_buttons);
+
 pub const RestartButtonsComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
@@ -50,9 +52,9 @@ pub const RestartButtonsComponent = struct {
         const mouse_x: c_int = @intFromFloat(event.button.x);
         const mouse_y: c_int = @intFromFloat(event.button.y);
 
-        const grid_col = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
-        const grid_row = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
-        const clicked_session: usize = grid_row * @as(usize, host.grid_cols) + grid_col;
+        const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
+        const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
+        const clicked_session: usize = grid_row * host.grid_cols + grid_col;
         if (clicked_session >= host.sessions.len) return false;
 
         const session_info = host.sessions[clicked_session];
@@ -68,7 +70,9 @@ pub const RestartButtonsComponent = struct {
         const inside = geom.containsPoint(button_rect, mouse_x, mouse_y);
         if (!inside) return false;
 
-        actions.append(.{ .RestartSession = clicked_session }) catch {};
+        actions.append(.{ .RestartSession = clicked_session }) catch |err| {
+            log.warn("failed to queue restart action for session {d}: {}", .{ clicked_session, err });
+        };
         return true;
     }
 
@@ -76,9 +80,9 @@ pub const RestartButtonsComponent = struct {
         const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
         if (host.view_mode != .Grid) return false;
 
-        const grid_col = @min(@as(usize, @intCast(@divFloor(x, host.cell_w))), host.grid_cols - 1);
-        const grid_row = @min(@as(usize, @intCast(@divFloor(y, host.cell_h))), host.grid_rows - 1);
-        const session_idx: usize = grid_row * @as(usize, host.grid_cols) + grid_col;
+        const grid_col: usize = @min(@as(usize, @intCast(@divFloor(x, host.cell_w))), host.grid_cols - 1);
+        const grid_row: usize = @min(@as(usize, @intCast(@divFloor(y, host.cell_h))), host.grid_rows - 1);
+        const session_idx: usize = grid_row * host.grid_cols + grid_col;
         if (session_idx >= host.sessions.len) return false;
 
         const session_info = host.sessions[session_idx];

@@ -7,6 +7,8 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const font_cache = @import("../../font_cache.zig");
 
+const log = std.log.scoped(.confirm_dialog);
+
 pub const ConfirmDialogComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
@@ -123,7 +125,9 @@ pub const ConfirmDialogComponent = struct {
                 const is_confirm = key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER;
                 if (is_confirm) {
                     if (self.on_confirm) |action| {
-                        actions.append(action) catch {};
+                        actions.append(action) catch |err| {
+                            log.warn("failed to queue dialog confirmation: {}", .{err});
+                        };
                     }
                     self.visible = false;
                     self.escape_pressed = false;
@@ -144,7 +148,9 @@ pub const ConfirmDialogComponent = struct {
                 const buttons = self.buttonRects(modal, host.ui_scale);
                 if (geom.containsPoint(buttons.confirm, mouse_x, mouse_y)) {
                     if (self.on_confirm) |action| {
-                        actions.append(action) catch {};
+                        actions.append(action) catch |err| {
+                            log.warn("failed to queue dialog confirmation: {}", .{err});
+                        };
                     }
                     self.visible = false;
                     return true;

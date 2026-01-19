@@ -822,7 +822,9 @@ pub fn main() !void {
                         const focused = &sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch {};
+                            _ = focused.shell.?.write(&esc_byte) catch |err| {
+                                log.warn("session {d}: failed to send escape key: {}", .{ anim_state.focused_session, err });
+                            };
                         }
                         std.debug.print("Escape released, sent to terminal\n", .{});
                     }
@@ -1036,7 +1038,9 @@ pub fn main() !void {
                                     while (i < count) : (i += 1) {
                                         const n = input.encodeMouseScroll(direction, cell.col, cell.row, sgr_format, &buf);
                                         if (n > 0) {
-                                            session.sendInput(buf[0..n]) catch {};
+                                            session.sendInput(buf[0..n]) catch |err| {
+                                                log.warn("session {d}: failed to send mouse scroll: {}", .{ session_idx, err });
+                                            };
                                         }
                                     }
                                 } else {
@@ -1233,7 +1237,9 @@ pub fn main() !void {
                 // Update cwd to the new worktree path for UI purposes.
                 const new_path = std.fs.path.join(allocator, &.{ create_action.base_path, ".architect", create_action.name }) catch null;
                 if (new_path) |abs| {
-                    session.recordCwd(abs) catch {};
+                    session.recordCwd(abs) catch |err| {
+                        log.warn("session {d}: failed to record cwd: {}", .{ create_action.session, err });
+                    };
                     allocator.free(abs);
                 }
 
@@ -1929,7 +1935,9 @@ fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     session.selection_pending = false;
 
     terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.warn("session {d}: failed to start selection: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -1937,7 +1945,9 @@ fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
     if (!session.selection_dragging) return;
     const anchor = session.selection_anchor orelse return;
     const terminal = session.terminal orelse return;
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch {};
+    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
+        log.warn("session {d}: failed to update selection: {}", .{ session.id, err });
+    };
     session.dirty = true;
 }
 
@@ -2440,7 +2450,9 @@ fn clearTerminal(session: *SessionState) void {
     session.dirty = true;
 
     // Trigger shell redraw like Ghostty (FF) so the prompt is repainted at top.
-    session.sendInput(&[_]u8{0x0C}) catch {};
+    session.sendInput(&[_]u8{0x0C}) catch |err| {
+        log.warn("session {d}: failed to send clear redraw: {}", .{ session.id, err });
+    };
 }
 
 fn copySelectionToClipboard(
