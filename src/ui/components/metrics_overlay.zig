@@ -120,7 +120,7 @@ pub const MetricsOverlayComponent = struct {
         const text_height: c_int = @intFromFloat(text_height_f);
 
         const x = host.window_w - text_width - PADDING - BG_PADDING;
-        const y = PADDING;
+        const y = host.window_h - text_height - PADDING - BG_PADDING;
 
         const bg_rect = c.SDL_FRect{
             .x = @as(f32, @floatFromInt(x - BG_PADDING)),

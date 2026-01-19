@@ -124,7 +124,7 @@ Disabling vsync may reduce input latency but can cause screen tearing.
 enabled = false  # Enable metrics collection overlay (default: false)
 ```
 
-When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the top-right corner. The overlay displays:
+When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-right corner. The overlay displays:
 - **Frames**: Total rendered frame count
 - **Cache size**: Number of cached glyph textures
 - **Hits/s**: Glyph cache hits per second
