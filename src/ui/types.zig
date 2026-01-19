@@ -4,6 +4,7 @@ const app_state = @import("../app/app_state.zig");
 const font_mod = @import("../font.zig");
 const colors = @import("../colors.zig");
 const font_cache = @import("../font_cache.zig");
+const geom = @import("../geom.zig");
 
 pub const SessionUiInfo = struct {
     dead: bool,
@@ -23,18 +24,27 @@ pub const UiHost = struct {
     grid_rows: usize,
     cell_w: c_int,
     cell_h: c_int,
+    term_cols: u16,
+    term_rows: u16,
 
     view_mode: app_state.ViewMode,
     focused_session: usize,
     focused_cwd: ?[]const u8,
     focused_has_foreground_process: bool,
+    animating_rect: ?geom.Rect = null,
 
     sessions: []const SessionUiInfo,
     theme: *const colors.Theme,
+
+    mouse_x: c_int = 0,
+    mouse_y: c_int = 0,
+    mouse_has_position: bool = false,
+    mouse_over_ui: bool = false,
 };
 
 pub const UiAction = union(enum) {
     RestartSession: usize,
+    FocusSession: usize,
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
