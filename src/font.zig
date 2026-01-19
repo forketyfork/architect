@@ -546,6 +546,10 @@ pub const Font = struct {
         }
     }
 
+    // O(n) linear scan to find the oldest entry. A proper LRU list would give O(1) eviction,
+    // but in practice the 4096-entry cache is large enough that evictions are rare during
+    // normal terminal usage—even with diverse Unicode, emoji, and multiple font sizes.
+    // The simplicity of a flat hashmap outweighs the cost of occasional linear scans.
     fn findOldestKey(map: *std.AutoHashMap(GlyphKey, CacheEntry)) ?GlyphKey {
         var it = map.iterator();
         var oldest_key: ?GlyphKey = null;
