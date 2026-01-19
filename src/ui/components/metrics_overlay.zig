@@ -184,6 +184,11 @@ pub const MetricsOverlayComponent = struct {
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph cache: {d}", .{cache_size}) catch "Glyph cache: ?";
         line_count += 1;
 
+        const total_accesses = hit_rate + miss_rate;
+        const hit_pct: f64 = if (total_accesses > 0) (hit_rate / total_accesses) * 100.0 else 0.0;
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hit rate: {d:.1}%", .{hit_pct}) catch "Glyph hit rate: ?";
+        line_count += 1;
+
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hits/s: {d:.1}", .{hit_rate}) catch "Glyph hits/s: ?";
         line_count += 1;
 
