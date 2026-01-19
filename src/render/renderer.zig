@@ -154,6 +154,7 @@ fn renderSession(
 ) RenderError!void {
     try renderSessionContent(renderer, session, rect, scale, is_focused, font, term_cols, term_rows, theme);
     renderSessionOverlays(renderer, session, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme);
+    session.dirty = false;
 }
 
 fn renderSessionContent(
