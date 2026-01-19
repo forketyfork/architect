@@ -54,12 +54,13 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - CWD bar with marquee scrolling for long paths
 - Scrollback indicator strip
 
-**UiRoot (src/ui/)** is the registry for UI overlay components:
+**UiRoot (src/ui/)** is the registry for UI overlay components and session interaction state:
 - Dispatches events topmost-first (by z-index)
 - Runs per-frame `update()` on all components
 - Drains `UiAction` queue for UI→app mutations
 - Renders all components in z-order after the scene
 - Reports `needsFrame()` when any component requires animation
+- Owns per-session `SessionViewState` via `SessionInteractionComponent` (selection, hover, scrollback state)
 
 **UiAssets** provides shared rendering resources:
 - `FontCache` stores configured fonts keyed by pixel size, so terminal rendering and UI components reuse a single loaded font set instead of opening per-component instances.
@@ -119,6 +120,7 @@ src/
     ├── root.zig          # UiRoot: component registry, dispatch
     ├── component.zig     # UiComponent vtable interface
     ├── types.zig         # UiHost, UiAction, UiAssets, SessionUiInfo
+    ├── session_view_state.zig  # Per-session UI interaction state
     ├── scale.zig         # DPI scaling helper
     ├── first_frame_guard.zig  # Idle throttling transition helper
     │
@@ -135,6 +137,7 @@ src/
     │   ├── pill_group.zig        # Pill overlay coordinator (collapses others)
     │   ├── quit_confirm.zig      # Quit confirmation dialog
     │   ├── restart_buttons.zig   # Dead session restart buttons
+    │   ├── session_interaction.zig # Terminal mouse/scroll interaction handling
     │   ├── toast.zig             # Toast notification display
     │   └── worktree_overlay.zig  # Git worktree picker (T pill)
     │

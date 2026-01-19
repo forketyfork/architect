@@ -24,14 +24,11 @@ const ghostty_vt = @import("ghostty-vt");
 const c = @import("c.zig");
 const metrics_mod = @import("metrics.zig");
 const open_url = @import("os/open.zig");
-const url_matcher = @import("url_matcher.zig");
 
 const log = std.log.scoped(.main);
 
 const INITIAL_WINDOW_WIDTH = 1200;
 const INITIAL_WINDOW_HEIGHT = 900;
-const SCROLL_LINES_PER_TICK: isize = 1;
-const MAX_SCROLL_VELOCITY: f32 = 30.0;
 const DEFAULT_FONT_SIZE: c_int = 14;
 const MIN_FONT_SIZE: c_int = 8;
 const MAX_FONT_SIZE: c_int = 96;
@@ -41,16 +38,11 @@ const ACTIVE_FRAME_NS: i128 = 16_666_667;
 const IDLE_FRAME_NS: i128 = 50_000_000;
 const MAX_IDLE_RENDER_GAP_NS: i128 = 250_000_000;
 const FOREGROUND_PROCESS_CACHE_MS: i64 = 150;
-const SessionStatus = app_state.SessionStatus;
 const ViewMode = app_state.ViewMode;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
-const Notification = notify.Notification;
 const SessionState = session_state.SessionState;
-const FontSizeDirection = input.FontSizeDirection;
-const GridNavDirection = input.GridNavDirection;
-const CursorKind = enum { arrow, ibeam, pointer };
 
 const ForegroundProcessCache = struct {
     session_idx: ?usize = null,
@@ -241,17 +233,6 @@ pub fn main() !void {
         };
     }
 
-    const arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
-    defer if (arrow_cursor) |cursor| c.SDL_DestroyCursor(cursor);
-    const ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
-    defer if (ibeam_cursor) |cursor| c.SDL_DestroyCursor(cursor);
-    const pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
-    defer if (pointer_cursor) |cursor| c.SDL_DestroyCursor(cursor);
-    var current_cursor: CursorKind = .arrow;
-    if (arrow_cursor) |cursor| {
-        _ = c.SDL_SetCursor(cursor);
-    }
-
     const renderer = sdl.renderer;
 
     var font_size: c_int = persistence.font_size;
@@ -378,6 +359,9 @@ pub fn main() !void {
     var ime_composition = ImeComposition{};
     var last_focused_session: usize = anim_state.focused_session;
 
+    const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
+    try ui.register(session_interaction_component.asComponent());
+
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
     worktree_comp_ptr.* = .{ .allocator = allocator };
     const worktree_component = ui_mod.UiComponent{
@@ -421,19 +405,10 @@ pub fn main() !void {
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
-    var previous_frame_ns: i128 = undefined;
-    var first_frame: bool = true;
     var last_render_ns: i128 = 0;
     while (running) {
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
-        var delta_time_s: f32 = 0.0;
-        if (first_frame) {
-            first_frame = false;
-        } else {
-            delta_time_s = @as(f32, @floatFromInt(frame_start_ns - previous_frame_ns)) / 1_000_000_000.0;
-        }
-        previous_frame_ns = frame_start_ns;
 
         var event: c.SDL_Event = undefined;
         var processed_event = false;
@@ -458,14 +433,18 @@ pub fn main() !void {
                 cell_height_pixels,
                 grid_cols,
                 grid_rows,
+                full_cols,
+                full_rows,
                 &anim_state,
                 sessions,
                 session_ui_info,
                 focused_has_foreground_process,
                 &theme,
             );
+            var event_ui_host = ui_host;
+            applyMouseContext(&ui, &event_ui_host, &scaled_event);
 
-            const ui_consumed = ui.handleEvent(&ui_host, &scaled_event);
+            const ui_consumed = ui.handleEvent(&event_ui_host, &scaled_event);
             if (ui_consumed) continue;
 
             switch (scaled_event.type) {
@@ -549,7 +528,7 @@ pub fn main() !void {
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     const focused = &sessions[anim_state.focused_session];
-                    handleTextInput(focused, &ime_composition, scaled_event.text.text) catch |err| {
+                    handleTextInput(focused, &ime_composition, scaled_event.text.text, session_interaction_component) catch |err| {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
                 },
@@ -561,6 +540,7 @@ pub fn main() !void {
                         scaled_event.edit.text,
                         scaled_event.edit.start,
                         scaled_event.edit.length,
+                        session_interaction_component,
                     ) catch |err| {
                         std.debug.print("Edit input failed: {}\n", .{err});
                     };
@@ -595,7 +575,7 @@ pub fn main() !void {
                     };
                     defer allocator.free(escaped);
 
-                    pasteText(session, allocator, escaped) catch |err| switch (err) {
+                    pasteText(session, allocator, escaped, session_interaction_component) catch |err| switch (err) {
                         error.NoTerminal => ui.showToast("No terminal to paste into", now),
                         error.NoShell => ui.showToast("Shell not available", now),
                         else => std.debug.print("Failed to paste dropped path: {}\n", .{err}),
@@ -647,6 +627,7 @@ pub fn main() !void {
                                 }
                             }
                             session.deinit(allocator);
+                            session_interaction_component.resetView(session_idx);
                             session.markDirty();
                         }
                         continue;
@@ -663,7 +644,7 @@ pub fn main() !void {
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘V", now);
-                        pasteClipboardIntoSession(focused, allocator, &ui, now) catch |err| {
+                        pasteClipboardIntoSession(focused, allocator, &ui, now, session_interaction_component) catch |err| {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
@@ -715,11 +696,11 @@ pub fn main() !void {
                             defer if (cwd_buf) |buf| allocator.free(buf);
 
                             try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
-                            sessions[next_free_idx].status = .running;
-                            sessions[next_free_idx].attention = false;
+                            session_interaction_component.setStatus(next_free_idx, .running);
+                            session_interaction_component.setAttention(next_free_idx, false);
 
-                            sessions[anim_state.focused_session].clearSelection();
-                            sessions[next_free_idx].clearSelection();
+                            session_interaction_component.clearSelection(anim_state.focused_session);
+                            session_interaction_component.clearSelection(next_free_idx);
 
                             anim_state.previous_session = anim_state.focused_session;
                             anim_state.focused_session = next_free_idx;
@@ -738,8 +719,8 @@ pub fn main() !void {
 
                         if (anim_state.mode == .Grid) {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            sessions[idx].status = .running;
-                            sessions[idx].attention = false;
+                            session_interaction_component.setStatus(idx, .running);
+                            session_interaction_component.setAttention(idx, false);
 
                             const grid_row: c_int = @intCast(idx / grid_cols);
                             const grid_col: c_int = @intCast(idx % grid_cols);
@@ -767,10 +748,10 @@ pub fn main() !void {
                             std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
                         } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            sessions[anim_state.focused_session].clearSelection();
-                            sessions[idx].clearSelection();
-                            sessions[idx].status = .running;
-                            sessions[idx].attention = false;
+                            session_interaction_component.clearSelection(anim_state.focused_session);
+                            session_interaction_component.clearSelection(idx);
+                            session_interaction_component.setStatus(idx, .running);
+                            session_interaction_component.setAttention(idx, false);
                             anim_state.focused_session = idx;
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
@@ -791,7 +772,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, false, grid_cols, grid_rows, &loop);
+                            try navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid_cols, grid_rows, &loop);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].markDirty();
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
@@ -805,7 +786,7 @@ pub fn main() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try navigateGrid(&anim_state, sessions, direction, now, true, animations_enabled, grid_cols, grid_rows, &loop);
+                            try navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid_cols, grid_rows, &loop);
 
                             const buf_size = gridNotificationBufferSize(grid_cols, grid_rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -816,6 +797,7 @@ pub fn main() !void {
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
                         } else {
                             if (focused.spawned and !focused.dead) {
+                                session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                                 try handleKeyInput(focused, key, mod);
                             }
                         }
@@ -824,8 +806,8 @@ pub fn main() !void {
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
-                        sessions[clicked_session].status = .running;
-                        sessions[clicked_session].attention = false;
+                        session_interaction_component.setStatus(clicked_session, .running);
+                        session_interaction_component.setAttention(clicked_session, false);
 
                         const grid_row: c_int = @intCast(clicked_session / grid_cols);
                         const grid_col: c_int = @intCast(clicked_session % grid_cols);
@@ -852,6 +834,7 @@ pub fn main() !void {
                         }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (focused.spawned and !focused.dead and !isModifierKey(key)) {
+                        session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                         try handleKeyInput(focused, key, mod);
                     }
                 },
@@ -868,255 +851,17 @@ pub fn main() !void {
                         std.debug.print("Escape released, sent to terminal\n", .{});
                     }
                 },
-                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    const mouse_x: c_int = @intFromFloat(scaled_event.button.x);
-                    const mouse_y: c_int = @intFromFloat(scaled_event.button.y);
-
-                    if (anim_state.mode == .Grid) {
-                        sessions[anim_state.focused_session].clearSelection();
-                        const grid_col_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_width_pixels))), grid_cols - 1);
-                        const grid_row_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_height_pixels))), grid_rows - 1);
-                        const clicked_session: usize = grid_row_idx * grid_cols + grid_col_idx;
-
-                        const cell_rect = Rect{
-                            .x = @as(c_int, @intCast(grid_col_idx)) * cell_width_pixels,
-                            .y = @as(c_int, @intCast(grid_row_idx)) * cell_height_pixels,
-                            .w = cell_width_pixels,
-                            .h = cell_height_pixels,
-                        };
-
-                        try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
-
-                        sessions[clicked_session].status = .running;
-                        sessions[clicked_session].attention = false;
-
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
-
-                        anim_state.focused_session = clicked_session;
-                        if (animations_enabled) {
-                            anim_state.mode = .Expanding;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = cell_rect;
-                            anim_state.target_rect = target_rect;
-                        } else {
-                            anim_state.mode = .Full;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = target_rect;
-                            anim_state.target_rect = target_rect;
-                            anim_state.previous_session = clicked_session;
-                        }
-                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (anim_state.mode == .Full and scaled_event.button.button == c.SDL_BUTTON_LEFT) {
-                        const focused = &sessions[anim_state.focused_session];
-                        if (focused.spawned and focused.terminal != null) {
-                            if (fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |pin| {
-                                const clicks = scaled_event.button.clicks;
-
-                                if (clicks >= 3) {
-                                    // Triple-click: select entire line
-                                    selectLine(focused, pin, focused.is_viewing_scrollback);
-                                } else if (clicks == 2) {
-                                    // Double-click: select word
-                                    selectWord(focused, pin, focused.is_viewing_scrollback);
-                                } else {
-                                    // Single-click: begin drag selection or open link
-                                    const mod = c.SDL_GetModState();
-                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-
-                                    if (cmd_held) {
-                                        if (getLinkAtPin(allocator, &focused.terminal.?, pin, focused.is_viewing_scrollback)) |uri| {
-                                            defer allocator.free(uri);
-                                            open_url.openUrl(allocator, uri) catch |err| {
-                                                log.err("Failed to open URL: {}", .{err});
-                                            };
-                                        } else {
-                                            beginSelection(focused, pin);
-                                        }
-                                    } else {
-                                        beginSelection(focused, pin);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                    if (scaled_event.button.button == c.SDL_BUTTON_LEFT and anim_state.mode == .Full) {
-                        const focused = &sessions[anim_state.focused_session];
-                        endSelection(focused);
-                    }
-                },
-                c.SDL_EVENT_MOUSE_MOTION => {
-                    const mouse_x: c_int = @intFromFloat(scaled_event.motion.x);
-                    const mouse_y: c_int = @intFromFloat(scaled_event.motion.y);
-                    const over_ui = ui.hitTest(&ui_host, mouse_x, mouse_y);
-                    var desired_cursor: CursorKind = .arrow;
-
-                    if (anim_state.mode == .Full) {
-                        const focused = &sessions[anim_state.focused_session];
-                        const pin = fullViewPinFromMouse(focused, mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows);
-
-                        if (focused.selection_dragging) {
-                            if (pin) |p| {
-                                updateSelectionDrag(focused, p);
-                            }
-
-                            const edge_threshold: c_int = 50;
-                            const scroll_speed: isize = 1;
-
-                            if (mouse_y < edge_threshold) {
-                                scrollSession(focused, -scroll_speed, now);
-                            } else if (mouse_y > render_height - edge_threshold) {
-                                scrollSession(focused, scroll_speed, now);
-                            }
-                        } else if (focused.selection_pending) {
-                            if (focused.selection_anchor) |anchor| {
-                                if (pin) |p| {
-                                    if (!pinsEqual(anchor, p)) {
-                                        startSelectionDrag(focused, p);
-                                    }
-                                }
-                            } else {
-                                focused.selection_pending = false;
-                            }
-                        }
-
-                        if (!over_ui and pin != null and focused.terminal != null) {
-                            const mod = c.SDL_GetModState();
-                            const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-
-                            if (cmd_held) {
-                                if (getLinkMatchAtPin(allocator, &focused.terminal.?, pin.?, focused.is_viewing_scrollback)) |link_match| {
-                                    desired_cursor = .pointer;
-                                    focused.hovered_link_start = link_match.start_pin;
-                                    focused.hovered_link_end = link_match.end_pin;
-                                    allocator.free(link_match.url);
-                                    focused.markDirty();
-                                } else {
-                                    desired_cursor = .ibeam;
-                                    focused.hovered_link_start = null;
-                                    focused.hovered_link_end = null;
-                                    focused.markDirty();
-                                }
-                            } else {
-                                desired_cursor = .ibeam;
-                                if (focused.hovered_link_start != null) {
-                                    focused.hovered_link_start = null;
-                                    focused.hovered_link_end = null;
-                                    focused.markDirty();
-                                }
-                            }
-                        } else {
-                            if (focused.hovered_link_start != null) {
-                                focused.hovered_link_start = null;
-                                focused.hovered_link_end = null;
-                                focused.markDirty();
-                            }
-                        }
-                    }
-
-                    if (desired_cursor != current_cursor) {
-                        const target_cursor = switch (desired_cursor) {
-                            .arrow => arrow_cursor,
-                            .ibeam => ibeam_cursor,
-                            .pointer => pointer_cursor,
-                        };
-                        if (target_cursor) |cursor| {
-                            _ = c.SDL_SetCursor(cursor);
-                            current_cursor = desired_cursor;
-                        }
-                    }
-                },
-                c.SDL_EVENT_MOUSE_WHEEL => {
-                    const mouse_x: c_int = @intFromFloat(scaled_event.wheel.mouse_x);
-                    const mouse_y: c_int = @intFromFloat(scaled_event.wheel.mouse_y);
-
-                    const hovered_session = calculateHoveredSession(
-                        mouse_x,
-                        mouse_y,
-                        &anim_state,
-                        cell_width_pixels,
-                        cell_height_pixels,
-                        render_width,
-                        render_height,
-                        grid_cols,
-                        grid_rows,
-                    );
-
-                    if (hovered_session) |session_idx| {
-                        var session = &sessions[session_idx];
-                        const ticks_per_notch: isize = SCROLL_LINES_PER_TICK;
-                        const wheel_ticks: isize = if (scaled_event.wheel.integer_y != 0)
-                            @as(isize, @intCast(scaled_event.wheel.integer_y)) * ticks_per_notch
-                        else
-                            @as(isize, @intFromFloat(scaled_event.wheel.y * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
-                        const scroll_delta = -wheel_ticks;
-                        if (scroll_delta != 0) {
-                            // Check if terminal has mouse tracking enabled and we should forward scroll to app
-                            const should_forward = blk: {
-                                if (anim_state.mode != .Full) break :blk false;
-                                if (session.is_viewing_scrollback) break :blk false;
-                                const terminal = session.terminal orelse break :blk false;
-                                // Check if any mouse tracking mode is enabled
-                                const mouse_tracking = terminal.modes.get(.mouse_event_normal) or
-                                    terminal.modes.get(.mouse_event_button) or
-                                    terminal.modes.get(.mouse_event_any) or
-                                    terminal.modes.get(.mouse_event_x10);
-                                break :blk mouse_tracking;
-                            };
-
-                            if (should_forward) {
-                                if (fullViewCellFromMouse(mouse_x, mouse_y, render_width, render_height, &font, full_cols, full_rows)) |cell| {
-                                    // Forward scroll to terminal as mouse events
-                                    const terminal = session.terminal.?;
-                                    const sgr_format = terminal.modes.get(.mouse_format_sgr);
-                                    const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
-                                    const count = @abs(scroll_delta);
-                                    var buf: [32]u8 = undefined;
-                                    var i: usize = 0;
-                                    while (i < count) : (i += 1) {
-                                        const n = input.encodeMouseScroll(direction, cell.col, cell.row, sgr_format, &buf);
-                                        if (n > 0) {
-                                            session.sendInput(buf[0..n]) catch |err| {
-                                                log.warn("session {d}: failed to send mouse scroll: {}", .{ session_idx, err });
-                                            };
-                                        }
-                                    }
-                                } else {
-                                    scrollSession(session, scroll_delta, now);
-                                    // If the wheel event originates from a touch/trackpad
-                                    // contact (SDL_TOUCH_MOUSEID), keep inertia suppressed
-                                    // until the contact is released.
-                                    if (scaled_event.wheel.which == c.SDL_TOUCH_MOUSEID) {
-                                        session.scroll_inertia_allowed = false;
-                                    }
-                                }
-                            } else {
-                                scrollSession(session, scroll_delta, now);
-                                // If the wheel event originates from a touch/trackpad
-                                // contact (SDL_TOUCH_MOUSEID), keep inertia suppressed
-                                // until the contact is released.
-                                if (scaled_event.wheel.which == c.SDL_TOUCH_MOUSEID) {
-                                    session.scroll_inertia_allowed = false;
-                                }
-                            }
-                        }
-                    }
-                },
                 else => {},
             }
         }
 
         try loop.run(.no_wait);
 
-        var has_scroll_inertia = false;
         for (sessions) |*session| {
             session.checkAlive();
             try session.processOutput();
             try session.flushPendingWrites();
             session.updateCwd(now);
-            updateScrollInertia(session, delta_time_s);
-            has_scroll_inertia = has_scroll_inertia or (session.scroll_velocity != 0.0);
         }
         const any_session_dirty = render_cache.anyDirty(sessions);
 
@@ -1125,14 +870,13 @@ pub fn main() !void {
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
             if (note.session < sessions.len) {
-                var session = &sessions[note.session];
-                session.status = note.state;
+                session_interaction_component.setStatus(note.session, note.state);
                 const wants_attention = switch (note.state) {
                     .awaiting_approval, .done => true,
                     else => false,
                 };
                 const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == note.session;
-                session.attention = if (is_focused_full) false else wants_attention;
+                session_interaction_component.setAttention(note.session, if (is_focused_full) false else wants_attention);
                 std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
             }
         }
@@ -1147,6 +891,8 @@ pub fn main() !void {
             cell_height_pixels,
             grid_cols,
             grid_rows,
+            full_cols,
+            full_rows,
             &anim_state,
             sessions,
             session_ui_info,
@@ -1159,8 +905,43 @@ pub fn main() !void {
             .RestartSession => |idx| {
                 if (idx < sessions.len) {
                     try sessions[idx].restart();
+                    session_interaction_component.resetView(idx);
                     std.debug.print("UI requested restart: {d}\n", .{idx});
                 }
+            },
+            .FocusSession => |idx| {
+                if (anim_state.mode != .Grid) continue;
+                if (idx >= sessions.len) continue;
+
+                session_interaction_component.clearSelection(anim_state.focused_session);
+                try sessions[idx].ensureSpawnedWithLoop(&loop);
+                session_interaction_component.setStatus(idx, .running);
+                session_interaction_component.setAttention(idx, false);
+
+                const grid_row: c_int = @intCast(idx / grid_cols);
+                const grid_col: c_int = @intCast(idx % grid_cols);
+                const cell_rect = Rect{
+                    .x = grid_col * cell_width_pixels,
+                    .y = grid_row * cell_height_pixels,
+                    .w = cell_width_pixels,
+                    .h = cell_height_pixels,
+                };
+                const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+
+                anim_state.focused_session = idx;
+                if (animations_enabled) {
+                    anim_state.mode = .Expanding;
+                    anim_state.start_time = now;
+                    anim_state.start_rect = cell_rect;
+                    anim_state.target_rect = target_rect;
+                } else {
+                    anim_state.mode = .Full;
+                    anim_state.start_time = now;
+                    anim_state.start_rect = target_rect;
+                    anim_state.target_rect = target_rect;
+                    anim_state.previous_session = idx;
+                }
+                std.debug.print("Expanding session: {d}\n", .{idx});
             },
             .DespawnSession => |idx| {
                 if (idx < sessions.len) {
@@ -1172,6 +953,7 @@ pub fn main() !void {
                         }
                     }
                     sessions[idx].deinit(allocator);
+                    session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
                     std.debug.print("UI requested despawn: {d}\n", .{idx});
                 }
@@ -1240,8 +1022,8 @@ pub fn main() !void {
                     continue;
                 };
 
-                session.status = .running;
-                session.attention = false;
+                session_interaction_component.setStatus(switch_action.session, .running);
+                session_interaction_component.setAttention(switch_action.session, false);
                 ui.showToast("Switched worktree", now);
             },
             .CreateWorktree => |create_action| {
@@ -1281,8 +1063,8 @@ pub fn main() !void {
                     allocator.free(abs);
                 }
 
-                session.status = .running;
-                session.attention = false;
+                session_interaction_component.setStatus(create_action.session, .running);
+                session_interaction_component.setAttention(create_action.session, false);
                 ui.showToast("Creating worktree…", now);
             },
             .RemoveWorktree => |remove_action| {
@@ -1330,8 +1112,8 @@ pub fn main() !void {
                     continue;
                 };
 
-                session.status = .running;
-                session.attention = false;
+                session_interaction_component.setStatus(remove_action.session, .running);
+                session_interaction_component.setAttention(remove_action.session, false);
                 ui.showToast("Removing worktree…", now);
             },
             .ToggleMetrics => {
@@ -1388,6 +1170,8 @@ pub fn main() !void {
             cell_height_pixels,
             grid_cols,
             grid_rows,
+            full_cols,
+            full_rows,
             &anim_state,
             sessions,
             session_ui_info,
@@ -1401,14 +1185,14 @@ pub fn main() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, &render_cache, sessions, cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, &render_cache, sessions, session_interaction_component.viewSlice(), cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             metrics_mod.increment(.frame_count);
             last_render_ns = std.time.nanoTimestamp();
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !has_scroll_inertia;
+        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications;
         // When vsync is enabled and we're active, let vsync handle frame pacing.
         // When idle, always throttle to save power regardless of vsync.
         const needs_throttle = is_idle or !sdl.vsync_enabled;
@@ -1513,6 +1297,7 @@ fn formatGridNotification(buf: []u8, focused_session: usize, grid_cols: usize, g
 fn navigateGrid(
     anim_state: *AnimationState,
     sessions: []SessionState,
+    session_interaction: *ui_mod.SessionInteractionComponent,
     direction: input.GridNavDirection,
     now: i64,
     enable_wrapping: bool,
@@ -1582,8 +1367,8 @@ fn navigateGrid(
         } else if (show_animation) {
             try sessions[new_session].ensureSpawnedWithLoop(loop);
         }
-        sessions[anim_state.focused_session].clearSelection();
-        sessions[new_session].clearSelection();
+        session_interaction.clearSelection(anim_state.focused_session);
+        session_interaction.clearSelection(new_session);
 
         if (animation_mode) |mode| {
             anim_state.mode = mode;
@@ -1639,6 +1424,44 @@ fn scaleEventToRender(event: *const c.SDL_Event, scale_x: f32, scale_y: f32) c.S
     return e;
 }
 
+fn applyMouseContext(ui: *ui_mod.UiRoot, host: *ui_mod.UiHost, event: *const c.SDL_Event) void {
+    switch (event.type) {
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            const mouse_x: c_int = @intFromFloat(event.button.x);
+            const mouse_y: c_int = @intFromFloat(event.button.y);
+            host.mouse_x = mouse_x;
+            host.mouse_y = mouse_y;
+            host.mouse_has_position = true;
+            host.mouse_over_ui = ui.hitTest(host, mouse_x, mouse_y);
+        },
+        c.SDL_EVENT_MOUSE_MOTION => {
+            const mouse_x: c_int = @intFromFloat(event.motion.x);
+            const mouse_y: c_int = @intFromFloat(event.motion.y);
+            host.mouse_x = mouse_x;
+            host.mouse_y = mouse_y;
+            host.mouse_has_position = true;
+            host.mouse_over_ui = ui.hitTest(host, mouse_x, mouse_y);
+        },
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            const mouse_x: c_int = @intFromFloat(event.wheel.mouse_x);
+            const mouse_y: c_int = @intFromFloat(event.wheel.mouse_y);
+            host.mouse_x = mouse_x;
+            host.mouse_y = mouse_y;
+            host.mouse_has_position = true;
+            host.mouse_over_ui = ui.hitTest(host, mouse_x, mouse_y);
+        },
+        c.SDL_EVENT_DROP_POSITION => {
+            const mouse_x: c_int = @intFromFloat(event.drop.x);
+            const mouse_y: c_int = @intFromFloat(event.drop.y);
+            host.mouse_x = mouse_x;
+            host.mouse_y = mouse_y;
+            host.mouse_has_position = true;
+            host.mouse_over_ui = ui.hitTest(host, mouse_x, mouse_y);
+        },
+        else => {},
+    }
+}
+
 fn makeUiHost(
     now: i64,
     render_width: c_int,
@@ -1648,6 +1471,8 @@ fn makeUiHost(
     cell_height_pixels: c_int,
     grid_cols: usize,
     grid_rows: usize,
+    term_cols: u16,
+    term_rows: u16,
     anim_state: *const AnimationState,
     sessions: []const SessionState,
     buffer: []ui_mod.SessionUiInfo,
@@ -1665,6 +1490,10 @@ fn makeUiHost(
 
     const focused_session = &sessions[anim_state.focused_session];
     const focused_cwd = focused_session.cwd_path;
+    const animating_rect: ?Rect = switch (anim_state.mode) {
+        .Expanding, .Collapsing => anim_state.getCurrentRect(now),
+        else => null,
+    };
 
     return .{
         .now_ms = now,
@@ -1675,10 +1504,13 @@ fn makeUiHost(
         .grid_rows = grid_rows,
         .cell_w = cell_width_pixels,
         .cell_h = cell_height_pixels,
+        .term_cols = term_cols,
+        .term_rows = term_rows,
         .view_mode = anim_state.mode,
         .focused_session = anim_state.focused_session,
         .focused_cwd = focused_cwd,
         .focused_has_foreground_process = focused_has_foreground_process,
+        .animating_rect = animating_rect,
         .sessions = buffer[0..sessions.len],
         .theme = theme,
     };
@@ -1715,60 +1547,6 @@ fn calculateHoveredSession(
             return null;
         },
     };
-}
-
-fn scrollSession(session: *SessionState, delta: isize, now: i64) void {
-    if (!session.spawned) return;
-
-    session.last_scroll_time = now;
-    session.scroll_remainder = 0.0;
-    session.scroll_inertia_allowed = true;
-
-    if (session.terminal) |*terminal| {
-        var pages = &terminal.screens.active.pages;
-        pages.scroll(.{ .delta_row = delta });
-        session.is_viewing_scrollback = (pages.viewport != .active);
-        session.markDirty();
-    }
-
-    const sensitivity: f32 = 0.08;
-    session.scroll_velocity += @as(f32, @floatFromInt(delta)) * sensitivity;
-    session.scroll_velocity = std.math.clamp(session.scroll_velocity, -MAX_SCROLL_VELOCITY, MAX_SCROLL_VELOCITY);
-}
-
-fn updateScrollInertia(session: *SessionState, delta_time_s: f32) void {
-    if (!session.spawned) return;
-    if (!session.scroll_inertia_allowed) return;
-    if (session.scroll_velocity == 0.0) return;
-    if (session.last_scroll_time == 0) return;
-
-    const decay_constant: f32 = 7.5;
-    const decay_factor = std.math.exp(-decay_constant * delta_time_s);
-    const velocity_threshold: f32 = 0.12;
-
-    if (@abs(session.scroll_velocity) < velocity_threshold) {
-        session.scroll_velocity = 0.0;
-        session.scroll_remainder = 0.0;
-        return;
-    }
-
-    const reference_fps: f32 = 60.0;
-
-    if (session.terminal) |*terminal| {
-        const scroll_amount = session.scroll_velocity * delta_time_s * reference_fps + session.scroll_remainder;
-        const scroll_lines: isize = @intFromFloat(scroll_amount);
-
-        if (scroll_lines != 0) {
-            var pages = &terminal.screens.active.pages;
-            pages.scroll(.{ .delta_row = scroll_lines });
-            session.is_viewing_scrollback = (pages.viewport != .active);
-            session.markDirty();
-        }
-
-        session.scroll_remainder = scroll_amount - @as(f32, @floatFromInt(scroll_lines));
-    }
-
-    session.scroll_velocity *= decay_factor;
 }
 
 const TerminalSize = struct {
@@ -1875,15 +1653,6 @@ fn isModifierKey(key: c.SDL_Keycode) bool {
 fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod) !void {
     if (key == c.SDLK_ESCAPE) return;
 
-    if (focused.is_viewing_scrollback) {
-        if (focused.terminal) |*terminal| {
-            terminal.screens.active.pages.scroll(.{ .active = {} });
-            focused.is_viewing_scrollback = false;
-            focused.scroll_velocity = 0.0;
-            focused.scroll_remainder = 0.0;
-        }
-    }
-
     // Check if kitty keyboard protocol is enabled (any non-zero flags value)
     const kitty_enabled = if (focused.terminal) |*terminal|
         terminal.screens.active.kitty_keyboard.current().int() != 0
@@ -1894,439 +1663,6 @@ fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod)
     const n = input.encodeKeyWithMod(key, mod, kitty_enabled, &buf);
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
-    }
-}
-
-const CellPosition = struct { col: u16, row: u16 };
-
-/// Convert mouse coordinates to terminal cell position for full-screen view.
-/// Returns null if the mouse is outside the terminal area.
-fn fullViewCellFromMouse(
-    mouse_x: c_int,
-    mouse_y: c_int,
-    render_width: c_int,
-    render_height: c_int,
-    font: *const font_mod.Font,
-    term_cols: u16,
-    term_rows: u16,
-) ?CellPosition {
-    const padding = renderer_mod.TERMINAL_PADDING;
-    const origin_x: c_int = padding;
-    const origin_y: c_int = padding;
-    const drawable_w: c_int = render_width - padding * 2;
-    const drawable_h: c_int = render_height - padding * 2;
-    if (drawable_w <= 0 or drawable_h <= 0) return null;
-
-    const cell_w: c_int = font.cell_width;
-    const cell_h: c_int = font.cell_height;
-    if (cell_w == 0 or cell_h == 0) return null;
-
-    if (mouse_x < origin_x or mouse_y < origin_y) return null;
-    if (mouse_x >= origin_x + drawable_w or mouse_y >= origin_y + drawable_h) return null;
-
-    const col = @as(u16, @intCast(@divFloor(mouse_x - origin_x, cell_w)));
-    const row = @as(u16, @intCast(@divFloor(mouse_y - origin_y, cell_h)));
-    if (col >= term_cols or row >= term_rows) return null;
-
-    return .{ .col = col, .row = row };
-}
-
-fn fullViewPinFromMouse(
-    session: *SessionState,
-    mouse_x: c_int,
-    mouse_y: c_int,
-    render_width: c_int,
-    render_height: c_int,
-    font: *const font_mod.Font,
-    term_cols: u16,
-    term_rows: u16,
-) ?ghostty_vt.Pin {
-    if (!session.spawned or session.terminal == null) return null;
-
-    const padding = renderer_mod.TERMINAL_PADDING;
-    const origin_x: c_int = padding;
-    const origin_y: c_int = padding;
-    const drawable_w: c_int = render_width - padding * 2;
-    const drawable_h: c_int = render_height - padding * 2;
-    if (drawable_w <= 0 or drawable_h <= 0) return null;
-
-    const cell_w: c_int = font.cell_width;
-    const cell_h: c_int = font.cell_height;
-    if (cell_w == 0 or cell_h == 0) return null;
-
-    if (mouse_x < origin_x or mouse_y < origin_y) return null;
-    if (mouse_x >= origin_x + drawable_w or mouse_y >= origin_y + drawable_h) return null;
-
-    const col = @as(u16, @intCast(@divFloor(mouse_x - origin_x, cell_w)));
-    const row = @as(u16, @intCast(@divFloor(mouse_y - origin_y, cell_h)));
-    if (col >= term_cols or row >= term_rows) return null;
-
-    const point = if (session.is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = col, .y = row } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = col, .y = row } };
-
-    const terminal = session.terminal orelse return null;
-    return terminal.screens.active.pages.pin(point);
-}
-
-fn beginSelection(session: *SessionState, pin: ghostty_vt.Pin) void {
-    const terminal = session.terminal orelse return;
-    terminal.screens.active.clearSelection();
-    session.selection_anchor = pin;
-    session.selection_pending = true;
-    session.selection_dragging = false;
-    session.markDirty();
-}
-
-fn startSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
-    const terminal = session.terminal orelse return;
-    const anchor = session.selection_anchor orelse return;
-
-    session.selection_dragging = true;
-    session.selection_pending = false;
-
-    terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
-        log.warn("session {d}: failed to start selection: {}", .{ session.id, err });
-    };
-    session.markDirty();
-}
-
-fn updateSelectionDrag(session: *SessionState, pin: ghostty_vt.Pin) void {
-    if (!session.selection_dragging) return;
-    const anchor = session.selection_anchor orelse return;
-    const terminal = session.terminal orelse return;
-    terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
-        log.warn("session {d}: failed to update selection: {}", .{ session.id, err });
-    };
-    session.markDirty();
-}
-
-fn endSelection(session: *SessionState) void {
-    session.selection_dragging = false;
-    session.selection_pending = false;
-    session.selection_anchor = null;
-}
-
-fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
-    return a.node == b.node and a.x == b.x and a.y == b.y;
-}
-
-/// Returns true if the codepoint is considered part of a word (alphanumeric or underscore).
-/// Only ASCII characters are considered; non-ASCII codepoints return false.
-fn isWordCharacter(codepoint: u21) bool {
-    if (codepoint > 127) return false;
-    const ch: u8 = @intCast(codepoint);
-    return std.ascii.isAlphanumeric(ch) or ch == '_';
-}
-
-/// Select the word at the given pin position. A word is a contiguous sequence of
-/// word characters (alphanumeric and underscore).
-fn selectWord(session: *SessionState, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) void {
-    const terminal = &(session.terminal orelse return);
-    const page = &pin.node.data;
-    const max_col: u16 = @intCast(page.size.cols - 1);
-
-    // Get the point from the pin
-    const pin_point = if (is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_x = if (is_viewing_scrollback) point.viewport.x else point.active.x;
-    const click_y = if (is_viewing_scrollback) point.viewport.y else point.active.y;
-
-    // Check if clicked cell is a word character
-    const clicked_cell = terminal.screens.active.pages.getCell(
-        if (is_viewing_scrollback)
-            ghostty_vt.point.Point{ .viewport = .{ .x = click_x, .y = click_y } }
-        else
-            ghostty_vt.point.Point{ .active = .{ .x = click_x, .y = click_y } },
-    ) orelse return;
-    const clicked_cp = clicked_cell.cell.content.codepoint;
-    if (!isWordCharacter(clicked_cp)) return;
-
-    // Find word start by scanning left
-    var start_x = click_x;
-    while (start_x > 0) {
-        const prev_x = start_x - 1;
-        const prev_cell = terminal.screens.active.pages.getCell(
-            if (is_viewing_scrollback)
-                ghostty_vt.point.Point{ .viewport = .{ .x = prev_x, .y = click_y } }
-            else
-                ghostty_vt.point.Point{ .active = .{ .x = prev_x, .y = click_y } },
-        ) orelse break;
-        if (!isWordCharacter(prev_cell.cell.content.codepoint)) break;
-        start_x = prev_x;
-    }
-
-    // Find word end by scanning right
-    var end_x = click_x;
-    while (end_x < max_col) {
-        const next_x = end_x + 1;
-        const next_cell = terminal.screens.active.pages.getCell(
-            if (is_viewing_scrollback)
-                ghostty_vt.point.Point{ .viewport = .{ .x = next_x, .y = click_y } }
-            else
-                ghostty_vt.point.Point{ .active = .{ .x = next_x, .y = click_y } },
-        ) orelse break;
-        if (!isWordCharacter(next_cell.cell.content.codepoint)) break;
-        end_x = next_x;
-    }
-
-    // Create pins for the word boundaries
-    const start_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = start_x, .y = click_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = start_x, .y = click_y } };
-    const end_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = end_x, .y = click_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = end_x, .y = click_y } };
-
-    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
-    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
-
-    // Apply the selection
-    terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
-        log.err("failed to select word: {}", .{err});
-        return;
-    };
-    session.markDirty();
-}
-
-/// Select the entire line at the given pin position.
-fn selectLine(session: *SessionState, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) void {
-    const terminal = &(session.terminal orelse return);
-    const page = &pin.node.data;
-    const max_col: u16 = @intCast(page.size.cols - 1);
-
-    // Get the point from the pin
-    const pin_point = if (is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_y = if (is_viewing_scrollback) point.viewport.y else point.active.y;
-
-    // Create pins for line start (x=0) and line end (x=max_col)
-    const start_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = click_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = click_y } };
-    const end_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = max_col, .y = click_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = max_col, .y = click_y } };
-
-    const start_pin = terminal.screens.active.pages.pin(start_point) orelse return;
-    const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
-
-    // Apply the selection
-    terminal.screens.active.clearSelection();
-    terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
-        log.err("failed to select line: {}", .{err});
-        return;
-    };
-    session.markDirty();
-}
-
-const LinkMatch = struct {
-    url: []u8,
-    start_pin: ghostty_vt.Pin,
-    end_pin: ghostty_vt.Pin,
-};
-
-fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) ?LinkMatch {
-    const page = &pin.node.data;
-    const row_and_cell = pin.rowAndCell();
-    const cell = row_and_cell.cell;
-
-    if (page.lookupHyperlink(cell)) |hyperlink_id| {
-        const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
-        const url = allocator.dupe(u8, entry.uri.slice(page.memory)) catch return null;
-        return LinkMatch{
-            .url = url,
-            .start_pin = pin,
-            .end_pin = pin,
-        };
-    }
-
-    const pin_point = if (is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point_or_null = pin_point orelse return null;
-    const start_y_orig = if (is_viewing_scrollback) point_or_null.viewport.y else point_or_null.active.y;
-
-    var start_y = start_y_orig;
-    var current_row = row_and_cell.row;
-
-    while (current_row.wrap_continuation and start_y > 0) {
-        start_y -= 1;
-        const prev_point = if (is_viewing_scrollback)
-            ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = start_y } }
-        else
-            ghostty_vt.point.Point{ .active = .{ .x = 0, .y = start_y } };
-        const prev_pin = terminal.screens.active.pages.pin(prev_point) orelse break;
-        current_row = prev_pin.rowAndCell().row;
-    }
-
-    var end_y = start_y_orig;
-    current_row = row_and_cell.row;
-    const max_y: u16 = @intCast(page.size.rows - 1);
-
-    while (current_row.wrap and end_y < max_y) {
-        end_y += 1;
-        const next_point = if (is_viewing_scrollback)
-            ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = end_y } }
-        else
-            ghostty_vt.point.Point{ .active = .{ .x = 0, .y = end_y } };
-        const next_pin = terminal.screens.active.pages.pin(next_point) orelse break;
-        current_row = next_pin.rowAndCell().row;
-    }
-
-    const max_x: u16 = @intCast(page.size.cols - 1);
-    const row_start_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = start_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = start_y } };
-    const row_end_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = max_x, .y = end_y } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = max_x, .y = end_y } };
-    const row_start_pin = terminal.screens.active.pages.pin(row_start_point) orelse return null;
-    const row_end_pin = terminal.screens.active.pages.pin(row_end_point) orelse return null;
-
-    const selection = ghostty_vt.Selection.init(row_start_pin, row_end_pin, false);
-    const row_text = terminal.screens.active.selectionString(allocator, .{
-        .sel = selection,
-        .trim = false,
-    }) catch return null;
-    defer allocator.free(row_text);
-
-    var cell_to_byte: std.ArrayList(usize) = .empty;
-    defer cell_to_byte.deinit(allocator);
-
-    var byte_pos: usize = 0;
-    var cell_idx: usize = 0;
-    var y = start_y;
-    while (y <= end_y) : (y += 1) {
-        var x: u16 = 0;
-        while (x < page.size.cols) : (x += 1) {
-            const point = if (is_viewing_scrollback)
-                ghostty_vt.point.Point{ .viewport = .{ .x = x, .y = y } }
-            else
-                ghostty_vt.point.Point{ .active = .{ .x = x, .y = y } };
-            const list_cell = terminal.screens.active.pages.getCell(point) orelse {
-                cell_to_byte.append(allocator, byte_pos) catch return null;
-                cell_idx += 1;
-                continue;
-            };
-
-            cell_to_byte.append(allocator, byte_pos) catch return null;
-
-            const list_cell_cell = list_cell.cell;
-            const cp = list_cell_cell.content.codepoint;
-            const encoded_len: usize = blk: {
-                if (cp != 0 and cp != ' ') {
-                    var utf8_buf: [4]u8 = undefined;
-                    break :blk std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
-                }
-                break :blk 1;
-            };
-
-            if (list_cell_cell.wide == .wide) {
-                // Wide character (takes 2 cells, but emitted as one sequence in text).
-                byte_pos += encoded_len;
-
-                // If possible, handle the second cell of the wide character now
-                // so we map it to the same byte position (start of char).
-                if (x + 1 < page.size.cols) {
-                    x += 1;
-                    // Map the second half to the START of the character.
-                    // The previous append was for the start of the character.
-                    // We need to retrieve that value.
-                    const char_start_pos = cell_to_byte.items[cell_to_byte.items.len - 1];
-                    cell_to_byte.append(allocator, char_start_pos) catch return null;
-                    cell_idx += 1;
-                }
-            } else {
-                // Narrow character
-                byte_pos += encoded_len;
-            }
-            cell_idx += 1;
-        }
-        if (y < end_y) {
-            byte_pos += 1;
-        }
-    }
-
-    const pin_x = if (is_viewing_scrollback) point_or_null.viewport.x else point_or_null.active.x;
-    const click_cell_idx = (start_y_orig - start_y) * page.size.cols + pin_x;
-    if (click_cell_idx >= cell_to_byte.items.len) return null;
-    const click_byte_pos = cell_to_byte.items[click_cell_idx];
-
-    const url_match = url_matcher.findUrlMatchAtPosition(row_text, click_byte_pos) orelse return null;
-
-    var start_cell_idx: usize = 0;
-    for (cell_to_byte.items, 0..) |byte, idx| {
-        if (byte >= url_match.start) {
-            start_cell_idx = idx;
-            break;
-        }
-    }
-
-    var end_cell_idx: usize = cell_to_byte.items.len - 1;
-    for (cell_to_byte.items, 0..) |byte, idx| {
-        if (byte >= url_match.end) {
-            end_cell_idx = if (idx > 0) idx - 1 else 0;
-            break;
-        }
-    }
-
-    const start_row = start_y + @as(u16, @intCast(start_cell_idx / page.size.cols));
-    const start_col: u16 = @intCast(start_cell_idx % page.size.cols);
-    const end_row = start_y + @as(u16, @intCast(end_cell_idx / page.size.cols));
-    const end_col: u16 = @intCast(end_cell_idx % page.size.cols);
-
-    const link_start_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = start_col, .y = start_row } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = start_col, .y = start_row } };
-    const link_end_point = if (is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = end_col, .y = end_row } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = end_col, .y = end_row } };
-    const link_start_pin = terminal.screens.active.pages.pin(link_start_point) orelse return null;
-    const link_end_pin = terminal.screens.active.pages.pin(link_end_point) orelse return null;
-
-    const url = allocator.dupe(u8, url_match.url) catch return null;
-
-    return LinkMatch{
-        .url = url,
-        .start_pin = link_start_pin,
-        .end_pin = link_end_pin,
-    };
-}
-
-fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) ?[]u8 {
-    if (getLinkMatchAtPin(allocator, terminal, pin, is_viewing_scrollback)) |match| {
-        return match.url;
-    }
-    return null;
-}
-
-fn resetScrollIfNeeded(session: *SessionState) void {
-    if (!session.is_viewing_scrollback) return;
-
-    if (session.terminal) |*terminal| {
-        terminal.screens.active.pages.scroll(.{ .active = {} });
-        session.is_viewing_scrollback = false;
-        session.scroll_velocity = 0.0;
-        session.scroll_remainder = 0.0;
     }
 }
 
@@ -2393,10 +1729,15 @@ fn buildRemoveWorktreeCommand(allocator: std.mem.Allocator, path: []const u8) ![
     return cmd.toOwnedSlice(allocator);
 }
 
-fn pasteText(session: *SessionState, allocator: std.mem.Allocator, text: []const u8) !void {
+fn pasteText(
+    session: *SessionState,
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    session_interaction: *ui_mod.SessionInteractionComponent,
+) !void {
     if (text.len == 0) return;
 
-    resetScrollIfNeeded(session);
+    session_interaction.resetScrollIfNeeded(session.id);
 
     const terminal = session.terminal orelse return error.NoTerminal;
     if (session.shell == null) return error.NoShell;
@@ -2452,6 +1793,7 @@ fn handleTextEditing(
     text_ptr: [*c]const u8,
     start: c_int,
     length: c_int,
+    session_interaction: *ui_mod.SessionInteractionComponent,
 ) !void {
     if (!session.spawned or session.dead) return;
     if (text_ptr == null) return;
@@ -2459,12 +1801,12 @@ fn handleTextEditing(
     const text = std.mem.sliceTo(text_ptr, 0);
     if (text.len == 0) {
         if (ime.codepoints == 0) return;
-        resetScrollIfNeeded(session);
+        session_interaction.resetScrollIfNeeded(session.id);
         try clearImeComposition(session, ime);
         return;
     }
 
-    resetScrollIfNeeded(session);
+    session_interaction.resetScrollIfNeeded(session.id);
     const is_committed_text = length == 0 and start == 0;
     if (is_committed_text) {
         try clearImeComposition(session, ime);
@@ -2477,14 +1819,19 @@ fn handleTextEditing(
     ime.codepoints = countImeCodepoints(text);
 }
 
-fn handleTextInput(session: *SessionState, ime: *ImeComposition, text_ptr: [*c]const u8) !void {
+fn handleTextInput(
+    session: *SessionState,
+    ime: *ImeComposition,
+    text_ptr: [*c]const u8,
+    session_interaction: *ui_mod.SessionInteractionComponent,
+) !void {
     if (!session.spawned or session.dead) return;
     if (text_ptr == null) return;
 
     const text = std.mem.sliceTo(text_ptr, 0);
     if (text.len == 0) return;
 
-    resetScrollIfNeeded(session);
+    session_interaction.resetScrollIfNeeded(session.id);
     try clearImeComposition(session, ime);
     try session.sendInput(text);
 }
@@ -2543,6 +1890,7 @@ fn pasteClipboardIntoSession(
     allocator: std.mem.Allocator,
     ui: *ui_mod.UiRoot,
     now: i64,
+    session_interaction: *ui_mod.SessionInteractionComponent,
 ) !void {
     const clip_ptr = c.SDL_GetClipboardText();
     defer c.SDL_free(clip_ptr);
@@ -2556,7 +1904,7 @@ fn pasteClipboardIntoSession(
         return;
     }
 
-    pasteText(session, allocator, clip) catch |err| switch (err) {
+    pasteText(session, allocator, clip, session_interaction) catch |err| switch (err) {
         error.NoTerminal => {
             ui.showToast("No terminal to paste into", now);
             return;

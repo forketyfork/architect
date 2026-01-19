@@ -5,7 +5,6 @@ const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
-const app_state = @import("../app/app_state.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
@@ -31,9 +30,6 @@ pub const SessionState = struct {
     terminal: ?ghostty_vt.Terminal,
     stream: ?vt_stream.StreamType,
     output_buf: [4096]u8,
-    status: app_state.SessionStatus = .running,
-    attention: bool = false,
-    is_viewing_scrollback: bool = false,
     render_epoch: u64 = 1,
     spawned: bool = false,
     dead: bool = false,
@@ -47,19 +43,6 @@ pub const SessionState = struct {
     /// When cwd_path is freed, this becomes invalid and must not be used.
     cwd_basename: ?[]const u8 = null,
     cwd_last_check: i64 = 0,
-    scroll_velocity: f32 = 0.0,
-    scroll_remainder: f32 = 0.0,
-    last_scroll_time: i64 = 0,
-    /// Whether custom inertia should be applied after the most recent scroll event.
-    scroll_inertia_allowed: bool = true,
-    /// Selection anchor for in-progress drags.
-    selection_anchor: ?ghostty_vt.Pin = null,
-    selection_dragging: bool = false,
-    /// True while the primary button is held down and we're waiting to see if it turns into a drag.
-    selection_pending: bool = false,
-    /// Hovered link range (for underlining).
-    hovered_link_start: ?ghostty_vt.Pin = null,
-    hovered_link_end: ?ghostty_vt.Pin = null,
     pending_write: std.ArrayListUnmanaged(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
@@ -337,7 +320,7 @@ pub const SessionState = struct {
     }
 
     fn resetForRespawn(self: *SessionState) void {
-        self.clearSelection();
+        self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);
         // Clean up process watcher. The orphaned flag ensures the callback (which will fire
         // when the old process exits) frees the context without affecting the new session state.
@@ -368,19 +351,13 @@ pub const SessionState = struct {
 
         self.spawned = false;
         self.dead = false;
-        self.scroll_velocity = 0.0;
-        self.scroll_remainder = 0.0;
-        self.last_scroll_time = 0;
     }
 
     pub fn markDirty(self: *SessionState) void {
         self.render_epoch +%= 1;
     }
 
-    pub fn clearSelection(self: *SessionState) void {
-        self.selection_anchor = null;
-        self.selection_dragging = false;
-        self.selection_pending = false;
+    fn clearTerminalSelection(self: *SessionState) void {
         if (!self.spawned) return;
         if (self.terminal) |*terminal| {
             terminal.screens.active.clearSelection();
