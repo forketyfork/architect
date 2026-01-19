@@ -3,6 +3,7 @@ const c = @import("../c.zig");
 const colors = @import("../colors.zig");
 const ghostty_vt = @import("ghostty-vt");
 const app_state = @import("../app/app_state.zig");
+const grid_layout = @import("../app/grid_layout.zig");
 const geom = @import("../geom.zig");
 const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
@@ -17,6 +18,7 @@ const SessionState = session_state.SessionState;
 const SessionViewState = view_state.SessionViewState;
 const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
+const GridLayout = grid_layout.GridLayout;
 
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
@@ -87,6 +89,7 @@ pub fn render(
     window_height: c_int,
     theme: *const colors.Theme,
     grid_font_scale: f32,
+    grid: ?*const GridLayout,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -190,6 +193,40 @@ pub fn render(
             const apply_effects = anim_scale < 0.999;
             const entry = render_cache.entry(anim_state.focused_session);
             try renderSession(renderer, &sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, theme);
+        },
+        .GridResizing => {
+            // Render sessions at their animated positions during grid resize
+            for (sessions, 0..) |*session, i| {
+                if (!session.spawned) continue;
+
+                // Get animated rect from GridLayout if available
+                const cell_rect: Rect = if (grid) |g| blk: {
+                    if (g.getAnimatedRect(i, current_time, window_width, window_height)) |animated_rect| {
+                        break :blk animated_rect;
+                    }
+                    // New session or no animation - use final position
+                    const pos = GridLayout.GridPosition.fromIndex(i, g.cols);
+                    break :blk Rect{
+                        .x = @as(c_int, @intCast(pos.col)) * cell_width_pixels,
+                        .y = @as(c_int, @intCast(pos.row)) * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+                } else blk: {
+                    // Fallback: calculate position from index
+                    const grid_row: c_int = @intCast(i / grid_cols);
+                    const grid_col: c_int = @intCast(i % grid_cols);
+                    break :blk Rect{
+                        .x = grid_col * cell_width_pixels,
+                        .y = grid_row * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+                };
+
+                const entry = render_cache.entry(i);
+                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, theme);
+            }
         },
     }
 }

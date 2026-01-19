@@ -4,6 +4,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
 const app_state = @import("app_state.zig");
+const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
 const input_keys = @import("input_keys.zig");
 const input_text = @import("input_text.zig");
@@ -45,6 +46,7 @@ const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
 const SessionState = session_state.SessionState;
+const GridLayout = grid_layout.GridLayout;
 
 const ForegroundProcessCache = struct {
     session_idx: ?usize = null,
@@ -76,21 +78,58 @@ fn countForegroundProcesses(sessions: []const SessionState) usize {
     return total;
 }
 
-fn findNextFreeSession(sessions: []const SessionState, current_idx: usize) ?usize {
-    const start_idx = current_idx + 1;
-    var idx = start_idx;
-    while (idx < sessions.len) : (idx += 1) {
-        if (!sessions[idx].spawned) {
-            return idx;
+fn countSpawnedSessions(sessions: []const SessionState) usize {
+    var count: usize = 0;
+    for (sessions) |session| {
+        if (session.spawned) count += 1;
+    }
+    return count;
+}
+
+/// Collect indices of all spawned sessions in order.
+fn collectActiveSessionIndices(sessions: []const SessionState, allocator: std.mem.Allocator) !std.ArrayList(usize) {
+    var indices = std.ArrayList(usize).init(allocator);
+    for (sessions, 0..) |session, idx| {
+        if (session.spawned) {
+            try indices.append(idx);
         }
     }
-    idx = 0;
-    while (idx < start_idx) : (idx += 1) {
+    return indices;
+}
+
+fn findNextFreeSlotInGrid(sessions: []const SessionState, grid_capacity: usize) ?usize {
+    // Find the first unspawned slot within current grid capacity
+    var idx: usize = 0;
+    while (idx < grid_capacity and idx < sessions.len) : (idx += 1) {
         if (!sessions[idx].spawned) {
             return idx;
         }
     }
     return null;
+}
+
+/// Defragment sessions by moving spawned sessions to fill gaps.
+/// After this, all spawned sessions will be in indices [0, spawned_count).
+fn defragmentSessions(sessions: []SessionState, target_count: usize) void {
+    var write_idx: usize = 0;
+    var read_idx: usize = 0;
+
+    while (read_idx < sessions.len and write_idx < target_count) {
+        if (sessions[read_idx].spawned) {
+            if (write_idx != read_idx) {
+                // Swap sessions to move spawned one to write_idx
+                const tmp = sessions[write_idx];
+                sessions[write_idx] = sessions[read_idx];
+                sessions[read_idx] = tmp;
+
+                // Update session IDs to match new positions
+                sessions[write_idx].id = write_idx;
+                sessions[read_idx].id = read_idx;
+            }
+            write_idx += 1;
+        }
+        read_idx += 1;
+    }
 }
 
 fn initSharedFont(
@@ -160,10 +199,6 @@ pub fn run() !void {
                 .width = INITIAL_WINDOW_WIDTH,
                 .height = INITIAL_WINDOW_HEIGHT,
             },
-            .grid = .{
-                .rows = config_mod.DEFAULT_GRID_ROWS,
-                .cols = config_mod.DEFAULT_GRID_COLS,
-            },
         };
     };
     defer config.deinit(allocator);
@@ -180,26 +215,26 @@ pub fn run() !void {
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
-    const grid_rows: usize = @intCast(config.grid.rows);
-    const grid_cols: usize = @intCast(config.grid.cols);
-    const grid_count: usize = grid_rows * grid_cols;
-    const pruned_terminals = persistence.pruneTerminals(allocator, grid_cols, grid_rows) catch |err| blk: {
-        std.debug.print("Failed to prune persisted terminals: {}\n", .{err});
-        break :blk false;
-    };
-    if (pruned_terminals) {
-        persistence.save(allocator) catch |err| {
-            std.debug.print("Failed to save pruned persistence: {}\n", .{err});
-        };
-    }
+    // Dynamic grid layout - starts with 1x1 and grows as terminals are added
+    var grid = GridLayout.init(allocator);
+    defer grid.deinit();
+
+    // Load persisted terminals to determine initial grid size
     var restored_terminals = if (builtin.os.tag == .macos)
-        persistence.collectTerminalEntries(allocator, grid_cols, grid_rows) catch |err| blk: {
+        persistence.collectTerminalEntries(allocator, grid_layout.MAX_GRID_SIZE, grid_layout.MAX_GRID_SIZE) catch |err| blk: {
             std.debug.print("Failed to collect persisted terminals: {}\n", .{err});
             break :blk std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
         }
     else
         std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
     defer restored_terminals.deinit(allocator);
+
+    // Calculate initial grid size based on restored terminals
+    const initial_terminal_count: usize = if (restored_terminals.items.len > 0) restored_terminals.items.len else 1;
+    const initial_dims = GridLayout.calculateDimensions(initial_terminal_count);
+    grid.cols = initial_dims.cols;
+    grid.rows = initial_dims.rows;
+
     var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
@@ -271,17 +306,17 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, .Grid, config.grid.font_scale, grid_cols, grid_rows);
+    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
     std.debug.print("Grid cell terminal size: {d}x{d}\n", .{ full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
-    std.debug.print("Spawning {d} shell instances ({d}x{d} grid): {s}\n", .{ grid_count, grid_cols, grid_rows, shell_path });
+    std.debug.print("Starting with {d}x{d} grid: {s}\n", .{ grid.cols, grid.rows, shell_path });
 
-    var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
-    var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
+    var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+    var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
     const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
     const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
@@ -293,7 +328,8 @@ pub fn run() !void {
         .ws_ypixel = @intCast(usable_height),
     };
 
-    const sessions = try allocator.alloc(SessionState, grid_count);
+    // Allocate max possible sessions to avoid reallocation
+    const sessions = try allocator.alloc(SessionState, grid_layout.MAX_TERMINALS);
     var init_count: usize = 0;
     defer {
         var i: usize = 0;
@@ -306,36 +342,39 @@ pub fn run() !void {
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
 
-    for (0..grid_count) |i| {
+    // Initialize all session slots
+    for (0..grid_layout.MAX_TERMINALS) |i| {
         var session_buf: [16]u8 = undefined;
         const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
         sessions[i] = try SessionState.init(allocator, i, shell_path, size, session_z, notify_sock);
         init_count += 1;
     }
 
-    for (restored_terminals.items) |entry| {
-        if (entry.index >= sessions.len or entry.path.len == 0) continue;
+    // Restore persisted terminals
+    for (restored_terminals.items, 0..) |entry, new_idx| {
+        if (new_idx >= sessions.len or entry.path.len == 0) continue;
         const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
-            std.debug.print("Failed to restore terminal {d}: {}\n", .{ entry.index, err });
+            std.debug.print("Failed to restore terminal {d}: {}\n", .{ new_idx, err });
             break :blk null;
         };
         defer if (dir_buf) |buf| allocator.free(buf);
         if (dir_buf) |buf| {
             const dir: [:0]const u8 = buf[0..entry.path.len :0];
-            sessions[entry.index].ensureSpawnedWithDir(dir, &loop) catch |err| {
-                std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ entry.index, err });
+            sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
+                std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
         }
     }
 
+    // Always spawn at least the first terminal
     try sessions[0].ensureSpawnedWithLoop(&loop);
 
     init_count = sessions.len;
 
-    const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_count);
+    const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.MAX_TERMINALS);
     defer allocator.free(session_ui_info);
 
-    var render_cache = try renderer_mod.RenderCache.init(allocator, grid_count);
+    var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.MAX_TERMINALS);
     defer render_cache.deinit();
 
     var foreground_cache = ForegroundProcessCache{};
@@ -425,8 +464,8 @@ pub fn run() !void {
                 ui_scale,
                 cell_width_pixels,
                 cell_height_pixels,
-                grid_cols,
-                grid_rows,
+                grid.cols,
+                grid.rows,
                 full_cols,
                 full_rows,
                 &anim_state,
@@ -468,18 +507,18 @@ pub fn run() !void {
                         font.metrics = metrics_ptr;
                         ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(UI_FONT_SIZE, ui_scale));
                         ui.assets.ui_font = &ui_font;
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
+                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     } else {
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
+                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
                         layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
                     }
-                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid_cols)));
-                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
+                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
                     std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ window_width_points, window_height_points, render_width, render_height, full_cols, full_rows });
 
@@ -556,8 +595,8 @@ pub fn run() !void {
                         cell_height_pixels,
                         render_width,
                         render_height,
-                        grid_cols,
-                        grid_rows,
+                        grid.cols,
+                        grid.rows,
                     ) orelse continue;
 
                     var session = &sessions[hovered_session];
@@ -583,7 +622,7 @@ pub fn run() !void {
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
                     const terminal_shortcut: ?usize = if (worktree_comp_ptr.overlay.state == .Closed)
-                        input.terminalSwitchShortcut(key, mod, grid_cols * grid_rows)
+                        input.terminalSwitchShortcut(key, mod, grid.cols * grid.rows)
                     else
                         null;
 
@@ -613,16 +652,82 @@ pub fn run() !void {
                                 .{ .DespawnSession = session_idx },
                             );
                         } else {
+                            // If in full view, collapse to grid first
                             if (anim_state.mode == .Full) {
                                 if (animations_enabled) {
-                                    grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                                    grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
                                 } else {
                                     anim_state.mode = .Grid;
                                 }
                             }
+
+                            // Close the terminal
                             session.deinit(allocator);
                             session_interaction_component.resetView(session_idx);
                             session.markDirty();
+
+                            // Count remaining spawned sessions after closing
+                            const remaining_count = countSpawnedSessions(sessions);
+
+                            // Don't shrink below 1 terminal
+                            if (remaining_count == 0) {
+                                // Re-spawn a fresh terminal in slot 0
+                                try sessions[0].ensureSpawnedWithLoop(&loop);
+                                anim_state.focused_session = 0;
+                                grid.cols = 1;
+                                grid.rows = 1;
+                            } else if (grid.canShrink(remaining_count)) {
+                                // Defragment: compact terminals to fill gaps
+                                defragmentSessions(sessions, remaining_count);
+
+                                // Calculate new grid dimensions
+                                const new_dims = GridLayout.calculateDimensions(remaining_count);
+
+                                // Collect active sessions for animation
+                                var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
+                                    std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                                    grid.cols = new_dims.cols;
+                                    grid.rows = new_dims.rows;
+                                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                                    continue;
+                                };
+                                defer active_indices.deinit();
+
+                                // Start grid shrink animation
+                                if (animations_enabled and anim_state.mode == .Grid) {
+                                    grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
+                                        std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                    };
+                                    anim_state.mode = .GridResizing;
+                                } else {
+                                    grid.cols = new_dims.cols;
+                                    grid.rows = new_dims.rows;
+                                }
+
+                                cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                                cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+
+                                // Update focus to a valid session
+                                if (anim_state.focused_session >= remaining_count) {
+                                    anim_state.focused_session = if (remaining_count > 0) remaining_count - 1 else 0;
+                                }
+
+                                std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
+                            } else {
+                                // Grid doesn't need to shrink, just update focus if needed
+                                if (!sessions[anim_state.focused_session].spawned) {
+                                    // Find the next spawned session
+                                    var new_focus: usize = 0;
+                                    for (sessions, 0..) |*s, idx| {
+                                        if (s.spawned) {
+                                            new_focus = idx;
+                                            break;
+                                        }
+                                    }
+                                    anim_state.focused_session = new_focus;
+                                }
+                            }
                         }
                         continue;
                     }
@@ -653,7 +758,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
+                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
                             layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
@@ -670,13 +775,20 @@ pub fn run() !void {
                         ui.showToast(notification_msg, now);
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
-                        // In grid mode, the focused slot might be unspawned - use it directly
-                        const target_idx: ?usize = if (!focused.spawned)
-                            anim_state.focused_session
-                        else
-                            findNextFreeSession(sessions, anim_state.focused_session);
 
-                        if (target_idx) |next_free_idx| {
+                        // Count currently spawned sessions
+                        const spawned_count = countSpawnedSessions(sessions);
+
+                        // Check if we need to expand the grid
+                        if (grid.needsExpansion(spawned_count)) {
+                            // Calculate new grid dimensions
+                            const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
+                            if (new_dims.cols * new_dims.rows > grid_layout.MAX_TERMINALS) {
+                                ui.showToast("Maximum terminals reached", now);
+                                continue;
+                            }
+
+                            // Get working directory from focused session
                             const cwd_path = focused.cwd_path;
                             var cwd_buf: ?[]u8 = null;
                             const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
@@ -686,26 +798,87 @@ pub fn run() !void {
                                 cwd_buf = buf;
                                 break :blk buf[0..path.len :0];
                             } else null;
-
                             defer if (cwd_buf) |buf| allocator.free(buf);
 
-                            try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
-                            session_interaction_component.setStatus(next_free_idx, .running);
-                            session_interaction_component.setAttention(next_free_idx, false);
+                            // New terminal goes in the next slot after existing ones
+                            const new_idx = spawned_count;
+
+                            // Collect active sessions for animation
+                            var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
+                                std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                                continue;
+                            };
+                            defer active_indices.deinit();
+
+                            // Update grid dimensions and start animation
+                            if (animations_enabled) {
+                                grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
+                                    std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                };
+                                anim_state.mode = .GridResizing;
+                            } else {
+                                grid.cols = new_dims.cols;
+                                grid.rows = new_dims.rows;
+                            }
+
+                            // Spawn new terminal
+                            try sessions[new_idx].ensureSpawnedWithDir(cwd_z, &loop);
+                            session_interaction_component.setStatus(new_idx, .running);
+                            session_interaction_component.setAttention(new_idx, false);
+
+                            // Update cell dimensions for new grid
+                            cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                            cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
-                            session_interaction_component.clearSelection(next_free_idx);
+                            session_interaction_component.clearSelection(new_idx);
 
                             anim_state.previous_session = anim_state.focused_session;
-                            anim_state.focused_session = next_free_idx;
+                            anim_state.focused_session = new_idx;
 
-                            const buf_size = grid_nav.gridNotificationBufferSize(grid_cols, grid_rows);
+                            const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
                             defer allocator.free(notification_buf);
-                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, next_free_idx, grid_cols, grid_rows);
+                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, new_idx, grid.cols, grid.rows);
                             ui.showToast(notification_msg, now);
+                            std.debug.print("Grid expanded to {d}x{d}, new terminal at index {d}\n", .{ grid.cols, grid.rows, new_idx });
                         } else {
-                            ui.showToast("All terminals in use", now);
+                            // Grid has space, find next free slot
+                            const target_idx: ?usize = if (!focused.spawned)
+                                anim_state.focused_session
+                            else
+                                findNextFreeSlotInGrid(sessions, grid.capacity());
+
+                            if (target_idx) |next_free_idx| {
+                                const cwd_path = focused.cwd_path;
+                                var cwd_buf: ?[]u8 = null;
+                                const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
+                                    const buf = allocator.alloc(u8, path.len + 1) catch break :blk null;
+                                    @memcpy(buf[0..path.len], path);
+                                    buf[path.len] = 0;
+                                    cwd_buf = buf;
+                                    break :blk buf[0..path.len :0];
+                                } else null;
+                                defer if (cwd_buf) |buf| allocator.free(buf);
+
+                                try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
+                                session_interaction_component.setStatus(next_free_idx, .running);
+                                session_interaction_component.setAttention(next_free_idx, false);
+
+                                session_interaction_component.clearSelection(anim_state.focused_session);
+                                session_interaction_component.clearSelection(next_free_idx);
+
+                                anim_state.previous_session = anim_state.focused_session;
+                                anim_state.focused_session = next_free_idx;
+
+                                const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
+                                const notification_buf = try allocator.alloc(u8, buf_size);
+                                defer allocator.free(notification_buf);
+                                const notification_msg = try grid_nav.formatGridNotification(notification_buf, next_free_idx, grid.cols, grid.rows);
+                                ui.showToast(notification_msg, now);
+                            } else {
+                                ui.showToast("All terminals in use", now);
+                            }
                         }
                     } else if (terminal_shortcut) |idx| {
                         const hotkey_label = input.terminalHotkeyLabel(idx) orelse "⌘?";
@@ -716,8 +889,8 @@ pub fn run() !void {
                             session_interaction_component.setStatus(idx, .running);
                             session_interaction_component.setAttention(idx, false);
 
-                            const grid_row: c_int = @intCast(idx / grid_cols);
-                            const grid_col: c_int = @intCast(idx % grid_cols);
+                            const grid_row: c_int = @intCast(idx / grid.cols);
+                            const grid_col: c_int = @intCast(idx % grid.cols);
                             const start_rect = Rect{
                                 .x = grid_col * cell_width_pixels,
                                 .y = grid_row * cell_height_pixels,
@@ -748,10 +921,10 @@ pub fn run() !void {
                             session_interaction_component.setAttention(idx, false);
                             anim_state.focused_session = idx;
 
-                            const buf_size = grid_nav.gridNotificationBufferSize(grid_cols, grid_rows);
+                            const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
                             defer allocator.free(notification_buf);
-                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, idx, grid_cols, grid_rows);
+                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, idx, grid.cols, grid.rows);
                             ui.showToast(notification_msg, now);
                             std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
                         }
@@ -766,7 +939,7 @@ pub fn run() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid_cols, grid_rows, &loop);
+                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
                             const new_session = anim_state.focused_session;
                             sessions[new_session].markDirty();
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
@@ -780,12 +953,12 @@ pub fn run() !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid_cols, grid_rows, &loop);
+                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
 
-                            const buf_size = grid_nav.gridNotificationBufferSize(grid_cols, grid_rows);
+                            const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
                             defer allocator.free(notification_buf);
-                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, anim_state.focused_session, grid_cols, grid_rows);
+                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, anim_state.focused_session, grid.cols, grid.rows);
                             ui.showToast(notification_msg, now);
 
                             std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
@@ -803,8 +976,8 @@ pub fn run() !void {
                         session_interaction_component.setStatus(clicked_session, .running);
                         session_interaction_component.setAttention(clicked_session, false);
 
-                        const grid_row: c_int = @intCast(clicked_session / grid_cols);
-                        const grid_col: c_int = @intCast(clicked_session % grid_cols);
+                        const grid_row: c_int = @intCast(clicked_session / grid.cols);
+                        const grid_col: c_int = @intCast(clicked_session % grid.cols);
                         const start_rect = Rect{
                             .x = grid_col * cell_width_pixels,
                             .y = grid_row * cell_height_pixels,
@@ -883,8 +1056,8 @@ pub fn run() !void {
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
-            grid_cols,
-            grid_rows,
+            grid.cols,
+            grid.rows,
             full_cols,
             full_rows,
             &anim_state,
@@ -912,8 +1085,8 @@ pub fn run() !void {
                 session_interaction_component.setStatus(idx, .running);
                 session_interaction_component.setAttention(idx, false);
 
-                const grid_row: c_int = @intCast(idx / grid_cols);
-                const grid_col: c_int = @intCast(idx % grid_cols);
+                const grid_row: c_int = @intCast(idx / grid.cols);
+                const grid_col: c_int = @intCast(idx % grid.cols);
                 const cell_rect = Rect{
                     .x = grid_col * cell_width_pixels,
                     .y = grid_row * cell_height_pixels,
@@ -941,7 +1114,7 @@ pub fn run() !void {
                 if (idx < sessions.len) {
                     if (anim_state.mode == .Full and anim_state.focused_session == idx) {
                         if (animations_enabled) {
-                            grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                            grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
                         } else {
                             anim_state.mode = .Grid;
                         }
@@ -950,15 +1123,50 @@ pub fn run() !void {
                     session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
                     std.debug.print("UI requested despawn: {d}\n", .{idx});
+
+                    // Handle grid contraction
+                    const remaining_count = countSpawnedSessions(sessions);
+
+                    if (remaining_count == 0) {
+                        // Re-spawn a fresh terminal in slot 0
+                        sessions[0].ensureSpawnedWithLoop(&loop) catch |err| {
+                            std.debug.print("Failed to respawn terminal: {}\n", .{err});
+                        };
+                        anim_state.focused_session = 0;
+                        grid.cols = 1;
+                        grid.rows = 1;
+                    } else if (grid.canShrink(remaining_count)) {
+                        defragmentSessions(sessions, remaining_count);
+                        const new_dims = GridLayout.calculateDimensions(remaining_count);
+                        grid.cols = new_dims.cols;
+                        grid.rows = new_dims.rows;
+
+                        cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                        cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+
+                        if (anim_state.focused_session >= remaining_count) {
+                            anim_state.focused_session = if (remaining_count > 0) remaining_count - 1 else 0;
+                        }
+                        std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
+                    } else if (!sessions[anim_state.focused_session].spawned) {
+                        var new_focus: usize = 0;
+                        for (sessions, 0..) |*s, i| {
+                            if (s.spawned) {
+                                new_focus = i;
+                                break;
+                            }
+                        }
+                        anim_state.focused_session = new_focus;
+                    }
                 }
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
                     if (animations_enabled) {
-                        grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid_cols);
+                        grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
                     } else {
-                        const grid_row: c_int = @intCast(anim_state.focused_session / grid_cols);
-                        const grid_col: c_int = @intCast(anim_state.focused_session % grid_cols);
+                        const grid_row: c_int = @intCast(anim_state.focused_session / grid.cols);
+                        const grid_col: c_int = @intCast(anim_state.focused_session % grid.cols);
                         anim_state.mode = .Grid;
                         anim_state.start_time = now;
                         anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
@@ -1139,9 +1347,21 @@ pub fn run() !void {
             }
         }
 
+        // Handle grid resize animation completion
+        if (anim_state.mode == .GridResizing) {
+            if (grid.updateResize(now)) {
+                anim_state.mode = .Grid;
+                // Mark all sessions dirty to refresh render cache
+                for (sessions) |*session| {
+                    session.markDirty();
+                }
+                std.debug.print("Grid resize complete: {d}x{d}\n", .{ grid.cols, grid.rows });
+            }
+        }
+
         const desired_font_scale = layout.gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
         if (desired_font_scale != current_grid_font_scale) {
-            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid_cols, grid_rows);
+            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
             full_cols = term_size.cols;
             full_rows = term_size.rows;
             layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
@@ -1162,8 +1382,8 @@ pub fn run() !void {
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
-            grid_cols,
-            grid_rows,
+            grid.cols,
+            grid.rows,
             full_cols,
             full_rows,
             &anim_state,
@@ -1179,7 +1399,7 @@ pub fn run() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, &render_cache, sessions, session_interaction_component.viewSlice(), cell_width_pixels, cell_height_pixels, grid_cols, grid_rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale);
+            try renderer_mod.render(renderer, &render_cache, sessions, session_interaction_component.viewSlice(), cell_width_pixels, cell_height_pixels, grid.cols, grid.rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale, &grid);
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             metrics_mod.increment(.frame_count);
@@ -1207,7 +1427,7 @@ pub fn run() !void {
             if (!session.spawned or session.dead) continue;
             if (session.cwd_path) |path| {
                 if (path.len == 0) continue;
-                persistence.setTerminal(allocator, idx, grid_cols, path) catch |err| {
+                persistence.setTerminal(allocator, idx, grid.cols, path) catch |err| {
                     std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
                 };
             }

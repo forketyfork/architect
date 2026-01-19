@@ -163,7 +163,7 @@ src/
 
 ### View Modes (`app_state.ViewMode`)
 ```
-Grid         → 3×3 overview, all sessions visible
+Grid         → Dynamic grid overview, all sessions visible
 Expanding    → Animating from grid cell to fullscreen
 Full         → Single session fullscreen
 Collapsing   → Animating from fullscreen to grid cell
@@ -171,6 +171,7 @@ PanningLeft  → Horizontal pan animation (moving left)
 PanningRight → Horizontal pan animation (moving right)
 PanningUp    → Vertical pan animation (moving up)
 PanningDown  → Vertical pan animation (moving down)
+GridResizing → Grid is expanding or shrinking (adding/removing cells)
 ```
 
 ### Session Status (`app_state.SessionStatus`)

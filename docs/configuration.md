@@ -31,12 +31,14 @@ The font family must be installed on your system. Common choices:
 
 ```toml
 [grid]
-rows = 3        # Number of rows (1-12, default: 3)
-cols = 3        # Number of columns (1-12, default: 3)
 font_scale = 1.0  # Font scale in grid view (0.5-3.0, default: 1.0)
 ```
 
-The grid defines how many terminal sessions are displayed. Values outside the valid range are clamped automatically.
+The grid size is dynamic and adjusts automatically based on the number of terminals:
+- Press `Cmd+N` to add a new terminal — the grid expands to accommodate it
+- Press `Cmd+W` to close a terminal — the grid shrinks and remaining terminals are compacted
+- Grid layout maintains `columns >= rows` (e.g., 1x1 → 2x1 → 2x2 → 3x2 → 3x3 → ...)
+- Maximum grid size is 12×12 (144 terminals)
 
 ### Window Configuration
 
@@ -145,8 +147,6 @@ family = "JetBrains Mono"
 size = 13
 
 [grid]
-rows = 2
-cols = 3
 font_scale = 0.9
 
 [theme]
@@ -215,11 +215,12 @@ terminal_2_1 = "/Users/me"
 
 ### Terminal Keys
 
-Terminal keys use 1-based `row_col` format:
-- `terminal_1_1` = top-left cell (row 1, column 1)
-- `terminal_2_3` = second row, third column
+Terminal keys use 1-based `row_col` format based on the current grid layout:
+- `terminal_1_1` = first terminal (top-left)
+- `terminal_1_2` = second terminal
+- `terminal_2_1` = third terminal (second row, first column in a 2×2+ grid)
 
-On launch, Architect restores terminals to their saved working directories. Entries outside the current grid dimensions are pruned automatically.
+On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals.
 
 Note: Terminal cwd persistence is currently macOS-only.
 
