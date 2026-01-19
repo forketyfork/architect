@@ -4,8 +4,8 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         main.zig                            │
-│  (application lifetime, frame loop, event dispatch)         │
+│           main.zig → app/runtime.zig                        │
+│  (entrypoint → lifetime, frame loop, event dispatch)        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │  Platform   │  │    Input    │  │    Notification     │  │
@@ -28,7 +28,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 ## Runtime Flow
 
-**main.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop. Each frame it:
+**app/runtime.zig** owns application lifetime, window sizing, PTY/session startup, configuration persistence, and the frame loop, while **main.zig** is a thin entrypoint. Each frame it:
 
 1. Polls SDL events and scales coordinates to render space.
 2. Builds a lightweight `UiHost` snapshot and lets `UiRoot` handle events first.
@@ -75,7 +75,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 ```
 src/
-├── main.zig              # Entry point, frame loop, event dispatch
+├── main.zig              # Entry point (delegates to app/runtime.zig)
 ├── c.zig                 # C bindings (SDL3, TTF, etc.)
 ├── colors.zig            # Theme and color palette management (ANSI 16/256)
 ├── config.zig            # TOML config persistence
@@ -97,7 +97,15 @@ src/
 │   └── mapper.zig        # Key→bytes encoding, shortcut detection
 │
 ├── app/
-│   └── app_state.zig     # ViewMode, AnimationState, SessionStatus
+│   ├── app_state.zig     # ViewMode, AnimationState, SessionStatus
+│   ├── runtime.zig       # App lifetime + frame loop
+│   ├── layout.zig        # Sizing, scaling, hover hit-testing, terminal resize
+│   ├── ui_host.zig       # UiHost snapshot + mouse context
+│   ├── grid_nav.zig      # Grid navigation + notifications
+│   ├── input_keys.zig    # Keyboard input encoding
+│   ├── input_text.zig    # IME/text input handling
+│   ├── terminal_actions.zig # Clipboard, paste, clear
+│   └── worktree.zig      # Worktree command building + cd helpers
 │
 ├── session/
 │   ├── state.zig         # SessionState: PTY, terminal, process watcher
