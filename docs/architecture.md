@@ -40,7 +40,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
 9. Sleeps based on idle/active frame targets (~16ms active, ~50ms idle).
 
-`SessionState.dirty` is set on terminal updates and cleared after a successful render (cached grid or full view). When collapsing from full view to grid, the focused session is marked dirty so its cache refreshes before idle throttling resumes.
+`SessionState.render_epoch` increments on terminal updates, and the renderer cache tracks the last presented/cache epochs. When collapsing from full view to grid, the focused session’s render epoch is bumped so its cache refreshes before idle throttling resumes.
 
 **Terminal resizing**
 - `applyTerminalResize` updates the PTY size first, then resizes the `ghostty-vt` terminal.
@@ -232,15 +232,20 @@ struct {
     theme: *const Theme,        // Active color theme
 }
 ```
+`UiHost` is rebuilt on demand using a shared, preallocated `SessionUiInfo` buffer; treat it as a transient snapshot and do not retain its slices across calls.
+`focused_has_foreground_process` is populated from a short-lived cache in `main.zig` to avoid per-frame syscalls; UI code should treat it as a hint and action handlers should recheck directly when needed.
 
 ## Data & State Boundaries
 
 | Layer | State Location | What it contains |
 |-------|----------------|------------------|
-| Scene | `src/session/state.zig` | PTY, terminal buffer, scroll position, CWD, cache texture |
+| Scene | `src/session/state.zig` | PTY, terminal buffer, scroll position, CWD, render epoch |
 | Scene | `src/app/app_state.zig` | ViewMode, animation rects, focused session index |
+| Renderer | `src/render/renderer.zig` (`RenderCache`) | Per-session cache textures and last presented/cache epochs |
 | UI    | Component structs | Visibility flags, animation timers, cached textures |
 | Shared | `UiHost` | Read-only snapshot passed each frame |
+
+`SessionState` bumps its render epoch on content changes; the renderer compares this against `RenderCache` epochs to decide when to redraw and when to refresh cached textures.
 
 **Key rule**: Scene code must not own UI state; UI state lives inside components.
 
@@ -283,7 +288,7 @@ Each `SessionState` contains:
 - `terminal`: ghostty-vt terminal state machine
 - `stream`: VT stream wrapper for output processing
 - `process_watcher`: xev-based async process exit detection
-- `cache_texture`: Cached render for grid view (dirty flag optimization)
+- `render_epoch`: Monotonic counter for renderer invalidation
 - `pending_write`: Buffered stdin for non-blocking writes
 
 Sessions are lazily spawned: only session 0 starts on launch; others spawn on first click/navigation.
@@ -363,7 +368,7 @@ Coordinates multiple pill overlays:
 
 6. **Lazy spawning**: Sessions spawn on demand, not at startup (except session 0).
 
-7. **Cache invalidation**: Set `session.dirty = true` after any terminal content change.
+7. **Cache invalidation**: Call `session.markDirty()` after any terminal content change.
 
 ## Dependencies
 

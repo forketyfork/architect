@@ -6,7 +6,6 @@ const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
 const app_state = @import("../app/app_state.zig");
-const c = @import("../c.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
@@ -35,10 +34,7 @@ pub const SessionState = struct {
     status: app_state.SessionStatus = .running,
     attention: bool = false,
     is_viewing_scrollback: bool = false,
-    dirty: bool = true,
-    cache_texture: ?*c.SDL_Texture = null,
-    cache_w: c_int = 0,
-    cache_h: c_int = 0,
+    render_epoch: u64 = 1,
     spawned: bool = false,
     dead: bool = false,
     shell_path: []const u8,
@@ -169,7 +165,7 @@ pub const SessionState = struct {
             &self.shell.?,
         );
         self.stream = stream;
-        self.dirty = true;
+        self.markDirty();
 
         if (loop_opt) |loop| {
             var process = try xev.Process.init(shell.child_pid);
@@ -210,13 +206,6 @@ pub const SessionState = struct {
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
-        if (self.cache_texture) |tex| {
-            c.SDL_DestroyTexture(tex);
-            self.cache_texture = null;
-            self.cache_w = 0;
-            self.cache_h = 0;
-        }
-
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
 
@@ -312,7 +301,7 @@ pub const SessionState = struct {
         };
 
         self.dead = true;
-        self.dirty = true;
+        self.markDirty();
         log.info("session {d} process exited with code {d}", .{ self.id, exit_code });
 
         self.allocator.destroy(ctx);
@@ -329,7 +318,7 @@ pub const SessionState = struct {
             const result = std.c.waitpid(shell.child_pid, &status, std.c.W.NOHANG);
             if (result > 0) {
                 self.dead = true;
-                self.dirty = true;
+                self.markDirty();
                 log.info("session {d} process exited", .{self.id});
             }
         }
@@ -384,6 +373,10 @@ pub const SessionState = struct {
         self.last_scroll_time = 0;
     }
 
+    pub fn markDirty(self: *SessionState) void {
+        self.render_epoch +%= 1;
+    }
+
     pub fn clearSelection(self: *SessionState) void {
         self.selection_anchor = null;
         self.selection_dragging = false;
@@ -391,7 +384,7 @@ pub const SessionState = struct {
         if (!self.spawned) return;
         if (self.terminal) |*terminal| {
             terminal.screens.active.clearSelection();
-            self.dirty = true;
+            self.markDirty();
         }
     }
 
@@ -410,7 +403,7 @@ pub const SessionState = struct {
             if (n == 0) return;
 
             try stream.nextSlice(self.output_buf[0..n]);
-            self.dirty = true;
+            self.markDirty();
 
             // Keep draining until the PTY would block to avoid frame-bounded
             // throttling of bursty output (e.g. startup logos).
@@ -477,7 +470,7 @@ pub const SessionState = struct {
 
         self.cwd_path = new_path;
         self.cwd_basename = basenameForDisplay(new_path);
-        self.dirty = true;
+        self.markDirty();
     }
 
     pub fn recordCwd(self: *SessionState, path: []const u8) !void {
@@ -502,7 +495,7 @@ pub const SessionState = struct {
 
         self.cwd_path = try self.allocator.dupe(u8, path);
         self.cwd_basename = basenameForDisplay(self.cwd_path.?);
-        self.dirty = true;
+        self.markDirty();
     }
 
     /// Returns true when the PTY's foreground process group differs from the
