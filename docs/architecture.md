@@ -40,6 +40,8 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 8. Calls `renderer.render` for the scene, then `ui.render` for overlays, then presents.
 9. Sleeps based on idle/active frame targets (~16ms active, ~50ms idle).
 
+`SessionState.dirty` is set on terminal updates and cleared after a successful render (cached grid or full view). When collapsing from full view to grid, the focused session is marked dirty so its cache refreshes before idle throttling resumes.
+
 **Terminal resizing**
 - `applyTerminalResize` updates the PTY size first, then resizes the `ghostty-vt` terminal.
 - The VT stream stays alive; only its handler is refreshed to repoint at the resized terminal, preserving parser state and preventing in-flight escape sequences from being misparsed.

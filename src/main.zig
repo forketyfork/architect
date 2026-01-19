@@ -1321,11 +1321,16 @@ pub fn main() !void {
             anim_state.mode == .PanningUp or anim_state.mode == .PanningDown)
         {
             if (anim_state.isComplete(now)) {
-                anim_state.mode = switch (anim_state.mode) {
+                const previous_mode = anim_state.mode;
+                const next_mode = switch (anim_state.mode) {
                     .Expanding, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => .Full,
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
+                anim_state.mode = next_mode;
+                if (previous_mode == .Collapsing and next_mode == .Grid and anim_state.focused_session < sessions.len) {
+                    sessions[anim_state.focused_session].dirty = true;
+                }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
         }
