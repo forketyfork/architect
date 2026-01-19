@@ -226,12 +226,18 @@ pub const SessionState = struct {
             self.cwd_basename = null;
         }
 
+        // Clean up process watcher. We mark the context as orphaned so the callback frees it
+        // when it eventually fires. If the callback never fires (process still running at
+        // shutdown), the WaitContext (~40 bytes) leaks. This is acceptable because:
+        // (1) it only happens at app shutdown when the OS reclaims all memory anyway,
+        // (2) proper cancellation via xev's cancel API would require threading the loop
+        //     through to deinit, adding complexity for negligible benefit,
+        // (3) there's no race condition since xev is single-threaded.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            // Mark as orphaned; the callback will free the context when it fires.
             ctx.orphaned = true;
             self.process_wait_ctx = null;
         }
@@ -344,12 +350,13 @@ pub const SessionState = struct {
     fn resetForRespawn(self: *SessionState) void {
         self.clearSelection();
         self.pending_write.clearAndFree(self.allocator);
+        // Clean up process watcher. The orphaned flag ensures the callback (which will fire
+        // when the old process exits) frees the context without affecting the new session state.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            // Mark as orphaned; the callback will free the context when it fires.
             ctx.orphaned = true;
             self.process_wait_ctx = null;
         }
