@@ -17,7 +17,16 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 ## Coding Conventions
 - Favor self-documenting code; keep comments minimal and meaningful.
 - Default to ASCII unless the file already uses non-ASCII.
-- Always handle errors explicitly: propagate, recover, or log; do not swallow errors with bare `catch {}` / `catch unreachable` unless proven impossible.
+- **Error handling**: Always handle errors explicitly—propagate, recover, or log. Never use bare `catch {}` or `catch unreachable`. Even for "impossible" failures like action queue appends, log them:
+  ```zig
+  // WRONG: silently swallows the error
+  actions.append(.SomeAction) catch {};
+
+  // CORRECT: log the error for debugging
+  actions.append(.SomeAction) catch |err| {
+      log.warn("failed to queue action: {}", .{err});
+  };
+  ```
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 

@@ -35,13 +35,17 @@ pub const Metrics = struct {
         return self.values[@intFromEnum(kind)];
     }
 
-    pub fn sampleRates(self: *Metrics, now_ms: i64) i64 {
-        const elapsed = now_ms - self.last_sample_ms;
-        if (elapsed > 0) {
-            @memcpy(&self.prev_values, &self.values);
-            self.last_sample_ms = now_ms;
-        }
-        return elapsed;
+    /// Returns elapsed time since last sample. Call getRate() after this,
+    /// then commitSample() to prepare for the next interval.
+    pub fn sampleRates(self: *const Metrics, now_ms: i64) i64 {
+        return now_ms - self.last_sample_ms;
+    }
+
+    /// Copies current values to prev_values for the next rate calculation.
+    /// Call this AFTER getRate() to avoid zeroing the delta.
+    pub fn commitSample(self: *Metrics, now_ms: i64) void {
+        @memcpy(&self.prev_values, &self.values);
+        self.last_sample_ms = now_ms;
     }
 
     pub fn getRate(self: *const Metrics, kind: MetricKind, elapsed_ms: i64) f64 {

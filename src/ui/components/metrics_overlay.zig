@@ -6,6 +6,8 @@ const UiComponent = @import("../component.zig").UiComponent;
 const metrics_mod = @import("../../metrics.zig");
 const font_cache = @import("../../font_cache.zig");
 
+const log = std.log.scoped(.metrics_overlay);
+
 pub const MetricsOverlayComponent = struct {
     allocator: std.mem.Allocator,
     visible: bool = false,
@@ -67,7 +69,9 @@ pub const MetricsOverlayComponent = struct {
             const has_blocking = (mods & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
             if (has_cmd and has_shift and !has_blocking and key_event.key == c.SDLK_M) {
-                actions.append(.{ .ToggleMetrics = {} }) catch {};
+                actions.append(.{ .ToggleMetrics = {} }) catch |err| {
+                    log.warn("failed to queue ToggleMetrics action: {}", .{err});
+                };
                 return true;
             }
         }
@@ -87,10 +91,12 @@ pub const MetricsOverlayComponent = struct {
 
         const metrics_ptr = metrics_mod.global orelse return;
 
+        var needs_commit = false;
         if (host.now_ms - self.last_sample_ms >= SAMPLE_INTERVAL_MS) {
             self.cached_elapsed_ms = metrics_ptr.sampleRates(host.now_ms);
             self.last_sample_ms = host.now_ms;
             self.dirty = true;
+            needs_commit = true;
         }
 
         const cache = assets.font_cache orelse return;
@@ -100,6 +106,10 @@ pub const MetricsOverlayComponent = struct {
         }
 
         self.ensureTexture(renderer, cache, host.theme, metrics_ptr) catch return;
+
+        if (needs_commit) {
+            metrics_ptr.commitSample(host.now_ms);
+        }
         const texture = self.texture orelse return;
 
         var text_width_f: f32 = 0;
