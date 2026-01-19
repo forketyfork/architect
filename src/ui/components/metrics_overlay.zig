@@ -177,16 +177,16 @@ pub const MetricsOverlayComponent = struct {
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Frames: {d}", .{frame_count}) catch "Frames: ?";
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Cache size: {d}", .{cache_size}) catch "Cache size: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph cache: {d}", .{cache_size}) catch "Glyph cache: ?";
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Hits/s: {d:.1}", .{hit_rate}) catch "Hits/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hits/s: {d:.1}", .{hit_rate}) catch "Glyph hits/s: ?";
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Misses/s: {d:.1}", .{miss_rate}) catch "Misses/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph misses/s: {d:.1}", .{miss_rate}) catch "Glyph misses/s: ?";
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Evictions/s: {d:.1}", .{evict_rate}) catch "Evictions/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph evictions/s: {d:.1}", .{evict_rate}) catch "Glyph evictions/s: ?";
         line_count += 1;
 
         var max_width: c_int = 0;

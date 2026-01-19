@@ -126,10 +126,10 @@ enabled = false  # Enable metrics collection overlay (default: false)
 
 When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-right corner. The overlay displays:
 - **Frames**: Total rendered frame count
-- **Cache size**: Number of cached glyph textures
-- **Hits/s**: Glyph cache hits per second
-- **Misses/s**: Glyph cache misses per second
-- **Evictions/s**: Cache evictions per second
+- **Glyph cache**: Number of cached glyph textures
+- **Glyph hits/s**: Glyph cache hits per second
+- **Glyph misses/s**: Glyph cache misses per second
+- **Glyph evictions/s**: Glyph cache evictions per second
 
 Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
 
