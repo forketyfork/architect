@@ -108,7 +108,7 @@ fn collectSessionIndexSnapshots(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
 ) !std.ArrayList(SessionIndexSnapshot) {
-    var snapshots = try std.ArrayList(SessionIndexSnapshot).initCapacity(allocator, 0);
+    var snapshots = std.ArrayList(SessionIndexSnapshot).empty;
     for (sessions, 0..) |session, idx| {
         if (session.spawned) {
             try snapshots.append(allocator, .{ .session_id = session.id, .index = idx });
@@ -134,7 +134,7 @@ fn collectSessionMovesCurrent(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
 ) !std.ArrayList(SessionMove) {
-    var moves = try std.ArrayList(SessionMove).initCapacity(allocator, 0);
+    var moves = std.ArrayList(SessionMove).empty;
     for (sessions, 0..) |session, idx| {
         if (session.spawned) {
             try moves.append(allocator, .{ .session_idx = idx, .old_index = idx });
@@ -149,7 +149,7 @@ fn collectSessionMovesFromSnapshots(
     snapshots: []const SessionIndexSnapshot,
     allocator: std.mem.Allocator,
 ) !SessionMoves {
-    var moves = try std.ArrayList(SessionMove).initCapacity(allocator, 0);
+    var moves = std.ArrayList(SessionMove).empty;
     var moved = false;
     for (sessions, 0..) |session, idx| {
         if (!session.spawned) continue;

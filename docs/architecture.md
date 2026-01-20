@@ -259,7 +259,7 @@ struct {
 | UI    | Component structs | Visibility flags, animation timers, cached textures |
 | Shared | `UiHost` | Read-only snapshot passed each frame |
 
-`SessionState` bumps its render epoch on content changes; the renderer compares this against `RenderCache` epochs to decide when to redraw and when to refresh cached textures.
+`SessionState` bumps its render epoch on content changes; the renderer compares this against `RenderCache` epochs to decide when to redraw and when to refresh cached textures. Unspawned sessions are excluded from dirty checks and cache allocation to avoid extra GPU work.
 
 **Key rule**: Scene code must not own UI state; UI state lives inside components.
 
