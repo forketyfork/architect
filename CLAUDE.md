@@ -99,9 +99,20 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent “local constant shadows” errors.
 
 ### Zig 0.15 collection API differences
-- `std.ArrayList(T)` now prefers `initCapacity(allocator, 0)`; `append` and similar methods require the allocator argument (`list.append(allocator, item)`).
+- `std.ArrayList(T)`: Zig 0.15 only provides `initCapacity(allocator, n)`, not `init()`. When initializing, use a reasonable capacity estimate (e.g., 8 or 16) rather than 0—`initCapacity(allocator, 0)` still allocates and is wasteful. For truly lazy allocation, use `.empty` and pass the allocator on each operation. Methods like `append` require the allocator argument (`list.append(allocator, item)`).
 - `std.fmt.allocPrintZ` is unavailable; create a null-terminated buffer manually: allocate `len+1`, copy bytes, set the last byte to 0, and slice as `buf[0..len :0]`.
 - For writers, `toml.serialize` expects `*std.Io.Writer`. Use `std.Io.Writer.Allocating.init(allocator)` (or `initCapacity`) and pass `&writer.writer`; read bytes with `writer.written()`.
+
+### Loop boundary conditions
+When iterating over slices with index arithmetic, use `< len` not `<= len`:
+```zig
+// WRONG: iterates one past the end, causing unnecessary work or out-of-bounds
+while (pos <= slice.len) { ... }
+
+// CORRECT: stops at the last valid position
+while (pos < slice.len) { ... }
+```
+The `<= len` pattern is only correct when `pos` represents a position *after* processing (e.g., `slice[0..pos]` as a "processed so far" marker).
 
 ## Build and Test (required after every task)
 - Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.

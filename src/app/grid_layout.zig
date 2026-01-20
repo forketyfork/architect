@@ -62,7 +62,7 @@ pub const GridLayout = struct {
         return .{
             .cols = 1,
             .rows = 1,
-            .animations = try std.ArrayList(TerminalAnimation).initCapacity(allocator, 0),
+            .animations = try std.ArrayList(TerminalAnimation).initCapacity(allocator, 16),
             .resize_start_time = 0,
             .prev_cols = 1,
             .prev_rows = 1,

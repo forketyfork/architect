@@ -402,7 +402,7 @@ pub const Persistence = struct {
     fn writeTomlString(writer: *std.Io.Writer, value: []const u8) !void {
         _ = try writer.writeByte('"');
         var curr_pos: usize = 0;
-        while (curr_pos <= value.len) {
+        while (curr_pos < value.len) {
             const next_pos = std.mem.indexOfAnyPos(u8, value, curr_pos, &.{ '"', '\n', '\t', '\r', '\\', 0x0C, 0x08 }) orelse value.len;
             try writer.print("{s}", .{value[curr_pos..next_pos]});
             if (next_pos != value.len) {
