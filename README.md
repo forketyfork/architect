@@ -31,13 +31,13 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Agent-Focused
 - **Status highlights** — agents glow when awaiting approval or done, so you never miss a prompt
-- **Dynamic grid** — starts with a single terminal, press ⌘N to add more and the grid grows automatically
+- **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion/contraction
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch, ⌘N to add, ⌘W to close, ⌘/ for shortcuts
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close (restarts if it's the only terminal), ⌘/ for shortcuts
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Kitty keyboard protocol for enhanced key handling

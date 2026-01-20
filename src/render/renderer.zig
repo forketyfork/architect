@@ -62,7 +62,7 @@ pub const RenderCache = struct {
         return &self.entries[idx];
     }
 
-    pub fn anyDirty(self: *RenderCache, sessions: []const SessionState) bool {
+    pub fn anyDirty(self: *RenderCache, sessions: []const *SessionState) bool {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
@@ -74,7 +74,7 @@ pub const RenderCache = struct {
 pub fn render(
     renderer: *c.SDL_Renderer,
     render_cache: *RenderCache,
-    sessions: []SessionState,
+    sessions: []const *SessionState,
     views: []const SessionViewState,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
@@ -103,7 +103,7 @@ pub fn render(
 
     switch (anim_state.mode) {
         .Grid => {
-            for (sessions, 0..) |*session, i| {
+            for (sessions, 0..) |session, i| {
                 const grid_row: c_int = @intCast(i / grid_cols);
                 const grid_col: c_int = @intCast(i % grid_cols);
 
@@ -121,7 +121,7 @@ pub fn render(
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, &sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -133,7 +133,7 @@ pub fn render(
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, &sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
@@ -141,7 +141,7 @@ pub fn render(
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, &sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -153,7 +153,7 @@ pub fn render(
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, &sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
@@ -161,7 +161,7 @@ pub fn render(
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, &sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -173,7 +173,7 @@ pub fn render(
             else
                 1.0 - (1.0 - grid_scale) * eased;
 
-            for (sessions, 0..) |*session, i| {
+            for (sessions, 0..) |session, i| {
                 if (i != anim_state.focused_session) {
                     const grid_row: c_int = @intCast(i / grid_cols);
                     const grid_col: c_int = @intCast(i % grid_cols);
@@ -192,11 +192,11 @@ pub fn render(
 
             const apply_effects = anim_scale < 0.999;
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, &sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, theme);
         },
         .GridResizing => {
             // Render sessions at their animated positions during grid resize
-            for (sessions, 0..) |*session, i| {
+            for (sessions, 0..) |session, i| {
                 if (!session.spawned) continue;
 
                 // Get animated rect from GridLayout if available

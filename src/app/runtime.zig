@@ -14,6 +14,7 @@ const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const notify = @import("../session/notify.zig");
 const session_state = @import("../session/state.zig");
+const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
 const macos_input = @import("../platform/macos_input_source.zig");
 const input = @import("../input/mapper.zig");
@@ -46,6 +47,7 @@ const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
 const SessionState = session_state.SessionState;
+const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
 
 const ForegroundProcessCache = struct {
@@ -53,7 +55,7 @@ const ForegroundProcessCache = struct {
     last_check_ms: i64 = 0,
     value: bool = false,
 
-    fn get(self: *ForegroundProcessCache, now_ms: i64, focused_session: usize, sessions: []const SessionState) bool {
+    fn get(self: *ForegroundProcessCache, now_ms: i64, focused_session: usize, sessions: []const *SessionState) bool {
         if (self.session_idx != focused_session) {
             self.session_idx = focused_session;
             self.last_check_ms = 0;
@@ -68,9 +70,9 @@ const ForegroundProcessCache = struct {
     }
 };
 
-fn countForegroundProcesses(sessions: []const SessionState) usize {
+fn countForegroundProcesses(sessions: []const *SessionState) usize {
     var total: usize = 0;
-    for (sessions) |*session| {
+    for (sessions) |session| {
         if (session.hasForegroundProcess()) {
             total += 1;
         }
@@ -78,7 +80,7 @@ fn countForegroundProcesses(sessions: []const SessionState) usize {
     return total;
 }
 
-fn countSpawnedSessions(sessions: []const SessionState) usize {
+fn countSpawnedSessions(sessions: []const *SessionState) usize {
     var count: usize = 0;
     for (sessions) |session| {
         if (session.spawned) count += 1;
@@ -86,7 +88,7 @@ fn countSpawnedSessions(sessions: []const SessionState) usize {
     return count;
 }
 
-fn highestSpawnedIndex(sessions: []const SessionState) ?usize {
+fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     var idx: usize = sessions.len;
     while (idx > 0) {
         idx -= 1;
@@ -96,7 +98,7 @@ fn highestSpawnedIndex(sessions: []const SessionState) ?usize {
 }
 
 /// Collect indices of all spawned sessions in order.
-fn collectActiveSessionIndices(sessions: []const SessionState, allocator: std.mem.Allocator) !std.ArrayList(usize) {
+fn collectActiveSessionIndices(sessions: []const *SessionState, allocator: std.mem.Allocator) !std.ArrayList(usize) {
     var indices = try std.ArrayList(usize).initCapacity(allocator, 0);
     for (sessions, 0..) |session, idx| {
         if (session.spawned) {
@@ -106,15 +108,72 @@ fn collectActiveSessionIndices(sessions: []const SessionState, allocator: std.me
     return indices;
 }
 
-fn findNextFreeSlotInGrid(sessions: []const SessionState, grid_capacity: usize) ?usize {
-    // Find the first unspawned slot within current grid capacity
-    var idx: usize = 0;
-    while (idx < grid_capacity and idx < sessions.len) : (idx += 1) {
+fn findNextFreeSlotAfter(
+    sessions: []const *SessionState,
+    grid_capacity: usize,
+    start_idx: usize,
+) ?usize {
+    if (grid_capacity == 0) return null;
+
+    var offset: usize = 1;
+    while (offset <= grid_capacity) : (offset += 1) {
+        const idx = (start_idx + offset) % grid_capacity;
+        if (idx >= sessions.len) continue;
         if (!sessions[idx].spawned) {
             return idx;
         }
     }
     return null;
+}
+
+fn findSessionIndexById(sessions: []const *SessionState, session_id: usize) ?usize {
+    for (sessions, 0..) |session, idx| {
+        if (session.spawned and session.id == session_id) return idx;
+    }
+    return null;
+}
+
+fn compactSessions(
+    sessions: []*SessionState,
+    views: []SessionViewState,
+    render_cache: *renderer_mod.RenderCache,
+    anim_state: *AnimationState,
+) void {
+    const focused_id: ?usize = if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].spawned)
+        sessions[anim_state.focused_session].id
+    else
+        null;
+    const previous_id: ?usize = if (anim_state.previous_session < sessions.len and sessions[anim_state.previous_session].spawned)
+        sessions[anim_state.previous_session].id
+    else
+        null;
+
+    var write_idx: usize = 0;
+    var idx: usize = 0;
+    while (idx < sessions.len) : (idx += 1) {
+        if (!sessions[idx].spawned) continue;
+        if (write_idx != idx) {
+            std.mem.swap(*SessionState, &sessions[write_idx], &sessions[idx]);
+            std.mem.swap(SessionViewState, &views[write_idx], &views[idx]);
+            std.mem.swap(renderer_mod.RenderCache.Entry, &render_cache.entries[write_idx], &render_cache.entries[idx]);
+        }
+        write_idx += 1;
+    }
+
+    for (sessions, 0..) |session, slot_idx| {
+        session.slot_index = slot_idx;
+    }
+
+    if (focused_id) |id| {
+        if (findSessionIndexById(sessions, id)) |new_idx| {
+            anim_state.focused_session = new_idx;
+        }
+    }
+    if (previous_id) |id| {
+        if (findSessionIndexById(sessions, id)) |new_idx| {
+            anim_state.previous_session = new_idx;
+        }
+    }
 }
 
 const WorkingDir = struct {
@@ -163,7 +222,7 @@ fn initSharedFont(
 }
 
 fn handleQuitRequest(
-    sessions: []const SessionState,
+    sessions: []const *SessionState,
     confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
 ) bool {
     const running_processes = countForegroundProcesses(sessions);
@@ -334,13 +393,15 @@ pub fn run() !void {
     };
 
     // Allocate max possible sessions to avoid reallocation
-    const sessions = try allocator.alloc(SessionState, grid_layout.MAX_TERMINALS);
+    const sessions_storage = try allocator.alloc(SessionState, grid_layout.MAX_TERMINALS);
+    const sessions = try allocator.alloc(*SessionState, grid_layout.MAX_TERMINALS);
     var init_count: usize = 0;
     defer {
         var i: usize = 0;
         while (i < init_count) : (i += 1) {
-            sessions[i].deinit(allocator);
+            sessions_storage[i].deinit(allocator);
         }
+        allocator.free(sessions_storage);
         allocator.free(sessions);
     }
 
@@ -349,9 +410,8 @@ pub fn run() !void {
 
     // Initialize all session slots
     for (0..grid_layout.MAX_TERMINALS) |i| {
-        var session_buf: [16]u8 = undefined;
-        const session_z = try std.fmt.bufPrintZ(&session_buf, "{d}", .{i});
-        sessions[i] = try SessionState.init(allocator, i, shell_path, size, session_z, notify_sock);
+        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock);
+        sessions[i] = &sessions_storage[i];
         init_count += 1;
     }
 
@@ -386,8 +446,9 @@ pub fn run() !void {
 
     var running = true;
 
+    const initial_mode: app_state.ViewMode = if (countSpawnedSessions(sessions) == 1) .Full else .Grid;
     var anim_state = AnimationState{
-        .mode = .Grid,
+        .mode = initial_mode,
         .focused_session = 0,
         .previous_session = 0,
         .start_time = 0,
@@ -453,7 +514,7 @@ pub fn run() !void {
         while (c.SDL_PollEvent(&event)) {
             if (anim_state.focused_session != last_focused_session) {
                 const previous_session = last_focused_session;
-                input_text.clearImeComposition(&sessions[previous_session], &ime_composition) catch |err| {
+                input_text.clearImeComposition(sessions[previous_session], &ime_composition) catch |err| {
                     std.debug.print("Failed to clear IME composition: {}\n", .{err});
                 };
                 ime_composition.reset();
@@ -565,13 +626,13 @@ pub fn run() !void {
                     }
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
-                    const focused = &sessions[anim_state.focused_session];
+                    const focused = sessions[anim_state.focused_session];
                     input_text.handleTextInput(focused, &ime_composition, scaled_event.text.text, session_interaction_component) catch |err| {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
                 },
                 c.SDL_EVENT_TEXT_EDITING => {
-                    const focused = &sessions[anim_state.focused_session];
+                    const focused = sessions[anim_state.focused_session];
                     input_text.handleTextEditing(
                         focused,
                         &ime_composition,
@@ -604,7 +665,7 @@ pub fn run() !void {
                         grid.rows,
                     ) orelse continue;
 
-                    var session = &sessions[hovered_session];
+                    var session = sessions[hovered_session];
                     try session.ensureSpawnedWithLoop(&loop);
 
                     const escaped = worktree.shellQuotePath(allocator, drop_path) catch |err| {
@@ -622,7 +683,7 @@ pub fn run() !void {
                 c.SDL_EVENT_KEY_DOWN => {
                     const key = scaled_event.key.key;
                     const mod = scaled_event.key.mod;
-                    const focused = &sessions[anim_state.focused_session];
+                    const focused = sessions[anim_state.focused_session];
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
@@ -642,7 +703,7 @@ pub fn run() !void {
                     if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘W", now);
                         const session_idx = anim_state.focused_session;
-                        const session = &sessions[session_idx];
+                        const session = sessions[session_idx];
 
                         if (!session.spawned) {
                             continue;
@@ -657,6 +718,19 @@ pub fn run() !void {
                                 .{ .DespawnSession = session_idx },
                             );
                         } else {
+                            const spawned_count = countSpawnedSessions(sessions);
+                            if (spawned_count == 1) {
+                                var working_dir = WorkingDir.init(allocator, session.cwd_path);
+                                defer working_dir.deinit(allocator);
+
+                                try session.relaunch(working_dir.cwd_z, &loop);
+                                session_interaction_component.resetView(session_idx);
+                                session_interaction_component.setStatus(session_idx, .running);
+                                session_interaction_component.setAttention(session_idx, false);
+                                anim_state.mode = .Full;
+                                continue;
+                            }
+
                             // If in full view, collapse to grid first
                             if (anim_state.mode == .Full) {
                                 if (animations_enabled) {
@@ -671,6 +745,8 @@ pub fn run() !void {
                             session_interaction_component.resetView(session_idx);
                             session.markDirty();
 
+                            compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+
                             // Count remaining spawned sessions after closing
                             const remaining_count = countSpawnedSessions(sessions);
                             const max_spawned_idx = highestSpawnedIndex(sessions);
@@ -683,6 +759,7 @@ pub fn run() !void {
                                 anim_state.focused_session = 0;
                                 grid.cols = 1;
                                 grid.rows = 1;
+                                anim_state.mode = .Full;
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -716,7 +793,7 @@ pub fn run() !void {
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
                                         var new_focus: usize = 0;
-                                        for (sessions, 0..) |*s, idx| {
+                                        for (sessions, 0..) |s, idx| {
                                             if (s.spawned) {
                                                 new_focus = idx;
                                                 break;
@@ -731,7 +808,7 @@ pub fn run() !void {
                                     if (!sessions[anim_state.focused_session].spawned) {
                                         // Find the next spawned session
                                         var new_focus: usize = 0;
-                                        for (sessions, 0..) |*s, idx| {
+                                        for (sessions, 0..) |s, idx| {
                                             if (s.spawned) {
                                                 new_focus = idx;
                                                 break;
@@ -739,6 +816,10 @@ pub fn run() !void {
                                         }
                                         anim_state.focused_session = new_focus;
                                     }
+                                }
+
+                                if (remaining_count == 1) {
+                                    anim_state.mode = .Full;
                                 }
                             }
                         }
@@ -805,8 +886,11 @@ pub fn run() !void {
                             var working_dir = WorkingDir.init(allocator, focused.cwd_path);
                             defer working_dir.deinit(allocator);
 
-                            // New terminal goes in the next slot after existing ones
-                            const new_idx = spawned_count;
+                            const new_capacity = new_dims.cols * new_dims.rows;
+                            const new_idx = findNextFreeSlotAfter(sessions, new_capacity, anim_state.focused_session) orelse {
+                                ui.showToast("All terminals in use", now);
+                                continue;
+                            };
 
                             // Collect active sessions for animation
                             var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
@@ -852,7 +936,7 @@ pub fn run() !void {
                             const target_idx: ?usize = if (!focused.spawned)
                                 anim_state.focused_session
                             else
-                                findNextFreeSlotInGrid(sessions, grid.capacity());
+                                findNextFreeSlotAfter(sessions, grid.capacity(), anim_state.focused_session);
 
                             if (target_idx) |next_free_idx| {
                                 var working_dir = WorkingDir.init(allocator, focused.cwd_path);
@@ -967,6 +1051,9 @@ pub fn run() !void {
                         }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
+                        if (countSpawnedSessions(sessions) == 1) {
+                            continue;
+                        }
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
@@ -1005,7 +1092,7 @@ pub fn run() !void {
                 c.SDL_EVENT_KEY_UP => {
                     const key = scaled_event.key.key;
                     if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
-                        const focused = &sessions[anim_state.focused_session];
+                        const focused = sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
                             _ = focused.shell.?.write(&esc_byte) catch |err| {
@@ -1021,7 +1108,7 @@ pub fn run() !void {
 
         try loop.run(.no_wait);
 
-        for (sessions) |*session| {
+        for (sessions) |session| {
             session.checkAlive();
             try session.processOutput();
             try session.flushPendingWrites();
@@ -1033,16 +1120,15 @@ pub fn run() !void {
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
-            if (note.session < sessions.len) {
-                session_interaction_component.setStatus(note.session, note.state);
-                const wants_attention = switch (note.state) {
-                    .awaiting_approval, .done => true,
-                    else => false,
-                };
-                const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == note.session;
-                session_interaction_component.setAttention(note.session, if (is_focused_full) false else wants_attention);
-                std.debug.print("Session {d} status -> {s}\n", .{ note.session, @tagName(note.state) });
-            }
+            const session_idx = findSessionIndexById(sessions, note.session) orelse continue;
+            session_interaction_component.setStatus(session_idx, note.state);
+            const wants_attention = switch (note.state) {
+                .awaiting_approval, .done => true,
+                else => false,
+            };
+            const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
+            session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention);
+            std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ note.session, session_idx, @tagName(note.state) });
         }
 
         var focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
@@ -1119,6 +1205,7 @@ pub fn run() !void {
                     sessions[idx].deinit(allocator);
                     session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
+                    compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
                     std.debug.print("UI requested despawn: {d}\n", .{idx});
 
                     // Handle grid contraction
@@ -1134,6 +1221,7 @@ pub fn run() !void {
                         anim_state.focused_session = 0;
                         grid.cols = 1;
                         grid.rows = 1;
+                        anim_state.mode = .Full;
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -1163,7 +1251,7 @@ pub fn run() !void {
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
-                                for (sessions, 0..) |*s, i| {
+                                for (sessions, 0..) |s, i| {
                                     if (s.spawned) {
                                         new_focus = i;
                                         break;
@@ -1174,7 +1262,7 @@ pub fn run() !void {
                             std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
                         } else if (!sessions[anim_state.focused_session].spawned) {
                             var new_focus: usize = 0;
-                            for (sessions, 0..) |*s, i| {
+                            for (sessions, 0..) |s, i| {
                                 if (s.spawned) {
                                     new_focus = i;
                                     break;
@@ -1182,12 +1270,19 @@ pub fn run() !void {
                             }
                             anim_state.focused_session = new_focus;
                         }
+
+                        if (remaining_count == 1) {
+                            anim_state.mode = .Full;
+                        }
                     }
                 }
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
-                    if (animations_enabled) {
+                    const spawned_count = countSpawnedSessions(sessions);
+                    if (spawned_count == 1) {
+                        std.debug.print("UI requested collapse ignored (single terminal)\n", .{});
+                    } else if (animations_enabled) {
                         grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
                     } else {
                         const grid_row: c_int = @intCast(anim_state.focused_session / grid.cols);
@@ -1232,7 +1327,7 @@ pub fn run() !void {
                 defer allocator.free(switch_action.path);
                 if (switch_action.session >= sessions.len) continue;
 
-                var session = &sessions[switch_action.session];
+                var session = sessions[switch_action.session];
                 if (session.hasForegroundProcess()) {
                     ui.showToast("Stop the running process first", now);
                     continue;
@@ -1257,7 +1352,7 @@ pub fn run() !void {
                 defer allocator.free(create_action.base_path);
                 defer allocator.free(create_action.name);
                 if (create_action.session >= sessions.len) continue;
-                var session = &sessions[create_action.session];
+                var session = sessions[create_action.session];
 
                 if (session.hasForegroundProcess()) {
                     ui.showToast("Stop the running process first", now);
@@ -1297,7 +1392,7 @@ pub fn run() !void {
             .RemoveWorktree => |remove_action| {
                 defer allocator.free(remove_action.path);
                 if (remove_action.session >= sessions.len) continue;
-                var session = &sessions[remove_action.session];
+                var session = sessions[remove_action.session];
 
                 if (session.hasForegroundProcess()) {
                     ui.showToast("Stop the running process first", now);
@@ -1308,7 +1403,7 @@ pub fn run() !void {
                     continue;
                 }
 
-                for (sessions, 0..) |*other_session, idx| {
+                for (sessions, 0..) |other_session, idx| {
                     if (idx == remove_action.session) continue;
                     if (!other_session.spawned or other_session.dead) continue;
 
@@ -1377,7 +1472,7 @@ pub fn run() !void {
             if (grid.updateResize(now)) {
                 anim_state.mode = .Grid;
                 // Mark all sessions dirty to refresh render cache
-                for (sessions) |*session| {
+                for (sessions) |session| {
                     session.markDirty();
                 }
                 std.debug.print("Grid resize complete: {d}x{d}\n", .{ grid.cols, grid.rows });

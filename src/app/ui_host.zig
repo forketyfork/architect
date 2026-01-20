@@ -58,7 +58,7 @@ pub fn makeUiHost(
     term_cols: u16,
     term_rows: u16,
     anim_state: *const AnimationState,
-    sessions: []const SessionState,
+    sessions: []const *SessionState,
     buffer: []ui_mod.SessionUiInfo,
     focused_has_foreground_process: bool,
     theme: *const colors_mod.Theme,
@@ -72,7 +72,7 @@ pub fn makeUiHost(
         };
     }
 
-    const focused_session = &sessions[anim_state.focused_session];
+    const focused_session = sessions[anim_state.focused_session];
     const focused_cwd = focused_session.cwd_path;
     const animating_rect: ?Rect = switch (anim_state.mode) {
         .Expanding, .Collapsing => anim_state.getCurrentRect(now),

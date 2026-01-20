@@ -62,6 +62,8 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - Reports `needsFrame()` when any component requires animation
 - Owns per-session `SessionViewState` via `SessionInteractionComponent` (selection, hover, scrollback state)
 
+Grid slots are ordered independently of session IDs: slot indices drive UI focus and shortcuts, while each `SessionState` receives a monotonic `id` used for external notifications. Slots may be compacted without changing session IDs.
+
 **UiAssets** provides shared rendering resources:
 - `FontCache` stores configured fonts keyed by pixel size, so terminal rendering and UI components reuse a single loaded font set instead of opening per-component instances.
 

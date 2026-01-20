@@ -15,7 +15,7 @@ pub fn pasteText(
 ) !void {
     if (text.len == 0) return;
 
-    session_interaction.resetScrollIfNeeded(session.id);
+    session_interaction.resetScrollIfNeeded(session.slot_index);
 
     const terminal = session.terminal orelse return error.NoTerminal;
     if (session.shell == null) return error.NoShell;

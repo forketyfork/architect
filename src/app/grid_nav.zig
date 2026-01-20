@@ -73,7 +73,7 @@ pub fn formatGridNotification(buf: []u8, focused_session: usize, grid_cols: usiz
 
 pub fn navigateGrid(
     anim_state: *AnimationState,
-    sessions: []SessionState,
+    sessions: []*SessionState,
     session_interaction: *ui_mod.SessionInteractionComponent,
     direction: input.GridNavDirection,
     now: i64,

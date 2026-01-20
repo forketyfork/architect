@@ -136,7 +136,7 @@ pub fn gridFontScaleForMode(mode: app_state.ViewMode, grid_font_scale: f32) f32 
 }
 
 pub fn applyTerminalResize(
-    sessions: []SessionState,
+    sessions: []const *SessionState,
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
@@ -153,7 +153,7 @@ pub fn applyTerminalResize(
         .ws_ypixel = @intCast(usable_height),
     };
 
-    for (sessions) |*session| {
+    for (sessions) |session| {
         session.pty_size = new_size;
         if (session.spawned) {
             const shell = &(session.shell orelse continue);
