@@ -49,6 +49,7 @@ const NotificationQueue = notify.NotificationQueue;
 const SessionState = session_state.SessionState;
 const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
+const SessionMove = grid_layout.SessionMove;
 
 const ForegroundProcessCache = struct {
     session_idx: ?usize = null,
@@ -97,15 +98,70 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     return null;
 }
 
-/// Collect indices of all spawned sessions in order.
-fn collectActiveSessionIndices(sessions: []const *SessionState, allocator: std.mem.Allocator) !std.ArrayList(usize) {
-    var indices = try std.ArrayList(usize).initCapacity(allocator, 0);
+const SessionIndexSnapshot = struct {
+    session_id: usize,
+    index: usize,
+};
+
+/// Collect indices for spawned sessions to preserve their pre-compaction positions.
+fn collectSessionIndexSnapshots(
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+) !std.ArrayList(SessionIndexSnapshot) {
+    var snapshots = try std.ArrayList(SessionIndexSnapshot).initCapacity(allocator, 0);
     for (sessions, 0..) |session, idx| {
         if (session.spawned) {
-            try indices.append(allocator, idx);
+            try snapshots.append(allocator, .{ .session_id = session.id, .index = idx });
         }
     }
-    return indices;
+    return snapshots;
+}
+
+fn findSnapshotIndex(snapshots: []const SessionIndexSnapshot, session_id: usize) ?usize {
+    for (snapshots) |snapshot| {
+        if (snapshot.session_id == session_id) return snapshot.index;
+    }
+    return null;
+}
+
+const SessionMoves = struct {
+    list: std.ArrayList(SessionMove),
+    moved: bool,
+};
+
+/// Collect session moves using the current indices as both old and new positions.
+fn collectSessionMovesCurrent(
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+) !std.ArrayList(SessionMove) {
+    var moves = try std.ArrayList(SessionMove).initCapacity(allocator, 0);
+    for (sessions, 0..) |session, idx| {
+        if (session.spawned) {
+            try moves.append(allocator, .{ .session_idx = idx, .old_index = idx });
+        }
+    }
+    return moves;
+}
+
+/// Collect session moves using snapshot indices as old positions, returning whether any moved.
+fn collectSessionMovesFromSnapshots(
+    sessions: []const *SessionState,
+    snapshots: []const SessionIndexSnapshot,
+    allocator: std.mem.Allocator,
+) !SessionMoves {
+    var moves = try std.ArrayList(SessionMove).initCapacity(allocator, 0);
+    var moved = false;
+    for (sessions, 0..) |session, idx| {
+        if (!session.spawned) continue;
+        const old_index = findSnapshotIndex(snapshots, session.id);
+        if (old_index) |old_idx| {
+            if (old_idx != idx) moved = true;
+        } else {
+            moved = true;
+        }
+        try moves.append(allocator, .{ .session_idx = idx, .old_index = old_index });
+    }
+    return .{ .list = moves, .moved = moved };
 }
 
 fn findNextFreeSlotAfter(
@@ -457,6 +513,7 @@ pub fn run() !void {
     };
     var ime_composition = input_text.ImeComposition{};
     var last_focused_session: usize = anim_state.focused_session;
+    var relaunch_trace_frames: u8 = 0;
 
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
@@ -508,6 +565,14 @@ pub fn run() !void {
     while (running) {
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
+        if (relaunch_trace_frames > 0) {
+            log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
+                @tagName(anim_state.mode),
+                grid.is_resizing,
+                grid.cols,
+                grid.rows,
+            });
+        }
 
         var event: c.SDL_Event = undefined;
         var processed_event = false;
@@ -706,6 +771,7 @@ pub fn run() !void {
                         const session = sessions[session_idx];
 
                         if (!session.spawned) {
+                            log.info("close requested on unspawned session idx={d} mode={s}", .{ session_idx, @tagName(anim_state.mode) });
                             continue;
                         }
 
@@ -719,14 +785,31 @@ pub fn run() !void {
                             );
                         } else {
                             const spawned_count = countSpawnedSessions(sessions);
+                            log.info("close requested idx={d} spawned_count={d} mode={s}", .{
+                                session_idx,
+                                spawned_count,
+                                @tagName(anim_state.mode),
+                            });
                             if (spawned_count == 1) {
                                 var working_dir = WorkingDir.init(allocator, session.cwd_path);
                                 defer working_dir.deinit(allocator);
 
+                                log.info("relaunching last session idx={d} grid_resizing={}", .{
+                                    session_idx,
+                                    grid.is_resizing,
+                                });
+                                relaunch_trace_frames = 120;
                                 try session.relaunch(working_dir.cwd_z, &loop);
                                 session_interaction_component.resetView(session_idx);
                                 session_interaction_component.setStatus(session_idx, .running);
                                 session_interaction_component.setAttention(session_idx, false);
+                                session.markDirty();
+                                grid.cancelResize();
+                                log.info("relaunch complete idx={d} spawned={} dead={}", .{
+                                    session_idx,
+                                    session.spawned,
+                                    session.dead,
+                                });
                                 anim_state.mode = .Full;
                                 continue;
                             }
@@ -738,6 +821,17 @@ pub fn run() !void {
                                 } else {
                                     anim_state.mode = .Grid;
                                 }
+                            }
+
+                            var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
+                            defer if (old_positions) |*snapshots| {
+                                snapshots.deinit(allocator);
+                            };
+                            if (animations_enabled and anim_state.mode == .Grid) {
+                                old_positions = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
+                                    std.debug.print("Failed to snapshot session positions: {}\n", .{err});
+                                    break :blk null;
+                                };
                             }
 
                             // Close the terminal
@@ -760,28 +854,53 @@ pub fn run() !void {
                                 grid.cols = 1;
                                 grid.rows = 1;
                                 anim_state.mode = .Full;
+                            } else if (remaining_count == 1) {
+                                // Only 1 terminal remains - go directly to Full mode, no resize animation
+                                grid.cols = 1;
+                                grid.rows = 1;
+                                cell_width_pixels = render_width;
+                                cell_height_pixels = render_height;
+                                if (!sessions[anim_state.focused_session].spawned) {
+                                    for (sessions, 0..) |s, idx| {
+                                        if (s.spawned) {
+                                            anim_state.focused_session = idx;
+                                            break;
+                                        }
+                                    }
+                                }
+                                anim_state.mode = .Full;
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
 
                                 if (should_shrink) {
-                                    // Collect active sessions for animation
-                                    var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
-                                        std.debug.print("Failed to collect active sessions: {}\n", .{err});
-                                        grid.cols = new_dims.cols;
-                                        grid.rows = new_dims.rows;
-                                        cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                                        cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                        continue;
-                                    };
-                                    defer active_indices.deinit(allocator);
-
-                                    // Start grid shrink animation
-                                    if (animations_enabled and anim_state.mode == .Grid) {
-                                        grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
-                                            std.debug.print("Failed to start grid resize animation: {}\n", .{err});
-                                        };
-                                        anim_state.mode = .GridResizing;
+                                    const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+                                    const grid_will_resize = new_dims.cols != grid.cols or new_dims.rows != grid.rows;
+                                    if (can_animate_reflow) {
+                                        if (old_positions) |snapshots| {
+                                            var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                                                std.debug.print("Failed to collect session moves: {}\n", .{err});
+                                                break :blk null;
+                                            };
+                                            if (move_result) |*moves| {
+                                                defer moves.list.deinit(allocator);
+                                                if (grid_will_resize or moves.moved) {
+                                                    grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                                        std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                                    };
+                                                    anim_state.mode = .GridResizing;
+                                                } else {
+                                                    grid.cols = new_dims.cols;
+                                                    grid.rows = new_dims.rows;
+                                                }
+                                            } else {
+                                                grid.cols = new_dims.cols;
+                                                grid.rows = new_dims.rows;
+                                            }
+                                        } else {
+                                            grid.cols = new_dims.cols;
+                                            grid.rows = new_dims.rows;
+                                        }
                                     } else {
                                         grid.cols = new_dims.cols;
                                         grid.rows = new_dims.rows;
@@ -804,6 +923,24 @@ pub fn run() !void {
 
                                     std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
                                 } else {
+                                    const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+                                    if (can_animate_reflow) {
+                                        if (old_positions) |snapshots| {
+                                            var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                                                std.debug.print("Failed to collect session moves: {}\n", .{err});
+                                                break :blk null;
+                                            };
+                                            if (move_result) |*moves| {
+                                                defer moves.list.deinit(allocator);
+                                                if (moves.moved) {
+                                                    grid.startResize(grid.cols, grid.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                                        std.debug.print("Failed to start grid reflow animation: {}\n", .{err});
+                                                    };
+                                                    anim_state.mode = .GridResizing;
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Grid doesn't need to shrink, just update focus if needed
                                     if (!sessions[anim_state.focused_session].spawned) {
                                         // Find the next spawned session
@@ -816,10 +953,6 @@ pub fn run() !void {
                                         }
                                         anim_state.focused_session = new_focus;
                                     }
-                                }
-
-                                if (remaining_count == 1) {
-                                    anim_state.mode = .Full;
                                 }
                             }
                         }
@@ -893,15 +1026,15 @@ pub fn run() !void {
                             };
 
                             // Collect active sessions for animation
-                            var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
-                                std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                            var moves = collectSessionMovesCurrent(sessions, allocator) catch |err| {
+                                std.debug.print("Failed to collect session moves: {}\n", .{err});
                                 continue;
                             };
-                            defer active_indices.deinit(allocator);
+                            defer moves.deinit(allocator);
 
                             // Update grid dimensions and start animation
                             if (animations_enabled) {
-                                grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
+                                grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, moves.items) catch |err| {
                                     std.debug.print("Failed to start grid resize animation: {}\n", .{err});
                                 };
                                 anim_state.mode = .GridResizing;
@@ -1106,13 +1239,31 @@ pub fn run() !void {
             }
         }
 
-        try loop.run(.no_wait);
+        loop.run(.no_wait) catch |err| {
+            log.err("xev loop run failed: {}", .{err});
+            return err;
+        };
+        if (relaunch_trace_frames > 0) {
+            log.info("frame trace after xev run", .{});
+        }
 
         for (sessions) |session| {
+            if (relaunch_trace_frames > 0 and session.spawned) {
+                log.info("frame trace before process session idx={d} id={d}", .{ session.slot_index, session.id });
+            }
             session.checkAlive();
-            try session.processOutput();
-            try session.flushPendingWrites();
+            session.processOutput() catch |err| {
+                log.err("session {d}: process output failed: {}", .{ session.id, err });
+                return err;
+            };
+            session.flushPendingWrites() catch |err| {
+                log.err("session {d}: flush pending writes failed: {}", .{ session.id, err });
+                return err;
+            };
             session.updateCwd(now);
+            if (relaunch_trace_frames > 0 and session.spawned) {
+                log.info("frame trace after process session idx={d} id={d}", .{ session.slot_index, session.id });
+            }
         }
         const any_session_dirty = render_cache.anyDirty(sessions);
 
@@ -1202,6 +1353,21 @@ pub fn run() !void {
                             anim_state.mode = .Grid;
                         }
                     }
+                    log.info("ui despawn requested idx={d} mode={s} spawned_count={d}", .{
+                        idx,
+                        @tagName(anim_state.mode),
+                        countSpawnedSessions(sessions),
+                    });
+                    var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
+                    defer if (old_positions) |*snapshots| {
+                        snapshots.deinit(allocator);
+                    };
+                    if (animations_enabled and anim_state.mode == .Grid) {
+                        old_positions = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
+                            std.debug.print("Failed to snapshot session positions: {}\n", .{err});
+                            break :blk null;
+                        };
+                    }
                     sessions[idx].deinit(allocator);
                     session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
@@ -1222,25 +1388,52 @@ pub fn run() !void {
                         grid.cols = 1;
                         grid.rows = 1;
                         anim_state.mode = .Full;
+                    } else if (remaining_count == 1) {
+                        // Only 1 terminal remains - go directly to Full mode, no resize animation
+                        grid.cols = 1;
+                        grid.rows = 1;
+                        cell_width_pixels = render_width;
+                        cell_height_pixels = render_height;
+                        if (!sessions[anim_state.focused_session].spawned) {
+                            for (sessions, 0..) |s, i| {
+                                if (s.spawned) {
+                                    anim_state.focused_session = i;
+                                    break;
+                                }
+                            }
+                        }
+                        anim_state.mode = .Full;
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
                         if (should_shrink) {
-                            if (animations_enabled and anim_state.mode == .Grid) {
-                                var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
-                                    std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+                            const grid_will_resize = new_dims.cols != grid.cols or new_dims.rows != grid.rows;
+                            if (can_animate_reflow) {
+                                if (old_positions) |snapshots| {
+                                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                                        std.debug.print("Failed to collect session moves: {}\n", .{err});
+                                        break :blk null;
+                                    };
+                                    if (move_result) |*moves| {
+                                        defer moves.list.deinit(allocator);
+                                        if (grid_will_resize or moves.moved) {
+                                            grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                                std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                            };
+                                            anim_state.mode = .GridResizing;
+                                        } else {
+                                            grid.cols = new_dims.cols;
+                                            grid.rows = new_dims.rows;
+                                        }
+                                    } else {
+                                        grid.cols = new_dims.cols;
+                                        grid.rows = new_dims.rows;
+                                    }
+                                } else {
                                     grid.cols = new_dims.cols;
                                     grid.rows = new_dims.rows;
-                                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    continue :ui_action_loop;
-                                };
-                                defer active_indices.deinit(allocator);
-
-                                grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
-                                    std.debug.print("Failed to start grid resize animation: {}\n", .{err});
-                                };
-                                anim_state.mode = .GridResizing;
+                                }
                             } else {
                                 grid.cols = new_dims.cols;
                                 grid.rows = new_dims.rows;
@@ -1260,19 +1453,35 @@ pub fn run() !void {
                                 anim_state.focused_session = new_focus;
                             }
                             std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
-                        } else if (!sessions[anim_state.focused_session].spawned) {
-                            var new_focus: usize = 0;
-                            for (sessions, 0..) |s, i| {
-                                if (s.spawned) {
-                                    new_focus = i;
-                                    break;
+                        } else {
+                            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+                            if (can_animate_reflow) {
+                                if (old_positions) |snapshots| {
+                                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                                        std.debug.print("Failed to collect session moves: {}\n", .{err});
+                                        break :blk null;
+                                    };
+                                    if (move_result) |*moves| {
+                                        defer moves.list.deinit(allocator);
+                                        if (moves.moved) {
+                                            grid.startResize(grid.cols, grid.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                                std.debug.print("Failed to start grid reflow animation: {}\n", .{err});
+                                            };
+                                            anim_state.mode = .GridResizing;
+                                        }
+                                    }
                                 }
                             }
-                            anim_state.focused_session = new_focus;
-                        }
-
-                        if (remaining_count == 1) {
-                            anim_state.mode = .Full;
+                            if (!sessions[anim_state.focused_session].spawned) {
+                                var new_focus: usize = 0;
+                                for (sessions, 0..) |s, i| {
+                                    if (s.spawned) {
+                                        new_focus = i;
+                                        break;
+                                    }
+                                }
+                                anim_state.focused_session = new_focus;
+                            }
                         }
                     }
                 }
@@ -1519,11 +1728,43 @@ pub fn run() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
-            try renderer_mod.render(renderer, &render_cache, sessions, session_interaction_component.viewSlice(), cell_width_pixels, cell_height_pixels, grid.cols, grid.rows, &anim_state, now, &font, full_cols, full_rows, render_width, render_height, &theme, config.grid.font_scale, &grid);
+            if (relaunch_trace_frames > 0) {
+                log.info("frame trace before render", .{});
+            }
+            renderer_mod.render(
+                renderer,
+                &render_cache,
+                sessions,
+                session_interaction_component.viewSlice(),
+                cell_width_pixels,
+                cell_height_pixels,
+                grid.cols,
+                grid.rows,
+                &anim_state,
+                now,
+                &font,
+                full_cols,
+                full_rows,
+                render_width,
+                render_height,
+                &theme,
+                config.grid.font_scale,
+                &grid,
+            ) catch |err| {
+                log.err("render failed: {}", .{err});
+                return err;
+            };
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
+            if (relaunch_trace_frames > 0) {
+                log.info("frame trace after render", .{});
+            }
             metrics_mod.increment(.frame_count);
             last_render_ns = std.time.nanoTimestamp();
+        }
+
+        if (relaunch_trace_frames > 0) {
+            relaunch_trace_frames -= 1;
         }
 
         const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications;

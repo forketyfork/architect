@@ -5,6 +5,7 @@ const geom = @import("../geom.zig");
 const easing = @import("../anim/easing.zig");
 
 const Rect = geom.Rect;
+const log = std.log.scoped(.grid_layout);
 
 pub const MAX_GRID_SIZE: usize = 12;
 pub const MAX_TERMINALS: usize = MAX_GRID_SIZE * MAX_GRID_SIZE;
@@ -32,6 +33,12 @@ pub const TerminalAnimation = struct {
     start_rect: Rect,
     target_rect: Rect,
     start_time: i64,
+};
+
+/// Describes how a session moves when the grid layout changes.
+pub const SessionMove = struct {
+    session_idx: usize,
+    old_index: ?usize,
 };
 
 /// Manages dynamic grid dimensions based on active terminal count.
@@ -142,9 +149,16 @@ pub const GridLayout = struct {
         now: i64,
         render_width: c_int,
         render_height: c_int,
-        active_sessions: []const usize,
+        session_moves: []const SessionMove,
     ) !void {
         self.animations.clearRetainingCapacity();
+        log.debug("start resize {d}x{d} -> {d}x{d} moves={d}", .{
+            self.cols,
+            self.rows,
+            new_cols,
+            new_rows,
+            session_moves.len,
+        });
         self.prev_cols = self.cols;
         self.prev_rows = self.rows;
         self.resize_start_time = now;
@@ -155,16 +169,8 @@ pub const GridLayout = struct {
         const new_cell_w = @divFloor(render_width, @as(c_int, @intCast(new_cols)));
         const new_cell_h = @divFloor(render_height, @as(c_int, @intCast(new_rows)));
 
-        for (active_sessions) |session_idx| {
-            const old_pos = GridPosition.fromIndex(session_idx, self.cols);
-            const new_pos = GridPosition.fromIndex(session_idx, new_cols);
-
-            const start_rect = Rect{
-                .x = @as(c_int, @intCast(old_pos.col)) * old_cell_w,
-                .y = @as(c_int, @intCast(old_pos.row)) * old_cell_h,
-                .w = old_cell_w,
-                .h = old_cell_h,
-            };
+        for (session_moves) |move| {
+            const new_pos = GridPosition.fromIndex(move.session_idx, new_cols);
 
             const target_rect = Rect{
                 .x = @as(c_int, @intCast(new_pos.col)) * new_cell_w,
@@ -173,8 +179,18 @@ pub const GridLayout = struct {
                 .h = new_cell_h,
             };
 
+            const start_rect = if (move.old_index) |old_idx| blk: {
+                const old_pos = GridPosition.fromIndex(old_idx, self.cols);
+                break :blk Rect{
+                    .x = @as(c_int, @intCast(old_pos.col)) * old_cell_w,
+                    .y = @as(c_int, @intCast(old_pos.row)) * old_cell_h,
+                    .w = old_cell_w,
+                    .h = old_cell_h,
+                };
+            } else target_rect;
+
             try self.animations.append(self.allocator, .{
-                .session_idx = session_idx,
+                .session_idx = move.session_idx,
                 .start_rect = start_rect,
                 .target_rect = target_rect,
                 .start_time = now,
@@ -197,6 +213,13 @@ pub const GridLayout = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn cancelResize(self: *GridLayout) void {
+        log.debug("cancel resize {d}x{d} anims={d}", .{ self.cols, self.rows, self.animations.items.len });
+        self.is_resizing = false;
+        self.resize_start_time = 0;
+        self.animations.clearRetainingCapacity();
     }
 
     /// Get the current animated rect for a session during resize.

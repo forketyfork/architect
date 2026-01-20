@@ -49,9 +49,8 @@ pub const SessionState = struct {
     pending_write: std.ArrayListUnmanaged(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
-    /// Completion structure for process wait callback.
-    process_completion: xev.Completion = .{},
-    /// Context for disambiguating process exit callbacks.
+    /// Context for disambiguating process exit callbacks. Includes its own completion struct
+    /// so each process watcher has an independent completion that won't be corrupted on relaunch.
     process_wait_ctx: ?*WaitContext = null,
     /// Incremented whenever a new watcher is armed to ignore stale completions.
     process_generation: usize = 0,
@@ -61,6 +60,8 @@ pub const SessionState = struct {
         generation: usize,
         pid: posix.pid_t,
         orphaned: bool = false,
+        /// Each WaitContext has its own completion to avoid corruption when relaunching.
+        completion: xev.Completion = .{},
     };
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
@@ -170,7 +171,7 @@ pub const SessionState = struct {
 
             process.wait(
                 loop,
-                &self.process_completion,
+                &wait_ctx.completion,
                 WaitContext,
                 wait_ctx,
                 processExitCallback,

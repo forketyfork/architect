@@ -115,7 +115,7 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, theme);
+                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme);
             }
         },
         .Full => {
@@ -186,7 +186,7 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, font, term_cols, term_rows, current_time, theme);
+                    try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, font, term_cols, term_rows, current_time, theme);
                 }
             }
 
@@ -195,7 +195,7 @@ pub fn render(
             try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, false, theme);
         },
         .GridResizing => {
-            // Render sessions at their animated positions during grid resize
+            // Render session contents first so borders draw on top.
             for (sessions, 0..) |session, i| {
                 if (!session.spawned) continue;
 
@@ -225,7 +225,36 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, font, term_cols, term_rows, current_time, theme);
+                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, font, term_cols, term_rows, current_time, theme);
+            }
+
+            // Render borders and overlays on top of the animated content.
+            for (sessions, 0..) |session, i| {
+                if (!session.spawned) continue;
+
+                const cell_rect: Rect = if (grid) |g| blk: {
+                    if (g.getAnimatedRect(i, current_time)) |animated_rect| {
+                        break :blk animated_rect;
+                    }
+                    const pos = g.indexToPosition(i);
+                    break :blk Rect{
+                        .x = @as(c_int, @intCast(pos.col)) * cell_width_pixels,
+                        .y = @as(c_int, @intCast(pos.row)) * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+                } else blk: {
+                    const grid_row: c_int = @intCast(i / grid_cols);
+                    const grid_col: c_int = @intCast(i % grid_cols);
+                    break :blk Rect{
+                        .x = grid_col * cell_width_pixels,
+                        .y = grid_row * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+                };
+
+                renderSessionOverlays(renderer, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme);
             }
         },
     }
@@ -674,6 +703,7 @@ fn renderGridSessionCached(
     scale: f32,
     is_focused: bool,
     apply_effects: bool,
+    render_overlays: bool,
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
@@ -703,13 +733,21 @@ fn renderGridSessionCached(
                 .h = @floatFromInt(rect.h),
             };
             _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+            if (render_overlays) {
+                renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+            }
             cache_entry.presented_epoch = session.render_epoch;
             return;
         }
     }
 
-    try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, theme);
+    if (render_overlays) {
+        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, theme);
+        return;
+    }
+
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, theme);
+    cache_entry.presented_epoch = session.render_epoch;
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {

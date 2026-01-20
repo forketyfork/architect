@@ -36,7 +36,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches
 
 ### Terminal Essentials
-- Smooth animated transitions for grid expansion/contraction
+- Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close (restarts if it's the only terminal), ⌘/ for shortcuts
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
 - OSC 8 hyperlink support (Cmd+Click to open)

@@ -20,7 +20,7 @@ pub const ViewMode = enum {
     PanningRight,
     PanningUp,
     PanningDown,
-    GridResizing, // Grid is changing dimensions (adding/removing cells)
+    GridResizing, // Grid is reflowing or changing dimensions (adding/removing cells)
 };
 
 pub const Rect = geom.Rect;
