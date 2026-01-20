@@ -1,5 +1,4 @@
 const std = @import("std");
-const c = @import("../c.zig");
 
 /// Scale an integer length from logical points to physical pixels using ui_scale.
 /// Returns at least 1 to avoid zero-sized UI elements on tiny scales.

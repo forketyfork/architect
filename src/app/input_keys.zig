@@ -1,4 +1,3 @@
-const ghostty_vt = @import("ghostty-vt");
 const input = @import("../input/mapper.zig");
 const session_state = @import("../session/state.zig");
 const c = @import("../c.zig");

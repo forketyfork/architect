@@ -1,4 +1,3 @@
-const std = @import("std");
 const builtin = @import("builtin");
 
 const is_macos = builtin.os.tag == .macos;
