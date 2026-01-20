@@ -375,10 +375,10 @@ fn drawBezierCorner(
     thickness: f32,
     color: c.SDL_Color,
 ) void {
-    const s: f32 = 0.25;
+    const bezier_control_factor: f32 = 0.25;
     const p0 = CornerPoint{ .x = mid_x, .y = mid_y + sy * radius };
-    const p1 = CornerPoint{ .x = mid_x, .y = mid_y + sy * s * radius };
-    const p2 = CornerPoint{ .x = mid_x + sx * s * radius, .y = mid_y };
+    const p1 = CornerPoint{ .x = mid_x, .y = mid_y + sy * bezier_control_factor * radius };
+    const p2 = CornerPoint{ .x = mid_x + sx * bezier_control_factor * radius, .y = mid_y };
     const p3 = CornerPoint{ .x = mid_x + sx * radius, .y = mid_y };
     const segments: usize = 12;
 
@@ -575,8 +575,8 @@ const box_specs: [128]BoxSpec = specs: {
     arr[0x6F] = .{ .left = .light, .up = .light, .rounded = true }; // ╯
     arr[0x70] = .{ .right = .light, .up = .light, .rounded = true }; // ╰
 
-    arr[0x71] = .{ .diagonal_down = true }; // ╱
-    arr[0x72] = .{ .diagonal_up = true }; // ╲
+    arr[0x71] = .{ .diagonal_up = true }; // ╱
+    arr[0x72] = .{ .diagonal_down = true }; // ╲
     arr[0x73] = .{ .diagonal_down = true, .diagonal_up = true }; // ╳
 
     arr[0x74] = .{ .left = .light }; // ╴
