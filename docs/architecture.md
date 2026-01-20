@@ -48,6 +48,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 
 **renderer/render.zig** draws only the *scene*:
 - Terminal cell content with HarfBuzz-shaped text runs
+- Box-drawing characters (U+2500–U+257F) rendered procedurally via `gfx/box_drawing.zig` for pixel-perfect alignment regardless of font
 - Grid cell backgrounds and borders (focused/unfocused)
 - Expand/collapse/panning animations with eased interpolation
 - Attention borders (pulsing yellow for awaiting approval, solid green for done)
@@ -117,6 +118,7 @@ src/
 │   └── renderer.zig      # Scene rendering (terminals, animations)
 │
 ├── gfx/
+│   ├── box_drawing.zig   # Procedural box-drawing character rendering (U+2500–U+257F)
 │   └── primitives.zig    # Rounded/thick border drawing helpers
 │
 ├── anim/
