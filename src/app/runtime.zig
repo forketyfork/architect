@@ -220,7 +220,7 @@ pub fn run() !void {
         fallback.window = config.window;
         break :blk fallback;
     };
-    defer persistence.deinit();
+    defer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
@@ -230,17 +230,12 @@ pub fn run() !void {
     defer grid.deinit();
 
     // Load persisted terminals to determine initial grid size
-    var restored_terminals = if (builtin.os.tag == .macos)
-        persistence.collectTerminalEntries(allocator, grid_layout.MAX_GRID_SIZE, grid_layout.MAX_GRID_SIZE) catch |err| blk: {
-            std.debug.print("Failed to collect persisted terminals: {}\n", .{err});
-            break :blk std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
-        }
-    else
-        std.ArrayList(config_mod.Persistence.TerminalEntry).empty;
-    defer restored_terminals.deinit(allocator);
+    const restored_paths = if (builtin.os.tag == .macos) persistence.terminal_paths.items else &[_][]const u8{};
+    const restored_limit = @min(restored_paths.len, grid_layout.MAX_TERMINALS);
+    const restored_slice = restored_paths[0..restored_limit];
 
     // Calculate initial grid size based on restored terminals
-    const initial_terminal_count: usize = if (restored_terminals.items.len > 0) restored_terminals.items.len else 1;
+    const initial_terminal_count: usize = if (restored_slice.len > 0) restored_slice.len else 1;
     const initial_dims = GridLayout.calculateDimensions(initial_terminal_count);
     grid.cols = initial_dims.cols;
     grid.rows = initial_dims.rows;
@@ -361,15 +356,15 @@ pub fn run() !void {
     }
 
     // Restore persisted terminals
-    for (restored_terminals.items, 0..) |entry, new_idx| {
-        if (new_idx >= sessions.len or entry.path.len == 0) continue;
-        const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
+    for (restored_slice, 0..) |path, new_idx| {
+        if (new_idx >= sessions.len or path.len == 0) continue;
+        const dir_buf = allocZ(allocator, path) catch |err| blk: {
             std.debug.print("Failed to restore terminal {d}: {}\n", .{ new_idx, err });
             break :blk null;
         };
         defer if (dir_buf) |buf| allocator.free(buf);
         if (dir_buf) |buf| {
-            const dir: [:0]const u8 = buf[0..entry.path.len :0];
+            const dir: [:0]const u8 = buf[0..path.len :0];
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
@@ -1143,8 +1138,25 @@ pub fn run() !void {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
                         if (should_shrink) {
-                            grid.cols = new_dims.cols;
-                            grid.rows = new_dims.rows;
+                            if (animations_enabled and anim_state.mode == .Grid) {
+                                var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
+                                    std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                                    grid.cols = new_dims.cols;
+                                    grid.rows = new_dims.rows;
+                                    cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                                    cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                                    continue :ui_action_loop;
+                                };
+                                defer active_indices.deinit(allocator);
+
+                                grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
+                                    std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                };
+                                anim_state.mode = .GridResizing;
+                            } else {
+                                grid.cols = new_dims.cols;
+                                grid.rows = new_dims.rows;
+                            }
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
@@ -1435,12 +1447,12 @@ pub fn run() !void {
     }
 
     if (builtin.os.tag == .macos) {
-        persistence.clearTerminals();
+        persistence.clearTerminalPaths(allocator);
         for (sessions, 0..) |session, idx| {
             if (!session.spawned or session.dead) continue;
             if (session.cwd_path) |path| {
                 if (path.len == 0) continue;
-                persistence.setTerminal(allocator, idx, grid.cols, path) catch |err| {
+                persistence.appendTerminalPath(allocator, path) catch |err| {
                     std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
                 };
             }

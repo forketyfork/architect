@@ -199,10 +199,11 @@ height = 900
 x = 100
 y = 50
 
-[terminals]
-terminal_1_1 = "/Users/me/projects/app"
-terminal_1_2 = "/Users/me/projects/lib"
-terminal_2_1 = "/Users/me"
+terminals = [
+  "/Users/me/projects/app",
+  "/Users/me/projects/lib",
+  "/Users/me",
+]
 ```
 
 ### Fields
@@ -211,18 +212,13 @@ terminal_2_1 = "/Users/me"
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
 | `[window]` | Last window position and dimensions |
-| `[terminals]` | Working directories for each terminal cell |
-
-### Terminal Keys
-
-Terminal keys use 1-based `row_col` format based on the current grid layout:
-- `terminal_1_1` = first terminal (top-left)
-- `terminal_1_2` = second terminal
-- `terminal_2_1` = third terminal (second row, first column in a 2×2+ grid)
+| `terminals` | Working directories for each terminal (ordered by session index) |
 
 On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals.
 
 Note: Terminal cwd persistence is currently macOS-only.
+
+Older `persistence.toml` files that used the `[terminals]` table are migrated automatically.
 
 ## Resetting Configuration
 
