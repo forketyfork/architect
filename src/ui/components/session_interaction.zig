@@ -857,7 +857,7 @@ fn calculateHoveredSession(
     host: *const types.UiHost,
 ) ?usize {
     return switch (host.view_mode) {
-        .Grid => {
+        .Grid, .GridResizing => {
             if (mouse_x < 0 or mouse_x >= host.window_w or
                 mouse_y < 0 or mouse_y >= host.window_h) return null;
 

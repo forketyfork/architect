@@ -201,11 +201,11 @@ pub fn render(
 
                 // Get animated rect from GridLayout if available
                 const cell_rect: Rect = if (grid) |g| blk: {
-                    if (g.getAnimatedRect(i, current_time, window_width, window_height)) |animated_rect| {
+                    if (g.getAnimatedRect(i, current_time)) |animated_rect| {
                         break :blk animated_rect;
                     }
                     // New session or no animation - use final position
-                    const pos = GridLayout.GridPosition.fromIndex(i, g.cols);
+                    const pos = g.indexToPosition(i);
                     break :blk Rect{
                         .x = @as(c_int, @intCast(pos.col)) * cell_width_pixels,
                         .y = @as(c_int, @intCast(pos.row)) * cell_height_pixels,

@@ -86,12 +86,21 @@ fn countSpawnedSessions(sessions: []const SessionState) usize {
     return count;
 }
 
+fn highestSpawnedIndex(sessions: []const SessionState) ?usize {
+    var idx: usize = sessions.len;
+    while (idx > 0) {
+        idx -= 1;
+        if (sessions[idx].spawned) return idx;
+    }
+    return null;
+}
+
 /// Collect indices of all spawned sessions in order.
 fn collectActiveSessionIndices(sessions: []const SessionState, allocator: std.mem.Allocator) !std.ArrayList(usize) {
-    var indices = std.ArrayList(usize).init(allocator);
+    var indices = try std.ArrayList(usize).initCapacity(allocator, 0);
     for (sessions, 0..) |session, idx| {
         if (session.spawned) {
-            try indices.append(idx);
+            try indices.append(allocator, idx);
         }
     }
     return indices;
@@ -108,29 +117,30 @@ fn findNextFreeSlotInGrid(sessions: []const SessionState, grid_capacity: usize) 
     return null;
 }
 
-/// Defragment sessions by moving spawned sessions to fill gaps.
-/// After this, all spawned sessions will be in indices [0, spawned_count).
-fn defragmentSessions(sessions: []SessionState, target_count: usize) void {
-    var write_idx: usize = 0;
-    var read_idx: usize = 0;
+const WorkingDir = struct {
+    cwd_z: ?[:0]const u8,
+    buf: ?[]u8,
 
-    while (read_idx < sessions.len and write_idx < target_count) {
-        if (sessions[read_idx].spawned) {
-            if (write_idx != read_idx) {
-                // Swap sessions to move spawned one to write_idx
-                const tmp = sessions[write_idx];
-                sessions[write_idx] = sessions[read_idx];
-                sessions[read_idx] = tmp;
+    fn init(allocator: std.mem.Allocator, cwd_path: ?[]const u8) WorkingDir {
+        var buf: ?[]u8 = null;
+        const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
+            const owned = allocator.alloc(u8, path.len + 1) catch break :blk null;
+            @memcpy(owned[0..path.len], path);
+            owned[path.len] = 0;
+            buf = owned;
+            break :blk owned[0..path.len :0];
+        } else null;
 
-                // Update session IDs to match new positions
-                sessions[write_idx].id = write_idx;
-                sessions[read_idx].id = read_idx;
-            }
-            write_idx += 1;
-        }
-        read_idx += 1;
+        return .{
+            .cwd_z = cwd_z,
+            .buf = buf,
+        };
     }
-}
+
+    fn deinit(self: *WorkingDir, allocator: std.mem.Allocator) void {
+        if (self.buf) |buf| allocator.free(buf);
+    }
+};
 
 fn initSharedFont(
     allocator: std.mem.Allocator,
@@ -216,7 +226,7 @@ pub fn run() !void {
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     // Dynamic grid layout - starts with 1x1 and grows as terminals are added
-    var grid = GridLayout.init(allocator);
+    var grid = try GridLayout.init(allocator);
     defer grid.deinit();
 
     // Load persisted terminals to determine initial grid size
@@ -668,6 +678,8 @@ pub fn run() !void {
 
                             // Count remaining spawned sessions after closing
                             const remaining_count = countSpawnedSessions(sessions);
+                            const max_spawned_idx = highestSpawnedIndex(sessions);
+                            const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
                             // Don't shrink below 1 terminal
                             if (remaining_count == 0) {
@@ -676,56 +688,62 @@ pub fn run() !void {
                                 anim_state.focused_session = 0;
                                 grid.cols = 1;
                                 grid.rows = 1;
-                            } else if (grid.canShrink(remaining_count)) {
-                                // Defragment: compact terminals to fill gaps
-                                defragmentSessions(sessions, remaining_count);
+                            } else {
+                                const new_dims = GridLayout.calculateDimensions(required_slots);
+                                const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
 
-                                // Calculate new grid dimensions
-                                const new_dims = GridLayout.calculateDimensions(remaining_count);
+                                if (should_shrink) {
+                                    // Collect active sessions for animation
+                                    var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
+                                        std.debug.print("Failed to collect active sessions: {}\n", .{err});
+                                        grid.cols = new_dims.cols;
+                                        grid.rows = new_dims.rows;
+                                        cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                                        cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                                        continue;
+                                    };
+                                    defer active_indices.deinit(allocator);
 
-                                // Collect active sessions for animation
-                                var active_indices = collectActiveSessionIndices(sessions, allocator) catch |err| {
-                                    std.debug.print("Failed to collect active sessions: {}\n", .{err});
-                                    grid.cols = new_dims.cols;
-                                    grid.rows = new_dims.rows;
+                                    // Start grid shrink animation
+                                    if (animations_enabled and anim_state.mode == .Grid) {
+                                        grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
+                                            std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                                        };
+                                        anim_state.mode = .GridResizing;
+                                    } else {
+                                        grid.cols = new_dims.cols;
+                                        grid.rows = new_dims.rows;
+                                    }
+
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    continue;
-                                };
-                                defer active_indices.deinit();
 
-                                // Start grid shrink animation
-                                if (animations_enabled and anim_state.mode == .Grid) {
-                                    grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, active_indices.items) catch |err| {
-                                        std.debug.print("Failed to start grid resize animation: {}\n", .{err});
-                                    };
-                                    anim_state.mode = .GridResizing;
-                                } else {
-                                    grid.cols = new_dims.cols;
-                                    grid.rows = new_dims.rows;
-                                }
-
-                                cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                                cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-
-                                // Update focus to a valid session
-                                if (anim_state.focused_session >= remaining_count) {
-                                    anim_state.focused_session = if (remaining_count > 0) remaining_count - 1 else 0;
-                                }
-
-                                std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
-                            } else {
-                                // Grid doesn't need to shrink, just update focus if needed
-                                if (!sessions[anim_state.focused_session].spawned) {
-                                    // Find the next spawned session
-                                    var new_focus: usize = 0;
-                                    for (sessions, 0..) |*s, idx| {
-                                        if (s.spawned) {
-                                            new_focus = idx;
-                                            break;
+                                    // Update focus to a valid session
+                                    if (!sessions[anim_state.focused_session].spawned) {
+                                        var new_focus: usize = 0;
+                                        for (sessions, 0..) |*s, idx| {
+                                            if (s.spawned) {
+                                                new_focus = idx;
+                                                break;
+                                            }
                                         }
+                                        anim_state.focused_session = new_focus;
                                     }
-                                    anim_state.focused_session = new_focus;
+
+                                    std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
+                                } else {
+                                    // Grid doesn't need to shrink, just update focus if needed
+                                    if (!sessions[anim_state.focused_session].spawned) {
+                                        // Find the next spawned session
+                                        var new_focus: usize = 0;
+                                        for (sessions, 0..) |*s, idx| {
+                                            if (s.spawned) {
+                                                new_focus = idx;
+                                                break;
+                                            }
+                                        }
+                                        anim_state.focused_session = new_focus;
+                                    }
                                 }
                             }
                         }
@@ -789,16 +807,8 @@ pub fn run() !void {
                             }
 
                             // Get working directory from focused session
-                            const cwd_path = focused.cwd_path;
-                            var cwd_buf: ?[]u8 = null;
-                            const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
-                                const buf = allocator.alloc(u8, path.len + 1) catch break :blk null;
-                                @memcpy(buf[0..path.len], path);
-                                buf[path.len] = 0;
-                                cwd_buf = buf;
-                                break :blk buf[0..path.len :0];
-                            } else null;
-                            defer if (cwd_buf) |buf| allocator.free(buf);
+                            var working_dir = WorkingDir.init(allocator, focused.cwd_path);
+                            defer working_dir.deinit(allocator);
 
                             // New terminal goes in the next slot after existing ones
                             const new_idx = spawned_count;
@@ -808,7 +818,7 @@ pub fn run() !void {
                                 std.debug.print("Failed to collect active sessions: {}\n", .{err});
                                 continue;
                             };
-                            defer active_indices.deinit();
+                            defer active_indices.deinit(allocator);
 
                             // Update grid dimensions and start animation
                             if (animations_enabled) {
@@ -822,7 +832,7 @@ pub fn run() !void {
                             }
 
                             // Spawn new terminal
-                            try sessions[new_idx].ensureSpawnedWithDir(cwd_z, &loop);
+                            try sessions[new_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
                             session_interaction_component.setStatus(new_idx, .running);
                             session_interaction_component.setAttention(new_idx, false);
 
@@ -850,18 +860,10 @@ pub fn run() !void {
                                 findNextFreeSlotInGrid(sessions, grid.capacity());
 
                             if (target_idx) |next_free_idx| {
-                                const cwd_path = focused.cwd_path;
-                                var cwd_buf: ?[]u8 = null;
-                                const cwd_z: ?[:0]const u8 = if (cwd_path) |path| blk: {
-                                    const buf = allocator.alloc(u8, path.len + 1) catch break :blk null;
-                                    @memcpy(buf[0..path.len], path);
-                                    buf[path.len] = 0;
-                                    cwd_buf = buf;
-                                    break :blk buf[0..path.len :0];
-                                } else null;
-                                defer if (cwd_buf) |buf| allocator.free(buf);
+                                var working_dir = WorkingDir.init(allocator, focused.cwd_path);
+                                defer working_dir.deinit(allocator);
 
-                                try sessions[next_free_idx].ensureSpawnedWithDir(cwd_z, &loop);
+                                try sessions[next_free_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
                                 session_interaction_component.setStatus(next_free_idx, .running);
                                 session_interaction_component.setAttention(next_free_idx, false);
 
@@ -1126,6 +1128,8 @@ pub fn run() !void {
 
                     // Handle grid contraction
                     const remaining_count = countSpawnedSessions(sessions);
+                    const max_spawned_idx = highestSpawnedIndex(sessions);
+                    const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
                     if (remaining_count == 0) {
                         // Re-spawn a fresh terminal in slot 0
@@ -1135,28 +1139,37 @@ pub fn run() !void {
                         anim_state.focused_session = 0;
                         grid.cols = 1;
                         grid.rows = 1;
-                    } else if (grid.canShrink(remaining_count)) {
-                        defragmentSessions(sessions, remaining_count);
-                        const new_dims = GridLayout.calculateDimensions(remaining_count);
-                        grid.cols = new_dims.cols;
-                        grid.rows = new_dims.rows;
+                    } else {
+                        const new_dims = GridLayout.calculateDimensions(required_slots);
+                        const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
+                        if (should_shrink) {
+                            grid.cols = new_dims.cols;
+                            grid.rows = new_dims.rows;
 
-                        cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                        cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                            cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                            cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
-                        if (anim_state.focused_session >= remaining_count) {
-                            anim_state.focused_session = if (remaining_count > 0) remaining_count - 1 else 0;
-                        }
-                        std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
-                    } else if (!sessions[anim_state.focused_session].spawned) {
-                        var new_focus: usize = 0;
-                        for (sessions, 0..) |*s, i| {
-                            if (s.spawned) {
-                                new_focus = i;
-                                break;
+                            if (!sessions[anim_state.focused_session].spawned) {
+                                var new_focus: usize = 0;
+                                for (sessions, 0..) |*s, i| {
+                                    if (s.spawned) {
+                                        new_focus = i;
+                                        break;
+                                    }
+                                }
+                                anim_state.focused_session = new_focus;
                             }
+                            std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
+                        } else if (!sessions[anim_state.focused_session].spawned) {
+                            var new_focus: usize = 0;
+                            for (sessions, 0..) |*s, i| {
+                                if (s.spawned) {
+                                    new_focus = i;
+                                    break;
+                                }
+                            }
+                            anim_state.focused_session = new_focus;
                         }
-                        anim_state.focused_session = new_focus;
                     }
                 }
             },

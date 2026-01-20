@@ -47,23 +47,25 @@ pub const GridLayout = struct {
     prev_rows: usize,
     /// Whether a grid resize animation is in progress.
     is_resizing: bool,
+    allocator: std.mem.Allocator,
 
     pub const ANIMATION_DURATION_MS: i64 = 300;
 
-    pub fn init(allocator: std.mem.Allocator) GridLayout {
+    pub fn init(allocator: std.mem.Allocator) !GridLayout {
         return .{
             .cols = 1,
             .rows = 1,
-            .animations = std.ArrayList(TerminalAnimation).init(allocator),
+            .animations = try std.ArrayList(TerminalAnimation).initCapacity(allocator, 0),
             .resize_start_time = 0,
             .prev_cols = 1,
             .prev_rows = 1,
             .is_resizing = false,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *GridLayout) void {
-        self.animations.deinit();
+        self.animations.deinit(self.allocator);
     }
 
     /// Calculate optimal grid dimensions for a given terminal count.
@@ -153,9 +155,9 @@ pub const GridLayout = struct {
         const new_cell_w = @divFloor(render_width, @as(c_int, @intCast(new_cols)));
         const new_cell_h = @divFloor(render_height, @as(c_int, @intCast(new_rows)));
 
-        for (active_sessions, 0..) |session_idx, new_logical_idx| {
+        for (active_sessions) |session_idx| {
             const old_pos = GridPosition.fromIndex(session_idx, self.cols);
-            const new_pos = GridPosition.fromIndex(new_logical_idx, new_cols);
+            const new_pos = GridPosition.fromIndex(session_idx, new_cols);
 
             const start_rect = Rect{
                 .x = @as(c_int, @intCast(old_pos.col)) * old_cell_w,
@@ -171,7 +173,7 @@ pub const GridLayout = struct {
                 .h = new_cell_h,
             };
 
-            try self.animations.append(.{
+            try self.animations.append(self.allocator, .{
                 .session_idx = session_idx,
                 .start_rect = start_rect,
                 .target_rect = target_rect,
@@ -202,8 +204,6 @@ pub const GridLayout = struct {
         self: *const GridLayout,
         session_idx: usize,
         now: i64,
-        render_width: c_int,
-        render_height: c_int,
     ) ?Rect {
         if (!self.is_resizing) return null;
 
@@ -217,8 +217,6 @@ pub const GridLayout = struct {
         }
 
         // Session wasn't in the animation list - it's a new cell
-        _ = render_width;
-        _ = render_height;
         return null;
     }
 

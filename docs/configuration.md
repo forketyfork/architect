@@ -36,7 +36,7 @@ font_scale = 1.0  # Font scale in grid view (0.5-3.0, default: 1.0)
 
 The grid size is dynamic and adjusts automatically based on the number of terminals:
 - Press `Cmd+N` to add a new terminal — the grid expands to accommodate it
-- Press `Cmd+W` to close a terminal — the grid shrinks and remaining terminals are compacted
+- Press `Cmd+W` to close a terminal — the grid shrinks when the highest occupied slot allows it; existing terminals keep their positions
 - Grid layout maintains `columns >= rows` (e.g., 1x1 → 2x1 → 2x2 → 3x2 → 3x3 → ...)
 - Maximum grid size is 12×12 (144 terminals)
 
@@ -238,4 +238,3 @@ Or remove the entire directory:
 ```bash
 rm -rf ~/.config/architect
 ```
-
