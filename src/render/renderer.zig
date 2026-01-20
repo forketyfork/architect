@@ -11,6 +11,7 @@ const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
+const box_drawing = @import("../gfx/box_drawing.zig");
 
 const log = std.log.scoped(.render);
 
@@ -883,63 +884,11 @@ fn chooseCursorFg(theme: *const colors.Theme) c.SDL_Color {
 }
 
 fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {
-    const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(@min(w, h))) / 8.0);
-    const half_t: f32 = thickness * 0.5;
-    const xf: f32 = @floatFromInt(x);
-    const yf: f32 = @floatFromInt(y);
-    const wf: f32 = @floatFromInt(w);
-    const hf: f32 = @floatFromInt(h);
-    const mid_x: f32 = xf + wf * 0.5;
-    const mid_y: f32 = yf + hf * 0.5;
-
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-
-    switch (cp) {
-        0x2500 => {
-            const rect = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = wf, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
-            return true;
-        },
-        0x2502 => {
-            const rect = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = hf };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
-            return true;
-        },
-        0x256D => {
-            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = mid_y, .w = thickness, .h = yf + hf - mid_y };
-            const horiz = c.SDL_FRect{ .x = mid_x, .y = mid_y - half_t, .w = xf + wf - mid_x, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        0x256E => {
-            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = mid_y, .w = thickness, .h = yf + hf - mid_y };
-            const horiz = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = mid_x - xf, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        0x2570 => {
-            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = mid_y - yf };
-            const horiz = c.SDL_FRect{ .x = mid_x, .y = mid_y - half_t, .w = xf + wf - mid_x, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        0x256F => {
-            const vert = c.SDL_FRect{ .x = mid_x - half_t, .y = yf, .w = thickness, .h = mid_y - yf };
-            const horiz = c.SDL_FRect{ .x = xf, .y = mid_y - half_t, .w = mid_x - xf, .h = thickness };
-            _ = c.SDL_RenderFillRect(renderer, &vert);
-            _ = c.SDL_RenderFillRect(renderer, &horiz);
-            return true;
-        },
-        else => return false,
-    }
+    return box_drawing.render(renderer, cp, x, y, w, h, color);
 }
 
 fn isBoxDrawingChar(cp: u21) bool {
-    return cp == 0x2500 or cp == 0x2502 or
-        cp == 0x256D or cp == 0x256E or cp == 0x2570 or cp == 0x256F;
+    return cp >= 0x2500 and cp <= 0x257F;
 }
 
 fn isFullCellGlyph(cp: u21) bool {
