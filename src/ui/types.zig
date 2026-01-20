@@ -1,5 +1,4 @@
 const std = @import("std");
-const c = @import("../c.zig");
 const app_state = @import("../app/app_state.zig");
 const font_mod = @import("../font.zig");
 const colors = @import("../colors.zig");

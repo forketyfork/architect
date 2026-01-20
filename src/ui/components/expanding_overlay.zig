@@ -1,4 +1,3 @@
-const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
 const easing = @import("../../anim/easing.zig");
 const dpi = @import("../scale.zig");
