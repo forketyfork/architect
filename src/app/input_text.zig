@@ -55,12 +55,12 @@ pub fn handleTextEditing(
     const text = std.mem.sliceTo(text_ptr, 0);
     if (text.len == 0) {
         if (ime.codepoints == 0) return;
-        session_interaction.resetScrollIfNeeded(session.id);
+        session_interaction.resetScrollIfNeeded(session.slot_index);
         try clearImeComposition(session, ime);
         return;
     }
 
-    session_interaction.resetScrollIfNeeded(session.id);
+    session_interaction.resetScrollIfNeeded(session.slot_index);
     const is_committed_text = length == 0 and start == 0;
     if (is_committed_text) {
         try clearImeComposition(session, ime);
@@ -85,7 +85,7 @@ pub fn handleTextInput(
     const text = std.mem.sliceTo(text_ptr, 0);
     if (text.len == 0) return;
 
-    session_interaction.resetScrollIfNeeded(session.id);
+    session_interaction.resetScrollIfNeeded(session.slot_index);
     try clearImeComposition(session, ime);
     try session.sendInput(text);
 }

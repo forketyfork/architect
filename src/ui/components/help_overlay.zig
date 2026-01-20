@@ -13,7 +13,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "Click terminal", .desc = "Expand to full screen" },
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
-    .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a terminal" },
+    .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Expand focused terminal" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘?", .desc = "Open help" },

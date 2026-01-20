@@ -28,7 +28,7 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
 }
 
 pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
-    return mode != .Grid and mode != .Collapsing;
+    return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
 }
 
 /// Returns terminal index (0-9) for Cmd+1..9,0 shortcuts.

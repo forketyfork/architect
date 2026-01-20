@@ -24,7 +24,7 @@ const CursorKind = enum { arrow, ibeam, pointer };
 
 pub const SessionInteractionComponent = struct {
     allocator: std.mem.Allocator,
-    sessions: []SessionState,
+    sessions: []*SessionState,
     views: []SessionViewState,
     font: *font_mod.Font,
     arrow_cursor: ?*c.SDL_Cursor = null,
@@ -35,7 +35,7 @@ pub const SessionInteractionComponent = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        sessions: []SessionState,
+        sessions: []*SessionState,
         font: *font_mod.Font,
     ) !*SessionInteractionComponent {
         const self = try allocator.create(SessionInteractionComponent);
@@ -160,7 +160,7 @@ pub const SessionInteractionComponent = struct {
                 if (host.view_mode == .Full and event.button.button == c.SDL_BUTTON_LEFT) {
                     const focused_idx = host.focused_session;
                     if (focused_idx >= self.sessions.len) return false;
-                    const focused = &self.sessions[focused_idx];
+                    const focused = self.sessions[focused_idx];
                     const view = &self.views[focused_idx];
 
                     if (focused.spawned and focused.terminal != null) {
@@ -208,7 +208,7 @@ pub const SessionInteractionComponent = struct {
                 if (host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
                     if (focused_idx < self.sessions.len) {
-                        var focused = &self.sessions[focused_idx];
+                        var focused = self.sessions[focused_idx];
                         const view = &self.views[focused_idx];
                         const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows);
 
@@ -284,7 +284,7 @@ pub const SessionInteractionComponent = struct {
                 );
                 if (hovered_session) |session_idx| {
                     if (session_idx >= self.sessions.len) return false;
-                    var session = &self.sessions[session_idx];
+                    var session = self.sessions[session_idx];
                     const view = &self.views[session_idx];
                     const ticks_per_notch: isize = SCROLL_LINES_PER_TICK;
                     const wheel_ticks: isize = if (event.wheel.integer_y != 0)
@@ -357,7 +357,7 @@ pub const SessionInteractionComponent = struct {
         if (delta_ms <= 0) return;
 
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
-        for (self.sessions, 0..) |*session, idx| {
+        for (self.sessions, 0..) |session, idx| {
             updateScrollInertia(session, &self.views[idx], delta_time_s);
         }
     }
@@ -857,7 +857,7 @@ fn calculateHoveredSession(
     host: *const types.UiHost,
 ) ?usize {
     return switch (host.view_mode) {
-        .Grid => {
+        .Grid, .GridResizing => {
             if (mouse_x < 0 or mouse_x >= host.window_w or
                 mouse_y < 0 or mouse_y >= host.window_h) return null;
 

@@ -23,8 +23,11 @@ extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
 
 const PENDING_WRITE_SHRINK_THRESHOLD: usize = 64 * 1024;
+const SESSION_ID_BUF_LEN: usize = 32;
+var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
+    slot_index: usize,
     id: usize,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
@@ -35,7 +38,7 @@ pub const SessionState = struct {
     dead: bool = false,
     shell_path: []const u8,
     pty_size: pty_mod.winsize,
-    session_id_z: [16:0]u8,
+    session_id_z: [SESSION_ID_BUF_LEN:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
     cwd_path: ?[]const u8 = null,
@@ -46,9 +49,8 @@ pub const SessionState = struct {
     pending_write: std.ArrayListUnmanaged(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
-    /// Completion structure for process wait callback.
-    process_completion: xev.Completion = .{},
-    /// Context for disambiguating process exit callbacks.
+    /// Context for disambiguating process exit callbacks. Includes its own completion struct
+    /// so each process watcher has an independent completion that won't be corrupted on relaunch.
     process_wait_ctx: ?*WaitContext = null,
     /// Incremented whenever a new watcher is armed to ignore stale completions.
     process_generation: usize = 0,
@@ -58,6 +60,8 @@ pub const SessionState = struct {
         generation: usize,
         pid: posix.pid_t,
         orphaned: bool = false,
+        /// Each WaitContext has its own completion to avoid corruption when relaunching.
+        completion: xev.Completion = .{},
     };
 
     pub const InitError = shell_mod.Shell.SpawnError || MakeNonBlockingError || error{
@@ -79,18 +83,16 @@ pub const SessionState = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        id: usize,
+        slot_index: usize,
         shell_path: []const u8,
         size: pty_mod.winsize,
-        session_id_z: [:0]const u8,
         notify_sock: [:0]const u8,
     ) InitError!SessionState {
-        var session_id_buf: [16:0]u8 = undefined;
-        @memcpy(session_id_buf[0..session_id_z.len], session_id_z);
-        session_id_buf[session_id_z.len] = 0;
+        const session_id_buf = [_:0]u8{0} ** SESSION_ID_BUF_LEN;
 
         return SessionState{
-            .id = id,
+            .slot_index = slot_index,
+            .id = 0,
             .shell = null,
             .terminal = null,
             .stream = null,
@@ -117,6 +119,7 @@ pub const SessionState = struct {
 
         // Bump generation to invalidate any stale callbacks from a previous shell; wrapping is intentional.
         self.process_generation +%= 1;
+        self.assignNewSessionId();
 
         const shell = try shell_mod.Shell.spawn(
             self.shell_path,
@@ -168,7 +171,7 @@ pub const SessionState = struct {
 
             process.wait(
                 loop,
-                &self.process_completion,
+                &wait_ctx.completion,
                 WaitContext,
                 wait_ctx,
                 processExitCallback,
@@ -186,6 +189,17 @@ pub const SessionState = struct {
         self.seedCwd(working_dir) catch |err| {
             log.warn("failed to record cwd for session {d}: {}", .{ self.id, err });
         };
+    }
+
+    fn assignNewSessionId(self: *SessionState) void {
+        const new_id = next_session_id.fetchAdd(1, .seq_cst);
+        self.id = new_id;
+        const written = std.fmt.bufPrint(&self.session_id_z, "{d}", .{new_id}) catch |err| {
+            log.warn("failed to format session id {d}: {}", .{ new_id, err });
+            self.session_id_z[0] = 0;
+            return;
+        };
+        self.session_id_z[written.len] = 0;
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
@@ -314,9 +328,13 @@ pub const SessionState = struct {
         try self.ensureSpawned();
     }
 
-    pub fn relaunchWithDir(self: *SessionState, working_dir: [:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+    pub fn relaunch(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         self.resetForRespawn();
         try self.ensureSpawnedWithDir(working_dir, loop_opt);
+    }
+
+    pub fn relaunchWithDir(self: *SessionState, working_dir: [:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+        return self.relaunch(working_dir, loop_opt);
     }
 
     fn resetForRespawn(self: *SessionState) void {
@@ -518,6 +536,31 @@ fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
 }
 
 pub const MakeNonBlockingError = posix.FcntlError;
+
+test "SessionState assigns incrementing ids" {
+    const allocator = std.testing.allocator;
+    next_session_id.store(0, .seq_cst);
+
+    const size = pty_mod.winsize{
+        .ws_row = 24,
+        .ws_col = 80,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    defer first.deinit(allocator);
+    first.assignNewSessionId();
+    try std.testing.expectEqual(@as(usize, 0), first.id);
+    try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
+
+    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock);
+    defer second.deinit(allocator);
+    second.assignNewSessionId();
+    try std.testing.expectEqual(@as(usize, 1), second.id);
+    try std.testing.expectEqualStrings("1", std.mem.sliceTo(second.session_id_z[0..], 0));
+}
 
 fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
     const flags = try posix.fcntl(fd, posix.F.GETFL, 0);

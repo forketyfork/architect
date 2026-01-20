@@ -70,7 +70,7 @@ pub fn calculateHoveredSession(
     grid_rows: usize,
 ) ?usize {
     return switch (anim_state.mode) {
-        .Grid => {
+        .Grid, .GridResizing => {
             if (mouse_x < 0 or mouse_x >= render_width or
                 mouse_y < 0 or mouse_y >= render_height) return null;
 
@@ -113,7 +113,7 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
 
 pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize) TerminalSize {
     return switch (mode) {
-        .Grid, .Expanding, .Collapsing => {
+        .Grid, .Expanding, .Collapsing, .GridResizing => {
             const grid_dim = @max(grid_cols, grid_rows);
             const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
             const effective_scale: f32 = base_grid_scale * grid_font_scale;
@@ -130,13 +130,13 @@ pub fn scaledFontSize(points: c_int, scale: f32) c_int {
 
 pub fn gridFontScaleForMode(mode: app_state.ViewMode, grid_font_scale: f32) f32 {
     return switch (mode) {
-        .Grid, .Expanding, .Collapsing => grid_font_scale,
+        .Grid, .Expanding, .Collapsing, .GridResizing => grid_font_scale,
         else => 1.0,
     };
 }
 
 pub fn applyTerminalResize(
-    sessions: []SessionState,
+    sessions: []const *SessionState,
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
@@ -153,7 +153,7 @@ pub fn applyTerminalResize(
         .ws_ypixel = @intCast(usable_height),
     };
 
-    for (sessions) |*session| {
+    for (sessions) |session| {
         session.pty_size = new_size;
         if (session.spawned) {
             const shell = &(session.shell orelse continue);

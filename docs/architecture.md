@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Architect is a terminal multiplexer displaying interactive sessions in a grid with smooth expand/collapse animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
+Architect is a terminal multiplexer displaying interactive sessions in a grid with smooth expand/collapse and resize/reflow animations. It is organized around five layers: platform abstraction, input handling, session management, scene rendering, and a UI overlay system.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -61,6 +61,8 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - Renders all components in z-order after the scene
 - Reports `needsFrame()` when any component requires animation
 - Owns per-session `SessionViewState` via `SessionInteractionComponent` (selection, hover, scrollback state)
+
+Grid slots are ordered independently of session IDs: slot indices drive UI focus and shortcuts, while each `SessionState` receives a monotonic `id` used for external notifications. Slots may be compacted without changing session IDs. Grid resize animations are canceled when the last terminal is relaunched so the renderer does not keep animating stale cell geometry, and runtime logs (including short frame traces) capture the close/relaunch path for debugging.
 
 **UiAssets** provides shared rendering resources:
 - `FontCache` stores configured fonts keyed by pixel size, so terminal rendering and UI components reuse a single loaded font set instead of opening per-component instances.
@@ -163,7 +165,7 @@ src/
 
 ### View Modes (`app_state.ViewMode`)
 ```
-Grid         → 3×3 overview, all sessions visible
+Grid         → Dynamic grid overview, all sessions visible
 Expanding    → Animating from grid cell to fullscreen
 Full         → Single session fullscreen
 Collapsing   → Animating from fullscreen to grid cell
@@ -171,6 +173,7 @@ PanningLeft  → Horizontal pan animation (moving left)
 PanningRight → Horizontal pan animation (moving right)
 PanningUp    → Vertical pan animation (moving up)
 PanningDown  → Vertical pan animation (moving down)
+GridResizing → Grid is expanding or shrinking (adding/removing cells)
 ```
 
 ### Session Status (`app_state.SessionStatus`)

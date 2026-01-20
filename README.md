@@ -31,12 +31,13 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Agent-Focused
 - **Status highlights** — agents glow when awaiting approval or done, so you never miss a prompt
-- **Grid view** — keep 4+ agents visible simultaneously, expand any one to full screen
+- **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
+- **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches
 
 ### Terminal Essentials
-- Smooth expand/collapse animations between grid and focused views
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch, ⌘W to close, ⌘/ for shortcuts
+- Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close (restarts if it's the only terminal), ⌘/ for shortcuts
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Kitty keyboard protocol for enhanced key handling
@@ -107,9 +108,9 @@ just build
 Architect stores configuration in `~/.config/architect/`:
 
 * `config.toml`: read-only user preferences (edit via `⌘,`).
-* `persistence.toml`: runtime state (window position/size, font size), managed automatically.
+* `persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically.
 
-Common settings include font family, theme colors, and grid rows/cols. Remove the files to reset to the default values.
+Common settings include font family, theme colors, and grid font scale. The grid size is dynamic and adapts to the number of terminals. Remove the files to reset to the default values.
 
 ## Troubleshooting
 
