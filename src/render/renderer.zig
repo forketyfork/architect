@@ -65,6 +65,7 @@ pub const RenderCache = struct {
     pub fn anyDirty(self: *RenderCache, sessions: []const *SessionState) bool {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
+            if (!session.spawned) continue;
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
         }
         return false;
@@ -100,10 +101,14 @@ pub fn render(
     const grid_dim = @max(grid_cols, grid_rows);
     const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
     const grid_scale: f32 = base_grid_scale * grid_font_scale;
+    const grid_capacity: usize = @min(sessions.len, grid_cols * grid_rows);
 
     switch (anim_state.mode) {
         .Grid => {
-            for (sessions, 0..) |session, i| {
+            var i: usize = 0;
+            while (i < grid_capacity) : (i += 1) {
+                const session = sessions[i];
+                if (!session.spawned) continue;
                 const grid_row: c_int = @intCast(i / grid_cols);
                 const grid_col: c_int = @intCast(i % grid_cols);
 
@@ -173,8 +178,11 @@ pub fn render(
             else
                 1.0 - (1.0 - grid_scale) * eased;
 
-            for (sessions, 0..) |session, i| {
+            var i: usize = 0;
+            while (i < grid_capacity) : (i += 1) {
+                const session = sessions[i];
                 if (i != anim_state.focused_session) {
+                    if (!session.spawned) continue;
                     const grid_row: c_int = @intCast(i / grid_cols);
                     const grid_col: c_int = @intCast(i % grid_cols);
 
@@ -710,6 +718,10 @@ fn renderGridSessionCached(
     current_time_ms: i64,
     theme: *const colors.Theme,
 ) RenderError!void {
+    if (!session.spawned) {
+        cache_entry.presented_epoch = session.render_epoch;
+        return;
+    }
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
 
     if (can_cache) {

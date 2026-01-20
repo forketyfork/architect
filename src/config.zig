@@ -335,6 +335,10 @@ pub const Persistence = struct {
         }, &writer.writer);
 
         if (self.terminal_paths.items.len > 0) {
+            const serialized = writer.written();
+            if (serialized.len > 0 and serialized[serialized.len - 1] != '\n') {
+                try writer.writer.writeByte('\n');
+            }
             try writer.writer.writeAll("terminals = [");
             for (self.terminal_paths.items, 0..) |path, idx| {
                 if (idx != 0) try writer.writer.writeAll(", ");
