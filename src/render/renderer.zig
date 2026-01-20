@@ -101,12 +101,12 @@ pub fn render(
     const grid_dim = @max(grid_cols, grid_rows);
     const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
     const grid_scale: f32 = base_grid_scale * grid_font_scale;
-    const grid_capacity: usize = @min(sessions.len, grid_cols * grid_rows);
+    const grid_slots_to_render: usize = @min(sessions.len, grid_cols * grid_rows);
 
     switch (anim_state.mode) {
         .Grid => {
             var i: usize = 0;
-            while (i < grid_capacity) : (i += 1) {
+            while (i < grid_slots_to_render) : (i += 1) {
                 const session = sessions[i];
                 if (!session.spawned) continue;
                 const grid_row: c_int = @intCast(i / grid_cols);
@@ -179,7 +179,7 @@ pub fn render(
                 1.0 - (1.0 - grid_scale) * eased;
 
             var i: usize = 0;
-            while (i < grid_capacity) : (i += 1) {
+            while (i < grid_slots_to_render) : (i += 1) {
                 const session = sessions[i];
                 if (i != anim_state.focused_session) {
                     if (!session.spawned) continue;
