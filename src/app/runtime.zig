@@ -695,6 +695,9 @@ pub fn run() !void {
                     input_text.handleTextInput(focused, &ime_composition, scaled_event.text.text, session_interaction_component) catch |err| {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
+                    if (anim_state.mode == .Grid) {
+                        session_interaction_component.setAttention(anim_state.focused_session, false);
+                    }
                 },
                 c.SDL_EVENT_TEXT_EDITING => {
                     const focused = sessions[anim_state.focused_session];
@@ -1783,6 +1786,11 @@ pub fn run() !void {
     }
 
     if (builtin.os.tag == .macos) {
+        const now = std.time.milliTimestamp();
+        for (sessions) |session| {
+            session.updateCwd(now);
+        }
+
         persistence.clearTerminalPaths(allocator);
         for (sessions, 0..) |session, idx| {
             if (!session.spawned or session.dead) continue;
