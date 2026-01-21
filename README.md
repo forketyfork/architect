@@ -25,7 +25,11 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 >
 > The application is experimental and may have bugs, stability issues, or unexpected behavior.
 
-![Architect Demo](docs/assets/architect-demo.gif)
+
+
+https://github.com/user-attachments/assets/a4e28a63-557a-44f3-9bae-47b2fd0a5dc6
+
+
 
 ## Features
 
