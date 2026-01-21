@@ -327,33 +327,40 @@ pub const Persistence = struct {
             else => return err,
         };
 
+        try self.saveToPath(allocator, persistence_path);
+    }
+
+    pub fn saveToPath(self: Persistence, allocator: std.mem.Allocator, path: []const u8) !void {
         var writer = std.Io.Writer.Allocating.init(allocator);
         defer writer.deinit();
+        try self.serializeToWriter(&writer.writer);
+        const serialized = writer.written();
 
+        const file = try fs.createFileAbsolute(path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(serialized);
+    }
+
+    pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
         // Write font_size first (top-level scalar)
-        try writer.writer.print("font_size = {d}\n", .{self.font_size});
+        try writer.print("font_size = {d}\n", .{self.font_size});
 
         // Write terminals array before any sections
         if (self.terminal_paths.items.len > 0) {
-            try writer.writer.writeAll("terminals = [");
+            try writer.writeAll("terminals = [");
             for (self.terminal_paths.items, 0..) |path, idx| {
-                if (idx != 0) try writer.writer.writeAll(", ");
-                try writeTomlString(&writer.writer, path);
+                if (idx != 0) try writer.writeAll(", ");
+                try writeTomlStringToWriter(writer, path);
             }
-            try writer.writer.writeAll("]\n");
+            try writer.writeAll("]\n");
         }
 
         // Write [window] section last
-        try writer.writer.writeAll("[window]\n");
-        try writer.writer.print("height = {d}\n", .{self.window.height});
-        try writer.writer.print("width = {d}\n", .{self.window.width});
-        try writer.writer.print("x = {d}\n", .{self.window.x});
-        try writer.writer.print("y = {d}\n", .{self.window.y});
-        const serialized = writer.written();
-
-        const file = try fs.createFileAbsolute(persistence_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(serialized);
+        try writer.writeAll("[window]\n");
+        try writer.print("height = {d}\n", .{self.window.height});
+        try writer.print("width = {d}\n", .{self.window.width});
+        try writer.print("x = {d}\n", .{self.window.x});
+        try writer.print("y = {d}\n", .{self.window.y});
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
@@ -407,6 +414,10 @@ pub const Persistence = struct {
     }
 
     fn writeTomlString(writer: *std.Io.Writer, value: []const u8) !void {
+        try writeTomlStringToWriter(writer, value);
+    }
+
+    fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {
         _ = try writer.writeByte('"');
         var curr_pos: usize = 0;
         while (curr_pos < value.len) {
@@ -746,14 +757,12 @@ test "Config - parse with all theme palette colors" {
     var result = try parser.parseString(content);
     defer result.deinit();
 
-    var config = result.value;
+    const config = result.value;
 
     try std.testing.expect(config.theme.palette.black != null);
     try std.testing.expectEqualStrings("#0E1116", config.theme.palette.black.?);
     try std.testing.expect(config.theme.palette.red != null);
     try std.testing.expectEqualStrings("#E06C75", config.theme.palette.red.?);
-
-    config.deinit(allocator);
 }
 
 test "parseTerminalKey decodes 1-based coordinates" {
@@ -835,43 +844,7 @@ test "Persistence save/load round-trip preserves all fields" {
     try original.appendTerminalPath(allocator, "/home/user/project2");
     try original.appendTerminalPath(allocator, "/tmp/test");
 
-    const save_impl = struct {
-        fn saveTempFile(self: Persistence, alloc: std.mem.Allocator, path: []const u8) !void {
-            const dir = fs.path.dirname(path) orelse return error.InvalidPath;
-            fs.makeDirAbsolute(dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
-
-            var writer = std.Io.Writer.Allocating.init(alloc);
-            defer writer.deinit();
-
-            try writer.writer.print("font_size = {d}\n", .{self.font_size});
-
-            if (self.terminal_paths.items.len > 0) {
-                try writer.writer.writeAll("terminals = [");
-                for (self.terminal_paths.items, 0..) |terminal_path, idx| {
-                    if (idx != 0) try writer.writer.writeAll(", ");
-                    try Persistence.writeTomlString(&writer.writer, terminal_path);
-                }
-                try writer.writer.writeAll("]\n");
-            }
-
-            try writer.writer.writeAll("[window]\n");
-            try writer.writer.print("height = {d}\n", .{self.window.height});
-            try writer.writer.print("width = {d}\n", .{self.window.width});
-            try writer.writer.print("x = {d}\n", .{self.window.x});
-            try writer.writer.print("y = {d}\n", .{self.window.y});
-
-            const serialized = writer.written();
-
-            const file = try fs.createFileAbsolute(path, .{ .truncate = true });
-            defer file.close();
-            try file.writeAll(serialized);
-        }
-    }.saveTempFile;
-
-    try save_impl(original, allocator, test_file);
+    try original.saveToPath(allocator, test_file);
 
     const file = try fs.openFileAbsolute(test_file, .{});
     defer file.close();
