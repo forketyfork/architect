@@ -4,6 +4,7 @@ const geom = @import("../../geom.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const font_cache = @import("../../font_cache.zig");
+const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../scale.zig");
 const input = @import("../../input/mapper.zig");
 const colors = @import("../../colors.zig");
@@ -15,6 +16,10 @@ const CWD_FONT_SIZE: c_int = 12;
 const CWD_PADDING: c_int = 8;
 const MARQUEE_SPEED: f32 = 30.0;
 const FADE_WIDTH: c_int = 20;
+
+pub fn reservedHeight(ui_scale: f32) c_int {
+    return dpi.scale(CWD_BAR_HEIGHT, ui_scale) + renderer_mod.GRID_BORDER_THICKNESS;
+}
 
 pub const CwdBarComponent = struct {
     allocator: std.mem.Allocator,
@@ -162,13 +167,16 @@ pub const CwdBarComponent = struct {
         const cwd_basename = info.cwd_basename orelse return;
 
         const bar_height = dpi.scale(CWD_BAR_HEIGHT, host.ui_scale);
+        const border_thickness = renderer_mod.GRID_BORDER_THICKNESS;
         const padding = dpi.scale(CWD_PADDING, host.ui_scale);
         const fade_width = dpi.scale(FADE_WIDTH, host.ui_scale);
 
+        if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
+
         const bar_rect = Rect{
-            .x = rect.x,
-            .y = rect.y + rect.h - bar_height,
-            .w = rect.w,
+            .x = rect.x + border_thickness,
+            .y = rect.y + rect.h - bar_height - border_thickness,
+            .w = rect.w - border_thickness * 2,
             .h = bar_height,
         };
 

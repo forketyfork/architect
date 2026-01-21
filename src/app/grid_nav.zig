@@ -90,6 +90,8 @@ pub fn navigateGrid(
     var animation_mode: ?ViewMode = null;
     var is_wrapping = false;
 
+    const current_session = anim_state.focused_session;
+
     switch (direction) {
         .up => {
             if (current_row > 0) {
@@ -137,19 +139,51 @@ pub fn navigateGrid(
         },
     }
 
-    const new_session: usize = new_row * grid_cols + new_col;
-    if (new_session != anim_state.focused_session) {
+    var new_session: usize = new_row * grid_cols + new_col;
+    if (direction == .down and new_row > current_row and new_session < sessions.len and !sessions[new_session].spawned) {
+        var col_idx: usize = grid_cols;
+        while (col_idx > 0) {
+            col_idx -= 1;
+            const candidate = new_row * grid_cols + col_idx;
+            if (candidate >= sessions.len) continue;
+            if (sessions[candidate].spawned) {
+                new_col = col_idx;
+                new_session = candidate;
+                break;
+            }
+        }
+    }
+
+    if (direction == .right and new_row == current_row and new_col > current_col and new_session < sessions.len and !sessions[new_session].spawned) {
+        var found = false;
+        var col_idx: usize = 0;
+        while (col_idx < grid_cols) : (col_idx += 1) {
+            const candidate = new_row * grid_cols + col_idx;
+            if (candidate >= sessions.len) break;
+            if (sessions[candidate].spawned) {
+                new_col = col_idx;
+                new_session = candidate;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            new_session = current_session;
+        }
+    }
+
+    if (new_session != current_session) {
         if (anim_state.mode == .Full) {
             try sessions[new_session].ensureSpawnedWithLoop(loop);
         } else if (show_animation) {
             try sessions[new_session].ensureSpawnedWithLoop(loop);
         }
-        session_interaction.clearSelection(anim_state.focused_session);
+        session_interaction.clearSelection(current_session);
         session_interaction.clearSelection(new_session);
 
         if (animation_mode) |mode| {
             anim_state.mode = mode;
-            anim_state.previous_session = anim_state.focused_session;
+            anim_state.previous_session = current_session;
             anim_state.focused_session = new_session;
             anim_state.start_time = now;
         } else {
