@@ -97,7 +97,7 @@ cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
 
 ### Build from Source
 
-See `docs/development.md` for the full development setup. Quick start:
+See [`docs/development.md`](docs/development.md) for the full development setup. Quick start:
 ```bash
 nix develop
 just build
@@ -121,10 +121,11 @@ Common settings include font family, theme colors, and grid font scale. The grid
 
 ## Documentation
 
-* `docs/architecture.md`: architecture overview and system boundaries.
-* `docs/configuration.md`: detailed configuration reference for `config.toml` and `persistence.toml`.
-* `docs/development.md`: build, test, release, and assistant hook setup.
-* `CLAUDE.md`: agent guidelines for code assistants.
+* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications.
+* [`docs/architecture.md`](docs/architecture.md): architecture overview and system boundaries.
+* [`docs/configuration.md`](docs/configuration.md): detailed configuration reference for `config.toml` and `persistence.toml`.
+* [`docs/development.md`](docs/development.md): build, test, and release process.
+* [`CLAUDE.md`](CLAUDE.md): agent guidelines for code assistants.
 
 ## Related Tools
 
