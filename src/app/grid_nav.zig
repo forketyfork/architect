@@ -155,7 +155,7 @@ pub fn navigateGrid(
     }
 
     if (direction == .right and new_row == current_row and new_col > current_col and new_session < sessions.len and !sessions[new_session].spawned) {
-        var found = false;
+        new_session = current_session;
         var col_idx: usize = 0;
         while (col_idx < grid_cols) : (col_idx += 1) {
             const candidate = new_row * grid_cols + col_idx;
@@ -163,12 +163,8 @@ pub fn navigateGrid(
             if (sessions[candidate].spawned) {
                 new_col = col_idx;
                 new_session = candidate;
-                found = true;
                 break;
             }
-        }
-        if (!found) {
-            new_session = current_session;
         }
     }
 

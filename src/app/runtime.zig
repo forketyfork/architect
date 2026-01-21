@@ -101,7 +101,9 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
     return switch (mode) {
         .Grid, .Expanding, .Collapsing, .GridResizing => blk: {
-            const per_cell_reserve = ui_mod.cwd_bar.reservedHeight(ui_scale);
+            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
+            const can_render_bar = cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale);
+            const per_cell_reserve: c_int = if (can_render_bar) ui_mod.cwd_bar.reservedHeight(ui_scale) else 0;
             const total_reserve: c_int = per_cell_reserve * @as(c_int, @intCast(grid_rows));
             const adjusted: c_int = render_height - total_reserve;
             break :blk if (adjusted > 0) adjusted else 0;

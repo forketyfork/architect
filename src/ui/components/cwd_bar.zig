@@ -21,6 +21,10 @@ pub fn reservedHeight(ui_scale: f32) c_int {
     return dpi.scale(CWD_BAR_HEIGHT, ui_scale) + renderer_mod.GRID_BORDER_THICKNESS;
 }
 
+pub fn minCellHeight(ui_scale: f32) c_int {
+    return reservedHeight(ui_scale) + 1;
+}
+
 pub const CwdBarComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
