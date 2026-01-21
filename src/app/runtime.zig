@@ -98,6 +98,41 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     return null;
 }
 
+fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
+    return switch (mode) {
+        .Grid, .Expanding, .Collapsing, .GridResizing => blk: {
+            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
+            const can_render_bar = cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale);
+            const per_cell_reserve: c_int = if (can_render_bar) ui_mod.cwd_bar.reservedHeight(ui_scale) else 0;
+            const total_reserve: c_int = per_cell_reserve * @as(c_int, @intCast(grid_rows));
+            const adjusted: c_int = render_height - total_reserve;
+            break :blk if (adjusted > 0) adjusted else 0;
+        },
+        else => render_height,
+    };
+}
+
+fn applyTerminalLayout(
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+    font: *font_mod.Font,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    mode: app_state.ViewMode,
+    grid_cols: usize,
+    grid_rows: usize,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+) void {
+    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
+    const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows);
+    full_cols.* = term_size.cols;
+    full_rows.* = term_size.rows;
+    layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height);
+}
+
 const SessionIndexSnapshot = struct {
     session_id: usize,
     index: usize,
@@ -426,7 +461,8 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows);
+    const initial_term_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid.rows);
+    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -439,7 +475,7 @@ pub fn run() !void {
     var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
     const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
-    const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_height = @max(0, initial_term_render_height - renderer_mod.TERMINAL_PADDING * 2);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
@@ -638,15 +674,17 @@ pub fn run() !void {
                         font.metrics = metrics_ptr;
                         ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(UI_FONT_SIZE, ui_scale));
                         ui.assets.ui_font = &ui_font;
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
+                        const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
+                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height);
                     } else {
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
+                        const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
+                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                         full_cols = new_term_size.cols;
                         full_rows = new_term_size.rows;
-                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height);
                     }
                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
@@ -856,7 +894,10 @@ pub fn run() !void {
                                 anim_state.focused_session = 0;
                                 grid.cols = 1;
                                 grid.rows = 1;
+                                cell_width_pixels = render_width;
+                                cell_height_pixels = render_height;
                                 anim_state.mode = .Full;
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             } else if (remaining_count == 1) {
                                 // Only 1 terminal remains - go directly to Full mode, no resize animation
                                 grid.cols = 1;
@@ -872,6 +913,7 @@ pub fn run() !void {
                                     }
                                 }
                                 anim_state.mode = .Full;
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -911,6 +953,7 @@ pub fn run() !void {
 
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
@@ -988,10 +1031,11 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
+                            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
+                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
-                            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+                            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -1054,6 +1098,7 @@ pub fn run() !void {
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(new_idx);
@@ -1390,7 +1435,10 @@ pub fn run() !void {
                         anim_state.focused_session = 0;
                         grid.cols = 1;
                         grid.rows = 1;
+                        cell_width_pixels = render_width;
+                        cell_height_pixels = render_height;
                         anim_state.mode = .Full;
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                     } else if (remaining_count == 1) {
                         // Only 1 terminal remains - go directly to Full mode, no resize animation
                         grid.cols = 1;
@@ -1406,6 +1454,7 @@ pub fn run() !void {
                             }
                         }
                         anim_state.mode = .Full;
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -1444,6 +1493,7 @@ pub fn run() !void {
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
@@ -1693,10 +1743,11 @@ pub fn run() !void {
 
         const desired_font_scale = layout.gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
         if (desired_font_scale != current_grid_font_scale) {
-            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
+            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
+            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
             full_cols = term_size.cols;
             full_rows = term_size.rows;
-            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, render_height);
+            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height);
             current_grid_font_scale = desired_font_scale;
             std.debug.print("Adjusted terminal size for view mode {s}: scale={d:.2} size={d}x{d}\n", .{
                 @tagName(anim_state.mode),

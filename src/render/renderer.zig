@@ -23,6 +23,7 @@ const GridLayout = grid_layout.GridLayout;
 
 const ATTENTION_THICKNESS: c_int = 3;
 pub const TERMINAL_PADDING: c_int = 8;
+pub const GRID_BORDER_THICKNESS: c_int = ATTENTION_THICKNESS;
 const FAINT_FACTOR: f32 = 0.6;
 const CURSOR_COLOR = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
 const DARK_FALLBACK = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
