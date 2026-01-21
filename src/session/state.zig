@@ -59,7 +59,6 @@ pub const SessionState = struct {
         session: *SessionState,
         generation: usize,
         pid: posix.pid_t,
-        orphaned: bool = false,
         /// Each WaitContext has its own completion to avoid corruption when relaunching.
         completion: xev.Completion = .{},
     };
@@ -212,19 +211,14 @@ pub const SessionState = struct {
             self.cwd_basename = null;
         }
 
-        // Clean up process watcher. We mark the context as orphaned so the callback frees it
-        // when it eventually fires. If the callback never fires (process still running at
-        // shutdown), the WaitContext (~40 bytes) leaks. This is acceptable because:
-        // (1) it only happens at app shutdown when the OS reclaims all memory anyway,
-        // (2) proper cancellation via xev's cancel API would require threading the loop
-        //     through to deinit, adding complexity for negligible benefit,
-        // (3) there's no race condition since xev is single-threaded.
+        // Clean up process watcher. Deinit cancels the watch, so the callback won't fire.
+        // Free the context immediately rather than relying on the callback to clean up.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            ctx.orphaned = true;
+            allocator.destroy(ctx);
             self.process_wait_ctx = null;
         }
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
@@ -273,13 +267,6 @@ pub const SessionState = struct {
         r: xev.Process.WaitError!u32,
     ) xev.CallbackAction {
         const ctx = ctx_opt orelse return .disarm;
-
-        // If the session was deinited, free the context and bail.
-        if (ctx.orphaned) {
-            ctx.session.allocator.destroy(ctx);
-            return .disarm;
-        }
-
         const self = ctx.session;
 
         // Ignore completions from stale watchers (after despawn/restart) or mismatched PID.
@@ -340,14 +327,14 @@ pub const SessionState = struct {
     fn resetForRespawn(self: *SessionState) void {
         self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);
-        // Clean up process watcher. The orphaned flag ensures the callback (which will fire
-        // when the old process exits) frees the context without affecting the new session state.
+        // Clean up process watcher. Deinit cancels the watch and frees the context immediately.
+        // The generation bump ensures we ignore any stale exit events.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            ctx.orphaned = true;
+            self.allocator.destroy(ctx);
             self.process_wait_ctx = null;
         }
         // Wrap intentionally: generation just invalidates prior watchers.

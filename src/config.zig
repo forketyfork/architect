@@ -327,30 +327,40 @@ pub const Persistence = struct {
             else => return err,
         };
 
+        try self.saveToPath(allocator, persistence_path);
+    }
+
+    pub fn saveToPath(self: Persistence, allocator: std.mem.Allocator, path: []const u8) !void {
         var writer = std.Io.Writer.Allocating.init(allocator);
         defer writer.deinit();
-        try toml.serialize(allocator, TomlPersistenceSerialized{
-            .window = self.window,
-            .font_size = self.font_size,
-        }, &writer.writer);
-
-        if (self.terminal_paths.items.len > 0) {
-            const serialized = writer.written();
-            if (serialized.len > 0 and serialized[serialized.len - 1] != '\n') {
-                try writer.writer.writeByte('\n');
-            }
-            try writer.writer.writeAll("terminals = [");
-            for (self.terminal_paths.items, 0..) |path, idx| {
-                if (idx != 0) try writer.writer.writeAll(", ");
-                try writeTomlString(&writer.writer, path);
-            }
-            try writer.writer.writeAll("]\n");
-        }
+        try self.serializeToWriter(&writer.writer);
         const serialized = writer.written();
 
-        const file = try fs.createFileAbsolute(persistence_path, .{ .truncate = true });
+        const file = try fs.createFileAbsolute(path, .{ .truncate = true });
         defer file.close();
         try file.writeAll(serialized);
+    }
+
+    pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
+        // Write font_size first (top-level scalar)
+        try writer.print("font_size = {d}\n", .{self.font_size});
+
+        // Write terminals array before any sections
+        if (self.terminal_paths.items.len > 0) {
+            try writer.writeAll("terminals = [");
+            for (self.terminal_paths.items, 0..) |path, idx| {
+                if (idx != 0) try writer.writeAll(", ");
+                try writeTomlStringToWriter(writer, path);
+            }
+            try writer.writeAll("]\n");
+        }
+
+        // Write [window] section last
+        try writer.writeAll("[window]\n");
+        try writer.print("height = {d}\n", .{self.window.height});
+        try writer.print("width = {d}\n", .{self.window.width});
+        try writer.print("x = {d}\n", .{self.window.x});
+        try writer.print("y = {d}\n", .{self.window.y});
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
@@ -404,6 +414,10 @@ pub const Persistence = struct {
     }
 
     fn writeTomlString(writer: *std.Io.Writer, value: []const u8) !void {
+        try writeTomlStringToWriter(writer, value);
+    }
+
+    fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {
         _ = try writer.writeByte('"');
         var curr_pos: usize = 0;
         while (curr_pos < value.len) {
@@ -706,6 +720,51 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(false, config.ui.enable_animations);
 }
 
+test "Config - parse with all theme palette colors" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\[font]
+        \\size = 14
+        \\
+        \\[theme]
+        \\background = "#0E1116"
+        \\foreground = "#CDD6E0"
+        \\
+        \\[theme.palette]
+        \\black = "#0E1116"
+        \\red = "#E06C75"
+        \\green = "#98C379"
+        \\yellow = "#D19A66"
+        \\blue = "#61AFEF"
+        \\magenta = "#C678DD"
+        \\cyan = "#56B6C2"
+        \\white = "#ABB2BF"
+        \\bright_black = "#5C6370"
+        \\bright_red = "#E06C75"
+        \\bright_green = "#98C379"
+        \\bright_yellow = "#E5C07B"
+        \\bright_blue = "#61AFEF"
+        \\bright_magenta = "#C678DD"
+        \\bright_cyan = "#56B6C2"
+        \\bright_white = "#CDD6E0"
+        \\
+    ;
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(content);
+    defer result.deinit();
+
+    const config = result.value;
+
+    try std.testing.expect(config.theme.palette.black != null);
+    try std.testing.expectEqualStrings("#0E1116", config.theme.palette.black.?);
+    try std.testing.expect(config.theme.palette.red != null);
+    try std.testing.expectEqualStrings("#E06C75", config.theme.palette.red.?);
+}
+
 test "parseTerminalKey decodes 1-based coordinates" {
     const parsed = parseTerminalKey("terminal_2_3").?;
     try std.testing.expectEqual(@as(usize, 1), parsed.row);
@@ -759,4 +818,65 @@ test "Persistence.appendLegacyTerminals migrates row-major order" {
     try std.testing.expectEqual(@as(usize, 2), persistence.terminal_paths.items.len);
     try std.testing.expectEqualStrings("/a", persistence.terminal_paths.items[0]);
     try std.testing.expectEqualStrings("/b", persistence.terminal_paths.items[1]);
+}
+
+test "Persistence save/load round-trip preserves all fields" {
+    const allocator = std.testing.allocator;
+
+    const tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const test_file = try fs.path.join(allocator, &[_][]const u8{ tmp_path, "test_persistence.toml" });
+    defer allocator.free(test_file);
+
+    var original = Persistence.init(allocator);
+    defer original.deinit(allocator);
+
+    original.window.width = 1920;
+    original.window.height = 1080;
+    original.window.x = 100;
+    original.window.y = 200;
+    original.font_size = 16;
+    try original.appendTerminalPath(allocator, "/home/user/project1");
+    try original.appendTerminalPath(allocator, "/home/user/project2");
+    try original.appendTerminalPath(allocator, "/tmp/test");
+
+    try original.saveToPath(allocator, test_file);
+
+    const file = try fs.openFileAbsolute(test_file, .{});
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(contents);
+
+    var loaded = Persistence.init(allocator);
+    defer loaded.deinit(allocator);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV2).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(contents);
+    defer result.deinit();
+
+    loaded.window = result.value.window;
+    loaded.font_size = result.value.font_size;
+
+    if (result.value.terminals) |paths| {
+        for (paths) |path| {
+            try loaded.appendTerminalPath(allocator, path);
+        }
+    }
+
+    try std.testing.expectEqual(original.window.width, loaded.window.width);
+    try std.testing.expectEqual(original.window.height, loaded.window.height);
+    try std.testing.expectEqual(original.window.x, loaded.window.x);
+    try std.testing.expectEqual(original.window.y, loaded.window.y);
+    try std.testing.expectEqual(original.font_size, loaded.font_size);
+    try std.testing.expectEqual(original.terminal_paths.items.len, loaded.terminal_paths.items.len);
+
+    for (original.terminal_paths.items, loaded.terminal_paths.items) |orig_path, load_path| {
+        try std.testing.expectEqualStrings(orig_path, load_path);
+    }
 }
