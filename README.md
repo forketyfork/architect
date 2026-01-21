@@ -6,7 +6,7 @@
 
 ![Architect Hero](docs/assets/architect-hero.png)
 
-A terminal built for multi-agent AI coding workflows. Run Claude Code, Codex, or Gemini in parallel and see at a glance which agents need your attention.
+A terminal built for multi-agent AI coding workflows. Run Claude Code, Codex, or Gemini in parallel and see at a glance which agents need your attention. See more in [my article](https://forketyfork.github.io/blog/2026/01/21/running-4-ai-coding-agents-at-once-the-terminal-i-built-to-keep-up/).
 
 Built on [ghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation and SDL3 for rendering.
 
