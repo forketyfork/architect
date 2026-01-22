@@ -168,6 +168,20 @@ pub fn navigateGrid(
         }
     }
 
+    if (direction == .left and is_wrapping and new_session < sessions.len and !sessions[new_session].spawned) {
+        var col_idx: usize = grid_cols;
+        while (col_idx > 0) {
+            col_idx -= 1;
+            const candidate = new_row * grid_cols + col_idx;
+            if (candidate >= sessions.len) continue;
+            if (sessions[candidate].spawned) {
+                new_col = col_idx;
+                new_session = candidate;
+                break;
+            }
+        }
+    }
+
     if (new_session != current_session) {
         if (anim_state.mode == .Full) {
             try sessions[new_session].ensureSpawnedWithLoop(loop);
