@@ -1267,6 +1267,9 @@ pub fn run() !void {
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
                     } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
                         session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
+                        if (anim_state.mode == .Grid) {
+                            session_interaction_component.setAttention(anim_state.focused_session, false);
+                        }
                         try input_keys.handleKeyInput(focused, key, mod);
                     }
                 },
