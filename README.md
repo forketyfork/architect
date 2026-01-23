@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/a4e28a63-557a-44f3-9bae-47b2fd0a5dc6
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close (restarts if it's the only terminal), ⌘/ for shortcuts
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
 - OSC 8 hyperlink support (Cmd+Click to open)
