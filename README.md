@@ -122,6 +122,7 @@ Common settings include font family, theme colors, and grid font scale. The grid
 * **App won't open (Gatekeeper)**: run `xattr -dr com.apple.quarantine Architect.app` after extracting the release.
 * **Font not found**: ensure the font is installed and set `font.family` in `config.toml`. The app falls back to `SFNSMono` on macOS.
 * **Reset configuration**: delete `~/.config/architect/config.toml` and `~/.config/architect/persistence.toml`.
+* **Crash after closing a terminal**: update to the latest build; older builds could crash after terminal close events on macOS.
 * **Known limitations**: emoji fallback is macOS-only; keybindings are currently fixed.
 
 ## Documentation
