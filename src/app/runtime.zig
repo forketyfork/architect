@@ -550,7 +550,7 @@ pub fn run() !void {
     var ime_composition = input_text.ImeComposition{};
     var last_focused_session: usize = anim_state.focused_session;
     var relaunch_trace_frames: u8 = 0;
-    var suppress_window_close_frames: u8 = 0;
+    var window_close_suppress_countdown: u8 = 0;
 
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
@@ -630,7 +630,9 @@ pub fn run() !void {
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
                 if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
-                    suppress_window_close_frames = 2;
+                    // Use 2 frames to cover the delay between Cmd+W and SDL delivering a close request.
+                    // A single frame is not always enough to suppress the close in the next loop.
+                    window_close_suppress_countdown = 2;
                 }
             }
             const focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
@@ -664,8 +666,9 @@ pub fn run() !void {
                     }
                 },
                 c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
-                    if (builtin.os.tag == .macos and suppress_window_close_frames > 0) {
-                        suppress_window_close_frames = 0;
+                    if (builtin.os.tag == .macos and window_close_suppress_countdown > 0) {
+                        // Reset immediately so we only suppress this close request.
+                        window_close_suppress_countdown = 0;
                         continue;
                     }
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
@@ -1862,8 +1865,8 @@ pub fn run() !void {
             }
         }
 
-        if (suppress_window_close_frames > 0) {
-            suppress_window_close_frames -= 1;
+        if (window_close_suppress_countdown > 0) {
+            window_close_suppress_countdown -= 1;
         }
     }
 
