@@ -550,6 +550,7 @@ pub fn run() !void {
     var ime_composition = input_text.ImeComposition{};
     var last_focused_session: usize = anim_state.focused_session;
     var relaunch_trace_frames: u8 = 0;
+    var window_close_suppress_countdown: u8 = 0;
 
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
@@ -623,6 +624,17 @@ pub fn run() !void {
             }
             processed_event = true;
             var scaled_event = layout.scaleEventToRender(&event, scale_x, scale_y);
+            if (builtin.os.tag == .macos and scaled_event.type == c.SDL_EVENT_KEY_DOWN) {
+                const key = scaled_event.key.key;
+                const mod = scaled_event.key.mod;
+                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+                if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
+                    // Use 2 frames to cover the delay between Cmd+W and SDL delivering a close request.
+                    // A single frame is not always enough to suppress the close in the next loop.
+                    window_close_suppress_countdown = 2;
+                }
+            }
             const focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
             const host_snapshot = ui_host.makeUiHost(
                 now,
@@ -652,6 +664,19 @@ pub fn run() !void {
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                         running = false;
                     }
+                },
+                c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                    if (builtin.os.tag == .macos and window_close_suppress_countdown > 0) {
+                        // Reset immediately so we only suppress this close request.
+                        window_close_suppress_countdown = 0;
+                        continue;
+                    }
+                    if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
+                        running = false;
+                    }
+                },
+                c.SDL_EVENT_WINDOW_DESTROYED => {
+                    running = false;
                 },
                 c.SDL_EVENT_WINDOW_MOVED => {
                     window_x = scaled_event.window.data1;
@@ -1290,6 +1315,8 @@ pub fn run() !void {
             }
         }
 
+        if (!running) break;
+
         loop.run(.no_wait) catch |err| {
             log.err("xev loop run failed: {}", .{err});
             return err;
@@ -1836,6 +1863,10 @@ pub fn run() !void {
                 const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
                 std.Thread.sleep(sleep_ns);
             }
+        }
+
+        if (window_close_suppress_countdown > 0) {
+            window_close_suppress_countdown -= 1;
         }
     }
 
