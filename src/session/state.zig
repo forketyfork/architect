@@ -156,9 +156,6 @@ pub const SessionState = struct {
             var process = try xev.Process.init(shell.child_pid);
             errdefer process.deinit();
 
-            if (self.process_wait_ctx) |ctx| {
-                self.allocator.destroy(ctx);
-            }
             const wait_ctx = try self.allocator.create(WaitContext);
             errdefer self.allocator.destroy(wait_ctx);
             wait_ctx.* = .{
@@ -211,16 +208,16 @@ pub const SessionState = struct {
             self.cwd_basename = null;
         }
 
-        // Clean up process watcher. Deinit cancels the watch, so the callback won't fire.
-        // Free the context immediately rather than relying on the callback to clean up.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            allocator.destroy(ctx);
-            self.process_wait_ctx = null;
+            if (ctx.completion.state() == .dead) {
+                allocator.destroy(ctx);
+            }
         }
+        self.process_wait_ctx = null;
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
         self.process_generation +%= 1;
 
@@ -270,17 +267,24 @@ pub const SessionState = struct {
         const self = ctx.session;
 
         // Ignore completions from stale watchers (after despawn/restart) or mismatched PID.
-        const shell = self.shell orelse return .disarm;
-        if (ctx.generation != self.process_generation or ctx.pid != shell.child_pid) {
+        const shell = self.shell orelse {
+            const is_current = self.process_wait_ctx == ctx;
             self.allocator.destroy(ctx);
-            if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+            if (is_current) self.process_wait_ctx = null;
+            return .disarm;
+        };
+        if (ctx.generation != self.process_generation or ctx.pid != shell.child_pid) {
+            const is_current = self.process_wait_ctx == ctx;
+            self.allocator.destroy(ctx);
+            if (is_current) self.process_wait_ctx = null;
             return .disarm;
         }
 
         const exit_code = r catch |err| {
             log.err("process wait error for session {d}: {}", .{ self.id, err });
+            const is_current = self.process_wait_ctx == ctx;
             self.allocator.destroy(ctx);
-            if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+            if (is_current) self.process_wait_ctx = null;
             return .disarm;
         };
 
@@ -288,8 +292,9 @@ pub const SessionState = struct {
         self.markDirty();
         log.info("session {d} process exited with code {d}", .{ self.id, exit_code });
 
+        const is_current = self.process_wait_ctx == ctx;
         self.allocator.destroy(ctx);
-        if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+        if (is_current) self.process_wait_ctx = null;
 
         return .disarm;
     }
@@ -327,16 +332,16 @@ pub const SessionState = struct {
     fn resetForRespawn(self: *SessionState) void {
         self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);
-        // Clean up process watcher. Deinit cancels the watch and frees the context immediately.
-        // The generation bump ensures we ignore any stale exit events.
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            self.allocator.destroy(ctx);
-            self.process_wait_ctx = null;
+            if (ctx.completion.state() == .dead) {
+                self.allocator.destroy(ctx);
+            }
         }
+        self.process_wait_ctx = null;
         // Wrap intentionally: generation just invalidates prior watchers.
         self.process_generation +%= 1;
         if (self.spawned) {
