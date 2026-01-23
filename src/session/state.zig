@@ -212,7 +212,11 @@ pub const SessionState = struct {
             watcher.deinit();
             self.process_watcher = null;
         }
-        // WaitContext is released in the exit callback once the completion is disarmed.
+        if (self.process_wait_ctx) |ctx| {
+            if (ctx.completion.state() == .dead) {
+                allocator.destroy(ctx);
+            }
+        }
         self.process_wait_ctx = null;
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
         self.process_generation +%= 1;
@@ -264,20 +268,23 @@ pub const SessionState = struct {
 
         // Ignore completions from stale watchers (after despawn/restart) or mismatched PID.
         const shell = self.shell orelse {
+            const is_current = self.process_wait_ctx == ctx;
             self.allocator.destroy(ctx);
-            if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+            if (is_current) self.process_wait_ctx = null;
             return .disarm;
         };
         if (ctx.generation != self.process_generation or ctx.pid != shell.child_pid) {
+            const is_current = self.process_wait_ctx == ctx;
             self.allocator.destroy(ctx);
-            if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+            if (is_current) self.process_wait_ctx = null;
             return .disarm;
         }
 
         const exit_code = r catch |err| {
             log.err("process wait error for session {d}: {}", .{ self.id, err });
+            const is_current = self.process_wait_ctx == ctx;
             self.allocator.destroy(ctx);
-            if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+            if (is_current) self.process_wait_ctx = null;
             return .disarm;
         };
 
@@ -285,8 +292,9 @@ pub const SessionState = struct {
         self.markDirty();
         log.info("session {d} process exited with code {d}", .{ self.id, exit_code });
 
+        const is_current = self.process_wait_ctx == ctx;
         self.allocator.destroy(ctx);
-        if (self.process_wait_ctx == ctx) self.process_wait_ctx = null;
+        if (is_current) self.process_wait_ctx = null;
 
         return .disarm;
     }
@@ -328,7 +336,11 @@ pub const SessionState = struct {
             watcher.deinit();
             self.process_watcher = null;
         }
-        // WaitContext is released in the exit callback once the completion is disarmed.
+        if (self.process_wait_ctx) |ctx| {
+            if (ctx.completion.state() == .dead) {
+                self.allocator.destroy(ctx);
+            }
+        }
         self.process_wait_ctx = null;
         // Wrap intentionally: generation just invalidates prior watchers.
         self.process_generation +%= 1;
