@@ -1,5 +1,4 @@
 const std = @import("std");
-const posix = std.posix;
 const builtin = @import("builtin");
 
 const log = std.log.scoped(.cwd);

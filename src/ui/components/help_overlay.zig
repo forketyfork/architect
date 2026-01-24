@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -168,7 +169,7 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
@@ -198,7 +199,7 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
@@ -271,7 +272,7 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
+    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
         const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const key_font_size: c_int = dpi.scale(16, ui_scale);

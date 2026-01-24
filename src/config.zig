@@ -249,11 +249,6 @@ pub const Persistence = struct {
         terminals: ?toml.HashMap([]const u8) = null,
     };
 
-    const TomlPersistenceSerialized = struct {
-        window: WindowConfig = .{},
-        font_size: c_int = 14,
-    };
-
     pub fn init(allocator: std.mem.Allocator) Persistence {
         _ = allocator;
         return .{};
@@ -411,10 +406,6 @@ pub const Persistence = struct {
         for (entries.items) |entry| {
             try self.appendTerminalPath(allocator, entry.path);
         }
-    }
-
-    fn writeTomlString(writer: *std.Io.Writer, value: []const u8) !void {
-        try writeTomlStringToWriter(writer, value);
     }
 
     fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {

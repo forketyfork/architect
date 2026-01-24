@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -129,7 +130,7 @@ pub const RestartButtonsComponent = struct {
         }
     }
 
-    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) void {
+    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const colors.Theme, cache: *font_cache.FontCache) void {
         self.ensureTexture(renderer, theme, cache) catch return;
         const text_width = self.tex_w;
         const text_height = self.tex_h;
@@ -186,7 +187,7 @@ pub const RestartButtonsComponent = struct {
         };
     }
 
-    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
+    fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const colors.Theme, cache: *font_cache.FontCache) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
         const fonts = try cache.get(RESTART_BUTTON_FONT_SIZE);

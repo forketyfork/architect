@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -239,7 +240,7 @@ pub const ConfirmDialogComponent = struct {
         _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
     }
 
-    fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
         const cancel_rect = c.SDL_FRect{
@@ -314,7 +315,7 @@ pub const ConfirmDialogComponent = struct {
         };
     }
 
-    fn ensureTextures(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
+    fn ensureTextures(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, theme: *const colors.Theme, cache: *font_cache.FontCache) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null and self.confirm_tex != null and self.cancel_tex != null) return;
         const title_fonts = try cache.get(self.title_font_size);
         const body_fonts = try cache.get(self.body_font_size);

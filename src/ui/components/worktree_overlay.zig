@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -41,7 +42,6 @@ pub const WorktreeOverlayComponent = struct {
     const BUTTON_MARGIN: c_int = 20;
     const BUTTON_ANIMATION_DURATION_MS: i64 = 200;
     const MAX_WORKTREES: usize = 9;
-    const MAX_NON_ROOT_WORKTREES: usize = 8;
     const MODAL_WIDTH: c_int = 520;
     const MODAL_HEIGHT: c_int = 220;
     const MODAL_RADIUS: c_int = 12;
@@ -351,7 +351,7 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
@@ -381,7 +381,7 @@ pub const WorktreeOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
 
         const padding: c_int = dpi.scale(20, ui_scale);
@@ -538,7 +538,7 @@ pub const WorktreeOverlayComponent = struct {
         return best_match;
     }
 
-    fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const colors.Theme) void {
         if (self.flow_animation_start_ms == 0) {
             self.flow_animation_start_ms = host.now_ms;
         }
@@ -700,7 +700,7 @@ pub const WorktreeOverlayComponent = struct {
         return rel;
     }
 
-    fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
+    fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
         const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
@@ -1188,7 +1188,7 @@ pub const WorktreeOverlayComponent = struct {
         return true;
     }
 
-    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.cache orelse return;
         const font_cache = assets.font_cache orelse return;
         const title_fonts = font_cache.get(cache.title_font_size) catch return;
@@ -1293,7 +1293,7 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.cache orelse return;
         const font_cache = assets.font_cache orelse return;
         const title_fonts = font_cache.get(cache.title_font_size) catch return;

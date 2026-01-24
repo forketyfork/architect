@@ -1,7 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
 const types = @import("../types.zig");
-const UiComponent = @import("../component.zig").UiComponent;
 
 pub const MarqueeLabel = struct {
     allocator: std.mem.Allocator,
