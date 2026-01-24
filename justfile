@@ -48,4 +48,6 @@ lint:
 
     zig fmt --check src/
 
+    zig build lint
+
 ci: build test lint

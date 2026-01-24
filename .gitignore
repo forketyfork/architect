@@ -12,5 +12,8 @@ zig-out/
 .zig-cache/
 .cache/
 
+# zwanzig linter cache
+.zwanzig-cache/
+
 
 .DS_Store
