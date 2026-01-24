@@ -1123,12 +1123,12 @@ pub const WorktreeOverlayComponent = struct {
         const x: f32 = event.button.x;
         const y: f32 = event.button.y;
 
-        const inConfirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
+        const in_confirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
             y >= layout.confirm.y and y <= layout.confirm.y + layout.confirm.h;
-        const inCancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
+        const in_cancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
             y >= layout.cancel.y and y <= layout.cancel.y + layout.cancel.h;
 
-        if (inConfirm) {
+        if (in_confirm) {
             var fake_event: c.SDL_Event = undefined;
             fake_event.type = c.SDL_EVENT_KEY_DOWN;
             fake_event.key.key = c.SDLK_RETURN;
@@ -1136,16 +1136,16 @@ pub const WorktreeOverlayComponent = struct {
             _ = self.handleCreateModalKey(&fake_event, host, actions);
             return true;
         }
-        if (inCancel) {
+        if (in_cancel) {
             self.creating = false;
             self.escape_pressed = false;
             self.clearCreateInput();
             return true;
         }
 
-        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+        const in_modal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
             y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
-        if (inModal) {
+        if (in_modal) {
             return true;
         }
 
@@ -1161,26 +1161,26 @@ pub const WorktreeOverlayComponent = struct {
         const x: f32 = event.button.x;
         const y: f32 = event.button.y;
 
-        const inConfirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
+        const in_confirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
             y >= layout.confirm.y and y <= layout.confirm.y + layout.confirm.h;
-        const inCancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
+        const in_cancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
             y >= layout.cancel.y and y <= layout.cancel.y + layout.cancel.h;
 
-        if (inConfirm) {
+        if (in_confirm) {
             if (self.pending_removal_path) |path| {
                 self.emitRemove(actions, host.focused_session, path);
             }
             self.clearPendingRemoval();
             return true;
         }
-        if (inCancel) {
+        if (in_cancel) {
             self.clearPendingRemoval();
             return true;
         }
 
-        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+        const in_modal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
             y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
-        if (inModal) {
+        if (in_modal) {
             return true;
         }
 

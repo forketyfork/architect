@@ -9,6 +9,7 @@ const c = if (is_macos) @cImport({
     @cInclude("objc/message.h");
 }) else struct {};
 
+// zwanzig-disable-next-line: identifier-style
 pub const InputSourceTracker = if (is_macos) struct {
     source: ?c.TISInputSourceRef = null,
     id: ?c.CFStringRef = null,
@@ -54,6 +55,7 @@ pub const InputSourceTracker = if (is_macos) struct {
         if (try self.restoreWithAppKit()) return;
 
         if (self.source) |source| {
+            // zwanzig-disable-next-line: identifier-style
             const status = c.TISSelectInputSource(source);
             if (status != 0) return Error.SetInputSourceFailed;
         }
@@ -123,6 +125,7 @@ pub const InputSourceTracker = if (is_macos) struct {
         const value_raw = c.CFDictionaryGetValue(props, subkey) orelse return false;
         const value: c.CFTypeRef = @ptrCast(value_raw);
 
+        // zwanzig-disable-next-line: identifier-style
         const type_id = c.CFGetTypeID(value);
         if (type_id == c.CFNumberGetTypeID()) {
             var number: i64 = 0;
@@ -139,9 +142,11 @@ pub const InputSourceTracker = if (is_macos) struct {
         return false;
     }
 
+    // zwanzig-disable: identifier-style
     const ObjcMsgSend = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
     const ObjcMsgSendSet = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) void;
     const ObjcMsgSendBool = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) u8;
+    // zwanzig-enable: identifier-style
 } else struct {
     pub const Error = error{};
 

@@ -231,6 +231,7 @@ pub const MetricsConfig = struct {
 };
 
 pub const Persistence = struct {
+    // zwanzig-disable-next-line: identifier-style
     const TerminalKeyPrefix = "terminal_";
 
     window: WindowConfig = .{},

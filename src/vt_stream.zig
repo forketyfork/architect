@@ -4,6 +4,7 @@ const shell_mod = @import("shell.zig");
 
 const log = std.log.scoped(.vt_stream);
 
+// zwanzig-disable-next-line: identifier-style
 const ReadonlyHandler = @typeInfo(@TypeOf(ghostty_vt.Terminal.vtHandler)).@"fn".return_type.?;
 
 /// Stream handler that keeps terminal state in sync (via the built-in

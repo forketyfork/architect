@@ -8,6 +8,7 @@ pub const MetricKind = enum(u8) {
     frame_count,
 };
 
+// zwanzig-disable-next-line: identifier-style
 const METRIC_COUNT = @typeInfo(MetricKind).@"enum".fields.len;
 
 pub const Metrics = struct {
