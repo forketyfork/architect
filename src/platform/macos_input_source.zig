@@ -142,11 +142,9 @@ pub const InputSourceTracker = if (is_macos) struct {
         return false;
     }
 
-    // zwanzig-disable: identifier-style
     const ObjcMsgSend = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
     const ObjcMsgSendSet = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) void;
     const ObjcMsgSendBool = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) u8;
-    // zwanzig-enable: identifier-style
 } else struct {
     pub const Error = error{};
 

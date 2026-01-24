@@ -14,7 +14,6 @@ pub const winsize = extern struct {
     ws_ypixel: u16 = 600,
 };
 
-// zwanzig-disable-next-line: identifier-style
 pub const Pty = switch (builtin.os.tag) {
     .macos, .linux => PosixPty,
     else => @compileError("Unsupported platform for PTY"),
@@ -28,7 +27,6 @@ pub const Mode = packed struct {
 const PosixPty = struct {
     pub const Error = OpenError || GetModeError || SetSizeError || ChildPreExecError;
 
-    // zwanzig-disable-next-line: identifier-style
     pub const Fd = posix.fd_t;
 
     const TIOCSCTTY = if (builtin.os.tag == .macos) 536900705 else c.TIOCSCTTY;
