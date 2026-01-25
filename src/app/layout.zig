@@ -92,7 +92,7 @@ pub fn calculateHoveredSession(
 }
 
 pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32) TerminalSize {
-    const padding = renderer_mod.TERMINAL_PADDING * 2;
+    const padding = renderer_mod.terminal_padding * 2;
     const usable_w = @max(0, window_width - padding);
     const usable_h = @max(0, window_height - padding);
     const scaled_cell_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * grid_font_scale)));
@@ -143,8 +143,8 @@ pub fn applyTerminalResize(
     render_width: c_int,
     render_height: c_int,
 ) void {
-    const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
-    const usable_height = @max(0, render_height - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_width = @max(0, render_width - renderer_mod.terminal_padding * 2);
+    const usable_height = @max(0, render_height - renderer_mod.terminal_padding * 2);
 
     const new_size = pty_mod.winsize{
         .ws_row = rows,

@@ -22,8 +22,8 @@ const log = std.log.scoped(.session_state);
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
 
-const PENDING_WRITE_SHRINK_THRESHOLD: usize = 64 * 1024;
-const SESSION_ID_BUF_LEN: usize = 32;
+const pending_write_shrink_threshold: usize = 64 * 1024;
+const session_id_buf_len: usize = 32;
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -38,7 +38,7 @@ pub const SessionState = struct {
     dead: bool = false,
     shell_path: []const u8,
     pty_size: pty_mod.winsize,
-    session_id_z: [SESSION_ID_BUF_LEN:0]u8,
+    session_id_z: [session_id_buf_len:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
     cwd_path: ?[]const u8 = null,
@@ -87,7 +87,7 @@ pub const SessionState = struct {
         size: pty_mod.winsize,
         notify_sock: [:0]const u8,
     ) InitError!SessionState {
-        const session_id_buf = [_:0]u8{0} ** SESSION_ID_BUF_LEN;
+        const session_id_buf = [_:0]u8{0} ** session_id_buf_len;
 
         return SessionState{
             .slot_index = slot_index,
@@ -562,7 +562,7 @@ fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
 }
 
 fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
-    if (buf.items.len == 0 and buf.capacity > PENDING_WRITE_SHRINK_THRESHOLD) {
+    if (buf.items.len == 0 and buf.capacity > pending_write_shrink_threshold) {
         buf.shrinkAndFree(allocator, 0);
     }
 }
@@ -572,13 +572,13 @@ test "pending write shrinks when empty and over threshold" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(allocator);
 
-    try buf.ensureTotalCapacity(allocator, PENDING_WRITE_SHRINK_THRESHOLD + 10);
-    buf.items.len = PENDING_WRITE_SHRINK_THRESHOLD + 10;
+    try buf.ensureTotalCapacity(allocator, pending_write_shrink_threshold + 10);
+    buf.items.len = pending_write_shrink_threshold + 10;
     buf.clearRetainingCapacity();
 
     const before = buf.capacity;
-    try std.testing.expect(before > PENDING_WRITE_SHRINK_THRESHOLD);
+    try std.testing.expect(before > pending_write_shrink_threshold);
 
     maybeShrinkPendingWrite(&buf, allocator);
-    try std.testing.expect(buf.capacity <= PENDING_WRITE_SHRINK_THRESHOLD);
+    try std.testing.expect(buf.capacity <= pending_write_shrink_threshold);
 }

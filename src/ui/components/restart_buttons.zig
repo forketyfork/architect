@@ -16,11 +16,11 @@ pub const RestartButtonsComponent = struct {
     tex_w: c_int = 0,
     tex_h: c_int = 0,
 
-    const RESTART_BUTTON_FONT_SIZE: c_int = 20;
-    const RESTART_BUTTON_HEIGHT: c_int = 40;
-    const RESTART_BUTTON_PADDING: c_int = 12;
-    const RESTART_BUTTON_MARGIN: c_int = 8;
-    const RESTART_BUTTON_RADIUS: c_int = 8;
+    const restart_button_font_size: c_int = 20;
+    const restart_button_height: c_int = 40;
+    const restart_button_padding: c_int = 12;
+    const restart_button_margin: c_int = 8;
+    const restart_button_radius: c_int = 8;
 
     pub fn init(allocator: std.mem.Allocator) !*RestartButtonsComponent {
         const self = try allocator.create(RestartButtonsComponent);
@@ -134,10 +134,10 @@ pub const RestartButtonsComponent = struct {
         self.ensureTexture(renderer, theme, cache) catch return;
         const text_width = self.tex_w;
         const text_height = self.tex_h;
-        const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = RESTART_BUTTON_HEIGHT;
-        const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-        const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
+        const button_w = text_width + restart_button_padding * 2;
+        const button_h = restart_button_height;
+        const button_x = rect.x + rect.w - button_w - restart_button_margin;
+        const button_y = rect.y + rect.h - button_h - restart_button_margin;
 
         const button_rect = geom.Rect{
             .x = button_x,
@@ -159,9 +159,9 @@ pub const RestartButtonsComponent = struct {
 
         const acc = theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, button_rect, RESTART_BUTTON_RADIUS);
+        primitives.drawRoundedBorder(renderer, button_rect, restart_button_radius);
 
-        const text_x = button_x + RESTART_BUTTON_PADDING;
+        const text_x = button_x + restart_button_padding;
         const text_y = button_y + @divFloor(button_h - text_height, 2);
 
         const dest_rect = c.SDL_FRect{
@@ -175,10 +175,10 @@ pub const RestartButtonsComponent = struct {
 
     fn restartButtonRect(self: *RestartButtonsComponent, rect: geom.Rect) geom.Rect {
         const text_width = if (self.tex_w > 0) self.tex_w else 80;
-        const button_w = text_width + RESTART_BUTTON_PADDING * 2;
-        const button_h = RESTART_BUTTON_HEIGHT;
-        const button_x = rect.x + rect.w - button_w - RESTART_BUTTON_MARGIN;
-        const button_y = rect.y + rect.h - button_h - RESTART_BUTTON_MARGIN;
+        const button_w = text_width + restart_button_padding * 2;
+        const button_h = restart_button_height;
+        const button_x = rect.x + rect.w - button_w - restart_button_margin;
+        const button_y = rect.y + rect.h - button_h - restart_button_margin;
         return geom.Rect{
             .x = button_x,
             .y = button_y,
@@ -190,7 +190,7 @@ pub const RestartButtonsComponent = struct {
     fn ensureTexture(self: *RestartButtonsComponent, renderer: ?*c.SDL_Renderer, theme: *const colors.Theme, cache: *font_cache.FontCache) !void {
         if (self.texture != null and !self.isDirty()) return;
         const r = renderer orelse return error.MissingRenderer;
-        const fonts = try cache.get(RESTART_BUTTON_FONT_SIZE);
+        const fonts = try cache.get(restart_button_font_size);
         const icon_font = fonts.regular;
 
         const restart_text = "Restart";

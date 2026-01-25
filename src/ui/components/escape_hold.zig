@@ -16,13 +16,13 @@ pub const EscapeHoldComponent = struct {
     font: *font_mod.Font,
     first_frame: FirstFrameGuard = .{},
 
-    const ESC_HOLD_TOTAL_MS: i64 = 700;
-    const ESC_INDICATOR_DELAY_MS: i64 = 150;
-    const ESC_ARC_COUNT: usize = 5;
-    const ESC_VISIBLE_DURATION_MS: i64 = ESC_HOLD_TOTAL_MS - ESC_INDICATOR_DELAY_MS;
-    const ESC_ARC_SEGMENT_MS: i64 = ESC_VISIBLE_DURATION_MS / ESC_ARC_COUNT;
-    const ESC_INDICATOR_MARGIN: c_int = 40;
-    const ESC_INDICATOR_RADIUS: c_int = 30;
+    const esc_hold_total_ms: i64 = 700;
+    const esc_indicator_delay_ms: i64 = 150;
+    const esc_arc_count: usize = 5;
+    const esc_visible_duration_ms: i64 = esc_hold_total_ms - esc_indicator_delay_ms;
+    const esc_arc_segment_ms: i64 = esc_visible_duration_ms / esc_arc_count;
+    const esc_indicator_margin: c_int = 40;
+    const esc_indicator_radius: c_int = 30;
 
     pub fn init(allocator: std.mem.Allocator, font: *font_mod.Font) !*EscapeHoldComponent {
         const comp = try allocator.create(EscapeHoldComponent);
@@ -51,7 +51,7 @@ pub const EscapeHoldComponent = struct {
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 if (event.key.key == c.SDLK_ESCAPE and !event.key.repeat) {
-                    self.gesture.start(host.now_ms, ESC_HOLD_TOTAL_MS);
+                    self.gesture.start(host.now_ms, esc_hold_total_ms);
                     self.first_frame.markTransition();
                     return true;
                 }
@@ -84,7 +84,7 @@ pub const EscapeHoldComponent = struct {
         }
 
         if (self.gesture.consumed) {
-            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + ESC_HOLD_TOTAL_MS);
+            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + esc_hold_total_ms);
             const flash_duration_ms: i64 = 200;
             if (elapsed_since_complete >= flash_duration_ms) {
                 self.gesture.stop();
@@ -102,12 +102,12 @@ pub const EscapeHoldComponent = struct {
         if (!self.gesture.active) return;
 
         const elapsed = host.now_ms - self.gesture.start_ms;
-        if (elapsed < ESC_INDICATOR_DELAY_MS) return;
+        if (elapsed < esc_indicator_delay_ms) return;
 
-        const display_elapsed = elapsed - ESC_INDICATOR_DELAY_MS;
-        const completed_arcs = @min(ESC_ARC_COUNT, @as(usize, @intCast(@divFloor(display_elapsed, ESC_ARC_SEGMENT_MS))));
-        const margin = dpi.scale(ESC_INDICATOR_MARGIN, host.ui_scale);
-        const radius = dpi.scale(ESC_INDICATOR_RADIUS, host.ui_scale);
+        const display_elapsed = elapsed - esc_indicator_delay_ms;
+        const completed_arcs = @min(esc_arc_count, @as(usize, @intCast(@divFloor(display_elapsed, esc_arc_segment_ms))));
+        const margin = dpi.scale(esc_indicator_margin, host.ui_scale);
+        const radius = dpi.scale(esc_indicator_radius, host.ui_scale);
         const ring_half_thickness = dpi.scale(4, host.ui_scale);
         const center_offset = dpi.scale(10, host.ui_scale);
         const center_x = margin + radius + center_offset;
@@ -160,20 +160,23 @@ pub const EscapeHoldComponent = struct {
         const y = center_y - @divFloor(text_height, 2);
 
         for (esc_text) |ch| {
-            self.font.renderGlyph(ch, x, y, self.font.cell_width, self.font.cell_height, text_color) catch continue;
+            self.font.renderGlyph(ch, x, y, self.font.cell_width, self.font.cell_height, text_color) catch |err| {
+                log.warn("failed to render glyph: {}", .{err});
+                continue;
+            };
             x += self.font.cell_width;
         }
 
         const arc_segments: usize = 32;
-        const degrees_per_arc: f32 = 360.0 / @as(f32, @floatFromInt(ESC_ARC_COUNT));
+        const degrees_per_arc: f32 = 360.0 / @as(f32, @floatFromInt(esc_arc_count));
         const gap_degrees: f32 = 8.0;
 
-        const all_complete = completed_arcs >= ESC_ARC_COUNT;
+        const all_complete = completed_arcs >= esc_arc_count;
         var flash_brightness: f32 = 1.0;
         var flash_scale: f32 = 1.0;
 
         if (all_complete and self.gesture.active) {
-            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + ESC_HOLD_TOTAL_MS);
+            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + esc_hold_total_ms);
             if (elapsed_since_complete >= 0) {
                 const flash_duration_ms: i64 = 200;
                 const flash_progress = @min(1.0, @as(f32, @floatFromInt(elapsed_since_complete)) / @as(f32, @floatFromInt(flash_duration_ms)));
@@ -184,7 +187,7 @@ pub const EscapeHoldComponent = struct {
         }
 
         var arc: usize = 0;
-        while (arc < ESC_ARC_COUNT) : (arc += 1) {
+        while (arc < esc_arc_count) : (arc += 1) {
             const is_completed = arc < completed_arcs;
             var color = if (is_completed)
                 c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 } // bright blue accent

@@ -2,7 +2,7 @@ const std = @import("std");
 const geom = @import("../geom.zig");
 const easing = @import("../anim/easing.zig");
 
-pub const ANIMATION_DURATION_MS: i64 = 300;
+pub const animation_duration_ms: i64 = 300;
 
 pub const SessionStatus = enum {
     idle,
@@ -49,13 +49,13 @@ pub const AnimationState = struct {
 
     pub fn getCurrentRect(self: *const AnimationState, current_time: i64) Rect {
         const elapsed = current_time - self.start_time;
-        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+        const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
         return interpolateRect(self.start_rect, self.target_rect, progress);
     }
 
     pub fn isComplete(self: *const AnimationState, current_time: i64) bool {
         const elapsed = current_time - self.start_time;
-        return elapsed >= ANIMATION_DURATION_MS;
+        return elapsed >= animation_duration_ms;
     }
 };
 

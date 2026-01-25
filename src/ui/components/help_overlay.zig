@@ -51,13 +51,13 @@ const Cache = struct {
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
-    overlay: ExpandingOverlay = ExpandingOverlay.init(0, HELP_BUTTON_MARGIN, HELP_BUTTON_SIZE_SMALL, HELP_BUTTON_SIZE_LARGE, HELP_BUTTON_ANIMATION_DURATION_MS),
+    overlay: ExpandingOverlay = ExpandingOverlay.init(0, help_button_margin, help_button_size_small, help_button_size_large, help_button_animation_duration_ms),
     cache: ?*Cache = null,
     first_frame: FirstFrameGuard = .{},
-    const HELP_BUTTON_SIZE_SMALL: c_int = 40;
-    const HELP_BUTTON_SIZE_LARGE: c_int = 440;
-    const HELP_BUTTON_MARGIN: c_int = 20;
-    const HELP_BUTTON_ANIMATION_DURATION_MS: i64 = 200;
+    const help_button_size_small: c_int = 40;
+    const help_button_size_large: c_int = 440;
+    const help_button_margin: c_int = 20;
+    const help_button_animation_duration_ms: i64 = 200;
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(HelpOverlayComponent);

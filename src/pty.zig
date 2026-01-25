@@ -6,7 +6,7 @@ const posix = std.posix;
 
 const log = std.log.scoped(.pty);
 
-// zwanzig-disable-next-line: identifier-style
+// zwanzig-disable: identifier-style
 pub const winsize = extern struct {
     ws_row: u16 = 24,
     ws_col: u16 = 80,

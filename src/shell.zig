@@ -26,14 +26,14 @@ var terminfo_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
 var terminfo_dir_z: ?[:0]const u8 = null;
 var tic_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
-const FALLBACK_TERM = "xterm-256color";
-const ARCHITECT_TERM = "xterm-ghostty";
-const DEFAULT_COLORTERM = "truecolor";
-const DEFAULT_LANG = "en_US.UTF-8";
-const DEFAULT_TERM_PROGRAM = "Architect";
+const fallback_term = "xterm-256color";
+const architect_term = "xterm-ghostty";
+const default_colorterm = "truecolor";
+const default_lang = "en_US.UTF-8";
+const default_term_program = "Architect";
 
 // Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
-const ARCHITECT_TERMINFO_SRC = assets.xterm_ghostty;
+const architect_terminfo_src = assets.xterm_ghostty;
 
 fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
     if (posix.getenv(name) != null) return;
@@ -56,7 +56,7 @@ pub fn ensureTerminfoSetup() void {
 
     // Install to ~/.cache/architect/terminfo
     const home = posix.getenv("HOME") orelse {
-        log.warn("HOME not set, cannot install terminfo, falling back to {s}", .{FALLBACK_TERM});
+        log.warn("HOME not set, cannot install terminfo, falling back to {s}", .{fallback_term});
         return;
     };
 
@@ -119,13 +119,13 @@ pub fn ensureTerminfoSetup() void {
         return;
     };
     defer src_file.close();
-    src_file.writeAll(ARCHITECT_TERMINFO_SRC) catch |err| {
+    src_file.writeAll(architect_terminfo_src) catch |err| {
         log.warn("Failed to write terminfo source: {}", .{err});
         return;
     };
 
     const tic_path = findExecutableInPath("tic") orelse {
-        log.warn("tic not found in PATH, falling back to {s}", .{FALLBACK_TERM});
+        log.warn("tic not found in PATH, falling back to {s}", .{fallback_term});
         return;
     };
 
@@ -150,14 +150,14 @@ pub fn ensureTerminfoSetup() void {
         _ = std.c.waitpid(fork_result, &status, 0);
 
         if (wifexited(status) and wexitstatus(status) == 0) {
-            log.info("Successfully compiled {s} terminfo to {s}", .{ ARCHITECT_TERM, cache_dir_z });
+            log.info("Successfully compiled {s} terminfo to {s}", .{ architect_term, cache_dir_z });
             terminfo_dir_z = cache_dir_z;
             terminfo_available = true;
         } else {
-            log.warn("tic failed to compile terminfo (status={}), falling back to {s}", .{ status, FALLBACK_TERM });
+            log.warn("tic failed to compile terminfo (status={}), falling back to {s}", .{ status, fallback_term });
         }
     } else {
-        log.warn("Failed to fork for tic, falling back to {s}", .{FALLBACK_TERM});
+        log.warn("Failed to fork for tic, falling back to {s}", .{fallback_term});
     }
 }
 
@@ -167,7 +167,10 @@ fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
     var it = std.mem.splitScalar(u8, path_env_slice, ':');
     while (it.next()) |dir| {
         if (dir.len == 0) continue;
-        const candidate = std.fmt.bufPrintZ(&tic_path_buf, "{s}/{s}", .{ dir, name }) catch continue;
+        const candidate = std.fmt.bufPrintZ(&tic_path_buf, "{s}/{s}", .{ dir, name }) catch |err| {
+            log.warn("failed to format candidate path: {}", .{err});
+            continue;
+        };
         if (std.fs.cwd().statFile(candidate)) |_| {
             return candidate;
         } else |_| {}
@@ -184,8 +187,8 @@ pub const Shell = struct {
         ExecFailed,
     } || pty_mod.Pty.Error;
 
-    const NAME_SESSION: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
-    const NAME_SOCK: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
+    const name_session: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
+    const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
 
     pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
@@ -205,10 +208,10 @@ pub const Shell = struct {
             // session metadata injected for external notification hooks.
             try pty_instance.childPreExec();
 
-            if (libc.setenv(NAME_SESSION.ptr, session_id, 1) != 0) {
+            if (libc.setenv(name_session.ptr, session_id, 1) != 0) {
                 std.c._exit(1);
             }
-            if (libc.setenv(NAME_SOCK.ptr, notify_sock, 1) != 0) {
+            if (libc.setenv(name_sock.ptr, notify_sock, 1) != 0) {
                 std.c._exit(1);
             }
 
@@ -220,23 +223,23 @@ pub const Shell = struct {
                     // We installed to cache, set TERMINFO to point there
                     setEnv("TERMINFO", dir);
                 }
-                setEnv("TERM", ARCHITECT_TERM);
+                setEnv("TERM", architect_term);
             } else {
-                setEnv("TERM", FALLBACK_TERM);
+                setEnv("TERM", fallback_term);
             }
-            setDefaultEnv("COLORTERM", DEFAULT_COLORTERM);
-            setDefaultEnv("LANG", DEFAULT_LANG);
-            setDefaultEnv("TERM_PROGRAM", DEFAULT_TERM_PROGRAM);
+            setDefaultEnv("COLORTERM", default_colorterm);
+            setDefaultEnv("LANG", default_lang);
+            setDefaultEnv("TERM_PROGRAM", default_term_program);
 
             // Change to specified directory or home directory before spawning shell.
             // Try working_dir first, fall back to HOME.
             const target_dir = working_dir orelse posix.getenv("HOME");
             if (target_dir) |dir| {
-                posix.chdir(dir) catch {
-                    // Errors are intentionally ignored: we're in a forked child process where
-                    // logging is impractical, and chdir failure is non-fatal (shell starts in
-                    // the parent's cwd instead).
-                };
+                // zwanzig-disable: empty-catch-engine
+                // Errors are intentionally ignored: we're in a forked child process where
+                // logging is impractical, and chdir failure is non-fatal (shell starts in
+                // the parent's cwd instead).
+                posix.chdir(dir) catch {};
             }
 
             posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
@@ -254,7 +257,7 @@ pub const Shell = struct {
         if (!warned_env_defaults) {
             warned_env_defaults = true;
             if (posix.getenv("TERM") == null or posix.getenv("LANG") == null) {
-                log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ FALLBACK_TERM, DEFAULT_LANG });
+                log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ fallback_term, default_lang });
             }
         }
 
