@@ -2,8 +2,8 @@ const std = @import("std");
 const fs = std.fs;
 const toml = @import("toml");
 
-pub const MIN_GRID_FONT_SCALE: f32 = 0.5;
-pub const MAX_GRID_FONT_SCALE: f32 = 3.0;
+pub const min_grid_font_scale: f32 = 0.5;
+pub const max_grid_font_scale: f32 = 3.0;
 
 pub const Color = struct {
     r: u8,
@@ -231,7 +231,7 @@ pub const MetricsConfig = struct {
 };
 
 pub const Persistence = struct {
-    const TerminalKeyPrefix = "terminal_";
+    const terminal_key_prefix = "terminal_";
 
     window: WindowConfig = .{},
     font_size: c_int = 14,
@@ -247,11 +247,6 @@ pub const Persistence = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?toml.HashMap([]const u8) = null,
-    };
-
-    const TomlPersistenceSerialized = struct {
-        window: WindowConfig = .{},
-        font_size: c_int = 14,
     };
 
     pub fn init(allocator: std.mem.Allocator) Persistence {
@@ -413,10 +408,6 @@ pub const Persistence = struct {
         }
     }
 
-    fn writeTomlString(writer: *std.Io.Writer, value: []const u8) !void {
-        try writeTomlStringToWriter(writer, value);
-    }
-
     fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {
         _ = try writer.writeByte('"');
         var curr_pos: usize = 0;
@@ -443,8 +434,8 @@ pub const Persistence = struct {
 };
 
 fn parseTerminalKey(key: []const u8) ?struct { row: usize, col: usize } {
-    if (!std.mem.startsWith(u8, key, Persistence.TerminalKeyPrefix)) return null;
-    const suffix = key[Persistence.TerminalKeyPrefix.len..];
+    if (!std.mem.startsWith(u8, key, Persistence.terminal_key_prefix)) return null;
+    const suffix = key[Persistence.terminal_key_prefix.len..];
     const sep_index = std.mem.indexOfScalar(u8, suffix, '_') orelse return null;
 
     const row_str = suffix[0..sep_index];
@@ -572,7 +563,7 @@ pub const Config = struct {
 
         var config = result.value;
 
-        config.grid.font_scale = std.math.clamp(config.grid.font_scale, MIN_GRID_FONT_SCALE, MAX_GRID_FONT_SCALE);
+        config.grid.font_scale = std.math.clamp(config.grid.font_scale, min_grid_font_scale, max_grid_font_scale);
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
@@ -590,11 +581,11 @@ pub const Config = struct {
     }
 
     pub fn getFontFamily(self: Config) []const u8 {
-        return self.font.family orelse DEFAULT_FONT_FAMILY;
+        return self.font.family orelse default_font_family;
     }
 };
 
-pub const DEFAULT_FONT_FAMILY = "SFNSMono";
+pub const default_font_family = "SFNSMono";
 
 pub const LoadError = error{
     ConfigNotFound,

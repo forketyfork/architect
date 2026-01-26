@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -50,13 +51,13 @@ const Cache = struct {
 
 pub const HelpOverlayComponent = struct {
     allocator: std.mem.Allocator,
-    overlay: ExpandingOverlay = ExpandingOverlay.init(0, HELP_BUTTON_MARGIN, HELP_BUTTON_SIZE_SMALL, HELP_BUTTON_SIZE_LARGE, HELP_BUTTON_ANIMATION_DURATION_MS),
+    overlay: ExpandingOverlay = ExpandingOverlay.init(0, help_button_margin, help_button_size_small, help_button_size_large, help_button_animation_duration_ms),
     cache: ?*Cache = null,
     first_frame: FirstFrameGuard = .{},
-    const HELP_BUTTON_SIZE_SMALL: c_int = 40;
-    const HELP_BUTTON_SIZE_LARGE: c_int = 440;
-    const HELP_BUTTON_MARGIN: c_int = 20;
-    const HELP_BUTTON_ANIMATION_DURATION_MS: i64 = 200;
+    const help_button_size_small: c_int = 40;
+    const help_button_size_large: c_int = 440;
+    const help_button_margin: c_int = 20;
+    const help_button_animation_duration_ms: i64 = 200;
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(HelpOverlayComponent);
@@ -168,7 +169,7 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
@@ -198,7 +199,7 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
         const padding: c_int = dpi.scale(20, ui_scale);
         const line_height: c_int = dpi.scale(28, ui_scale);
@@ -271,7 +272,7 @@ pub const HelpOverlayComponent = struct {
         }
     }
 
-    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
+    fn ensureCache(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
         const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const key_font_size: c_int = dpi.scale(16, ui_scale);

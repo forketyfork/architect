@@ -7,8 +7,8 @@ const easing = @import("../anim/easing.zig");
 const Rect = geom.Rect;
 const log = std.log.scoped(.grid_layout);
 
-pub const MAX_GRID_SIZE: usize = 12;
-pub const MAX_TERMINALS: usize = MAX_GRID_SIZE * MAX_GRID_SIZE;
+pub const max_grid_size: usize = 12;
+pub const max_terminals: usize = max_grid_size * max_grid_size;
 
 /// Represents a position in the grid (column, row).
 pub const GridPosition = struct {
@@ -56,7 +56,7 @@ pub const GridLayout = struct {
     is_resizing: bool,
     allocator: std.mem.Allocator,
 
-    pub const ANIMATION_DURATION_MS: i64 = 300;
+    pub const animation_duration_ms: i64 = 300;
 
     pub fn init(allocator: std.mem.Allocator) !GridLayout {
         return .{
@@ -84,17 +84,17 @@ pub const GridLayout = struct {
 
         // Find smallest grid where cols >= rows and cols * rows >= count
         var rows: usize = 1;
-        while (rows <= MAX_GRID_SIZE) : (rows += 1) {
+        while (rows <= max_grid_size) : (rows += 1) {
             // Start with square, then try cols = rows + 1
             var cols = rows;
-            while (cols <= MAX_GRID_SIZE and cols <= rows + 1) : (cols += 1) {
+            while (cols <= max_grid_size and cols <= rows + 1) : (cols += 1) {
                 if (cols * rows >= count) {
                     return .{ .cols = cols, .rows = rows };
                 }
             }
         }
 
-        return .{ .cols = MAX_GRID_SIZE, .rows = MAX_GRID_SIZE };
+        return .{ .cols = max_grid_size, .rows = max_grid_size };
     }
 
     /// Returns the total capacity of the current grid.
@@ -207,7 +207,7 @@ pub const GridLayout = struct {
         if (!self.is_resizing) return true;
 
         const elapsed = now - self.resize_start_time;
-        if (elapsed >= ANIMATION_DURATION_MS) {
+        if (elapsed >= animation_duration_ms) {
             self.is_resizing = false;
             self.animations.clearRetainingCapacity();
             return true;
@@ -233,7 +233,7 @@ pub const GridLayout = struct {
         for (self.animations.items) |anim| {
             if (anim.session_idx == session_idx) {
                 const elapsed = now - anim.start_time;
-                const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+                const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
                 const eased = easing.easeInOutCubic(progress);
                 return interpolateRect(anim.start_rect, anim.target_rect, eased);
             }
@@ -247,7 +247,7 @@ pub const GridLayout = struct {
     pub fn getResizeProgress(self: *const GridLayout, now: i64) f32 {
         if (!self.is_resizing) return 1.0;
         const elapsed = now - self.resize_start_time;
-        return @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, ANIMATION_DURATION_MS));
+        return @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
     }
 
     fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {

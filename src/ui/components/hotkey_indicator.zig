@@ -19,10 +19,10 @@ pub const HotkeyIndicatorComponent = struct {
     label: [32]u8 = undefined,
     label_len: usize = 0,
 
-    const INDICATOR_MARGIN: c_int = 40;
-    const INDICATOR_RADIUS: c_int = 30;
-    const DISPLAY_DURATION_MS: i64 = 400;
-    const FADE_START_MS: i64 = 200;
+    const indicator_margin: c_int = 40;
+    const indicator_radius: c_int = 30;
+    const display_duration_ms: i64 = 400;
+    const fade_start_ms: i64 = 200;
 
     pub fn init(allocator: std.mem.Allocator, font: *font_mod.Font) !*HotkeyIndicatorComponent {
         const comp = try allocator.create(HotkeyIndicatorComponent);
@@ -61,7 +61,7 @@ pub const HotkeyIndicatorComponent = struct {
         if (!self.active) return;
 
         const elapsed = host.now_ms - self.start_ms;
-        if (elapsed >= DISPLAY_DURATION_MS) {
+        if (elapsed >= display_duration_ms) {
             self.active = false;
         }
     }
@@ -71,7 +71,7 @@ pub const HotkeyIndicatorComponent = struct {
         if (self.first_frame.wantsFrame()) return true;
         if (!self.active) return false;
         const elapsed = host.now_ms - self.start_ms;
-        return elapsed < DISPLAY_DURATION_MS;
+        return elapsed < display_duration_ms;
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
@@ -79,13 +79,13 @@ pub const HotkeyIndicatorComponent = struct {
         if (!self.active) return;
 
         const elapsed = host.now_ms - self.start_ms;
-        if (elapsed >= DISPLAY_DURATION_MS) return;
+        if (elapsed >= display_duration_ms) return;
 
         const alpha = self.getAlpha(host.now_ms);
         if (alpha == 0) return;
 
-        const margin = dpi.scale(INDICATOR_MARGIN, host.ui_scale);
-        const radius = dpi.scale(INDICATOR_RADIUS, host.ui_scale);
+        const margin = dpi.scale(indicator_margin, host.ui_scale);
+        const radius = dpi.scale(indicator_radius, host.ui_scale);
         const ring_half_thickness = dpi.scale(4, host.ui_scale);
         const center_offset = dpi.scale(10, host.ui_scale);
         const center_x = margin + radius + center_offset;
@@ -185,10 +185,16 @@ pub const HotkeyIndicatorComponent = struct {
         var idx: usize = 0;
         while (idx < label_slice.len) {
             const first_byte = label_slice[idx];
-            const seq_len = std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
+            const seq_len = std.unicode.utf8ByteSequenceLength(first_byte) catch |err| blk: {
+                log.warn("invalid UTF-8 sequence length: {}", .{err});
+                break :blk 1;
+            };
             const end = @min(idx + seq_len, label_slice.len);
             const cp_slice = label_slice[idx..end];
-            const codepoint = std.unicode.utf8Decode(cp_slice) catch 0xFFFD;
+            const codepoint = std.unicode.utf8Decode(cp_slice) catch |err| blk: {
+                log.warn("failed to decode UTF-8: {}", .{err});
+                break :blk 0xFFFD;
+            };
             self.font.renderGlyph(codepoint, x, y, self.font.cell_width, self.font.cell_height, text_color) catch |err| {
                 log.debug("failed to render glyph U+{X:0>4}: {}", .{ codepoint, err });
             };
@@ -202,11 +208,11 @@ pub const HotkeyIndicatorComponent = struct {
     fn getAlpha(self: *const HotkeyIndicatorComponent, now_ms: i64) u8 {
         const elapsed = now_ms - self.start_ms;
         if (elapsed < 0) return 0;
-        if (elapsed >= DISPLAY_DURATION_MS) return 0;
-        if (elapsed < FADE_START_MS) return 255;
+        if (elapsed >= display_duration_ms) return 0;
+        if (elapsed < fade_start_ms) return 255;
 
-        const fade_elapsed = elapsed - FADE_START_MS;
-        const fade_duration = DISPLAY_DURATION_MS - FADE_START_MS;
+        const fade_elapsed = elapsed - fade_start_ms;
+        const fade_duration = display_duration_ms - fade_start_ms;
         const progress = @as(f32, @floatFromInt(fade_elapsed)) / @as(f32, @floatFromInt(fade_duration));
         const eased = progress * progress * (3.0 - 2.0 * progress);
         return @intFromFloat(255.0 * (1.0 - eased));
@@ -226,14 +232,21 @@ pub const HotkeyIndicatorComponent = struct {
     };
 };
 
+const log_global = std.log.scoped(.hotkey_indicator);
+
 fn countCodepoints(bytes: []const u8) usize {
     var idx: usize = 0;
     var total: usize = 0;
     while (idx < bytes.len) {
-        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[idx]) catch 1;
+        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[idx]) catch |err| blk: {
+            log_global.warn("invalid UTF-8 sequence length: {}", .{err});
+            break :blk 1;
+        };
         const end = @min(idx + seq_len, bytes.len);
-        // Decode to validate; errors fall back to replacement and still advance one seq.
-        _ = std.unicode.utf8Decode(bytes[idx..end]) catch 0xFFFD;
+        _ = std.unicode.utf8Decode(bytes[idx..end]) catch |err| blk: {
+            log_global.warn("failed to decode UTF-8: {}", .{err});
+            break :blk 0xFFFD;
+        };
         total += 1;
         idx = end;
     }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -41,15 +42,15 @@ pub const ConfirmDialogComponent = struct {
     cancel_w: c_int = 0,
     cancel_h: c_int = 0,
 
-    const MODAL_WIDTH: c_int = 520;
-    const MODAL_HEIGHT: c_int = 220;
-    const MODAL_RADIUS: c_int = 12;
-    const PADDING: c_int = 24;
-    const TITLE_SIZE: c_int = 22;
-    const BODY_SIZE: c_int = 16;
-    const BUTTON_WIDTH: c_int = 136;
-    const BUTTON_HEIGHT: c_int = 40;
-    const BUTTON_GAP: c_int = 12;
+    const modal_width: c_int = 520;
+    const modal_height: c_int = 220;
+    const modal_radius: c_int = 12;
+    const padding: c_int = 24;
+    const title_size: c_int = 22;
+    const body_size: c_int = 16;
+    const button_width: c_int = 136;
+    const button_height: c_int = 40;
+    const button_gap: c_int = 12;
 
     pub fn init(allocator: std.mem.Allocator) !*ConfirmDialogComponent {
         const self = try allocator.create(ConfirmDialogComponent);
@@ -178,8 +179,8 @@ pub const ConfirmDialogComponent = struct {
         const self: *ConfirmDialogComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.visible) return;
         const cache = assets.font_cache orelse return;
-        const title_font_size = dpi.scale(TITLE_SIZE, host.ui_scale);
-        const body_font_size = dpi.scale(BODY_SIZE, host.ui_scale);
+        const title_font_size = dpi.scale(title_size, host.ui_scale);
+        const body_font_size = dpi.scale(body_size, host.ui_scale);
         if (self.title_font_size != title_font_size or self.body_font_size != body_font_size or self.font_generation != cache.generation) {
             self.title_font_size = title_font_size;
             self.body_font_size = body_font_size;
@@ -211,16 +212,16 @@ pub const ConfirmDialogComponent = struct {
         _ = c.SDL_RenderFillRect(renderer, &modal_rect);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, dpi.scale(MODAL_RADIUS, host.ui_scale));
+        primitives.drawRoundedBorder(renderer, modal, dpi.scale(modal_radius, host.ui_scale));
 
         self.renderText(renderer, modal, host.ui_scale);
         self.renderButtons(renderer, modal, host.ui_scale, host.theme);
     }
 
     fn renderText(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
-        const padding = dpi.scale(PADDING, ui_scale);
-        const title_x = modal.x + padding;
-        const title_y = modal.y + padding;
+        const scaled_padding = dpi.scale(padding, ui_scale);
+        const title_x = modal.x + scaled_padding;
+        const title_y = modal.y + scaled_padding;
         const title_rect = c.SDL_FRect{
             .x = @floatFromInt(title_x),
             .y = @floatFromInt(title_y),
@@ -239,7 +240,7 @@ pub const ConfirmDialogComponent = struct {
         _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
     }
 
-    fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
         const cancel_rect = c.SDL_FRect{
@@ -289,8 +290,8 @@ pub const ConfirmDialogComponent = struct {
 
     fn modalRect(self: *ConfirmDialogComponent, host: *const types.UiHost) geom.Rect {
         _ = self;
-        const modal_w = dpi.scale(MODAL_WIDTH, host.ui_scale);
-        const modal_h = dpi.scale(MODAL_HEIGHT, host.ui_scale);
+        const modal_w = dpi.scale(modal_width, host.ui_scale);
+        const modal_h = dpi.scale(modal_height, host.ui_scale);
         return geom.Rect{
             .x = @divFloor(host.window_w - modal_w, 2),
             .y = @divFloor(host.window_h - modal_h, 2),
@@ -301,20 +302,20 @@ pub const ConfirmDialogComponent = struct {
 
     fn buttonRects(self: *ConfirmDialogComponent, modal: geom.Rect, ui_scale: f32) struct { cancel: geom.Rect, confirm: geom.Rect } {
         _ = self;
-        const button_w = dpi.scale(BUTTON_WIDTH, ui_scale);
-        const button_h = dpi.scale(BUTTON_HEIGHT, ui_scale);
-        const gap = dpi.scale(BUTTON_GAP, ui_scale);
-        const padding = dpi.scale(PADDING, ui_scale);
+        const button_w = dpi.scale(button_width, ui_scale);
+        const button_h = dpi.scale(button_height, ui_scale);
+        const gap = dpi.scale(button_gap, ui_scale);
+        const scaled_padding = dpi.scale(padding, ui_scale);
         const total_w = button_w * 2 + gap;
-        const base_x = modal.x + modal.w - total_w - padding;
-        const base_y = modal.y + modal.h - button_h - padding;
+        const base_x = modal.x + modal.w - total_w - scaled_padding;
+        const base_y = modal.y + modal.h - button_h - scaled_padding;
         return .{
             .cancel = .{ .x = base_x, .y = base_y, .w = button_w, .h = button_h },
             .confirm = .{ .x = base_x + button_w + gap, .y = base_y, .w = button_w, .h = button_h },
         };
     }
 
-    fn ensureTextures(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, theme: *const @import("../../colors.zig").Theme, cache: *font_cache.FontCache) !void {
+    fn ensureTextures(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, theme: *const colors.Theme, cache: *font_cache.FontCache) !void {
         if (!self.dirty and self.title_tex != null and self.message_tex != null and self.confirm_tex != null and self.cancel_tex != null) return;
         const title_fonts = try cache.get(self.title_font_size);
         const body_fonts = try cache.get(self.body_font_size);
@@ -331,9 +332,9 @@ pub const ConfirmDialogComponent = struct {
         const title_surface = c.TTF_RenderText_Blended(title_font, self.title_text.ptr, self.title_text.len, title_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(title_surface);
         self.title_tex = c.SDL_CreateTextureFromSurface(renderer, title_surface) orelse return error.TextureFailed;
-        const title_size = textureSize(self.title_tex.?);
-        self.title_w = title_size.x;
-        self.title_h = title_size.y;
+        const tex_title_size = textureSize(self.title_tex.?);
+        self.title_w = tex_title_size.x;
+        self.title_h = tex_title_size.y;
 
         const message_surface = c.TTF_RenderText_Blended(body_font, self.message_text.ptr, self.message_text.len, title_color) orelse return error.SurfaceFailed;
         defer c.SDL_DestroySurface(message_surface);

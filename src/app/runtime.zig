@@ -32,17 +32,17 @@ const open_url = @import("../os/open.zig");
 
 const log = std.log.scoped(.runtime);
 
-const INITIAL_WINDOW_WIDTH = 1200;
-const INITIAL_WINDOW_HEIGHT = 900;
-const DEFAULT_FONT_SIZE: c_int = 14;
-const MIN_FONT_SIZE: c_int = 8;
-const MAX_FONT_SIZE: c_int = 96;
-const FONT_STEP: c_int = 1;
-const UI_FONT_SIZE: c_int = 18;
-const ACTIVE_FRAME_NS: i128 = 16_666_667;
-const IDLE_FRAME_NS: i128 = 50_000_000;
-const MAX_IDLE_RENDER_GAP_NS: i128 = 250_000_000;
-const FOREGROUND_PROCESS_CACHE_MS: i64 = 150;
+const initial_window_width = 1200;
+const initial_window_height = 900;
+const default_font_size: c_int = 14;
+const min_font_size: c_int = 8;
+const max_font_size: c_int = 96;
+const font_step: c_int = 1;
+const ui_font_size: c_int = 18;
+const active_frame_ns: i128 = 16_666_667;
+const idle_frame_ns: i128 = 50_000_000;
+const max_idle_render_gap_ns: i128 = 250_000_000;
+const foreground_process_cache_ms: i64 = 150;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
@@ -62,7 +62,7 @@ const ForegroundProcessCache = struct {
             self.last_check_ms = 0;
         }
         if (self.last_check_ms == 0 or now_ms < self.last_check_ms or
-            now_ms - self.last_check_ms >= FOREGROUND_PROCESS_CACHE_MS)
+            now_ms - self.last_check_ms >= foreground_process_cache_ms)
         {
             self.value = sessions[focused_session].hasForegroundProcess();
             self.last_check_ms = now_ms;
@@ -354,10 +354,10 @@ pub fn run() !void {
             std.debug.print("Failed to load config: {}, using defaults\n", .{err});
         }
         break :blk config_mod.Config{
-            .font = .{ .size = DEFAULT_FONT_SIZE },
+            .font = .{ .size = default_font_size },
             .window = .{
-                .width = INITIAL_WINDOW_WIDTH,
-                .height = INITIAL_WINDOW_HEIGHT,
+                .width = initial_window_width,
+                .height = initial_window_height,
             },
         };
     };
@@ -371,7 +371,7 @@ pub fn run() !void {
         break :blk fallback;
     };
     defer persistence.deinit(allocator);
-    persistence.font_size = std.math.clamp(persistence.font_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
+    persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
@@ -381,7 +381,7 @@ pub fn run() !void {
 
     // Load persisted terminals to determine initial grid size
     const restored_paths = if (builtin.os.tag == .macos) persistence.terminal_paths.items else &[_][]const u8{};
-    const restored_limit = @min(restored_paths.len, grid_layout.MAX_TERMINALS);
+    const restored_limit = @min(restored_paths.len, grid_layout.max_terminals);
     const restored_slice = restored_paths[0..restored_limit];
 
     // Calculate initial grid size based on restored terminals
@@ -450,7 +450,7 @@ pub fn run() !void {
     defer font.deinit();
     font.metrics = metrics_ptr;
 
-    var ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(UI_FONT_SIZE, ui_scale));
+    var ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
@@ -474,8 +474,8 @@ pub fn run() !void {
     var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
     var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
-    const usable_width = @max(0, render_width - renderer_mod.TERMINAL_PADDING * 2);
-    const usable_height = @max(0, initial_term_render_height - renderer_mod.TERMINAL_PADDING * 2);
+    const usable_width = @max(0, render_width - renderer_mod.terminal_padding * 2);
+    const usable_height = @max(0, initial_term_render_height - renderer_mod.terminal_padding * 2);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
@@ -485,8 +485,8 @@ pub fn run() !void {
     };
 
     // Allocate max possible sessions to avoid reallocation
-    const sessions_storage = try allocator.alloc(SessionState, grid_layout.MAX_TERMINALS);
-    const sessions = try allocator.alloc(*SessionState, grid_layout.MAX_TERMINALS);
+    const sessions_storage = try allocator.alloc(SessionState, grid_layout.max_terminals);
+    const sessions = try allocator.alloc(*SessionState, grid_layout.max_terminals);
     var init_count: usize = 0;
     defer {
         var i: usize = 0;
@@ -501,7 +501,7 @@ pub fn run() !void {
     defer loop.deinit();
 
     // Initialize all session slots
-    for (0..grid_layout.MAX_TERMINALS) |i| {
+    for (0..grid_layout.max_terminals) |i| {
         sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock);
         sessions[i] = &sessions_storage[i];
         init_count += 1;
@@ -528,10 +528,10 @@ pub fn run() !void {
 
     init_count = sessions.len;
 
-    const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.MAX_TERMINALS);
+    const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
     defer allocator.free(session_ui_info);
 
-    var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.MAX_TERMINALS);
+    var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.max_terminals);
     defer render_cache.deinit();
 
     var foreground_cache = ForegroundProcessCache{};
@@ -697,7 +697,7 @@ pub fn run() !void {
                         ui_font.deinit();
                         font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(font_size, ui_scale));
                         font.metrics = metrics_ptr;
-                        ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(UI_FONT_SIZE, ui_scale));
+                        ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
                         ui.assets.ui_font = &ui_font;
                         const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
                         const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows);
@@ -1046,8 +1046,8 @@ pub fn run() !void {
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
-                        const delta: c_int = if (direction == .increase) FONT_STEP else -FONT_STEP;
-                        const target_size = std.math.clamp(font_size + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
+                        const delta: c_int = if (direction == .increase) font_step else -font_step;
+                        const target_size = std.math.clamp(font_size + delta, min_font_size, max_font_size);
 
                         if (target_size != font_size) {
                             const new_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(target_size, ui_scale));
@@ -1082,7 +1082,7 @@ pub fn run() !void {
                         if (grid.needsExpansion(spawned_count)) {
                             // Calculate new grid dimensions
                             const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
-                            if (new_dims.cols * new_dims.rows > grid_layout.MAX_TERMINALS) {
+                            if (new_dims.cols * new_dims.rows > grid_layout.max_terminals) {
                                 ui.showToast("Maximum terminals reached", now);
                                 continue;
                             }
@@ -1808,7 +1808,7 @@ pub fn run() !void {
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
-        const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= MAX_IDLE_RENDER_GAP_NS;
+        const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
 
         if (should_render) {
@@ -1856,7 +1856,7 @@ pub fn run() !void {
         // When idle, always throttle to save power regardless of vsync.
         const needs_throttle = is_idle or !sdl.vsync_enabled;
         if (needs_throttle) {
-            const target_frame_ns: i128 = if (is_idle) IDLE_FRAME_NS else ACTIVE_FRAME_NS;
+            const target_frame_ns: i128 = if (is_idle) idle_frame_ns else active_frame_ns;
             const frame_end_ns: i128 = std.time.nanoTimestamp();
             const frame_ns = frame_end_ns - frame_start_ns;
             if (frame_ns < target_frame_ns) {

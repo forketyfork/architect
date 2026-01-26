@@ -6,6 +6,7 @@ const posix = std.posix;
 
 const log = std.log.scoped(.pty);
 
+// zwanzig-disable: identifier-style
 pub const winsize = extern struct {
     ws_row: u16 = 24,
     ws_col: u16 = 80,
@@ -53,7 +54,7 @@ const PosixPty = struct {
     pub const OpenError = error{OpenptyFailed};
 
     pub fn open(size: winsize) OpenError!Pty {
-        var sizeCopy = size;
+        var size_copy = size;
 
         // openpty gives us a connected master/slave pair with the requested
         // window size; we mark the master CLOEXEC to avoid leaking into children.
@@ -64,7 +65,7 @@ const PosixPty = struct {
             &slave_fd,
             null,
             null,
-            @ptrCast(&sizeCopy),
+            @ptrCast(&size_copy),
         ) < 0)
             return error.OpenptyFailed;
         errdefer {

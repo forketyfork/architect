@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -13,7 +14,7 @@ const log = std.log.scoped(.worktree_overlay);
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
-    overlay: ExpandingOverlay = ExpandingOverlay.init(1, BUTTON_MARGIN, BUTTON_SIZE_SMALL, BUTTON_SIZE_LARGE, BUTTON_ANIMATION_DURATION_MS),
+    overlay: ExpandingOverlay = ExpandingOverlay.init(1, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
 
     worktrees: std.ArrayList(Worktree) = .{},
@@ -36,23 +37,22 @@ pub const WorktreeOverlayComponent = struct {
     flow_animation_start_ms: i64 = 0,
     cursor_blink_start_ms: i64 = 0,
 
-    const BUTTON_SIZE_SMALL: c_int = 40;
-    const BUTTON_SIZE_LARGE: c_int = 480;
-    const BUTTON_MARGIN: c_int = 20;
-    const BUTTON_ANIMATION_DURATION_MS: i64 = 200;
-    const MAX_WORKTREES: usize = 9;
-    const MAX_NON_ROOT_WORKTREES: usize = 8;
-    const MODAL_WIDTH: c_int = 520;
-    const MODAL_HEIGHT: c_int = 220;
-    const MODAL_RADIUS: c_int = 12;
-    const MODAL_PADDING: c_int = 24;
-    const BUTTON_WIDTH: c_int = 136;
-    const BUTTON_HEIGHT: c_int = 40;
-    const BUTTON_GAP: c_int = 12;
+    const button_size_small: c_int = 40;
+    const button_size_large: c_int = 480;
+    const button_margin: c_int = 20;
+    const button_animation_duration_ms: i64 = 200;
+    const max_worktrees: usize = 9;
+    const modal_width: c_int = 520;
+    const modal_height: c_int = 220;
+    const modal_radius: c_int = 12;
+    const modal_padding: c_int = 24;
+    const button_width: c_int = 136;
+    const button_height: c_int = 40;
+    const button_gap: c_int = 12;
 
-    const TITLE = "Git Worktrees";
-    const NEW_WORKTREE_LABEL = "New worktree…";
-    const REPOSITORY_ROOT_LABEL = "[repository root]";
+    const title = "Git Worktrees";
+    const new_worktree_label = "New worktree…";
+    const repository_root_label = "[repository root]";
 
     const Worktree = struct {
         abs_path: []const u8,
@@ -351,7 +351,7 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
@@ -381,7 +381,7 @@ pub const WorktreeOverlayComponent = struct {
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
-    fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
 
         const padding: c_int = dpi.scale(20, ui_scale);
@@ -484,11 +484,11 @@ pub const WorktreeOverlayComponent = struct {
                     _ = c.SDL_RenderLine(renderer, x2, y1, x1, y2);
 
                     if (is_hovered) {
-                        const BOLD_LINE_OFFSET: f32 = 1.0;
-                        _ = c.SDL_RenderLine(renderer, x1 + BOLD_LINE_OFFSET, y1, x2 + BOLD_LINE_OFFSET, y2);
-                        _ = c.SDL_RenderLine(renderer, x2 + BOLD_LINE_OFFSET, y1, x1 + BOLD_LINE_OFFSET, y2);
-                        _ = c.SDL_RenderLine(renderer, x1, y1 + BOLD_LINE_OFFSET, x2, y2 + BOLD_LINE_OFFSET);
-                        _ = c.SDL_RenderLine(renderer, x2, y1 + BOLD_LINE_OFFSET, x1, y2 + BOLD_LINE_OFFSET);
+                        const bold_line_offset: f32 = 1.0;
+                        _ = c.SDL_RenderLine(renderer, x1 + bold_line_offset, y1, x2 + bold_line_offset, y2);
+                        _ = c.SDL_RenderLine(renderer, x2 + bold_line_offset, y1, x1 + bold_line_offset, y2);
+                        _ = c.SDL_RenderLine(renderer, x1, y1 + bold_line_offset, x2, y2 + bold_line_offset);
+                        _ = c.SDL_RenderLine(renderer, x2, y1 + bold_line_offset, x1, y2 + bold_line_offset);
                     }
                 }
             }
@@ -538,7 +538,7 @@ pub const WorktreeOverlayComponent = struct {
         return best_match;
     }
 
-    fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderFlowingLine(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, y: c_int, ui_scale: f32, theme: *const colors.Theme) void {
         if (self.flow_animation_start_ms == 0) {
             self.flow_animation_start_ms = host.now_ms;
         }
@@ -657,7 +657,7 @@ pub const WorktreeOverlayComponent = struct {
 
         var root_idx: ?usize = null;
         for (self.worktrees.items, 0..) |wt, i| {
-            if (std.mem.eql(u8, wt.display, REPOSITORY_ROOT_LABEL)) {
+            if (std.mem.eql(u8, wt.display, repository_root_label)) {
                 root_idx = i;
                 break;
             }
@@ -683,12 +683,12 @@ pub const WorktreeOverlayComponent = struct {
             std.mem.sort(Worktree, self.worktrees.items[1..], Context{}, Context.lessThan);
         }
 
-        if (self.worktrees.items.len > MAX_WORKTREES) {
-            for (self.worktrees.items[MAX_WORKTREES..]) |wt| {
+        if (self.worktrees.items.len > max_worktrees) {
+            for (self.worktrees.items[max_worktrees..]) |wt| {
                 self.allocator.free(wt.abs_path);
                 self.allocator.free(wt.display);
             }
-            self.worktrees.items.len = MAX_WORKTREES;
+            self.worktrees.items.len = max_worktrees;
         }
     }
 
@@ -696,11 +696,11 @@ pub const WorktreeOverlayComponent = struct {
         const rel = std.fs.path.relative(self.allocator, base, abs) catch {
             return self.allocator.dupe(u8, abs);
         };
-        if (rel.len == 0) return self.allocator.dupe(u8, REPOSITORY_ROOT_LABEL);
+        if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);
         return rel;
     }
 
-    fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) ?*Cache {
+    fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
         const cache_store = assets.font_cache orelse return null;
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
@@ -728,7 +728,7 @@ pub const WorktreeOverlayComponent = struct {
         };
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, TITLE, title_color) catch {
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, title, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -744,14 +744,17 @@ pub const WorktreeOverlayComponent = struct {
         errdefer self.allocator.free(entries);
 
         const padding = dpi.scale(20, ui_scale);
-        const overlay_width = dpi.scale(BUTTON_SIZE_LARGE, ui_scale);
+        const overlay_width = dpi.scale(button_size_large, ui_scale);
         const hotkey_spacing = dpi.scale(10, ui_scale);
         const trailing_gutter = dpi.scale(32, ui_scale);
 
         for (0..entry_count) |idx| {
             var key_buf: [8]u8 = undefined;
             const digit: u8 = @as(u8, @intCast(idx % 10));
-            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch key_buf[0..0];
+            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
+                log.warn("failed to format hotkey: {}", .{err});
+                break :blk key_buf[0..0];
+            };
             const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
@@ -760,11 +763,14 @@ pub const WorktreeOverlayComponent = struct {
                 return null;
             };
 
-            const path_slice = if (idx == 0) NEW_WORKTREE_LABEL else self.worktrees.items[idx - 1].display;
+            const path_slice = if (idx == 0) new_worktree_label else self.worktrees.items[idx - 1].display;
             const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - trailing_gutter;
 
             var path_buf: [256]u8 = undefined;
-            const truncated_path = truncateTextLeft(path_slice, entry_fonts.regular, max_path_width, &path_buf) catch path_slice;
+            const truncated_path = truncateTextLeft(path_slice, entry_fonts.regular, max_path_width, &path_buf) catch |err| blk: {
+                log.warn("failed to truncate path: {}", .{err});
+                break :blk path_slice;
+            };
             const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(entries[0..idx]);
@@ -845,12 +851,18 @@ pub const WorktreeOverlayComponent = struct {
 
     fn setDisplayBase(self: *WorktreeOverlayComponent, base: []const u8) void {
         self.clearDisplayBase();
-        self.display_base = self.allocator.dupe(u8, base) catch null;
+        self.display_base = self.allocator.dupe(u8, base) catch |err| blk: {
+            log.warn("failed to allocate display base: {}", .{err});
+            break :blk null;
+        };
     }
 
     fn setError(self: *WorktreeOverlayComponent, msg: []const u8) void {
         self.clearError();
-        self.last_error = self.allocator.dupe(u8, msg) catch null;
+        self.last_error = self.allocator.dupe(u8, msg) catch |err| blk: {
+            log.warn("failed to allocate error message: {}", .{err});
+            break :blk null;
+        };
     }
 
     fn pathsEqual(a_opt: ?[]const u8, b_opt: ?[]const u8) bool {
@@ -948,19 +960,19 @@ pub const WorktreeOverlayComponent = struct {
 
     fn createModalLayout(self: *WorktreeOverlayComponent, host: *const types.UiHost) ModalLayout {
         _ = self;
-        const modal_w: c_int = dpi.scale(MODAL_WIDTH, host.ui_scale);
-        const modal_h: c_int = dpi.scale(MODAL_HEIGHT, host.ui_scale);
+        const modal_w: c_int = dpi.scale(modal_width, host.ui_scale);
+        const modal_h: c_int = dpi.scale(modal_height, host.ui_scale);
         const modal_x = @divFloor(host.window_w - modal_w, 2);
         const modal_y = @divFloor(host.window_h - modal_h, 2);
-        const padding: c_int = dpi.scale(MODAL_PADDING, host.ui_scale);
+        const padding: c_int = dpi.scale(modal_padding, host.ui_scale);
 
         const input_h: c_int = dpi.scale(34, host.ui_scale);
-        const button_h: c_int = dpi.scale(BUTTON_HEIGHT, host.ui_scale);
-        const button_w: c_int = dpi.scale(BUTTON_WIDTH, host.ui_scale);
-        const button_gap: c_int = dpi.scale(BUTTON_GAP, host.ui_scale);
+        const button_h: c_int = dpi.scale(button_height, host.ui_scale);
+        const button_w: c_int = dpi.scale(button_width, host.ui_scale);
+        const scaled_button_gap: c_int = dpi.scale(button_gap, host.ui_scale);
         const button_y = modal_y + modal_h - padding - button_h;
         const cancel_x = modal_x + modal_w - padding - button_w;
-        const confirm_x = cancel_x - button_gap - button_w;
+        const confirm_x = cancel_x - scaled_button_gap - button_w;
 
         const input_y = modal_y + padding + dpi.scale(32, host.ui_scale);
         const input_w = modal_w - 2 * padding;
@@ -1009,7 +1021,10 @@ pub const WorktreeOverlayComponent = struct {
         if (self.pending_removal_path) |old_path| {
             self.allocator.free(old_path);
         }
-        self.pending_removal_path = self.allocator.dupe(u8, worktree.abs_path) catch null;
+        self.pending_removal_path = self.allocator.dupe(u8, worktree.abs_path) catch |err| blk: {
+            log.warn("failed to allocate pending removal path: {}", .{err});
+            break :blk null;
+        };
         self.escape_pressed = false;
     }
 
@@ -1032,7 +1047,10 @@ pub const WorktreeOverlayComponent = struct {
 
     fn setCreateError(self: *WorktreeOverlayComponent, msg: []const u8) void {
         if (self.create_error) |err| self.allocator.free(err);
-        self.create_error = self.allocator.dupe(u8, msg) catch null;
+        self.create_error = self.allocator.dupe(u8, msg) catch |err| blk: {
+            log.warn("failed to allocate create error message: {}", .{err});
+            break :blk null;
+        };
     }
 
     fn isValidNameChar(ch: u8) bool {
@@ -1043,9 +1061,9 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8, now_ms: i64) void {
-        const MAX_LEN: usize = 64;
+        const max_len: usize = 64;
         for (text) |ch| {
-            if (self.create_input.items.len >= MAX_LEN) break;
+            if (self.create_input.items.len >= max_len) break;
             if (isValidNameChar(ch)) {
                 self.create_input.append(self.allocator, ch) catch |err| {
                     log.warn("failed to append text input: {}", .{err});
@@ -1123,12 +1141,12 @@ pub const WorktreeOverlayComponent = struct {
         const x: f32 = event.button.x;
         const y: f32 = event.button.y;
 
-        const inConfirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
+        const in_confirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
             y >= layout.confirm.y and y <= layout.confirm.y + layout.confirm.h;
-        const inCancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
+        const in_cancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
             y >= layout.cancel.y and y <= layout.cancel.y + layout.cancel.h;
 
-        if (inConfirm) {
+        if (in_confirm) {
             var fake_event: c.SDL_Event = undefined;
             fake_event.type = c.SDL_EVENT_KEY_DOWN;
             fake_event.key.key = c.SDLK_RETURN;
@@ -1136,16 +1154,16 @@ pub const WorktreeOverlayComponent = struct {
             _ = self.handleCreateModalKey(&fake_event, host, actions);
             return true;
         }
-        if (inCancel) {
+        if (in_cancel) {
             self.creating = false;
             self.escape_pressed = false;
             self.clearCreateInput();
             return true;
         }
 
-        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+        const in_modal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
             y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
-        if (inModal) {
+        if (in_modal) {
             return true;
         }
 
@@ -1161,26 +1179,26 @@ pub const WorktreeOverlayComponent = struct {
         const x: f32 = event.button.x;
         const y: f32 = event.button.y;
 
-        const inConfirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
+        const in_confirm = x >= layout.confirm.x and x <= layout.confirm.x + layout.confirm.w and
             y >= layout.confirm.y and y <= layout.confirm.y + layout.confirm.h;
-        const inCancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
+        const in_cancel = x >= layout.cancel.x and x <= layout.cancel.x + layout.cancel.w and
             y >= layout.cancel.y and y <= layout.cancel.y + layout.cancel.h;
 
-        if (inConfirm) {
+        if (in_confirm) {
             if (self.pending_removal_path) |path| {
                 self.emitRemove(actions, host.focused_session, path);
             }
             self.clearPendingRemoval();
             return true;
         }
-        if (inCancel) {
+        if (in_cancel) {
             self.clearPendingRemoval();
             return true;
         }
 
-        const inModal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
+        const in_modal = x >= layout.modal.x and x <= layout.modal.x + layout.modal.w and
             y >= layout.modal.y and y <= layout.modal.y + layout.modal.h;
-        if (inModal) {
+        if (in_modal) {
             return true;
         }
 
@@ -1188,7 +1206,7 @@ pub const WorktreeOverlayComponent = struct {
         return true;
     }
 
-    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderCreateModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.cache orelse return;
         const font_cache = assets.font_cache orelse return;
         const title_fonts = font_cache.get(cache.title_font_size) catch return;
@@ -1215,10 +1233,13 @@ pub const WorktreeOverlayComponent = struct {
             .y = @intFromFloat(layout.modal.y),
             .w = @intFromFloat(layout.modal.w),
             .h = @intFromFloat(layout.modal.h),
-        }, MODAL_RADIUS);
+        }, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Create worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Create worktree", title_color) catch |err| blk: {
+            log.warn("failed to create title texture: {}", .{err});
+            break :blk null;
+        };
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1245,7 +1266,10 @@ pub const WorktreeOverlayComponent = struct {
         const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
         const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch null;
+        const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch |err| blk: {
+            log.warn("failed to create input texture: {}", .{err});
+            break :blk null;
+        };
         const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
         var text_width: f32 = 0;
         var text_height: f32 = 0;
@@ -1278,7 +1302,10 @@ pub const WorktreeOverlayComponent = struct {
 
         // Error message
         if (self.create_error) |err| {
-            const err_tex = makeTextTexture(renderer, entry_fonts.regular, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch null;
+            const err_tex = makeTextTexture(renderer, entry_fonts.regular, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch |tex_err| blk: {
+                log.warn("operation failed: {}", .{tex_err});
+                break :blk null;
+            };
             if (err_tex) |tex| {
                 defer c.SDL_DestroyTexture(tex.tex);
                 const err_x = layout.input.x;
@@ -1293,7 +1320,7 @@ pub const WorktreeOverlayComponent = struct {
         }
     }
 
-    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const @import("../../colors.zig").Theme) void {
+    fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.cache orelse return;
         const font_cache = assets.font_cache orelse return;
         const title_fonts = font_cache.get(cache.title_font_size) catch return;
@@ -1319,10 +1346,13 @@ pub const WorktreeOverlayComponent = struct {
             .y = @intFromFloat(layout.modal.y),
             .w = @intFromFloat(layout.modal.w),
             .h = @intFromFloat(layout.modal.h),
-        }, MODAL_RADIUS);
+        }, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch null;
+        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch |err| blk: {
+            log.warn("failed to create title texture: {}", .{err});
+            break :blk null;
+        };
         if (title_tex) |tex| {
             defer c.SDL_DestroyTexture(tex.tex);
             const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1340,7 +1370,10 @@ pub const WorktreeOverlayComponent = struct {
                 const worktree = self.worktrees.items[wt_idx];
                 const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
                 const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
-                const message_tex = makeTextTexture(renderer, entry_fonts.regular, worktree.display, message_color) catch null;
+                const message_tex = makeTextTexture(renderer, entry_fonts.regular, worktree.display, message_color) catch |err| blk: {
+                    log.warn("failed to create worktree message texture: {}", .{err});
+                    break :blk null;
+                };
                 if (message_tex) |tex| {
                     defer c.SDL_DestroyTexture(tex.tex);
                     const message_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
@@ -1460,17 +1493,32 @@ pub const WorktreeOverlayComponent = struct {
         defer dir.close();
 
         var iterator = dir.iterate();
-        while (iterator.next() catch null) |entry| {
+        while (iterator.next() catch |err| blk: {
+            log.warn("failed to iterate directory: {}", .{err});
+            break :blk null;
+        }) |entry| {
             if (entry.kind != .directory) continue;
-            const wt_file = std.fs.path.join(self.allocator, &.{ worktrees_dir_buf, entry.name, "worktree" }) catch continue;
+            const wt_file = std.fs.path.join(self.allocator, &.{ worktrees_dir_buf, entry.name, "worktree" }) catch |err| {
+                log.warn("failed to join worktree path: {}", .{err});
+                continue;
+            };
             defer self.allocator.free(wt_file);
             const path = self.readTrimmedFile(wt_file) catch {
-                const gitdir_file = std.fs.path.join(self.allocator, &.{ worktrees_dir_buf, entry.name, "gitdir" }) catch continue;
+                const gitdir_file = std.fs.path.join(self.allocator, &.{ worktrees_dir_buf, entry.name, "gitdir" }) catch |err| {
+                    log.warn("failed to join gitdir path: {}", .{err});
+                    continue;
+                };
                 defer self.allocator.free(gitdir_file);
-                const gitdir_path = self.readTrimmedFile(gitdir_file) catch continue;
+                const gitdir_path = self.readTrimmedFile(gitdir_file) catch |err| {
+                    log.warn("failed to read gitdir file: {}", .{err});
+                    continue;
+                };
                 defer self.allocator.free(gitdir_path);
                 const derived = deriveWorktreePathFromGitdir(gitdir_path);
-                const duped = self.allocator.dupe(u8, derived) catch continue;
+                const duped = self.allocator.dupe(u8, derived) catch |err| {
+                    log.warn("failed to allocate derived path: {}", .{err});
+                    continue;
+                };
                 defer self.allocator.free(duped);
                 _ = self.appendWorktree(duped);
                 continue;
@@ -1496,7 +1544,10 @@ pub const WorktreeOverlayComponent = struct {
         errdefer self.allocator.free(current);
 
         while (true) {
-            const candidate = std.fs.path.join(self.allocator, &.{ current, ".git" }) catch break;
+            const candidate = std.fs.path.join(self.allocator, &.{ current, ".git" }) catch |err| {
+                log.warn("failed to join .git path: {}", .{err});
+                break;
+            };
             defer self.allocator.free(candidate);
 
             if (std.fs.openDirAbsolute(candidate, .{})) |dir| {
@@ -1510,7 +1561,8 @@ pub const WorktreeOverlayComponent = struct {
                 // .git file case
                 if (std.fs.openFileAbsolute(candidate, .{})) |file| {
                     defer file.close();
-                    const gitdir_line = self.readTrimmedFile(candidate) catch {
+                    const gitdir_line = self.readTrimmedFile(candidate) catch |err| {
+                        log.warn("failed to read .git file: {}", .{err});
                         break;
                     };
                     defer self.allocator.free(gitdir_line);
@@ -1519,7 +1571,10 @@ pub const WorktreeOverlayComponent = struct {
                     }
                     const path_part = std.mem.trim(u8, gitdir_line["gitdir:".len..], " \t");
                     const base_dir = std.fs.path.dirname(candidate) orelse ".";
-                    const resolved = std.fs.path.resolve(self.allocator, &.{ base_dir, path_part }) catch break;
+                    const resolved = std.fs.path.resolve(self.allocator, &.{ base_dir, path_part }) catch |err| {
+                        log.warn("failed to resolve gitdir path: {}", .{err});
+                        break;
+                    };
                     const commondir = try self.resolveCommonDir(resolved);
                     self.allocator.free(current);
                     return GitContext{ .gitdir = resolved, .commondir = commondir, .allocator = self.allocator };

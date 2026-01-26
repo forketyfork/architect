@@ -21,12 +21,12 @@ const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
 const GridLayout = grid_layout.GridLayout;
 
-const ATTENTION_THICKNESS: c_int = 3;
-pub const TERMINAL_PADDING: c_int = 8;
-pub const GRID_BORDER_THICKNESS: c_int = ATTENTION_THICKNESS;
-const FAINT_FACTOR: f32 = 0.6;
-const CURSOR_COLOR = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
-const DARK_FALLBACK = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const attention_thickness: c_int = 3;
+pub const terminal_padding: c_int = 8;
+pub const grid_border_thickness: c_int = attention_thickness;
+const faint_factor: f32 = 0.6;
+const cursor_color = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
+const dark_fallback = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -132,7 +132,7 @@ pub fn render(
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
-            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.animation_duration_ms));
             const eased = easing.easeInOutCubic(progress);
 
             const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_width)) * eased));
@@ -152,7 +152,7 @@ pub fn render(
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
-            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.animation_duration_ms));
             const eased = easing.easeInOutCubic(progress);
 
             const offset = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(window_height)) * eased));
@@ -173,7 +173,7 @@ pub fn render(
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
             const elapsed = current_time - anim_state.start_time;
-            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.ANIMATION_DURATION_MS));
+            const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, app_state.animation_duration_ms));
             const eased = easing.easeInOutCubic(progress);
             const anim_scale = if (anim_state.mode == .Expanding)
                 grid_scale + (1.0 - grid_scale) * eased
@@ -338,7 +338,7 @@ fn renderSessionContent(
     const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
     const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
 
-    const padding: c_int = TERMINAL_PADDING;
+    const padding: c_int = terminal_padding;
     const drawable_w: c_int = rect.w - padding * 2;
     const drawable_h: c_int = rect.h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return;
@@ -409,7 +409,7 @@ fn renderSessionContent(
             }
 
             if (on_cursor) {
-                bg_color = CURSOR_COLOR;
+                bg_color = cursor_color;
                 fg_color = chooseCursorFg(theme);
             }
 
@@ -588,7 +588,7 @@ fn renderSessionOverlays(
     theme: *const colors.Theme,
 ) void {
     const has_attention = is_grid_view and view.attention;
-    const border_thickness: c_int = ATTENTION_THICKNESS;
+    const border_thickness: c_int = attention_thickness;
 
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused, theme);
@@ -657,7 +657,7 @@ fn renderSessionOverlays(
             },
             else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 230 },
         };
-        primitives.drawThickBorder(renderer, rect, ATTENTION_THICKNESS, color);
+        primitives.drawThickBorder(renderer, rect, attention_thickness, color);
 
         const tint_color = switch (view.status) {
             .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 55 },
@@ -857,7 +857,7 @@ fn chooseVariant(style: ghostty_vt.Style) FontVariant {
 }
 
 fn applyFaint(color: c.SDL_Color) c.SDL_Color {
-    const factor = FAINT_FACTOR;
+    const factor = faint_factor;
     const r: u32 = @intFromFloat(@as(f32, @floatFromInt(color.r)) * factor);
     const g: u32 = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor);
     const b: u32 = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor);
@@ -875,11 +875,11 @@ fn colorLuma(color: c.SDL_Color) u16 {
 }
 
 fn chooseCursorFg(theme: *const colors.Theme) c.SDL_Color {
-    const cursor_luma = colorLuma(CURSOR_COLOR);
+    const cursor_luma = colorLuma(cursor_color);
     if (cursor_luma > 140) {
         const bg_luma = colorLuma(theme.background);
         if (bg_luma < 180) return theme.background;
-        return DARK_FALLBACK;
+        return dark_fallback;
     }
     return theme.foreground;
 }

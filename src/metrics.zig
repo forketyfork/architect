@@ -8,17 +8,17 @@ pub const MetricKind = enum(u8) {
     frame_count,
 };
 
-const METRIC_COUNT = @typeInfo(MetricKind).@"enum".fields.len;
+const metric_count = @typeInfo(MetricKind).@"enum".fields.len;
 
 pub const Metrics = struct {
-    values: [METRIC_COUNT]u64,
-    prev_values: [METRIC_COUNT]u64,
+    values: [metric_count]u64,
+    prev_values: [metric_count]u64,
     last_sample_ms: i64,
 
     pub fn init() Metrics {
         return .{
-            .values = [_]u64{0} ** METRIC_COUNT,
-            .prev_values = [_]u64{0} ** METRIC_COUNT,
+            .values = [_]u64{0} ** metric_count,
+            .prev_values = [_]u64{0} ** metric_count,
             .last_sample_ms = 0,
         };
     }
@@ -86,7 +86,7 @@ test "Metrics.set" {
 test "Metrics.getRate" {
     var m = Metrics.init();
     m.last_sample_ms = 0;
-    m.prev_values = [_]u64{0} ** METRIC_COUNT;
+    m.prev_values = [_]u64{0} ** metric_count;
     m.values[@intFromEnum(MetricKind.glyph_cache_hits)] = 10;
     const rate = m.getRate(.glyph_cache_hits, 1000);
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), rate, 0.001);

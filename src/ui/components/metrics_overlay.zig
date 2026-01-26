@@ -22,14 +22,14 @@ pub const MetricsOverlayComponent = struct {
     last_sample_ms: i64 = 0,
     cached_elapsed_ms: i64 = 0,
 
-    const OVERLAY_FONT_SIZE: c_int = 14;
-    const SAMPLE_INTERVAL_MS: i64 = 1000;
-    const PADDING: c_int = 10;
-    const BG_PADDING: c_int = 8;
-    const BG_ALPHA: u8 = 180;
-    const BORDER_ALPHA: u8 = 120;
-    const MAX_LINES: usize = 8;
-    const MAX_LINE_LENGTH: usize = 64;
+    const overlay_font_size: c_int = 14;
+    const sample_interval_ms: i64 = 1000;
+    const padding: c_int = 10;
+    const bg_padding: c_int = 8;
+    const bg_alpha: u8 = 180;
+    const border_alpha: u8 = 120;
+    const max_lines: usize = 8;
+    const max_line_length: usize = 64;
 
     pub fn init(allocator: std.mem.Allocator) !*MetricsOverlayComponent {
         const comp = try allocator.create(MetricsOverlayComponent);
@@ -92,7 +92,7 @@ pub const MetricsOverlayComponent = struct {
         const metrics_ptr = metrics_mod.global orelse return;
 
         var needs_commit = false;
-        if (host.now_ms - self.last_sample_ms >= SAMPLE_INTERVAL_MS) {
+        if (host.now_ms - self.last_sample_ms >= sample_interval_ms) {
             self.cached_elapsed_ms = metrics_ptr.sampleRates(host.now_ms);
             self.last_sample_ms = host.now_ms;
             self.dirty = true;
@@ -119,23 +119,23 @@ pub const MetricsOverlayComponent = struct {
         const text_width: c_int = @intFromFloat(text_width_f);
         const text_height: c_int = @intFromFloat(text_height_f);
 
-        const x = host.window_w - text_width - PADDING - BG_PADDING;
-        const y = host.window_h - text_height - PADDING - BG_PADDING;
+        const x = host.window_w - text_width - padding - bg_padding;
+        const y = host.window_h - text_height - padding - bg_padding;
 
         const bg_rect = c.SDL_FRect{
-            .x = @as(f32, @floatFromInt(x - BG_PADDING)),
-            .y = @as(f32, @floatFromInt(y - BG_PADDING)),
-            .w = @as(f32, @floatFromInt(text_width + BG_PADDING * 2)),
-            .h = @as(f32, @floatFromInt(text_height + BG_PADDING * 2)),
+            .x = @as(f32, @floatFromInt(x - bg_padding)),
+            .y = @as(f32, @floatFromInt(y - bg_padding)),
+            .w = @as(f32, @floatFromInt(text_width + bg_padding * 2)),
+            .h = @as(f32, @floatFromInt(text_height + bg_padding * 2)),
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, BG_ALPHA);
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const acc = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, BORDER_ALPHA);
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, border_alpha);
         _ = c.SDL_RenderRect(renderer, &bg_rect);
 
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
@@ -159,13 +159,13 @@ pub const MetricsOverlayComponent = struct {
     ) !void {
         if (!self.dirty and self.texture != null) return;
 
-        const fonts = try cache.get(OVERLAY_FONT_SIZE);
+        const fonts = try cache.get(overlay_font_size);
         const overlay_font = fonts.regular;
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
-        var line_bufs: [MAX_LINES][MAX_LINE_LENGTH]u8 = undefined;
-        var lines: [MAX_LINES][]const u8 = undefined;
+        var line_bufs: [max_lines][max_line_length]u8 = undefined;
+        var lines: [max_lines][]const u8 = undefined;
         var line_count: usize = 0;
 
         const frame_count = metrics_ptr.get(.frame_count);
@@ -175,32 +175,53 @@ pub const MetricsOverlayComponent = struct {
         const miss_rate = metrics_ptr.getRate(.glyph_cache_misses, self.cached_elapsed_ms);
         const evict_rate = metrics_ptr.getRate(.glyph_cache_evictions, self.cached_elapsed_ms);
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Frames: {d}", .{frame_count}) catch "Frames: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Frames: {d}", .{frame_count}) catch |err| blk: {
+            log.warn("failed to format frames: {}", .{err});
+            break :blk "Frames: ?";
+        };
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "FPS: {d:.1}", .{fps}) catch "FPS: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "FPS: {d:.1}", .{fps}) catch |err| blk: {
+            log.warn("failed to format FPS: {}", .{err});
+            break :blk "FPS: ?";
+        };
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph cache: {d}", .{cache_size}) catch "Glyph cache: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph cache: {d}", .{cache_size}) catch |err| blk: {
+            log.warn("failed to format cache size: {}", .{err});
+            break :blk "Glyph cache: ?";
+        };
         line_count += 1;
 
         const total_accesses = hit_rate + miss_rate;
         const hit_pct: f64 = if (total_accesses > 0) (hit_rate / total_accesses) * 100.0 else 0.0;
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hit rate: {d:.1}%", .{hit_pct}) catch "Glyph hit rate: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hit rate: {d:.1}%", .{hit_pct}) catch |err| blk: {
+            log.warn("failed to format hit rate: {}", .{err});
+            break :blk "Glyph hit rate: ?";
+        };
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hits/s: {d:.1}", .{hit_rate}) catch "Glyph hits/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph hits/s: {d:.1}", .{hit_rate}) catch |err| blk: {
+            log.warn("failed to format hits/s: {}", .{err});
+            break :blk "Glyph hits/s: ?";
+        };
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph misses/s: {d:.1}", .{miss_rate}) catch "Glyph misses/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph misses/s: {d:.1}", .{miss_rate}) catch |err| blk: {
+            log.warn("failed to format misses/s: {}", .{err});
+            break :blk "Glyph misses/s: ?";
+        };
         line_count += 1;
 
-        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph evictions/s: {d:.1}", .{evict_rate}) catch "Glyph evictions/s: ?";
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Glyph evictions/s: {d:.1}", .{evict_rate}) catch |err| blk: {
+            log.warn("failed to format evictions/s: {}", .{err});
+            break :blk "Glyph evictions/s: ?";
+        };
         line_count += 1;
 
         var max_width: c_int = 0;
-        var line_surfaces: [MAX_LINES]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** MAX_LINES;
-        var line_heights: [MAX_LINES]c_int = undefined;
+        var line_surfaces: [max_lines]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** max_lines;
+        var line_heights: [max_lines]c_int = undefined;
         defer {
             for (line_surfaces[0..line_count]) |surf_opt| {
                 if (surf_opt) |surf| {
@@ -210,7 +231,7 @@ pub const MetricsOverlayComponent = struct {
         }
 
         for (lines[0..line_count], 0..) |line, idx| {
-            var render_buf: [MAX_LINE_LENGTH]u8 = undefined;
+            var render_buf: [max_line_length]u8 = undefined;
             @memcpy(render_buf[0..line.len], line);
             render_buf[line.len] = 0;
 

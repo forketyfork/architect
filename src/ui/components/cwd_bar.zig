@@ -9,16 +9,18 @@ const dpi = @import("../scale.zig");
 const input = @import("../../input/mapper.zig");
 const colors = @import("../../colors.zig");
 
+const log = std.log.scoped(.cwd_bar);
+
 const Rect = geom.Rect;
 
-const CWD_BAR_HEIGHT: c_int = 24;
-const CWD_FONT_SIZE: c_int = 12;
-const CWD_PADDING: c_int = 8;
-const MARQUEE_SPEED: f32 = 30.0;
-const FADE_WIDTH: c_int = 20;
+const cwd_bar_height: c_int = 24;
+const cwd_font_size: c_int = 12;
+const cwd_padding: c_int = 8;
+const marquee_speed: f32 = 30.0;
+const fade_fade_width: c_int = 20;
 
 pub fn reservedHeight(ui_scale: f32) c_int {
-    return dpi.scale(CWD_BAR_HEIGHT, ui_scale) + renderer_mod.GRID_BORDER_THICKNESS;
+    return dpi.scale(cwd_bar_height, ui_scale) + renderer_mod.grid_border_thickness;
 }
 
 pub fn minCellHeight(ui_scale: f32) c_int {
@@ -170,10 +172,10 @@ pub const CwdBarComponent = struct {
         const cwd_path = info.cwd_path orelse return;
         const cwd_basename = info.cwd_basename orelse return;
 
-        const bar_height = dpi.scale(CWD_BAR_HEIGHT, host.ui_scale);
-        const border_thickness = renderer_mod.GRID_BORDER_THICKNESS;
-        const padding = dpi.scale(CWD_PADDING, host.ui_scale);
-        const fade_width = dpi.scale(FADE_WIDTH, host.ui_scale);
+        const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
+        const border_thickness = renderer_mod.grid_border_thickness;
+        const padding = dpi.scale(cwd_padding, host.ui_scale);
+        const fade_width = dpi.scale(fade_fade_width, host.ui_scale);
 
         if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
 
@@ -195,7 +197,7 @@ pub const CwdBarComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        const font_px = dpi.scale(CWD_FONT_SIZE, host.ui_scale);
+        const font_px = dpi.scale(cwd_font_size, host.ui_scale);
         const fonts = cache.get(font_px) catch return;
         const cwd_font = fonts.regular;
 
@@ -254,7 +256,10 @@ pub const CwdBarComponent = struct {
         if (path_changed or font_changed or sc.basename_tex == null) {
             sc.invalidate(self.allocator);
             sc.font_size = font_px;
-            sc.cached_path = self.allocator.dupe(u8, cwd_path) catch null;
+            sc.cached_path = self.allocator.dupe(u8, cwd_path) catch |err| blk: {
+                log.warn("failed to allocate cached path: {}", .{err});
+                break :blk null;
+            };
 
             const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
             defer c.SDL_DestroySurface(basename_surface);
@@ -356,7 +361,7 @@ pub const CwdBarComponent = struct {
             const scroll_range = parent_width - available_width;
             const scroll_range_f: f32 = @floatFromInt(scroll_range);
             const idle_ms: f32 = 1000.0;
-            const scroll_ms: f32 = scroll_range_f / MARQUEE_SPEED * 1000.0;
+            const scroll_ms: f32 = scroll_range_f / marquee_speed * 1000.0;
             const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
             const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
             const elapsed_ms: f32 = @floatFromInt(@mod(host.now_ms, cycle_ms_i64));

@@ -20,13 +20,13 @@ pub const ToastComponent = struct {
     tex_h: c_int = 0,
     dirty: bool = true,
 
-    const NOTIFICATION_FONT_SIZE: c_int = 36;
-    const NOTIFICATION_DURATION_MS: i64 = 2500;
-    const NOTIFICATION_FADE_START_MS: i64 = 1500;
-    const NOTIFICATION_BG_MAX_ALPHA: u8 = 200;
-    const NOTIFICATION_BORDER_MAX_ALPHA: u8 = 180;
-    const MAX_TOAST_LINES: usize = 16;
-    const MAX_LINE_LENGTH: usize = 256;
+    const notification_font_size: c_int = 36;
+    const notification_duration_ms: i64 = 2500;
+    const notification_fade_start_ms: i64 = 1500;
+    const notification_bg_max_alpha: u8 = 200;
+    const notification_border_max_alpha: u8 = 180;
+    const max_toast_lines: usize = 16;
+    const max_line_length: usize = 256;
 
     pub fn init(allocator: std.mem.Allocator) !*ToastComponent {
         const comp = try allocator.create(ToastComponent);
@@ -108,12 +108,12 @@ pub const ToastComponent = struct {
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const bg_alpha = @min(alpha, NOTIFICATION_BG_MAX_ALPHA);
+        const bg_alpha = @min(alpha, notification_bg_max_alpha);
         const sel = host.theme.selection;
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        const border_alpha = @min(alpha, NOTIFICATION_BORDER_MAX_ALPHA);
+        const border_alpha = @min(alpha, notification_border_max_alpha);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, border_alpha);
         _ = c.SDL_RenderRect(renderer, &bg_rect);
@@ -135,12 +135,12 @@ pub const ToastComponent = struct {
         if (!self.active) return;
         if (!self.dirty and self.texture != null) return;
 
-        const fonts = try cache.get(NOTIFICATION_FONT_SIZE);
+        const fonts = try cache.get(notification_font_size);
         const toast_font = fonts.regular;
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
-        var lines: [MAX_TOAST_LINES][]const u8 = undefined;
+        var lines: [max_toast_lines][]const u8 = undefined;
         var line_count: usize = 0;
         var line_start: usize = 0;
         for (0..self.message_len) |i| {
@@ -158,8 +158,8 @@ pub const ToastComponent = struct {
         }
 
         var max_width: c_int = 0;
-        var line_surfaces: [MAX_TOAST_LINES]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** MAX_TOAST_LINES;
-        var line_heights: [MAX_TOAST_LINES]c_int = undefined;
+        var line_surfaces: [max_toast_lines]?*c.SDL_Surface = [_]?*c.SDL_Surface{null} ** max_toast_lines;
+        var line_heights: [max_toast_lines]c_int = undefined;
         defer {
             for (line_surfaces[0..line_count]) |surf_opt| {
                 if (surf_opt) |surf| {
@@ -169,7 +169,7 @@ pub const ToastComponent = struct {
         }
 
         for (lines[0..line_count], 0..) |line, idx| {
-            var line_buf: [MAX_LINE_LENGTH]u8 = undefined;
+            var line_buf: [max_line_length]u8 = undefined;
             @memcpy(line_buf[0..line.len], line);
             line_buf[line.len] = 0;
 
@@ -220,17 +220,17 @@ pub const ToastComponent = struct {
     fn isVisible(self: *const ToastComponent, now: i64) bool {
         if (!self.active) return false;
         const elapsed = now - self.start_time;
-        return elapsed < NOTIFICATION_DURATION_MS;
+        return elapsed < notification_duration_ms;
     }
 
     fn getAlpha(self: *const ToastComponent, now: i64) u8 {
         if (!self.isVisible(now)) return 0;
         const elapsed = now - self.start_time;
-        if (elapsed < NOTIFICATION_FADE_START_MS) {
+        if (elapsed < notification_fade_start_ms) {
             return 255;
         }
-        const fade_progress = @as(f32, @floatFromInt(elapsed - NOTIFICATION_FADE_START_MS)) /
-            @as(f32, @floatFromInt(NOTIFICATION_DURATION_MS - NOTIFICATION_FADE_START_MS));
+        const fade_progress = @as(f32, @floatFromInt(elapsed - notification_fade_start_ms)) /
+            @as(f32, @floatFromInt(notification_duration_ms - notification_fade_start_ms));
         const eased_progress = fade_progress * fade_progress * (3.0 - 2.0 * fade_progress);
         const alpha = 255.0 * (1.0 - eased_progress);
         return @intFromFloat(@max(0, @min(255, alpha)));

@@ -17,8 +17,8 @@ const log = std.log.scoped(.session_interaction);
 const SessionState = session_state.SessionState;
 const SessionViewState = view_state.SessionViewState;
 
-const SCROLL_LINES_PER_TICK: isize = 1;
-const MAX_SCROLL_VELOCITY: f32 = 30.0;
+const scroll_lines_per_tick: isize = 1;
+const max_scroll_velocity: f32 = 30.0;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -286,11 +286,11 @@ pub const SessionInteractionComponent = struct {
                     if (session_idx >= self.sessions.len) return false;
                     var session = self.sessions[session_idx];
                     const view = &self.views[session_idx];
-                    const ticks_per_notch: isize = SCROLL_LINES_PER_TICK;
+                    const ticks_per_notch: isize = scroll_lines_per_tick;
                     const wheel_ticks: isize = if (event.wheel.integer_y != 0)
                         @as(isize, @intCast(event.wheel.integer_y)) * ticks_per_notch
                     else
-                        @as(isize, @intFromFloat(event.wheel.y * @as(f32, @floatFromInt(SCROLL_LINES_PER_TICK))));
+                        @as(isize, @intFromFloat(event.wheel.y * @as(f32, @floatFromInt(scroll_lines_per_tick))));
                     const scroll_delta = -wheel_ticks;
                     if (scroll_delta != 0) {
                         const should_forward = blk: {
@@ -409,7 +409,7 @@ fn fullViewCellFromMouse(
     term_cols: u16,
     term_rows: u16,
 ) ?CellPosition {
-    const padding = renderer_mod.TERMINAL_PADDING;
+    const padding = renderer_mod.terminal_padding;
     const origin_x: c_int = padding;
     const origin_y: c_int = padding;
     const drawable_w: c_int = render_width - padding * 2;
@@ -443,7 +443,7 @@ fn fullViewPinFromMouse(
 ) ?ghostty_vt.Pin {
     if (!session.spawned or session.terminal == null) return null;
 
-    const padding = renderer_mod.TERMINAL_PADDING;
+    const padding = renderer_mod.terminal_padding;
     const origin_x: c_int = padding;
     const origin_y: c_int = padding;
     const drawable_w: c_int = render_width - padding * 2;
@@ -813,7 +813,7 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
 
     const sensitivity: f32 = 0.08;
     view.scroll_velocity += @as(f32, @floatFromInt(delta)) * sensitivity;
-    view.scroll_velocity = std.math.clamp(view.scroll_velocity, -MAX_SCROLL_VELOCITY, MAX_SCROLL_VELOCITY);
+    view.scroll_velocity = std.math.clamp(view.scroll_velocity, -max_scroll_velocity, max_scroll_velocity);
 }
 
 fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32) void {

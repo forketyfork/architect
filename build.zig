@@ -100,6 +100,18 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    // Lint step using zwanzig
+    if (b.lazyDependency("zwanzig", .{
+        .target = target,
+        .optimize = optimize,
+    })) |zw| {
+        const zw_exe = zw.artifact("zwanzig");
+        const lint_run = b.addRunArtifact(zw_exe);
+        lint_run.addArgs(&.{"src"});
+        const lint_step = b.step("lint", "Run zwanzig linter");
+        lint_step.dependOn(&lint_run.step);
+    }
 }
 
 fn findSdkRoot() ?[]const u8 {

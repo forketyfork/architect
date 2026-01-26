@@ -12,8 +12,13 @@ pub const ImeComposition = struct {
     }
 };
 
+const log = std.log.scoped(.input_text);
+
 pub fn countImeCodepoints(text: []const u8) usize {
-    return std.unicode.utf8CountCodepoints(text) catch text.len;
+    return std.unicode.utf8CountCodepoints(text) catch |err| blk: {
+        log.warn("failed to count UTF-8 codepoints: {}", .{err});
+        break :blk text.len;
+    };
 }
 
 fn sendDeleteInput(session: *SessionState, count: usize) !void {

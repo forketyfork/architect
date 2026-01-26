@@ -21,15 +21,15 @@ pub const FontPaths = struct {
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
 
-        const selected_family = if (font_family) |ff| if (ff.len > 0) ff else DEFAULT_FONT_FAMILY else DEFAULT_FONT_FAMILY;
+        const selected_family = if (font_family) |ff| if (ff.len > 0) ff else default_font_family else default_font_family;
 
         if (findSystemFont(allocator, selected_family, "Regular")) |regular_path| {
             paths.regular = regular_path;
         } else |_| {
             if (font_family) |requested| {
-                log.warn("Font family '{s}' not found, falling back to {s}", .{ requested, DEFAULT_FONT_FAMILY });
+                log.warn("Font family '{s}' not found, falling back to {s}", .{ requested, default_font_family });
             }
-            paths.regular = try findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Regular");
+            paths.regular = try findSystemFont(allocator, default_font_family, "Regular");
         }
 
         const regular_is_ttc = std.mem.endsWith(u8, paths.regular, ".ttc");
@@ -40,8 +40,8 @@ pub const FontPaths = struct {
             if (regular_is_ttc) {
                 log.info("Using TTC file for Bold variant: {s}", .{paths.regular});
                 paths.bold = try allocator.dupeZ(u8, paths.regular);
-            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
-                paths.bold = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Bold") catch try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
+                paths.bold = findSystemFont(allocator, default_font_family, "Bold") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold = try allocator.dupeZ(u8, paths.regular);
             }
@@ -53,8 +53,8 @@ pub const FontPaths = struct {
             if (regular_is_ttc) {
                 log.info("Using TTC file for Italic variant: {s}", .{paths.regular});
                 paths.italic = try allocator.dupeZ(u8, paths.regular);
-            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
-                paths.italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "Italic") catch try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
+                paths.italic = findSystemFont(allocator, default_font_family, "Italic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.italic = try allocator.dupeZ(u8, paths.regular);
             }
@@ -66,8 +66,8 @@ pub const FontPaths = struct {
             if (regular_is_ttc) {
                 log.info("Using TTC file for BoldItalic variant: {s}", .{paths.regular});
                 paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
-            } else if (font_family != null and !std.mem.eql(u8, selected_family, DEFAULT_FONT_FAMILY)) {
-                paths.bold_italic = findSystemFont(allocator, DEFAULT_FONT_FAMILY, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
+            } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
+                paths.bold_italic = findSystemFont(allocator, default_font_family, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
             }
@@ -93,7 +93,7 @@ pub const FontPaths = struct {
     }
 };
 
-const DEFAULT_FONT_FAMILY = "SFNSMono";
+const default_font_family = "SFNSMono";
 
 fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {
     const search_dirs = [_][]const u8{
@@ -130,7 +130,10 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
         const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
         defer allocator.free(font_path);
 
-        std.fs.accessAbsolute(font_path, .{}) catch continue;
+        std.fs.accessAbsolute(font_path, .{}) catch |err| {
+            log.debug("font not found at {s}: {}", .{ font_path, err });
+            continue;
+        };
         log.info("Found font: {s}", .{font_path});
         return allocator.dupeZ(u8, font_path);
     }
@@ -139,7 +142,10 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
         const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
         defer allocator.free(font_path);
 
-        std.fs.accessAbsolute(font_path, .{}) catch continue;
+        std.fs.accessAbsolute(font_path, .{}) catch |err| {
+            log.debug("font not found at {s}: {}", .{ font_path, err });
+            continue;
+        };
         log.info("Found font: {s}", .{font_path});
         return allocator.dupeZ(u8, font_path);
     }
@@ -149,7 +155,10 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, fon
             const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir_path, font_family, ext });
             defer allocator.free(font_path);
 
-            std.fs.accessAbsolute(font_path, .{}) catch continue;
+            std.fs.accessAbsolute(font_path, .{}) catch |err| {
+                log.debug("font not found at {s}: {}", .{ font_path, err });
+                continue;
+            };
             log.info("Found font: {s}", .{font_path});
             return allocator.dupeZ(u8, font_path);
         }

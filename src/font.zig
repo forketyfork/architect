@@ -38,7 +38,7 @@ const GlyphKey = struct {
     len: u16,
 };
 
-const WHITE: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+const white: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
 
 pub const Font = struct {
     font: *c.TTF_Font,
@@ -57,26 +57,26 @@ pub const Font = struct {
     metrics: ?*metrics_mod.Metrics = null,
 
     /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
-    const MAX_GLYPH_CACHE_ENTRIES: usize = 4096;
+    const max_glyph_cache_entries: usize = 4096;
 
     /// Maximum byte length for a single glyph string to prevent abuse from
     /// malicious or malformed terminal output. 256 bytes allows for reasonable
     /// grapheme clusters including emoji sequences and combining characters
     /// while protecting against memory exhaustion attacks.
-    const MAX_GLYPH_BYTE_LENGTH: usize = 256;
+    const max_glyph_byte_length: usize = 256;
 
     /// Maximum codepoints in a single grapheme cluster before chunking.
     /// Chosen to balance rendering performance with memory usage. Values above
     /// this threshold are split into smaller segments to avoid creating
     /// excessively large textures (e.g., cursor trail effects with 120+ chars).
-    const MAX_CLUSTER_SIZE: usize = 32;
-    const UNICODE_REPLACEMENT: u21 = 0xFFFD;
+    const max_cluster_size: usize = 32;
+    const unicode_replacement: u21 = 0xFFFD;
 
     inline fn isValidScalar(cp: u21) bool {
         return cp <= 0x10_FFFF and !(cp >= 0xD800 and cp <= 0xDFFF);
     }
 
-    fn sanitizeCluster(codepoints: []const u21, buf: *[MAX_CLUSTER_SIZE]u21) []const u21 {
+    fn sanitizeCluster(codepoints: []const u21, buf: *[max_cluster_size]u21) []const u21 {
         var needs_sanitize = false;
         for (codepoints) |cp| {
             if (!isValidScalar(cp)) {
@@ -87,7 +87,7 @@ pub const Font = struct {
         if (!needs_sanitize) return codepoints;
 
         for (codepoints, 0..) |cp, idx| {
-            buf[idx] = if (isValidScalar(cp)) cp else UNICODE_REPLACEMENT;
+            buf[idx] = if (isValidScalar(cp)) cp else unicode_replacement;
         }
         return buf[0..codepoints.len];
     }
@@ -284,8 +284,8 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
-        if (codepoints.len > MAX_CLUSTER_SIZE) {
-            const chars_per_chunk = MAX_CLUSTER_SIZE;
+        if (codepoints.len > max_cluster_size) {
+            const chars_per_chunk = max_cluster_size;
             const cell_width = @max(1, @divTrunc(target_width, @as(c_int, @intCast(codepoints.len))));
 
             var offset: usize = 0;
@@ -300,7 +300,7 @@ pub const Font = struct {
             return;
         }
 
-        var sanitized_buf: [MAX_CLUSTER_SIZE]u21 = undefined;
+        var sanitized_buf: [max_cluster_size]u21 = undefined;
         const cluster = sanitizeCluster(codepoints, &sanitized_buf);
         const effective_variant = self.effectiveVariant(variant, cluster);
 
@@ -370,8 +370,8 @@ pub const Font = struct {
         if (codepoints.len == 0) return;
         if (codepoints.len == 1 and codepoints[0] == 0) return;
 
-        if (codepoints.len > MAX_CLUSTER_SIZE) {
-            const chars_per_chunk = MAX_CLUSTER_SIZE;
+        if (codepoints.len > max_cluster_size) {
+            const chars_per_chunk = max_cluster_size;
             const cell_width = @max(1, @divTrunc(target_width, @as(c_int, @intCast(codepoints.len))));
 
             var offset: usize = 0;
@@ -386,7 +386,7 @@ pub const Font = struct {
             return;
         }
 
-        var sanitized_buf: [MAX_CLUSTER_SIZE]u21 = undefined;
+        var sanitized_buf: [max_cluster_size]u21 = undefined;
         const cluster = sanitizeCluster(codepoints, &sanitized_buf);
         const effective_variant = self.effectiveVariant(variant, cluster);
 
@@ -473,14 +473,14 @@ pub const Font = struct {
     }
 
     fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
-        if (utf8.len > MAX_GLYPH_BYTE_LENGTH) {
+        if (utf8.len > max_glyph_byte_length) {
             log.warn("Refusing to render excessively long glyph string: {d} bytes", .{utf8.len});
             return error.GlyphRenderFailed;
         }
 
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
-            .color = packColor(if (fallback == .emoji) WHITE else fg_color),
+            .color = packColor(if (fallback == .emoji) white else fg_color),
             .fallback = fallback,
             .variant = variant,
             .len = @intCast(utf8.len),
@@ -497,7 +497,7 @@ pub const Font = struct {
             .symbol => self.symbol_fallback orelse self.font,
             .emoji => self.emoji_fallback orelse self.font,
         };
-        const render_color = if (fallback == .emoji) WHITE else fg_color;
+        const render_color = if (fallback == .emoji) white else fg_color;
 
         const surface = c.TTF_RenderText_Blended(render_font, @ptrCast(utf8.ptr), @intCast(utf8.len), render_color) orelse {
             log.debug("TTF_RenderText_Blended failed: {s}", .{c.SDL_GetError()});
@@ -536,7 +536,7 @@ pub const Font = struct {
     }
 
     fn evictIfNeeded(self: *Font) void {
-        if (self.glyph_cache.count() <= MAX_GLYPH_CACHE_ENTRIES) return;
+        if (self.glyph_cache.count() <= max_glyph_cache_entries) return;
 
         if (findOldestKey(&self.glyph_cache)) |victim| {
             if (self.glyph_cache.fetchRemove(victim)) |removed| {

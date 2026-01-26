@@ -60,7 +60,7 @@ pub fn startNotifyThread(
 ) StartNotifyThreadError!std.Thread {
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
-        else => {},
+        else => log.warn("failed to unlink notify socket: {}", .{err}),
     };
 
     const handler = struct {
@@ -111,7 +111,10 @@ pub fn startNotifyThread(
             };
 
             // Make accept non-blocking so the loop can observe stop requests.
-            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch null;
+            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| blk: {
+                log.warn("failed to get socket flags: {}", .{err});
+                break :blk null;
+            };
             if (flags) |f| {
                 var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                 o_flags.NONBLOCK = true;
@@ -126,11 +129,17 @@ pub fn startNotifyThread(
                         std.Thread.sleep(std.time.ns_per_ms * 10);
                         continue;
                     },
-                    else => continue,
+                    else => {
+                        log.debug("accept error: {}", .{err});
+                        continue;
+                    },
                 };
                 defer posix.close(conn_fd);
 
-                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch null;
+                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
+                    log.debug("failed to get connection flags: {}", .{err});
+                    break :blk null;
+                };
                 if (conn_flags) |f| {
                     var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                     o_flags.NONBLOCK = true;
@@ -146,11 +155,17 @@ pub fn startNotifyThread(
                 while (true) {
                     const n = posix.read(conn_fd, &tmp) catch |err| switch (err) {
                         error.WouldBlock, error.ConnectionResetByPeer => break,
-                        else => break,
+                        else => {
+                            log.debug("read error on notify connection: {}", .{err});
+                            break;
+                        },
                     };
                     if (n == 0) break;
                     if (buffer.items.len + n > 1024) break;
-                    buffer.appendSlice(ctx.allocator, tmp[0..n]) catch break;
+                    buffer.appendSlice(ctx.allocator, tmp[0..n]) catch |err| {
+                        log.debug("failed to append to notify buffer: {}", .{err});
+                        break;
+                    };
                 }
 
                 if (buffer.items.len == 0) continue;
