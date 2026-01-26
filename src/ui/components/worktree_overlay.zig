@@ -1350,7 +1350,7 @@ pub const WorktreeOverlayComponent = struct {
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch |err| blk: {
-            log.warn("operation failed: {}", .{err});
+            log.warn("failed to create title texture: {}", .{err});
             break :blk null;
         };
         if (title_tex) |tex| {
@@ -1371,7 +1371,7 @@ pub const WorktreeOverlayComponent = struct {
                 const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
                 const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
                 const message_tex = makeTextTexture(renderer, entry_fonts.regular, worktree.display, message_color) catch |err| blk: {
-                    log.warn("operation failed: {}", .{err});
+                    log.warn("failed to create worktree message texture: {}", .{err});
                     break :blk null;
                 };
                 if (message_tex) |tex| {

@@ -17,7 +17,7 @@ const cwd_bar_height: c_int = 24;
 const cwd_font_size: c_int = 12;
 const cwd_padding: c_int = 8;
 const marquee_speed: f32 = 30.0;
-const fade_width: c_int = 20;
+const fade_fade_width: c_int = 20;
 
 pub fn reservedHeight(ui_scale: f32) c_int {
     return dpi.scale(cwd_bar_height, ui_scale) + renderer_mod.grid_border_thickness;
@@ -175,7 +175,7 @@ pub const CwdBarComponent = struct {
         const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
         const border_thickness = renderer_mod.grid_border_thickness;
         const padding = dpi.scale(cwd_padding, host.ui_scale);
-        const scaled_fade_width = dpi.scale(fade_width, host.ui_scale);
+        const fade_width = dpi.scale(fade_fade_width, host.ui_scale);
 
         if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
 
@@ -389,7 +389,7 @@ pub const CwdBarComponent = struct {
             const fade_right = scroll_offset > 0;
 
             if (fade_left) {
-                renderFadeGradient(renderer, bar_rect, true, scaled_fade_width, padding, host.theme);
+                renderFadeGradient(renderer, bar_rect, true, fade_width, padding, host.theme);
             }
             if (fade_right) {
                 const visible_end_x = bar_rect.x + padding + available_width;
@@ -399,7 +399,7 @@ pub const CwdBarComponent = struct {
                     .w = visible_end_x - bar_rect.x,
                     .h = bar_rect.h,
                 };
-                renderFadeGradient(renderer, fade_rect, false, scaled_fade_width, padding, host.theme);
+                renderFadeGradient(renderer, fade_rect, false, fade_width, padding, host.theme);
             }
         }
     }
@@ -417,7 +417,7 @@ pub const CwdBarComponent = struct {
     };
 };
 
-fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, gradient_width: c_int, padding: c_int, theme: *const colors.Theme) void {
+fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, fade_width: c_int, padding: c_int, theme: *const colors.Theme) void {
     const sel = theme.selection;
     const base_color = c.SDL_FColor{
         .r = @as(f32, @floatFromInt(sel.r)) / 255.0,
@@ -432,7 +432,7 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, 
 
     if (is_left) {
         const x_start: f32 = @floatFromInt(bar_rect.x + padding);
-        const x_end: f32 = @floatFromInt(bar_rect.x + padding + gradient_width);
+        const x_end: f32 = @floatFromInt(bar_rect.x + padding + fade_width);
 
         const verts = [_]c.SDL_Vertex{
             .{ .position = .{ .x = x_start, .y = y1 }, .color = base_color },
@@ -443,7 +443,7 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, 
         const indices = [_]c_int{ 0, 1, 2, 1, 3, 2 };
         _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
     } else {
-        const x_start: f32 = @floatFromInt(bar_rect.x + bar_rect.w - gradient_width);
+        const x_start: f32 = @floatFromInt(bar_rect.x + bar_rect.w - fade_width);
         const x_end: f32 = @floatFromInt(bar_rect.x + bar_rect.w);
 
         const verts = [_]c.SDL_Vertex{
