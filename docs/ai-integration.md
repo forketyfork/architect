@@ -40,6 +40,8 @@ architect hook gemini
 ```
 
 If you upgrade Architect, restart existing terminals so the bundled `architect` script refreshes.
+The installer writes timestamped backups before updating configs (for example:
+`settings.json.architect.bak.20260127T153045Z`).
 
 ## Claude Code Hooks
 
@@ -89,6 +91,10 @@ If you upgrade Architect, restart existing terminals so the bundled `architect` 
    ```toml
    notify = ["architect", "notify"]
    ```
+
+If you already have `notify` configured, `architect hook codex` writes a wrapper
+to `~/.codex/architect_notify_wrapper.py` and points `notify` to it so both the
+existing notifier and Architect receive events.
 
 ## Gemini CLI Hooks
 
