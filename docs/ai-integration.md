@@ -27,7 +27,7 @@ architect notify done
 ```
 
 On macOS zsh login shells, `/etc/zprofile` resets `PATH` via `path_helper`. Architect
-adds wrapper files at `~/.cache/architect/zsh/.zprofile` and `~/.cache/architect/zsh/.zshrc`
+adds wrapper files at `~/.cache/architect/zsh/.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`
 that source your original dotfiles, prepend the Architect command directory, and install
 a small guard so `PATH` keeps the Architect entry after directory changes.
 
