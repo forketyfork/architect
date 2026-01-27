@@ -39,6 +39,8 @@ architect hook codex
 architect hook gemini
 ```
 
+If you upgrade Architect, restart existing terminals so the bundled `architect` script refreshes.
+
 ## Claude Code Hooks
 
 1. (Optional) Copy the helper script if the hook runs outside Architect:

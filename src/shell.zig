@@ -81,7 +81,7 @@ const architect_command_script =
     \\        message = json.dumps({
     \\            "session": int(session_id),
     \\            "state": state
-    \\        }) + "\\n"
+    \\        }) + "\n"
     \\
     \\        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     \\        sock.connect(sock_path)
@@ -166,7 +166,7 @@ const architect_command_script =
     \\        return None
     \\
     \\def write_json(path: str, data: dict) -> None:
-    \\    write_text(path, json.dumps(data, indent=2, sort_keys=False) + "\\n")
+    \\    write_text(path, json.dumps(data, indent=2, sort_keys=False) + "\n")
     \\
     \\def command_has_needle(command: str, needles: tuple[str, ...]) -> bool:
     \\    return any(needle in command for needle in needles)
@@ -297,11 +297,11 @@ const architect_command_script =
     \\    for i, existing in enumerate(lines):
     \\        if existing.strip().startswith("notify"):
     \\            lines[i] = line
-    \\            return "\\n".join(lines) + "\\n"
+    \\            return "\n".join(lines) + "\n"
     \\    if lines and lines[-1].strip() != "":
     \\        lines.append("")
     \\    lines.append(line)
-    \\    return "\\n".join(lines) + "\\n"
+    \\    return "\n".join(lines) + "\n"
     \\
     \\def install_claude() -> int:
     \\    path = os.path.expanduser("~/.claude/settings.json")
