@@ -526,6 +526,30 @@ pub fn run() !void {
     // Always spawn at least the first terminal
     try sessions[0].ensureSpawnedWithLoop(&loop);
 
+    // Show onboarding message on first launch
+    if (!persistence.onboarding_shown) {
+        if (sessions[0].stream) |*stream| {
+            // Grey text using ANSI bright black (90m), reset with 0m
+            const onboarding_msg =
+                "\x1b[90m" ++
+                "Welcome to Architect!\n" ++
+                "\n" ++
+                "  Cmd+N       New terminal      Cmd+W        Close terminal\n" ++
+                "  Cmd+Enter   Toggle focus      Hold Escape  Interrupt agent\n" ++
+                "\n" ++
+                "Hook AI agents: architect hook claude | codex | gemini\n" ++
+                "\x1b[0m\n";
+            stream.nextSlice(onboarding_msg) catch |err| {
+                log.warn("Failed to display onboarding message: {}", .{err});
+            };
+            sessions[0].markDirty();
+        }
+        persistence.onboarding_shown = true;
+        persistence.save(allocator) catch |err| {
+            log.warn("Failed to save persistence after onboarding: {}", .{err});
+        };
+    }
+
     init_count = sessions.len;
 
     const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
