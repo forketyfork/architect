@@ -4,7 +4,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org/)
 
-![Architect Hero](docs/assets/architect-hero.png)
+https://github.com/user-attachments/assets/a4e28a63-557a-44f3-9bae-47b2fd0a5dc6
 
 A terminal built for multi-agent AI coding workflows. Run Claude Code, Codex, or Gemini in parallel and see at a glance which agents need your attention. See more in [my article](https://forketyfork.github.io/blog/2026/01/21/running-4-ai-coding-agents-at-once-the-terminal-i-built-to-keep-up/).
 
@@ -24,12 +24,6 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 > **This project is in the early stages of development. Use at your own risk.**
 >
 > The application is experimental and may have bugs, stability issues, or unexpected behavior.
-
-
-
-https://github.com/user-attachments/assets/a4e28a63-557a-44f3-9bae-47b2fd0a5dc6
-
-
 
 ## Features
 
