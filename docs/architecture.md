@@ -54,6 +54,7 @@ Architect is a terminal multiplexer displaying interactive sessions in a grid wi
 - Attention borders (pulsing yellow for awaiting approval, solid green for done)
 - CWD bar with marquee scrolling for long paths
 - Scrollback indicator strip
+- First-run onboarding hint text rendered inside the terminal view (dimmed)
 
 **UiRoot (src/ui/)** is the registry for UI overlay components and session interaction state:
 - Dispatches events topmost-first (by z-index)

@@ -110,6 +110,7 @@ architect hook claude
 architect hook codex
 architect hook gemini
 ```
+On first launch, Architect shows a faint terminal hint with the core shortcuts (Cmd+N/W/Enter) and the `architect hook` setup command.
 
 ## Configuration
 
