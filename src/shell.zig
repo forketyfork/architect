@@ -71,8 +71,6 @@ const architect_command_script =
     \\GEMINI_NEEDLES = ("architect_hook.py", "architect notify")
     \\
     \\CODEX_NOTIFY = ["architect", "notify"]
-    \\CODEX_WRAPPER_PATH = os.path.expanduser("~/.codex/architect_notify_wrapper.py")
-    \\CODEX_WRAPPER_CMD = ["python3", CODEX_WRAPPER_PATH]
     \\
     \\def notify_architect(state: str) -> None:
     \\    session_id = os.environ.get("ARCHITECT_SESSION_ID")
@@ -155,12 +153,15 @@ const architect_command_script =
     \\def backup_path(path: str) -> str:
     \\    return f"{path}.architect.bak.{timestamp_suffix()}"
     \\
-    \\def backup_file(path: str) -> None:
+    \\def backup_file(path: str) -> str | None:
     \\    try:
     \\        if os.path.exists(path):
-    \\            shutil.copy2(path, backup_path(path))
+    \\            backup = backup_path(path)
+    \\            shutil.copy2(path, backup)
+    \\            return backup
     \\    except OSError:
-    \\        pass
+    \\        return None
+    \\    return None
     \\
     \\def read_text(path: str) -> str | None:
     \\    try:
@@ -213,8 +214,6 @@ const architect_command_script =
     \\def is_architect_notify(command: list[str]) -> bool:
     \\    if command == CODEX_NOTIFY:
     \\        return True
-    \\    if command == CODEX_WRAPPER_CMD:
-    \\        return True
     \\    for item in command:
     \\        if "architect_notify.py" in item:
     \\            return True
@@ -239,6 +238,15 @@ const architect_command_script =
     \\            return normalize_notify(parsed)
     \\    return None
     \\
+    \\def has_notify_line(text: str) -> bool:
+    \\    for line in text.splitlines():
+    \\        stripped = line.strip()
+    \\        if not stripped or stripped.startswith("#"):
+    \\            continue
+    \\        if stripped.startswith("notify"):
+    \\            return True
+    \\    return False
+    \\
     \\def read_codex_notify(text: str) -> list[str] | None:
     \\    if tomllib is not None:
     \\        try:
@@ -250,35 +258,6 @@ const architect_command_script =
     \\        except tomllib.TOMLDecodeError:
     \\            return None
     \\    return parse_notify_from_text(text)
-    \\
-    \\def write_codex_wrapper(path: str, original: list[str]) -> None:
-    \\    content = \"\"\"#!/usr/bin/env python3
-    \\import subprocess
-    \\import sys
-    \\
-    \\ORIGINAL = {original}
-    \\
-    \\def run(cmd: list[str], payload: str) -> None:
-    \\    try:
-    \\        subprocess.run(cmd + [payload], check=False, capture_output=True)
-    \\    except OSError:
-    \\        pass
-    \\
-    \\def main() -> int:
-    \\    if len(sys.argv) < 2:
-    \\        return 0
-    \\    payload = sys.argv[1]
-    \\    run(ORIGINAL, payload)
-    \\    run([\"architect\", \"notify\"], payload)
-    \\    return 0
-    \\
-    \\if __name__ == \"__main__\":
-    \\    raise SystemExit(main())
-    \\\"\"\".format(original=repr(original))
-    \\    dir_path = os.path.dirname(path)
-    \\    if dir_path:
-    \\        os.makedirs(dir_path, exist_ok=True)
-    \\    write_text(path, content)
     \\
     \\def ensure_group(groups):
     \\    if not groups:
@@ -386,7 +365,9 @@ const architect_command_script =
     \\        print(f"Failed to read {path}", file=sys.stderr)
     \\        return 1
     \\    if ensure_claude_hooks(data):
-    \\        backup_file(path)
+    \\        backup = backup_file(path)
+    \\        if backup:
+    \\            print(f"Wrote backup to {backup}")
     \\        write_json(path, data)
     \\        print("Installed Claude hooks.")
     \\    else:
@@ -400,7 +381,9 @@ const architect_command_script =
     \\        print(f"Failed to read {path}", file=sys.stderr)
     \\        return 1
     \\    if ensure_gemini_hooks(data):
-    \\        backup_file(path)
+    \\        backup = backup_file(path)
+    \\        if backup:
+    \\            print(f"Wrote backup to {backup}")
     \\        write_json(path, data)
     \\        print("Installed Gemini hooks.")
     \\    else:
@@ -417,17 +400,13 @@ const architect_command_script =
     \\    if existing is not None and is_architect_notify(existing):
     \\        print("Codex hooks already installed.")
     \\        return 0
-    \\    if existing is not None:
-    \\        write_codex_wrapper(CODEX_WRAPPER_PATH, existing)
-    \\        notify_line = f"notify = {json.dumps(CODEX_WRAPPER_CMD)}"
-    \\        new_text = upsert_notify_line(text, notify_line)
-    \\        backup_file(path)
-    \\        write_text(path, new_text)
-    \\        print("Installed Codex hooks (chained existing notify).")
-    \\        return 0
+    \\    if existing is not None or has_notify_line(text):
+    \\        print("Warning: replacing existing Codex notify configuration.", file=sys.stderr)
     \\    notify_line = f"notify = {json.dumps(CODEX_NOTIFY)}"
     \\    new_text = upsert_notify_line(text, notify_line)
-    \\    backup_file(path)
+    \\    backup = backup_file(path)
+    \\    if backup:
+    \\        print(f"Wrote backup to {backup}")
     \\    write_text(path, new_text)
     \\    print("Installed Codex hooks.")
     \\    return 0

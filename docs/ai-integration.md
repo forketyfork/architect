@@ -92,9 +92,8 @@ The installer writes timestamped backups before updating configs (for example:
    notify = ["architect", "notify"]
    ```
 
-If you already have `notify` configured, `architect hook codex` writes a wrapper
-to `~/.codex/architect_notify_wrapper.py` and points `notify` to it so both the
-existing notifier and Architect receive events.
+If you already have `notify` configured, `architect hook codex` overwrites it,
+prints a warning, and prints the backup file name.
 
 ## Gemini CLI Hooks
 
