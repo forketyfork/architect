@@ -349,13 +349,27 @@ const architect_command_script =
     \\
     \\def upsert_notify_line(text: str, line: str) -> str:
     \\    lines = text.splitlines()
+    \\    filtered = []
+    \\    for existing in lines:
+    \\        stripped = existing.strip()
+    \\        if stripped.startswith("notify") and not stripped.startswith("#"):
+    \\            continue
+    \\        filtered.append(existing)
+    \\    lines = filtered
+    \\    insert_idx = None
     \\    for i, existing in enumerate(lines):
-    \\        if existing.strip().startswith("notify"):
-    \\            lines[i] = line
-    \\            return "\n".join(lines) + "\n"
-    \\    if lines and lines[-1].strip() != "":
-    \\        lines.append("")
-    \\    lines.append(line)
+    \\        stripped = existing.strip()
+    \\        if not stripped or stripped.startswith("#"):
+    \\            continue
+    \\        if stripped.startswith("["):
+    \\            insert_idx = i
+    \\            break
+    \\    if insert_idx is None:
+    \\        if lines and lines[-1].strip() != "":
+    \\            lines.append("")
+    \\        lines.append(line)
+    \\    else:
+    \\        lines.insert(insert_idx, line)
     \\    return "\n".join(lines) + "\n"
     \\
     \\def install_claude() -> int:
