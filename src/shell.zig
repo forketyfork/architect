@@ -55,7 +55,7 @@ const architect_command_script =
     \\
     \\try:
     \\    import tomllib
-    \\except Exception:
+    \\except ImportError:
     \\    tomllib = None
     \\
     \\VALID_STATES = {"start", "awaiting_approval", "done"}
@@ -100,7 +100,7 @@ const architect_command_script =
     \\
     \\    try:
     \\        payload = json.loads(raw)
-    \\    except Exception:
+    \\    except json.JSONDecodeError:
     \\        return None
     \\
     \\    if not isinstance(payload, dict):
@@ -162,7 +162,7 @@ const architect_command_script =
     \\        return None
     \\    try:
     \\        return json.loads(text)
-    \\    except Exception:
+    \\    except json.JSONDecodeError:
     \\        return None
     \\
     \\def write_json(path: str, data: dict) -> None:
@@ -284,7 +284,7 @@ const architect_command_script =
     \\                for item in value:
     \\                    if isinstance(item, str) and "architect_notify.py" in item:
     \\                        return True
-    \\        except Exception:
+    \\        except tomllib.TOMLDecodeError:
     \\            pass
     \\    if 'notify = ["architect", "notify"]' in text:
     \\        return True
