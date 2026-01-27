@@ -26,6 +26,11 @@ architect notify awaiting_approval
 architect notify done
 ```
 
+On macOS zsh login shells, `/etc/zprofile` resets `PATH` via `path_helper`. Architect
+adds wrapper files at `~/.cache/architect/zsh/.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`
+that source your original dotfiles, prepend the Architect command directory, and install
+a small guard so `PATH` keeps the Architect entry after directory changes.
+
 If your hook runs outside an Architect terminal, use the Python helper scripts below.
 Replace `architect notify ...` in the examples with `python3 ~/.<tool>/architect_notify.py ...` when using those scripts.
 
