@@ -115,7 +115,7 @@ while (pos < slice.len) { ... }
 The `<= len` pattern is only correct when `pos` represents a position *after* processing (e.g., `slice[0..pos]` as a "processed so far" marker).
 
 ## Build and Test (required after every task)
-- Run `zig build` and `zig build test` (or `just ci` when appropriate) once the task is complete.
+- Run `zig build`, `zig build test`, and `just lint` (or `just ci` when appropriate) once the task is complete.
 - Report the results in your summary; if you must skip tests, state the reason explicitly.
 
 ## Documentation Hygiene (REQUIRED)

@@ -3,13 +3,14 @@
 Gemini CLI hook wrapper for Architect notifications.
 
 Gemini hooks receive JSON via stdin and must output JSON to stdout.
-This wrapper consumes stdin, calls architect_notify.py, and returns valid JSON.
+This wrapper consumes stdin, calls Architect notify, and returns valid JSON.
 """
 
 import json
 import os
-import sys
+import shutil
 import subprocess
+import sys
 
 
 def main() -> int:
@@ -29,13 +30,21 @@ def main() -> int:
 
         state = sys.argv[1]
 
-        # Call architect_notify.py script
-        script_path = os.path.join(os.path.dirname(__file__), "architect_notify.py")
-        subprocess.run(
-            ["python3", script_path, state],
-            check=False,
-            capture_output=True,
-        )
+        # Prefer built-in architect command when available, fall back to script.
+        architect_cmd = shutil.which("architect")
+        if architect_cmd:
+            subprocess.run(
+                [architect_cmd, "notify", state],
+                check=False,
+                capture_output=True,
+            )
+        else:
+            script_path = os.path.join(os.path.dirname(__file__), "architect_notify.py")
+            subprocess.run(
+                ["python3", script_path, state],
+                check=False,
+                capture_output=True,
+            )
 
         # Return success JSON to Gemini (required)
         print(json.dumps({"decision": "allow"}))

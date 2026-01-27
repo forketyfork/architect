@@ -323,6 +323,10 @@ Protocol: Single-line JSON
 {"session": 0, "state": "start"}
 ```
 
+Each shell also gets a small `architect` command in `PATH` that wraps this protocol
+and reads `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` (for example,
+`architect notify done`).
+
 A background thread (`notify.zig`) accepts connections, parses messages, and pushes to a thread-safe `NotificationQueue`. Main loop drains queue each frame.
 
 ## First Frame Guard Pattern

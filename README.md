@@ -127,7 +127,7 @@ Common settings include font family, theme colors, and grid font scale. The grid
 
 ## Documentation
 
-* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications.
+* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications (includes `architect notify` and `architect hook ...` inside Architect terminals).
 * [`docs/architecture.md`](docs/architecture.md): architecture overview and system boundaries.
 * [`docs/configuration.md`](docs/configuration.md): detailed configuration reference for `config.toml` and `persistence.toml`.
 * [`docs/development.md`](docs/development.md): build, test, and release process.

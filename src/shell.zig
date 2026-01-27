@@ -25,6 +25,10 @@ var terminfo_available: bool = false;
 var terminfo_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
 var terminfo_dir_z: ?[:0]const u8 = null;
 var tic_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var architect_command_setup_done: bool = false;
+var architect_command_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+var architect_command_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var architect_command_dir_z: ?[:0]const u8 = null;
 
 const fallback_term = "xterm-256color";
 const architect_term = "xterm-ghostty";
@@ -34,6 +38,350 @@ const default_term_program = "Architect";
 
 // Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
 const architect_terminfo_src = assets.xterm_ghostty;
+const architect_command_script =
+    \\#!/usr/bin/env python3
+    \\"""
+    \\Architect shell helper for sending UI notifications and installing hooks.
+    \\
+    \\Usage:
+    \\    architect notify <state|json>
+    \\    architect notify   (reads stdin)
+    \\    architect hook claude|codex|gemini
+    \\"""
+    \\import json
+    \\import os
+    \\import socket
+    \\import sys
+    \\
+    \\try:
+    \\    import tomllib
+    \\except Exception:
+    \\    tomllib = None
+    \\
+    \\VALID_STATES = {"start", "awaiting_approval", "done"}
+    \\
+    \\CLAUDE_DONE = "architect notify done || true"
+    \\CLAUDE_APPROVAL = "architect notify awaiting_approval || true"
+    \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
+    \\
+    \\GEMINI_DONE = "python3 ~/.gemini/architect_hook.py done"
+    \\GEMINI_APPROVAL = "python3 ~/.gemini/architect_hook.py awaiting_approval"
+    \\GEMINI_NEEDLES = ("architect_hook.py", "architect notify")
+    \\
+    \\CODEX_NOTIFY = ["architect", "notify"]
+    \\
+    \\def notify_architect(state: str) -> None:
+    \\    session_id = os.environ.get("ARCHITECT_SESSION_ID")
+    \\    sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\
+    \\    if not session_id or not sock_path:
+    \\        return
+    \\
+    \\    try:
+    \\        message = json.dumps({
+    \\            "session": int(session_id),
+    \\            "state": state
+    \\        }) + "\\n"
+    \\
+    \\        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    \\        sock.connect(sock_path)
+    \\        sock.sendall(message.encode())
+    \\        sock.close()
+    \\    except Exception:
+    \\        pass
+    \\
+    \\def state_from_notification(raw: str) -> str | None:
+    \\    raw = raw.strip()
+    \\    if not raw:
+    \\        return None
+    \\
+    \\    if raw in VALID_STATES:
+    \\        return raw
+    \\
+    \\    try:
+    \\        payload = json.loads(raw)
+    \\    except Exception:
+    \\        return None
+    \\
+    \\    if not isinstance(payload, dict):
+    \\        return None
+    \\
+    \\    state_field = payload.get("state")
+    \\    if isinstance(state_field, str) and state_field in VALID_STATES:
+    \\        return state_field
+    \\
+    \\    status = payload.get("status")
+    \\    if isinstance(status, str):
+    \\        lowered = status.lower()
+    \\        if lowered in VALID_STATES:
+    \\            return lowered
+    \\        if lowered in ("complete", "completed", "finished", "success"):
+    \\            return "done"
+    \\        if "approval" in lowered or "permission" in lowered:
+    \\            return "awaiting_approval"
+    \\
+    \\    ntype = str(payload.get("type") or "").lower()
+    \\    if ntype:
+    \\        if ntype in VALID_STATES:
+    \\            return ntype
+    \\        if "approval" in ntype or "permission" in ntype or (
+    \\            "input" in ntype and "await" in ntype
+    \\        ):
+    \\            return "awaiting_approval"
+    \\        if "complete" in ntype or ntype.endswith("-done"):
+    \\            return "done"
+    \\        if "start" in ntype or "begin" in ntype:
+    \\            return "start"
+    \\
+    \\    return None
+    \\
+    \\def warn_unmapped(raw: str) -> None:
+    \\    if sys.stderr.isatty():
+    \\        print(f"Ignoring unmapped notification: {raw}", file=sys.stderr)
+    \\
+    \\def print_usage() -> None:
+    \\    if sys.stderr.isatty():
+    \\        print("Usage: architect notify <state|json>", file=sys.stderr)
+    \\        print("       architect notify  (reads stdin)", file=sys.stderr)
+    \\        print("       architect hook claude|codex|gemini", file=sys.stderr)
+    \\
+    \\def read_text(path: str) -> str | None:
+    \\    try:
+    \\        with open(path, "r", encoding="utf-8") as handle:
+    \\            return handle.read()
+    \\    except FileNotFoundError:
+    \\        return None
+    \\
+    \\def write_text(path: str, text: str) -> None:
+    \\    with open(path, "w", encoding="utf-8") as handle:
+    \\        handle.write(text)
+    \\
+    \\def load_json(path: str) -> dict | None:
+    \\    text = read_text(path)
+    \\    if text is None:
+    \\        return None
+    \\    try:
+    \\        return json.loads(text)
+    \\    except Exception:
+    \\        return None
+    \\
+    \\def write_json(path: str, data: dict) -> None:
+    \\    write_text(path, json.dumps(data, indent=2, sort_keys=False) + "\\n")
+    \\
+    \\def command_has_needle(command: str, needles: tuple[str, ...]) -> bool:
+    \\    return any(needle in command for needle in needles)
+    \\
+    \\def hooks_have_needles(groups, needles: tuple[str, ...]) -> bool:
+    \\    if not isinstance(groups, list):
+    \\        return False
+    \\    for group in groups:
+    \\        hooks = group.get("hooks") if isinstance(group, dict) else None
+    \\        if not isinstance(hooks, list):
+    \\            continue
+    \\        for hook in hooks:
+    \\            if not isinstance(hook, dict):
+    \\                continue
+    \\            cmd = hook.get("command")
+    \\            if isinstance(cmd, str) and command_has_needle(cmd, needles):
+    \\                return True
+    \\    return False
+    \\
+    \\def ensure_group(groups):
+    \\    if not groups:
+    \\        group = {"hooks": []}
+    \\        groups.append(group)
+    \\        return group
+    \\    group = groups[0]
+    \\    if not isinstance(group, dict):
+    \\        group = {"hooks": []}
+    \\        groups[0] = group
+    \\    if not isinstance(group.get("hooks"), list):
+    \\        group["hooks"] = []
+    \\    return group
+    \\
+    \\def ensure_matcher_group(groups):
+    \\    if not groups:
+    \\        group = {"matcher": "*", "hooks": []}
+    \\        groups.append(group)
+    \\        return group
+    \\    for group in groups:
+    \\        if isinstance(group, dict) and group.get("matcher") == "*":
+    \\            if not isinstance(group.get("hooks"), list):
+    \\                group["hooks"] = []
+    \\            return group
+    \\    group = {"matcher": "*", "hooks": []}
+    \\    groups.append(group)
+    \\    return group
+    \\
+    \\def ensure_claude_hooks(data: dict) -> bool:
+    \\    hooks = data.setdefault("hooks", {})
+    \\    if not isinstance(hooks, dict):
+    \\        hooks = {}
+    \\        data["hooks"] = hooks
+    \\    stop_groups = hooks.setdefault("Stop", [])
+    \\    notification_groups = hooks.setdefault("Notification", [])
+    \\    changed = False
+    \\
+    \\    if not hooks_have_needles(stop_groups, CLAUDE_NEEDLES):
+    \\        group = ensure_group(stop_groups)
+    \\        group["hooks"].append({"type": "command", "command": CLAUDE_DONE})
+    \\        changed = True
+    \\
+    \\    if not hooks_have_needles(notification_groups, CLAUDE_NEEDLES):
+    \\        group = ensure_group(notification_groups)
+    \\        group["hooks"].append({"type": "command", "command": CLAUDE_APPROVAL})
+    \\        changed = True
+    \\
+    \\    return changed
+    \\
+    \\def ensure_gemini_hooks(data: dict) -> bool:
+    \\    hooks = data.setdefault("hooks", {})
+    \\    if not isinstance(hooks, dict):
+    \\        hooks = {}
+    \\        data["hooks"] = hooks
+    \\    after_groups = hooks.setdefault("AfterAgent", [])
+    \\    notification_groups = hooks.setdefault("Notification", [])
+    \\    changed = False
+    \\
+    \\    if not hooks_have_needles(after_groups, GEMINI_NEEDLES):
+    \\        group = ensure_matcher_group(after_groups)
+    \\        group["hooks"].append({
+    \\            "name": "architect-completion",
+    \\            "type": "command",
+    \\            "command": GEMINI_DONE,
+    \\            "description": "Notify Architect when task completes",
+    \\        })
+    \\        changed = True
+    \\
+    \\    if not hooks_have_needles(notification_groups, GEMINI_NEEDLES):
+    \\        group = ensure_matcher_group(notification_groups)
+    \\        group["hooks"].append({
+    \\            "name": "architect-approval",
+    \\            "type": "command",
+    \\            "command": GEMINI_APPROVAL,
+    \\            "description": "Notify Architect when waiting for approval",
+    \\        })
+    \\        changed = True
+    \\
+    \\    tools = data.setdefault("tools", {})
+    \\    if not isinstance(tools, dict):
+    \\        tools = {}
+    \\        data["tools"] = tools
+    \\    if tools.get("enableHooks") is not True:
+    \\        tools["enableHooks"] = True
+    \\        changed = True
+    \\
+    \\    return changed
+    \\
+    \\def codex_notify_installed(text: str) -> bool:
+    \\    if tomllib is not None:
+    \\        try:
+    \\            data = tomllib.loads(text)
+    \\            value = data.get("notify")
+    \\            if isinstance(value, list):
+    \\                if value == CODEX_NOTIFY:
+    \\                    return True
+    \\                for item in value:
+    \\                    if isinstance(item, str) and "architect_notify.py" in item:
+    \\                        return True
+    \\        except Exception:
+    \\            pass
+    \\    if 'notify = ["architect", "notify"]' in text:
+    \\        return True
+    \\    if "architect_notify.py" in text:
+    \\        return True
+    \\    return False
+    \\
+    \\def upsert_notify_line(text: str, line: str) -> str:
+    \\    lines = text.splitlines()
+    \\    for i, existing in enumerate(lines):
+    \\        if existing.strip().startswith("notify"):
+    \\            lines[i] = line
+    \\            return "\\n".join(lines) + "\\n"
+    \\    if lines and lines[-1].strip() != "":
+    \\        lines.append("")
+    \\    lines.append(line)
+    \\    return "\\n".join(lines) + "\\n"
+    \\
+    \\def install_claude() -> int:
+    \\    path = os.path.expanduser("~/.claude/settings.json")
+    \\    data = load_json(path)
+    \\    if data is None:
+    \\        print(f"Failed to read {path}", file=sys.stderr)
+    \\        return 1
+    \\    if ensure_claude_hooks(data):
+    \\        write_json(path, data)
+    \\        print("Installed Claude hooks.")
+    \\    else:
+    \\        print("Claude hooks already installed.")
+    \\    return 0
+    \\
+    \\def install_gemini() -> int:
+    \\    path = os.path.expanduser("~/.gemini/settings.json")
+    \\    data = load_json(path)
+    \\    if data is None:
+    \\        print(f"Failed to read {path}", file=sys.stderr)
+    \\        return 1
+    \\    if ensure_gemini_hooks(data):
+    \\        write_json(path, data)
+    \\        print("Installed Gemini hooks.")
+    \\    else:
+    \\        print("Gemini hooks already installed.")
+    \\    return 0
+    \\
+    \\def install_codex() -> int:
+    \\    path = os.path.expanduser("~/.codex/config.toml")
+    \\    text = read_text(path)
+    \\    if text is None:
+    \\        print(f"Failed to read {path}", file=sys.stderr)
+    \\        return 1
+    \\    if codex_notify_installed(text):
+    \\        print("Codex hooks already installed.")
+    \\        return 0
+    \\    notify_line = 'notify = ["architect", "notify"]'
+    \\    new_text = upsert_notify_line(text, notify_line)
+    \\    write_text(path, new_text)
+    \\    print("Installed Codex hooks.")
+    \\    return 0
+    \\
+    \\def main() -> int:
+    \\    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+    \\        print_usage()
+    \\        return 1
+    \\
+    \\    cmd = sys.argv[1]
+    \\    if cmd == "notify":
+    \\        raw_arg = sys.argv[2] if len(sys.argv) >= 3 else sys.stdin.read()
+    \\        if not raw_arg.strip():
+    \\            print_usage()
+    \\            return 1
+    \\        state = state_from_notification(raw_arg)
+    \\        if state is None:
+    \\            warn_unmapped(raw_arg)
+    \\            return 0
+    \\        notify_architect(state)
+    \\        return 0
+    \\    if cmd == "hook":
+    \\        if len(sys.argv) < 3:
+    \\            print_usage()
+    \\            return 1
+    \\        sub = sys.argv[2]
+    \\        if sub == "claude":
+    \\            return install_claude()
+    \\        if sub == "codex":
+    \\            return install_codex()
+    \\        if sub == "gemini":
+    \\            return install_gemini()
+    \\        print_usage()
+    \\        return 1
+    \\
+    \\    print_usage()
+    \\    return 1
+    \\
+    \\if __name__ == "__main__":
+    \\    raise SystemExit(main())
+    \\
+;
 
 fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
     if (posix.getenv(name) != null) return;
@@ -161,6 +509,114 @@ pub fn ensureTerminfoSetup() void {
     }
 }
 
+fn ensureArchitectCommandSetup() void {
+    if (architect_command_setup_done) return;
+    architect_command_setup_done = true;
+
+    const runtime_dir = posix.getenv("XDG_RUNTIME_DIR");
+    const home = posix.getenv("HOME");
+    var base_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_dir = if (runtime_dir) |dir|
+        std.fmt.bufPrint(&base_buf, "{s}/architect", .{dir}) catch |err| {
+            log.warn("failed to format architect runtime path: {}", .{err});
+            return;
+        }
+    else if (home) |home_dir|
+        std.fmt.bufPrint(&base_buf, "{s}/.cache/architect", .{home_dir}) catch |err| {
+            log.warn("failed to format architect cache path: {}", .{err});
+            return;
+        }
+    else
+        "/tmp/architect";
+
+    std.fs.makeDirAbsolute(base_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("failed to create architect command base dir: {}", .{err});
+            return;
+        },
+    };
+
+    const bin_dir_z = std.fmt.bufPrintZ(&architect_command_dir_buf, "{s}/bin", .{base_dir}) catch |err| {
+        log.warn("failed to format architect bin path: {}", .{err});
+        return;
+    };
+    const bin_dir = bin_dir_z[0..bin_dir_z.len];
+
+    std.fs.makeDirAbsolute(bin_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            log.warn("failed to create architect bin dir: {}", .{err});
+            return;
+        },
+    };
+
+    const script_path_z = std.fmt.bufPrintZ(&architect_command_path_buf, "{s}/architect", .{bin_dir}) catch |err| {
+        log.warn("failed to format architect command path: {}", .{err});
+        return;
+    };
+
+    const script_file = std.fs.createFileAbsolute(script_path_z, .{ .truncate = true }) catch |err| {
+        log.warn("failed to create architect command: {}", .{err});
+        return;
+    };
+    defer script_file.close();
+
+    script_file.writeAll(architect_command_script) catch |err| {
+        log.warn("failed to write architect command: {}", .{err});
+        return;
+    };
+
+    const script_path = std.mem.sliceTo(script_path_z, 0);
+    posix.fchmodat(posix.AT.FDCWD, script_path, 0o755, 0) catch |err| {
+        log.warn("failed to chmod architect command: {}", .{err});
+    };
+
+    architect_command_dir_z = bin_dir_z;
+}
+
+fn pathContainsEntry(path: []const u8, entry: []const u8) bool {
+    var it = std.mem.splitScalar(u8, path, ':');
+    while (it.next()) |segment| {
+        if (std.mem.eql(u8, segment, entry)) return true;
+    }
+    return false;
+}
+
+fn ensureArchitectCommandPath() void {
+    const dir_z = architect_command_dir_z orelse return;
+    const dir = std.mem.sliceTo(dir_z, 0);
+
+    const path_env = posix.getenv("PATH") orelse "";
+    const path_slice = std.mem.sliceTo(path_env, 0);
+    if (pathContainsEntry(path_slice, dir)) return;
+
+    const needs_sep = path_slice.len > 0;
+    const sep_len: usize = if (needs_sep) 1 else 0;
+    const total_len = dir.len + sep_len + path_slice.len;
+    const buf = std.heap.c_allocator.alloc(u8, total_len + 1) catch |err| {
+        log.warn("failed to allocate PATH for architect command: {}", .{err});
+        return;
+    };
+    defer std.heap.c_allocator.free(buf);
+
+    var idx: usize = 0;
+    std.mem.copyForwards(u8, buf[idx..][0..dir.len], dir);
+    idx += dir.len;
+    if (needs_sep) {
+        buf[idx] = ':';
+        idx += 1;
+        std.mem.copyForwards(u8, buf[idx..][0..path_slice.len], path_slice);
+        idx += path_slice.len;
+    }
+    buf[idx] = 0;
+
+    const value_z: [:0]u8 = buf[0..idx :0];
+    if (libc.setenv("PATH", value_z.ptr, 1) != 0) {
+        log.warn("failed to set PATH for architect command", .{});
+    }
+}
+
 fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
     const path_env = posix.getenv("PATH") orelse return null;
     const path_env_slice = std.mem.sliceTo(path_env, 0);
@@ -193,6 +649,7 @@ pub const Shell = struct {
     pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
         ensureTerminfoSetup();
+        ensureArchitectCommandSetup();
 
         const pty_instance = try pty_mod.Pty.open(size);
         errdefer {
@@ -230,6 +687,7 @@ pub const Shell = struct {
             setDefaultEnv("COLORTERM", default_colorterm);
             setDefaultEnv("LANG", default_lang);
             setDefaultEnv("TERM_PROGRAM", default_term_program);
+            ensureArchitectCommandPath();
 
             // Change to specified directory or home directory before spawning shell.
             // Try working_dir first, fall back to HOME.
@@ -309,3 +767,11 @@ pub const Shell = struct {
         _ = std.c.waitpid(self.child_pid, null, 0);
     }
 };
+
+test "pathContainsEntry" {
+    try std.testing.expect(pathContainsEntry("/usr/bin:/opt/bin", "/usr/bin"));
+    try std.testing.expect(pathContainsEntry("/usr/bin:/opt/bin", "/opt/bin"));
+    try std.testing.expect(!pathContainsEntry("/usr/bin:/opt/bin", "/bin"));
+    try std.testing.expect(pathContainsEntry("/usr/bin", "/usr/bin"));
+    try std.testing.expect(!pathContainsEntry("", "/usr/bin"));
+}
