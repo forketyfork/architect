@@ -193,6 +193,7 @@ Auto-managed runtime state. Do not edit manually unless troubleshooting.
 
 ```toml
 font_size = 14
+onboarding_shown = true
 
 [window]
 width = 1440
@@ -212,6 +213,7 @@ terminals = [
 | Field | Description |
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
+| `onboarding_shown` | Whether the first-launch onboarding message has been displayed |
 | `[window]` | Last window position and dimensions |
 | `terminals` | Working directories for each terminal (ordered by session index) |
 

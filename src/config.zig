@@ -236,11 +236,13 @@ pub const Persistence = struct {
     window: WindowConfig = .{},
     font_size: c_int = 14,
     terminal_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    onboarding_shown: bool = false,
 
     const TomlPersistenceV2 = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?[]const []const u8 = null,
+        onboarding_shown: bool = false,
     };
 
     const TomlPersistenceV1 = struct {
@@ -283,6 +285,7 @@ pub const Persistence = struct {
             defer result.deinit();
             persistence.window = result.value.window;
             persistence.font_size = result.value.font_size;
+            persistence.onboarding_shown = result.value.onboarding_shown;
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
@@ -339,6 +342,7 @@ pub const Persistence = struct {
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
         // Write font_size first (top-level scalar)
         try writer.print("font_size = {d}\n", .{self.font_size});
+        try writer.print("onboarding_shown = {}\n", .{self.onboarding_shown});
 
         // Write terminals array before any sections
         if (self.terminal_paths.items.len > 0) {
