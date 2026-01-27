@@ -236,11 +236,13 @@ pub const Persistence = struct {
     window: WindowConfig = .{},
     font_size: c_int = 14,
     terminal_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    onboarding_shown: bool = false,
 
     const TomlPersistenceV2 = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?[]const []const u8 = null,
+        onboarding_shown: ?bool = null,
     };
 
     const TomlPersistenceV1 = struct {
@@ -283,6 +285,7 @@ pub const Persistence = struct {
             defer result.deinit();
             persistence.window = result.value.window;
             persistence.font_size = result.value.font_size;
+            persistence.onboarding_shown = result.value.onboarding_shown orelse true;
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
@@ -304,6 +307,7 @@ pub const Persistence = struct {
 
         persistence.window = result_v1.value.window;
         persistence.font_size = result_v1.value.font_size;
+        persistence.onboarding_shown = true;
 
         if (result_v1.value.terminals) |stored| {
             try persistence.appendLegacyTerminals(allocator, stored);
@@ -339,6 +343,7 @@ pub const Persistence = struct {
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
         // Write font_size first (top-level scalar)
         try writer.print("font_size = {d}\n", .{self.font_size});
+        try writer.print("onboarding_shown = {}\n", .{self.onboarding_shown});
 
         // Write terminals array before any sections
         if (self.terminal_paths.items.len > 0) {
@@ -831,6 +836,7 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.x = 100;
     original.window.y = 200;
     original.font_size = 16;
+    original.onboarding_shown = true;
     try original.appendTerminalPath(allocator, "/home/user/project1");
     try original.appendTerminalPath(allocator, "/home/user/project2");
     try original.appendTerminalPath(allocator, "/tmp/test");
@@ -853,6 +859,7 @@ test "Persistence save/load round-trip preserves all fields" {
 
     loaded.window = result.value.window;
     loaded.font_size = result.value.font_size;
+    loaded.onboarding_shown = result.value.onboarding_shown orelse true;
 
     if (result.value.terminals) |paths| {
         for (paths) |path| {
@@ -865,6 +872,7 @@ test "Persistence save/load round-trip preserves all fields" {
     try std.testing.expectEqual(original.window.x, loaded.window.x);
     try std.testing.expectEqual(original.window.y, loaded.window.y);
     try std.testing.expectEqual(original.font_size, loaded.font_size);
+    try std.testing.expectEqual(original.onboarding_shown, loaded.onboarding_shown);
     try std.testing.expectEqual(original.terminal_paths.items.len, loaded.terminal_paths.items.len);
 
     for (original.terminal_paths.items, loaded.terminal_paths.items) |orig_path, load_path| {

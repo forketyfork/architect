@@ -372,6 +372,13 @@ pub fn run() !void {
     };
     defer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
+    const show_onboarding = !persistence.onboarding_shown;
+    if (show_onboarding) {
+        persistence.onboarding_shown = true;
+        persistence.save(allocator) catch |err| {
+            log.warn("Failed to save onboarding state: {}", .{err});
+        };
+    }
 
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
@@ -1834,6 +1841,7 @@ pub fn run() !void {
                 &theme,
                 config.grid.font_scale,
                 &grid,
+                show_onboarding,
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;
