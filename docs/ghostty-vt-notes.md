@@ -44,8 +44,8 @@ In `build.zig.zon` (URL + hash; tarball fetched automatically):
 ```zig
 .dependencies = .{
     .ghostty = .{
-        .url = "https://github.com/ghostty-org/ghostty/archive/f705b9f46a4083d8053cfa254898c164af46ff34.tar.gz",
-        .hash = "122022d77cfd6d901de978a2667797a18d82f7ce2fd6c40d4028d6db603499dc9679",
+        .url = "https://github.com/ghostty-org/ghostty/archive/01ea3744c59af4d973e96c5cce2fe8d4aa485e59.tar.gz",
+        .hash = "ghostty-1.3.0-dev-5UdBCztHSQTgA1VZa_mg8qFdLnXQJc3gWhsAgO6ZMybK",
     },
 },
 ```
