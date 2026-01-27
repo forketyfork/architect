@@ -15,9 +15,37 @@ Examples:
 {"session": 0, "state": "done"}
 ```
 
+## Built-in Command (inside Architect terminals)
+
+Architect injects a small `architect` command into each shell's `PATH`. It reads the
+session id and socket path from the environment, so hooks can simply call:
+
+```bash
+architect notify start
+architect notify awaiting_approval
+architect notify done
+```
+
+If your hook runs outside an Architect terminal, use the Python helper scripts below.
+Replace `architect notify ...` in the examples with `python3 ~/.<tool>/architect_notify.py ...` when using those scripts.
+
+## Hook Installer
+
+From inside an Architect terminal, you can install hooks automatically:
+
+```bash
+architect hook claude
+architect hook codex
+architect hook gemini
+```
+
+If you upgrade Architect, restart existing terminals so the bundled `architect` script refreshes.
+The installer writes timestamped backups before updating configs (for example:
+`settings.json.architect.bak.20260127T153045Z`).
+
 ## Claude Code Hooks
 
-1. Copy the helper script:
+1. (Optional) Copy the helper script if the hook runs outside Architect:
    ```bash
    cp scripts/architect_notify.py ~/.claude/architect_notify.py
    chmod +x ~/.claude/architect_notify.py
@@ -32,7 +60,7 @@ Examples:
            "hooks": [
              {
                "type": "command",
-               "command": "python3 ~/.claude/architect_notify.py done || true"
+               "command": "architect notify done || true"
              }
            ]
          }
@@ -42,7 +70,7 @@ Examples:
            "hooks": [
              {
                "type": "command",
-               "command": "python3 ~/.claude/architect_notify.py awaiting_approval || true"
+               "command": "architect notify awaiting_approval || true"
              }
            ]
          }
@@ -53,7 +81,7 @@ Examples:
 
 ## Codex Hooks
 
-1. Copy the helper script:
+1. (Optional) Copy the helper script if the hook runs outside Architect:
    ```bash
    cp scripts/architect_notify.py ~/.codex/architect_notify.py
    chmod +x ~/.codex/architect_notify.py
@@ -61,12 +89,18 @@ Examples:
 
 2. Add the `notify` setting to `~/.codex/config.toml`:
    ```toml
-   notify = ["python3", "/Users/your-username/.codex/architect_notify.py"]
+   notify = ["architect", "notify"]
    ```
+
+If you already have `notify` configured, `architect hook codex` overwrites it,
+prints a warning, and prints the backup file name.
 
 ## Gemini CLI Hooks
 
-1. Copy the notification scripts:
+Gemini hooks must emit JSON to stdout, so keep using the wrapper script even inside
+Architect terminals (it can call `architect notify` under the hood).
+
+1. Copy the notification scripts (the `architect hook gemini` installer assumes they exist):
    ```bash
    cp scripts/architect_notify.py ~/.gemini/architect_notify.py
    cp scripts/architect_hook_gemini.py ~/.gemini/architect_hook.py
