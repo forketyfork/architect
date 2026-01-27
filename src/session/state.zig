@@ -252,6 +252,7 @@ pub const SessionState = struct {
         HyperlinkSetOutOfMemory,
         NeedsRehash,
         OutOfMemory,
+        OutOfSpace,
         StringAllocOutOfMemory,
         StyleSetNeedsRehash,
         StyleSetOutOfMemory,
