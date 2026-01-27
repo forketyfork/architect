@@ -102,6 +102,15 @@ nix develop
 just build
 ```
 
+## Hooks
+
+To add hooks for Claude Code, Codex or Gemini, use the `architect` command available in the terminal:
+```bash
+architect hook claude
+architect hook codex
+architect hook gemini
+```
+
 ## Configuration
 
 Architect stores configuration in `~/.config/architect/`:
