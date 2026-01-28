@@ -486,8 +486,10 @@ pub fn run() !void {
 
     // Allocate max possible sessions to avoid reallocation
     const sessions_storage = try allocator.alloc(SessionState, grid_layout.max_terminals);
-    errdefer allocator.free(sessions_storage);
-    const sessions = try allocator.alloc(*SessionState, grid_layout.max_terminals);
+    const sessions = blk: {
+        errdefer allocator.free(sessions_storage);
+        break :blk try allocator.alloc(*SessionState, grid_layout.max_terminals);
+    };
     var init_count: usize = 0;
     defer {
         var i: usize = 0;
