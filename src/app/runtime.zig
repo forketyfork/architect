@@ -1360,10 +1360,11 @@ pub fn run() !void {
                 log.err("session {d}: flush pending writes failed: {}", .{ session.id, err });
                 return err;
             };
-            const prev_cwd = session.cwd_path;
+            const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
             if (session.cwd_path) |new_cwd| {
-                const changed = if (prev_cwd) |old| !std.mem.eql(u8, old, new_cwd) else true;
+                // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
+                const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
                 if (changed) {
                     persistence.appendRecentFolder(allocator, new_cwd) catch |err| {
                         log.warn("failed to update recent folders: {}", .{err});
@@ -1783,17 +1784,16 @@ pub fn run() !void {
                     continue;
                 };
 
-                persistence.appendRecentFolder(allocator, cd_action.path) catch |err| {
-                    log.warn("failed to update recent folders: {}", .{err});
-                };
-                recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
+                // Note: appendRecentFolder is handled by the per-frame updateCwd loop
+                // to avoid double-counting when cwd changes are detected
 
                 session_interaction_component.setStatus(cd_action.session, .running);
                 session_interaction_component.setAttention(cd_action.session, false);
 
                 const basename = std.fs.path.basename(cd_action.path);
-                const toast_msg = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch "Changed directory";
-                defer if (toast_msg.ptr != "Changed directory".ptr) allocator.free(toast_msg);
+                const toast_msg_buf = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch null;
+                const toast_msg = toast_msg_buf orelse "Changed directory";
+                defer if (toast_msg_buf) |buf| allocator.free(buf);
                 ui.showToast(toast_msg, now);
             },
             .ToggleMetrics => {
