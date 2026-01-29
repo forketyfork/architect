@@ -232,15 +232,30 @@ pub const MetricsConfig = struct {
 
 pub const Persistence = struct {
     const terminal_key_prefix = "terminal_";
+    const max_recent_folders: usize = 10;
+
+    pub const RecentFolder = struct {
+        path: []const u8,
+        count: u32,
+    };
 
     window: WindowConfig = .{},
     font_size: c_int = 14,
     terminal_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
+
+    const TomlPersistenceV3 = struct {
+        window: WindowConfig = .{},
+        font_size: c_int = 14,
+        terminals: ?[]const []const u8 = null,
+        recent_folders: ?toml.HashMap(u32) = null,
+    };
 
     const TomlPersistenceV2 = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?[]const []const u8 = null,
+        recent_folders: ?[]const []const u8 = null,
     };
 
     const TomlPersistenceV1 = struct {
@@ -257,6 +272,8 @@ pub const Persistence = struct {
     pub fn deinit(self: *Persistence, allocator: std.mem.Allocator) void {
         self.clearTerminalPaths(allocator);
         self.terminal_paths.deinit(allocator);
+        self.clearRecentFolders(allocator);
+        self.recent_folders.deinit(allocator);
     }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
@@ -276,6 +293,29 @@ pub const Persistence = struct {
 
         var persistence = Persistence.init(allocator);
 
+        // Try V3 format first (recent_folders as table with counts)
+        var parser_v3 = toml.Parser(TomlPersistenceV3).init(allocator);
+        defer parser_v3.deinit();
+
+        if (parser_v3.parseString(contents)) |result| {
+            defer result.deinit();
+            persistence.window = result.value.window;
+            persistence.font_size = result.value.font_size;
+
+            if (result.value.terminals) |paths| {
+                for (paths) |path| {
+                    try persistence.appendTerminalPath(allocator, path);
+                }
+            }
+
+            if (result.value.recent_folders) |folders_map| {
+                try persistence.loadRecentFoldersFromMap(allocator, folders_map);
+            }
+
+            return persistence;
+        } else |_| {}
+
+        // Try V2 format (recent_folders as array, migrate to counts)
         var parser_v2 = toml.Parser(TomlPersistenceV2).init(allocator);
         defer parser_v2.deinit();
 
@@ -287,6 +327,15 @@ pub const Persistence = struct {
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
                     try persistence.appendTerminalPath(allocator, path);
+                }
+            }
+
+            // Migrate from V2: treat array order as count (first = highest)
+            if (result.value.recent_folders) |folders| {
+                var initial_count: u32 = @intCast(folders.len);
+                for (folders) |folder| {
+                    try persistence.appendRecentFolderDirect(allocator, folder, initial_count);
+                    if (initial_count > 1) initial_count -= 1;
                 }
             }
 
@@ -350,12 +399,21 @@ pub const Persistence = struct {
             try writer.writeAll("]\n");
         }
 
-        // Write [window] section last
+        // Write [window] section
         try writer.writeAll("[window]\n");
         try writer.print("height = {d}\n", .{self.window.height});
         try writer.print("width = {d}\n", .{self.window.width});
         try writer.print("x = {d}\n", .{self.window.x});
         try writer.print("y = {d}\n", .{self.window.y});
+
+        // Write [recent_folders] section as table with counts
+        if (self.recent_folders.items.len > 0) {
+            try writer.writeAll("\n[recent_folders]\n");
+            for (self.recent_folders.items) |folder| {
+                try writeTomlStringToWriter(writer, folder.path);
+                try writer.print(" = {d}\n", .{folder.count});
+            }
+        }
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
@@ -374,6 +432,92 @@ pub const Persistence = struct {
             allocator.free(path);
         }
         self.terminal_paths.clearRetainingCapacity();
+    }
+
+    /// Increment visit count for a folder. Adds it if not present.
+    /// Keeps list sorted by count (descending) and trims to max size.
+    pub fn appendRecentFolder(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8) !void {
+        // Check if folder already exists
+        for (self.recent_folders.items) |*existing| {
+            if (std.mem.eql(u8, existing.path, folder)) {
+                existing.count += 1;
+                self.sortRecentFolders();
+                return;
+            }
+        }
+
+        // Not found - add new entry
+        const path_copy = try allocator.dupe(u8, folder);
+        errdefer allocator.free(path_copy);
+
+        try self.recent_folders.append(allocator, .{
+            .path = path_copy,
+            .count = 1,
+        });
+
+        self.sortRecentFolders();
+
+        // Trim to max size (remove lowest count entries)
+        while (self.recent_folders.items.len > max_recent_folders) {
+            if (self.recent_folders.pop()) |removed| {
+                allocator.free(removed.path);
+            }
+        }
+    }
+
+    /// Sort recent folders by visit count (descending)
+    fn sortRecentFolders(self: *Persistence) void {
+        std.mem.sort(RecentFolder, self.recent_folders.items, {}, struct {
+            fn lessThan(_: void, a: RecentFolder, b: RecentFolder) bool {
+                return a.count > b.count; // Descending order
+            }
+        }.lessThan);
+    }
+
+    /// Load recent folders from TOML HashMap (V3 format)
+    fn loadRecentFoldersFromMap(self: *Persistence, allocator: std.mem.Allocator, map: toml.HashMap(u32)) !void {
+        var it = map.map.iterator();
+        while (it.next()) |entry| {
+            const path_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(path_copy);
+            try self.recent_folders.append(allocator, .{
+                .path = path_copy,
+                .count = entry.value_ptr.*,
+            });
+        }
+        self.sortRecentFolders();
+    }
+
+    /// Directly append a folder with count (used during migration from V2)
+    fn appendRecentFolderDirect(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8, count: u32) !void {
+        if (self.recent_folders.items.len >= max_recent_folders) return;
+        const path_copy = try allocator.dupe(u8, folder);
+        errdefer allocator.free(path_copy);
+        try self.recent_folders.append(allocator, .{
+            .path = path_copy,
+            .count = count,
+        });
+    }
+
+    pub fn clearRecentFolders(self: *Persistence, allocator: std.mem.Allocator) void {
+        for (self.recent_folders.items) |folder| {
+            allocator.free(folder.path);
+        }
+        self.recent_folders.clearRetainingCapacity();
+    }
+
+    /// Get the list of recent folder paths (read-only, sorted by frequency)
+    pub fn getRecentFolderPaths(self: *const Persistence, allocator: std.mem.Allocator) ![]const []const u8 {
+        const result = try allocator.alloc([]const u8, self.recent_folders.items.len);
+        for (self.recent_folders.items, 0..) |folder, idx| {
+            result[idx] = folder.path;
+        }
+        return result;
+    }
+
+    /// Get the list of recent folders (for overlay display)
+    pub fn getRecentFolders(self: *const Persistence) []const RecentFolder {
+        return self.recent_folders.items;
     }
 
     fn appendLegacyTerminals(self: *Persistence, allocator: std.mem.Allocator, stored: toml.HashMap([]const u8)) !void {

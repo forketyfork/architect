@@ -373,6 +373,15 @@ pub fn run() !void {
     defer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
+    // Initialize recent folders with home directory if empty
+    if (persistence.recent_folders.items.len == 0) {
+        if (std.posix.getenv("HOME")) |home| {
+            persistence.appendRecentFolder(allocator, home) catch |err| {
+                log.warn("failed to initialize recent folders with home: {}", .{err});
+            };
+        }
+    }
+
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     // Dynamic grid layout - starts with 1x1 and grows as terminals are added
@@ -567,6 +576,16 @@ pub fn run() !void {
     };
     try ui.register(worktree_component);
 
+    const recent_folders_comp_ptr = try allocator.create(ui_mod.recent_folders_overlay.RecentFoldersOverlayComponent);
+    recent_folders_comp_ptr.* = .{ .allocator = allocator };
+    const recent_folders_component = ui_mod.UiComponent{
+        .ptr = recent_folders_comp_ptr,
+        .vtable = &ui_mod.recent_folders_overlay.RecentFoldersOverlayComponent.vtable,
+        .z_index = 1000,
+    };
+    try ui.register(recent_folders_component);
+    recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
+
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
     help_comp_ptr.* = .{ .allocator = allocator };
     const help_component = ui_mod.UiComponent{
@@ -576,7 +595,7 @@ pub fn run() !void {
     };
     try ui.register(help_component);
 
-    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, worktree_comp_ptr);
+    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr);
     try ui.register(pill_group_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
@@ -1341,7 +1360,17 @@ pub fn run() !void {
                 log.err("session {d}: flush pending writes failed: {}", .{ session.id, err });
                 return err;
             };
+            const prev_cwd = session.cwd_path;
             session.updateCwd(now);
+            if (session.cwd_path) |new_cwd| {
+                const changed = if (prev_cwd) |old| !std.mem.eql(u8, old, new_cwd) else true;
+                if (changed) {
+                    persistence.appendRecentFolder(allocator, new_cwd) catch |err| {
+                        log.warn("failed to update recent folders: {}", .{err});
+                    };
+                    recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
+                }
+            }
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace after process session idx={d} id={d}", .{ session.slot_index, session.id });
             }
@@ -1732,6 +1761,40 @@ pub fn run() !void {
                 session_interaction_component.setStatus(remove_action.session, .running);
                 session_interaction_component.setAttention(remove_action.session, false);
                 ui.showToast("Removing worktree…", now);
+            },
+            .ChangeDirectory => |cd_action| {
+                defer allocator.free(cd_action.path);
+                if (cd_action.session >= sessions.len) continue;
+
+                var session = sessions[cd_action.session];
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                worktree.changeSessionDirectory(session, allocator, cd_action.path) catch |err| {
+                    std.debug.print("Failed to change directory for session {d}: {}\n", .{ cd_action.session, err });
+                    ui.showToast("Could not change directory", now);
+                    continue;
+                };
+
+                persistence.appendRecentFolder(allocator, cd_action.path) catch |err| {
+                    log.warn("failed to update recent folders: {}", .{err});
+                };
+                recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
+
+                session_interaction_component.setStatus(cd_action.session, .running);
+                session_interaction_component.setAttention(cd_action.session, false);
+
+                const basename = std.fs.path.basename(cd_action.path);
+                const toast_msg = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch "Changed directory";
+                defer if (toast_msg.ptr != "Changed directory".ptr) allocator.free(toast_msg);
+                ui.showToast(toast_msg, now);
             },
             .ToggleMetrics => {
                 if (config.metrics.enabled) {

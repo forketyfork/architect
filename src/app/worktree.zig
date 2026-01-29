@@ -22,11 +22,14 @@ pub fn shellQuotePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
+/// Clear current input line before sending command (Ctrl+U)
+const clear_line_prefix = "\x15";
+
 pub fn changeSessionDirectory(session: *SessionState, allocator: std.mem.Allocator, path: []const u8) !void {
     var command: std.ArrayList(u8) = .empty;
     defer command.deinit(allocator);
 
-    try command.appendSlice(allocator, "cd -- ");
+    try command.appendSlice(allocator, clear_line_prefix ++ "cd -- ");
     try appendQuotedPath(&command, allocator, path);
     try command.append(allocator, '\n');
 
@@ -38,7 +41,7 @@ pub fn buildCreateWorktreeCommand(allocator: std.mem.Allocator, base_path: []con
     var cmd: std.ArrayList(u8) = .empty;
     errdefer cmd.deinit(allocator);
 
-    try cmd.appendSlice(allocator, "cd -- ");
+    try cmd.appendSlice(allocator, clear_line_prefix ++ "cd -- ");
     try appendQuotedPath(&cmd, allocator, base_path);
     try cmd.appendSlice(allocator, " && mkdir -p .architect && git worktree add ");
 
@@ -59,7 +62,7 @@ pub fn buildRemoveWorktreeCommand(allocator: std.mem.Allocator, path: []const u8
     var cmd: std.ArrayList(u8) = .empty;
     errdefer cmd.deinit(allocator);
 
-    try cmd.appendSlice(allocator, "git worktree remove ");
+    try cmd.appendSlice(allocator, clear_line_prefix ++ "git worktree remove ");
     try appendQuotedPath(&cmd, allocator, path);
     try cmd.appendSlice(allocator, "\n");
 
