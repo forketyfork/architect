@@ -194,17 +194,22 @@ Auto-managed runtime state. Do not edit manually unless troubleshooting.
 ```toml
 font_size = 14
 
+terminals = [
+  "/Users/me/projects/app",
+  "/Users/me/projects/lib",
+  "/Users/me",
+]
+
 [window]
 width = 1440
 height = 900
 x = 100
 y = 50
 
-terminals = [
-  "/Users/me/projects/app",
-  "/Users/me/projects/lib",
-  "/Users/me",
-]
+[recent_folders]
+"/Users/me/projects/app" = 15
+"/Users/me/projects/lib" = 8
+"/Users/me" = 3
 ```
 
 ### Fields
@@ -212,14 +217,15 @@ terminals = [
 | Field | Description |
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
-| `[window]` | Last window position and dimensions |
 | `terminals` | Working directories for each terminal (ordered by session index) |
+| `[window]` | Last window position and dimensions |
+| `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
 
 On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals.
 
 Note: Terminal cwd persistence is currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table are migrated automatically.
+Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically.
 
 ## Resetting Configuration
 
