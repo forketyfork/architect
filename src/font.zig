@@ -466,9 +466,8 @@ pub const Font = struct {
 
         if (align_baseline and cluster.len == 1) {
             if (glyphMetrics(metrics_font, cluster[0])) |glyph| {
-                const glyph_w = glyph.max_x - glyph.min_x;
                 const glyph_h = glyph.max_y - glyph.min_y;
-                const glyph_center_x = glyph_w * 0.5;
+                const glyph_center_x = (glyph.min_x + glyph.max_x) * 0.5;
                 const glyph_center_y = (metrics.ascent - glyph.max_y) + glyph_h * 0.5;
                 const surface_center_x = tex_w * 0.5;
                 const surface_center_y = tex_h * 0.5;
