@@ -126,9 +126,7 @@ pub const Font = struct {
     }
 
     fn shouldBaselineAlign(fallback: Fallback, cluster: []const u21) bool {
-        if (fallback == .emoji) {
-            return cluster.len == 1 and isSymbolLike(cluster[0]);
-        }
+        if (fallback == .emoji) return cluster.len == 1;
         if (fallback != .primary) return true;
         if (cluster.len != 1) return false;
         return isSymbolLike(cluster[0]);
