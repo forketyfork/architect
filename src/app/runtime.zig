@@ -307,7 +307,9 @@ fn initSharedFont(
         .bold = faces.bold,
         .italic = faces.italic,
         .bold_italic = faces.bold_italic,
+        .symbol_embedded = faces.symbol_embedded,
         .symbol = faces.symbol,
+        .symbol_secondary = faces.symbol_secondary,
         .emoji = faces.emoji,
     });
 }
@@ -440,7 +442,7 @@ pub fn run() !void {
     var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font.family);
     defer font_paths.deinit();
 
-    var shared_font_cache = font_cache_mod.FontCache.init(allocator);
+    var shared_font_cache = font_cache_mod.FontCache.initWithFallbacks(allocator, false);
     defer shared_font_cache.deinit();
     shared_font_cache.setPaths(
         font_paths.regular,
@@ -448,6 +450,19 @@ pub fn run() !void {
         font_paths.italic,
         font_paths.bold_italic,
         font_paths.symbol_fallback,
+        font_paths.symbol_fallback_secondary,
+        font_paths.emoji_fallback,
+    );
+
+    var ui_font_cache = font_cache_mod.FontCache.initWithFallbacks(allocator, true);
+    defer ui_font_cache.deinit();
+    ui_font_cache.setPaths(
+        font_paths.regular,
+        font_paths.bold,
+        font_paths.italic,
+        font_paths.bold_italic,
+        font_paths.symbol_fallback,
+        font_paths.symbol_fallback_secondary,
         font_paths.emoji_fallback,
     );
 
@@ -459,13 +474,13 @@ pub fn run() !void {
     defer font.deinit();
     font.metrics = metrics_ptr;
 
-    var ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
+    var ui_font = try initSharedFont(allocator, renderer, &ui_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
     defer ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
-    ui.assets.font_cache = &shared_font_cache;
+    ui.assets.font_cache = &ui_font_cache;
 
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;

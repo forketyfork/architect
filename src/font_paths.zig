@@ -9,6 +9,7 @@ pub const FontPaths = struct {
     italic: [:0]const u8,
     bold_italic: [:0]const u8,
     symbol_fallback: ?[:0]const u8,
+    symbol_fallback_secondary: ?[:0]const u8,
     emoji_fallback: ?[:0]const u8,
     allocator: std.mem.Allocator,
 
@@ -74,6 +75,11 @@ pub const FontPaths = struct {
         }
 
         paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+        const stix_path = "/System/Library/Fonts/Supplemental/STIXTwoMath.otf";
+        paths.symbol_fallback_secondary = if (std.fs.accessAbsolute(stix_path, .{})) |_|
+            try allocator.dupeZ(u8, stix_path)
+        else |_|
+            null;
         paths.emoji_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Apple Color Emoji.ttc");
 
         return paths;
@@ -85,6 +91,9 @@ pub const FontPaths = struct {
         self.allocator.free(self.italic);
         self.allocator.free(self.bold_italic);
         if (self.symbol_fallback) |fallback| {
+            self.allocator.free(fallback);
+        }
+        if (self.symbol_fallback_secondary) |fallback| {
             self.allocator.free(fallback);
         }
         if (self.emoji_fallback) |fallback| {

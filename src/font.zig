@@ -8,7 +8,9 @@ const log = std.log.scoped(.font);
 
 pub const Fallback = enum {
     primary,
+    symbol_embedded,
     symbol,
+    symbol_secondary,
     emoji,
 };
 
@@ -24,7 +26,9 @@ pub const Faces = struct {
     bold: ?*c.TTF_Font = null,
     italic: ?*c.TTF_Font = null,
     bold_italic: ?*c.TTF_Font = null,
+    symbol_embedded: ?*c.TTF_Font = null,
     symbol: ?*c.TTF_Font = null,
+    symbol_secondary: ?*c.TTF_Font = null,
     emoji: ?*c.TTF_Font = null,
 };
 
@@ -40,13 +44,34 @@ const GlyphKey = struct {
 
 const white: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
 
+const FontMetrics = struct {
+    ascent: f32,
+    descent: f32,
+    line_height: f32,
+};
+
+const GlyphMetrics = struct {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+    advance: f32,
+};
+
 pub const Font = struct {
     font: *c.TTF_Font,
     bold_font: ?*c.TTF_Font,
     italic_font: ?*c.TTF_Font,
     bold_italic_font: ?*c.TTF_Font,
+    symbol_fallback_embedded: ?*c.TTF_Font,
     symbol_fallback: ?*c.TTF_Font,
+    symbol_fallback_secondary: ?*c.TTF_Font,
     emoji_fallback: ?*c.TTF_Font,
+    primary_metrics: FontMetrics,
+    emoji_metrics: ?FontMetrics,
+    symbol_embedded_metrics: ?FontMetrics,
+    symbol_metrics: ?FontMetrics,
+    symbol_secondary_metrics: ?FontMetrics,
     renderer: *c.SDL_Renderer,
     glyph_cache: std.AutoHashMap(GlyphKey, CacheEntry),
     cache_tick: u64 = 0,
@@ -71,6 +96,52 @@ pub const Font = struct {
     /// excessively large textures (e.g., cursor trail effects with 120+ chars).
     const max_cluster_size: usize = 32;
     const unicode_replacement: u21 = 0xFFFD;
+
+    fn fontMetrics(font: *c.TTF_Font) FontMetrics {
+        const ascent = c.TTF_GetFontAscent(font);
+        const descent = c.TTF_GetFontDescent(font);
+        return .{
+            .ascent = @floatFromInt(ascent),
+            .descent = @floatFromInt(descent),
+            .line_height = @floatFromInt(ascent - descent),
+        };
+    }
+
+    fn glyphMetrics(font: *c.TTF_Font, codepoint: u21) ?GlyphMetrics {
+        var min_x: c_int = 0;
+        var max_x: c_int = 0;
+        var min_y: c_int = 0;
+        var max_y: c_int = 0;
+        var advance: c_int = 0;
+        if (!c.TTF_GetGlyphMetrics(font, @intCast(codepoint), &min_x, &max_x, &min_y, &max_y, &advance)) {
+            return null;
+        }
+        return .{
+            .min_x = @floatFromInt(min_x),
+            .max_x = @floatFromInt(max_x),
+            .min_y = @floatFromInt(min_y),
+            .max_y = @floatFromInt(max_y),
+            .advance = @floatFromInt(advance),
+        };
+    }
+
+    fn shouldBaselineAlign(fallback: Fallback, cluster: []const u21) bool {
+        if (fallback == .emoji) {
+            return cluster.len == 1 and isSymbolLike(cluster[0]);
+        }
+        if (fallback != .primary) return true;
+        if (cluster.len != 1) return false;
+        return isSymbolLike(cluster[0]);
+    }
+
+    fn isSymbolLike(codepoint: u21) bool {
+        return (codepoint >= 0x2190 and codepoint <= 0x21FF) or // Arrows
+            (codepoint >= 0x2300 and codepoint <= 0x23FF) or // Misc Technical
+            (codepoint >= 0x2460 and codepoint <= 0x24FF) or // Enclosed Alphanumerics
+            (codepoint >= 0x25A0 and codepoint <= 0x25FF) or // Geometric Shapes
+            (codepoint >= 0x2600 and codepoint <= 0x26FF) or // Misc Symbols
+            (codepoint >= 0x2B00 and codepoint <= 0x2BFF); // Misc Symbols and Arrows
+    }
 
     inline fn isValidScalar(cp: u21) bool {
         return cp <= 0x10_FFFF and !(cp >= 0xD800 and cp <= 0xDFFF);
@@ -117,6 +188,7 @@ pub const Font = struct {
         italic_font_path: ?[*:0]const u8,
         bold_italic_font_path: ?[*:0]const u8,
         symbol_fallback_path: ?[*:0]const u8,
+        symbol_fallback_secondary_path: ?[*:0]const u8,
         emoji_fallback_path: ?[*:0]const u8,
         size: c_int,
     ) InitError!Font {
@@ -172,6 +244,17 @@ pub const Font = struct {
         } else null;
         errdefer if (symbol_fallback) |f| c.TTF_CloseFont(f);
 
+        const symbol_fallback_secondary = if (symbol_fallback_secondary_path) |path| blk: {
+            const f = c.TTF_OpenFont(path, @floatFromInt(size));
+            if (f == null) {
+                log.warn("Failed to open secondary symbol fallback font: {s}", .{c.SDL_GetError()});
+            } else {
+                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+            }
+            break :blk f;
+        } else null;
+        errdefer if (symbol_fallback_secondary) |f| c.TTF_CloseFont(f);
+
         const emoji_fallback = if (emoji_fallback_path) |path| blk: {
             const f = c.TTF_OpenFont(path, @floatFromInt(size));
             if (f == null) {
@@ -197,8 +280,15 @@ pub const Font = struct {
             .bold_font = bold_font,
             .italic_font = italic_font,
             .bold_italic_font = bold_italic_font,
+            .symbol_fallback_embedded = null,
             .symbol_fallback = symbol_fallback,
+            .symbol_fallback_secondary = symbol_fallback_secondary,
             .emoji_fallback = emoji_fallback,
+            .primary_metrics = fontMetrics(font),
+            .emoji_metrics = if (emoji_fallback) |f| fontMetrics(f) else null,
+            .symbol_embedded_metrics = null,
+            .symbol_metrics = if (symbol_fallback) |f| fontMetrics(f) else null,
+            .symbol_secondary_metrics = if (symbol_fallback_secondary) |f| fontMetrics(f) else null,
             .renderer = renderer,
             .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
             .allocator = allocator,
@@ -219,7 +309,9 @@ pub const Font = struct {
             if (self.bold_font) |f| c.TTF_CloseFont(f);
             if (self.italic_font) |f| c.TTF_CloseFont(f);
             if (self.bold_italic_font) |f| c.TTF_CloseFont(f);
+            if (self.symbol_fallback_embedded) |f| c.TTF_CloseFont(f);
             if (self.symbol_fallback) |f| c.TTF_CloseFont(f);
+            if (self.symbol_fallback_secondary) |f| c.TTF_CloseFont(f);
             if (self.emoji_fallback) |f| c.TTF_CloseFont(f);
         }
     }
@@ -244,8 +336,15 @@ pub const Font = struct {
             .bold_font = faces.bold,
             .italic_font = faces.italic,
             .bold_italic_font = faces.bold_italic,
+            .symbol_fallback_embedded = faces.symbol_embedded,
             .symbol_fallback = faces.symbol,
+            .symbol_fallback_secondary = faces.symbol_secondary,
             .emoji_fallback = faces.emoji,
+            .primary_metrics = fontMetrics(faces.regular),
+            .emoji_metrics = if (faces.emoji) |f| fontMetrics(f) else null,
+            .symbol_embedded_metrics = if (faces.symbol_embedded) |f| fontMetrics(f) else null,
+            .symbol_metrics = if (faces.symbol) |f| fontMetrics(f) else null,
+            .symbol_secondary_metrics = if (faces.symbol_secondary) |f| fontMetrics(f) else null,
             .renderer = renderer,
             .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
             .allocator = allocator,
@@ -347,9 +446,41 @@ pub const Font = struct {
 
         const base_x: f32 = @floatFromInt(x);
         const base_y: f32 = @floatFromInt(y);
+        const metrics_font = switch (fallback_choice) {
+            .symbol_embedded => self.symbol_fallback_embedded orelse self.symbol_fallback orelse self.font,
+            .symbol => self.symbol_fallback orelse self.font,
+            .symbol_secondary => self.symbol_fallback_secondary orelse self.symbol_fallback orelse self.font,
+            .emoji => self.emoji_fallback orelse self.font,
+            .primary => self.variantFont(effective_variant),
+        };
+
+        const align_baseline = shouldBaselineAlign(fallback_choice, cluster);
+        const metrics = switch (fallback_choice) {
+            .primary => self.primary_metrics,
+            .symbol_embedded => self.symbol_embedded_metrics orelse self.primary_metrics,
+            .symbol => self.symbol_metrics orelse self.primary_metrics,
+            .symbol_secondary => self.symbol_secondary_metrics orelse self.primary_metrics,
+            .emoji => self.emoji_metrics orelse self.primary_metrics,
+        };
+
+        var dest_x = base_x + (avail_w - dest_w) * 0.5;
+        var dest_y = base_y + (avail_h - dest_h) * 0.5;
+
+        if (align_baseline and cluster.len == 1) {
+            if (glyphMetrics(metrics_font, cluster[0])) |glyph| {
+                const glyph_w = glyph.max_x - glyph.min_x;
+                const glyph_h = glyph.max_y - glyph.min_y;
+                const glyph_center_x = glyph_w * 0.5;
+                const glyph_center_y = (metrics.ascent - glyph.max_y) + glyph_h * 0.5;
+                const surface_center_x = tex_w * 0.5;
+                const surface_center_y = tex_h * 0.5;
+                dest_x += (surface_center_x - glyph_center_x) * scale;
+                dest_y += (surface_center_y - glyph_center_y) * scale;
+            }
+        }
         const dest_rect = c.SDL_FRect{
-            .x = base_x + (avail_w - dest_w) * 0.5,
-            .y = base_y + (avail_h - dest_h) * 0.5,
+            .x = dest_x,
+            .y = dest_y,
             .w = dest_w,
             .h = dest_h,
         };
@@ -455,6 +586,18 @@ pub const Font = struct {
             return .emoji;
         }
 
+        if (self.symbol_fallback_embedded) |fallback_font| {
+            const has_in_symbol = blk: {
+                for (codepoints) |cp| {
+                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
+                        break :blk false;
+                    }
+                }
+                break :blk true;
+            };
+            if (has_in_symbol) return .symbol_embedded;
+        }
+
         if (self.symbol_fallback) |fallback_font| {
             const has_in_symbol = blk: {
                 for (codepoints) |cp| {
@@ -465,6 +608,18 @@ pub const Font = struct {
                 break :blk true;
             };
             if (has_in_symbol) return .symbol;
+        }
+
+        if (self.symbol_fallback_secondary) |fallback_font| {
+            const has_in_symbol = blk: {
+                for (codepoints) |cp| {
+                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
+                        break :blk false;
+                    }
+                }
+                break :blk true;
+            };
+            if (has_in_symbol) return .symbol_secondary;
         }
 
         if (self.emoji_fallback != null) return .emoji;
@@ -494,7 +649,9 @@ pub const Font = struct {
 
         const render_font = switch (fallback) {
             .primary => self.variantFont(variant),
+            .symbol_embedded => self.symbol_fallback_embedded orelse self.symbol_fallback orelse self.font,
             .symbol => self.symbol_fallback orelse self.font,
+            .symbol_secondary => self.symbol_fallback_secondary orelse self.symbol_fallback orelse self.font,
             .emoji => self.emoji_fallback orelse self.font,
         };
         const render_color = if (fallback == .emoji) white else fg_color;
