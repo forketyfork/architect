@@ -17,8 +17,8 @@
             .hash = "toml-0.3.0-bV14Bd-EAQBKoXhpYft303BtA2vgLNlxntUCIWgRUl46",
         },
         .zwanzig = .{
-            .url = "https://github.com/forketyfork/zwanzig/archive/refs/tags/v0.2.4.tar.gz",
-            .hash = "zwanzig-0.2.4-oiXZlnYbCQCbWmblbxCfu56yhoeTWv7iNDzf9LP0lRX5",
+            .url = "https://github.com/forketyfork/zwanzig/archive/refs/tags/v0.3.0.tar.gz",
+            .hash = "zwanzig-0.3.0-oiXZluvfEACK3n9_G5gPK2m__rwk3W0AHYubEA1DVv0g",
         },
     },
     .paths = .{
