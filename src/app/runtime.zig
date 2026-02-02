@@ -1339,9 +1339,10 @@ pub fn run() !void {
                     const key = scaled_event.key.key;
                     if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
                         const focused = sessions[anim_state.focused_session];
-                        if (focused.spawned and !focused.dead and focused.shell != null) {
+                        const shell = focused.shell orelse continue;
+                        if (focused.spawned and !focused.dead) {
                             const esc_byte: [1]u8 = .{27};
-                            _ = focused.shell.?.write(&esc_byte) catch |err| {
+                            _ = shell.write(&esc_byte) catch |err| {
                                 log.warn("session {d}: failed to send escape key: {}", .{ anim_state.focused_session, err });
                             };
                         }

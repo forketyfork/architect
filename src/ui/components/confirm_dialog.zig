@@ -219,6 +219,9 @@ pub const ConfirmDialogComponent = struct {
     }
 
     fn renderText(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
+        const title_tex = self.title_tex orelse return;
+        const message_tex = self.message_tex orelse return;
+
         const scaled_padding = dpi.scale(padding, ui_scale);
         const title_x = modal.x + scaled_padding;
         const title_y = modal.y + scaled_padding;
@@ -228,7 +231,7 @@ pub const ConfirmDialogComponent = struct {
             .w = @floatFromInt(self.title_w),
             .h = @floatFromInt(self.title_h),
         };
-        _ = c.SDL_RenderTexture(renderer, self.title_tex.?, null, &title_rect);
+        _ = c.SDL_RenderTexture(renderer, title_tex, null, &title_rect);
 
         const message_y = title_y + self.title_h + dpi.scale(12, ui_scale);
         const message_rect = c.SDL_FRect{
@@ -237,10 +240,13 @@ pub const ConfirmDialogComponent = struct {
             .w = @floatFromInt(self.message_w),
             .h = @floatFromInt(self.message_h),
         };
-        _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
+        _ = c.SDL_RenderTexture(renderer, message_tex, null, &message_rect);
     }
 
     fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme) void {
+        const cancel_tex = self.cancel_tex orelse return;
+        const confirm_tex = self.confirm_tex orelse return;
+
         const buttons = self.buttonRects(modal, ui_scale);
 
         const cancel_rect = c.SDL_FRect{
@@ -277,7 +283,7 @@ pub const ConfirmDialogComponent = struct {
             .w = cancel_w,
             .h = cancel_h,
         };
-        _ = c.SDL_RenderTexture(renderer, self.cancel_tex.?, null, &cancel_text_rect);
+        _ = c.SDL_RenderTexture(renderer, cancel_tex, null, &cancel_text_rect);
 
         const confirm_text_rect = c.SDL_FRect{
             .x = @floatFromInt(buttons.confirm.x + @divFloor(buttons.confirm.w - self.confirm_w, 2)),
@@ -285,7 +291,7 @@ pub const ConfirmDialogComponent = struct {
             .w = @floatFromInt(self.confirm_w),
             .h = @floatFromInt(self.confirm_h),
         };
-        _ = c.SDL_RenderTexture(renderer, self.confirm_tex.?, null, &confirm_text_rect);
+        _ = c.SDL_RenderTexture(renderer, confirm_tex, null, &confirm_text_rect);
     }
 
     fn modalRect(self: *ConfirmDialogComponent, host: *const types.UiHost) geom.Rect {

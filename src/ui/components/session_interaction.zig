@@ -163,7 +163,8 @@ pub const SessionInteractionComponent = struct {
                     const focused = self.sessions[focused_idx];
                     const view = &self.views[focused_idx];
 
-                    if (focused.spawned and focused.terminal != null) {
+                    const terminal = focused.terminal orelse continue;
+                    if (focused.spawned) {
                         if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |pin| {
                             const clicks = event.button.clicks;
                             if (clicks >= 3) {
@@ -174,7 +175,7 @@ pub const SessionInteractionComponent = struct {
                                 const mod = c.SDL_GetModState();
                                 const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
                                 if (cmd_held) {
-                                    if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
+                                    if (getLinkAtPin(self.allocator, &terminal, pin, view.is_viewing_scrollback)) |uri| {
                                         defer self.allocator.free(uri);
                                         open_url.openUrl(self.allocator, uri) catch |err| {
                                             log.err("failed to open URL: {}", .{err});
@@ -306,7 +307,7 @@ pub const SessionInteractionComponent = struct {
 
                         if (should_forward) {
                             if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |cell| {
-                                const terminal = session.terminal.?;
+                                const terminal = session.terminal orelse continue;
                                 const sgr_format = terminal.modes.get(.mouse_format_sgr);
                                 const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
                                 const count = @abs(scroll_delta);

@@ -196,6 +196,9 @@ pub const QuitConfirmComponent = struct {
     }
 
     fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
+        const title_tex = self.title_tex orelse return;
+        const message_tex = self.message_tex orelse return;
+
         const scaled_padding = dpi.scale(padding, ui_scale);
         const title_x = modal.x + scaled_padding;
         const title_y = modal.y + scaled_padding;
@@ -205,7 +208,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(self.title_w),
             .h = @floatFromInt(self.title_h),
         };
-        _ = c.SDL_RenderTexture(renderer, self.title_tex.?, null, &title_rect);
+        _ = c.SDL_RenderTexture(renderer, title_tex, null, &title_rect);
 
         const message_y = title_y + self.title_h + dpi.scale(12, ui_scale);
         const message_rect = c.SDL_FRect{
@@ -214,7 +217,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(self.message_w),
             .h = @floatFromInt(self.message_h),
         };
-        _ = c.SDL_RenderTexture(renderer, self.message_tex.?, null, &message_rect);
+        _ = c.SDL_RenderTexture(renderer, message_tex, null, &message_rect);
     }
 
     fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme, font: *c.TTF_Font) void {

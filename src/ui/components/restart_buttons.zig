@@ -132,6 +132,8 @@ pub const RestartButtonsComponent = struct {
 
     fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const colors.Theme, cache: *font_cache.FontCache) void {
         self.ensureTexture(renderer, theme, cache) catch return;
+        const texture = self.texture orelse return;
+
         const text_width = self.tex_w;
         const text_height = self.tex_h;
         const button_w = text_width + restart_button_padding * 2;
@@ -170,7 +172,7 @@ pub const RestartButtonsComponent = struct {
             .w = @floatFromInt(text_width),
             .h = @floatFromInt(text_height),
         };
-        _ = c.SDL_RenderTexture(renderer, self.texture.?, null, &dest_rect);
+        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
     fn restartButtonRect(self: *RestartButtonsComponent, rect: geom.Rect) geom.Rect {
