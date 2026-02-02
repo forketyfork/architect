@@ -293,10 +293,11 @@ pub const SessionInteractionComponent = struct {
                         @as(isize, @intFromFloat(event.wheel.y * @as(f32, @floatFromInt(scroll_lines_per_tick))));
                     const scroll_delta = -wheel_ticks;
                     if (scroll_delta != 0) {
+                        const terminal_opt = session.terminal;
                         const should_forward = blk: {
                             if (host.view_mode != .Full) break :blk false;
                             if (view.is_viewing_scrollback) break :blk false;
-                            const terminal = session.terminal orelse break :blk false;
+                            const terminal = terminal_opt orelse break :blk false;
                             const mouse_tracking = terminal.modes.get(.mouse_event_normal) or
                                 terminal.modes.get(.mouse_event_button) or
                                 terminal.modes.get(.mouse_event_any) or
@@ -304,29 +305,29 @@ pub const SessionInteractionComponent = struct {
                             break :blk mouse_tracking;
                         };
 
+                        var forwarded = false;
                         if (should_forward) {
-                            if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |cell| {
-                                const terminal = session.terminal.?;
-                                const sgr_format = terminal.modes.get(.mouse_format_sgr);
-                                const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
-                                const count = @abs(scroll_delta);
-                                var buf: [32]u8 = undefined;
-                                var i: usize = 0;
-                                while (i < count) : (i += 1) {
-                                    const n = input.encodeMouseScroll(direction, cell.col, cell.row, sgr_format, &buf);
-                                    if (n > 0) {
-                                        session.sendInput(buf[0..n]) catch |err| {
-                                            log.warn("session {d}: failed to send mouse scroll: {}", .{ session_idx, err });
-                                        };
+                            if (terminal_opt) |terminal| {
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |cell| {
+                                    forwarded = true;
+                                    const sgr_format = terminal.modes.get(.mouse_format_sgr);
+                                    const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
+                                    const count = @abs(scroll_delta);
+                                    var buf: [32]u8 = undefined;
+                                    var i: usize = 0;
+                                    while (i < count) : (i += 1) {
+                                        const n = input.encodeMouseScroll(direction, cell.col, cell.row, sgr_format, &buf);
+                                        if (n > 0) {
+                                            session.sendInput(buf[0..n]) catch |err| {
+                                                log.warn("session {d}: failed to send mouse scroll: {}", .{ session_idx, err });
+                                            };
+                                        }
                                     }
                                 }
-                            } else {
-                                scrollSession(session, view, scroll_delta, host.now_ms);
-                                if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
-                                    view.scroll_inertia_allowed = false;
-                                }
                             }
-                        } else {
+                        }
+
+                        if (!forwarded) {
                             scrollSession(session, view, scroll_delta, host.now_ms);
                             if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
                                 view.scroll_inertia_allowed = false;
