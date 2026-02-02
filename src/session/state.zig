@@ -481,9 +481,8 @@ pub const SessionState = struct {
             self.allocator.free(old);
         }
 
-        const new_path = try self.allocator.dupe(u8, path);
-        self.cwd_path = new_path;
-        self.cwd_basename = basenameForDisplay(new_path);
+        self.cwd_path = try self.allocator.dupe(u8, path);
+        self.cwd_basename = basenameForDisplay(self.cwd_path.?);
         self.markDirty();
     }
 
