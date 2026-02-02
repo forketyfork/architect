@@ -143,8 +143,9 @@ pub const FontCache = struct {
         };
         errdefer fonts.close();
 
-        try self.fonts.put(size, fonts);
-        return self.fonts.getPtr(size).?;
+        const gop = try self.fonts.getOrPut(size);
+        gop.value_ptr.* = fonts;
+        return gop.value_ptr;
     }
 
     fn releaseFonts(self: *FontCache) void {

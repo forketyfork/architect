@@ -748,17 +748,17 @@ pub const SaveError = error{
 } || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
 
 test "Color.fromHex - valid hex colors" {
-    const white = Color.fromHex("#FFFFFF").?;
+    const white = Color.fromHex("#FFFFFF") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u8, 255), white.r);
     try std.testing.expectEqual(@as(u8, 255), white.g);
     try std.testing.expectEqual(@as(u8, 255), white.b);
 
-    const red = Color.fromHex("E06C75").?;
+    const red = Color.fromHex("E06C75") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u8, 224), red.r);
     try std.testing.expectEqual(@as(u8, 108), red.g);
     try std.testing.expectEqual(@as(u8, 117), red.b);
 
-    const one_dark_bg = Color.fromHex("#0E1116").?;
+    const one_dark_bg = Color.fromHex("#0E1116") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u8, 14), one_dark_bg.r);
     try std.testing.expectEqual(@as(u8, 17), one_dark_bg.g);
     try std.testing.expectEqual(@as(u8, 22), one_dark_bg.b);
@@ -901,7 +901,7 @@ test "Config - parse with all theme palette colors" {
 }
 
 test "parseTerminalKey decodes 1-based coordinates" {
-    const parsed = parseTerminalKey("terminal_2_3").?;
+    const parsed = parseTerminalKey("terminal_2_3") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 1), parsed.row);
     try std.testing.expectEqual(@as(usize, 2), parsed.col);
     try std.testing.expect(parseTerminalKey("terminal_x") == null);
