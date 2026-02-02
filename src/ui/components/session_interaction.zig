@@ -306,7 +306,7 @@ pub const SessionInteractionComponent = struct {
 
                         if (should_forward) {
                             if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |cell| {
-                                const terminal = session.terminal orelse continue;
+                                const terminal = session.terminal orelse return false;
                                 const sgr_format = terminal.modes.get(.mouse_format_sgr);
                                 const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
                                 const count = @abs(scroll_delta);

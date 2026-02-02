@@ -165,6 +165,8 @@ pub const QuitConfirmComponent = struct {
         }
 
         self.ensureTextures(renderer, host.theme, cache) catch return;
+        const title_tex = self.title_tex orelse return;
+        const message_tex = self.message_tex orelse return;
         const body_fonts = cache.get(self.body_font_size) catch return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -191,14 +193,11 @@ pub const QuitConfirmComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, modal, dpi.scale(modal_radius, host.ui_scale));
 
-        self.renderText(renderer, modal, host.ui_scale);
+        self.renderText(renderer, modal, host.ui_scale, title_tex, message_tex);
         self.renderButtons(renderer, modal, host.ui_scale, host.theme, body_fonts.regular);
     }
 
-    fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32) void {
-        const title_tex = self.title_tex orelse return;
-        const message_tex = self.message_tex orelse return;
-
+    fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, title_tex: *c.SDL_Texture, message_tex: *c.SDL_Texture) void {
         const scaled_padding = dpi.scale(padding, ui_scale);
         const title_x = modal.x + scaled_padding;
         const title_y = modal.y + scaled_padding;
