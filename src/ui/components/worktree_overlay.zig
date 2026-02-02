@@ -30,6 +30,7 @@ pub const WorktreeOverlayComponent = struct {
     confirming_removal: bool = false,
     pending_removal_index: ?usize = null,
     pending_removal_path: ?[]const u8 = null,
+    pending_refresh_ms: i64 = 0,
     escape_pressed: bool = false,
     create_input: std.ArrayList(u8) = .empty,
     create_error: ?[]const u8 = null,
@@ -42,6 +43,7 @@ pub const WorktreeOverlayComponent = struct {
     const button_size_large: c_int = 480;
     const button_margin: c_int = 20;
     const button_animation_duration_ms: i64 = 200;
+    const worktree_removal_refresh_delay_ms: i64 = 500;
     const max_worktrees: usize = 9;
     const modal_width: c_int = 520;
     const modal_height: c_int = 220;
@@ -285,6 +287,12 @@ pub const WorktreeOverlayComponent = struct {
         if (cwd_changed) {
             self.needs_refresh = true;
             self.setLastCwd(host_cwd);
+        }
+
+        // Check for delayed refresh (e.g., after worktree removal)
+        if (self.pending_refresh_ms > 0 and host.now_ms >= self.pending_refresh_ms) {
+            self.needs_refresh = true;
+            self.pending_refresh_ms = 0;
         }
 
         if (self.needs_refresh) {
@@ -1123,6 +1131,8 @@ pub const WorktreeOverlayComponent = struct {
                 self.emitRemove(actions, host.focused_session, path);
             }
             self.clearPendingRemoval();
+            // Schedule a refresh after the git command completes
+            self.pending_refresh_ms = host.now_ms + worktree_removal_refresh_delay_ms;
             return true;
         }
         if (in_cancel) {
