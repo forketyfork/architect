@@ -23,6 +23,8 @@ pub const EscapeHoldComponent = struct {
     const esc_arc_segment_ms: i64 = esc_visible_duration_ms / esc_arc_count;
     const esc_indicator_margin: c_int = 40;
     const esc_indicator_radius: c_int = 30;
+    const pop_duration_ms: i64 = 150;
+    const pop_duration_ms_f: f32 = @floatFromInt(pop_duration_ms);
 
     pub fn init(allocator: std.mem.Allocator, font: *font_mod.Font) !*EscapeHoldComponent {
         const comp = try allocator.create(EscapeHoldComponent);
@@ -220,9 +222,8 @@ pub const EscapeHoldComponent = struct {
                 // Calculate how long ago this segment completed
                 const segment_complete_time = @as(i64, @intCast(arc + 1)) * esc_arc_segment_ms;
                 const time_since_segment_complete = display_elapsed - segment_complete_time;
-                const pop_duration_ms: i64 = 150;
                 if (time_since_segment_complete >= 0 and time_since_segment_complete < pop_duration_ms) {
-                    const pop_progress = @as(f32, @floatFromInt(time_since_segment_complete)) / @as(f32, @floatFromInt(pop_duration_ms));
+                    const pop_progress = @as(f32, @floatFromInt(time_since_segment_complete)) / pop_duration_ms_f;
                     // Ease out: starts big, settles to normal
                     const pop_amount = 0.2 * (1.0 - pop_progress * pop_progress);
                     segment_scale = 1.0 + pop_amount;
