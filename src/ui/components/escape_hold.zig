@@ -23,6 +23,8 @@ pub const EscapeHoldComponent = struct {
     const esc_arc_segment_ms: i64 = esc_visible_duration_ms / esc_arc_count;
     const esc_indicator_margin: c_int = 40;
     const esc_indicator_radius: c_int = 30;
+    const pop_duration_ms: i64 = 150;
+    const pop_duration_ms_f: f32 = @floatFromInt(pop_duration_ms);
 
     pub fn init(allocator: std.mem.Allocator, font: *font_mod.Font) !*EscapeHoldComponent {
         const comp = try allocator.create(EscapeHoldComponent);
@@ -214,6 +216,20 @@ pub const EscapeHoldComponent = struct {
                 .a = @as(f32, @floatFromInt(color.a)) / 255.0,
             };
 
+            // Per-segment pop animation when it lights up
+            var segment_scale: f32 = 1.0;
+            if (is_completed and !all_complete) {
+                // Calculate how long ago this segment completed
+                const segment_complete_time = @as(i64, @intCast(arc + 1)) * esc_arc_segment_ms;
+                const time_since_segment_complete = display_elapsed - segment_complete_time;
+                if (time_since_segment_complete >= 0 and time_since_segment_complete < pop_duration_ms) {
+                    const pop_progress = @as(f32, @floatFromInt(time_since_segment_complete)) / pop_duration_ms_f;
+                    // Ease out: starts big, settles to normal
+                    const pop_amount = 0.2 * (1.0 - pop_progress * pop_progress);
+                    segment_scale = 1.0 + pop_amount;
+                }
+            }
+
             var i: usize = 0;
             while (i < arc_segments) : (i += 1) {
                 const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
@@ -222,8 +238,9 @@ pub const EscapeHoldComponent = struct {
                 const base_inner_radius = @as(f32, @floatFromInt(radius - ring_half_thickness));
                 const base_outer_radius = @as(f32, @floatFromInt(radius + ring_half_thickness));
 
-                const inner_radius = if (is_completed and all_complete) base_inner_radius * flash_scale else base_inner_radius;
-                const outer_radius = if (is_completed and all_complete) base_outer_radius * flash_scale else base_outer_radius;
+                const effective_scale = if (all_complete) flash_scale else segment_scale;
+                const inner_radius = base_inner_radius * effective_scale;
+                const outer_radius = base_outer_radius * effective_scale;
 
                 const x1_inner = @as(f32, @floatFromInt(center_x)) + inner_radius * std.math.cos(angle1);
                 const y1_inner = @as(f32, @floatFromInt(center_y)) + inner_radius * std.math.sin(angle1);
