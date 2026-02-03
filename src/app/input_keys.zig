@@ -14,13 +14,18 @@ pub fn isModifierKey(key: c.SDL_Keycode) bool {
 pub fn handleKeyInput(focused: *SessionState, key: c.SDL_Keycode, mod: c.SDL_Keymod) !void {
     if (key == c.SDLK_ESCAPE) return;
 
+    const cursor_keys = if (focused.terminal) |*terminal|
+        terminal.modes.get(.cursor_keys)
+    else
+        false;
+
     const kitty_enabled = if (focused.terminal) |*terminal|
         terminal.screens.active.kitty_keyboard.current().int() != 0
     else
         false;
 
     var buf: [16]u8 = undefined;
-    const n = input.encodeKeyWithMod(key, mod, kitty_enabled, &buf);
+    const n = input.encodeKeyWithMod(key, mod, cursor_keys, kitty_enabled, &buf);
     if (n > 0) {
         try focused.sendInput(buf[0..n]);
     }
