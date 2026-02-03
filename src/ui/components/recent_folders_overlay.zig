@@ -30,6 +30,7 @@ pub const RecentFoldersOverlayComponent = struct {
     const button_size_large: c_int = 400;
     const button_margin: c_int = 20;
     const button_animation_duration_ms: i64 = 200;
+    const line_height: c_int = 28;
     const max_folders: usize = 10;
 
     const title = "Recent Folders";
@@ -350,9 +351,9 @@ pub const RecentFoldersOverlayComponent = struct {
     fn renderOverlay(self: *RecentFoldersOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
 
-        const padding: c_int = dpi.scale(20, ui_scale);
-        const line_height: c_int = dpi.scale(28, ui_scale);
-        var y_offset: c_int = rect.y + padding;
+        const scaled_margin: c_int = dpi.scale(button_margin, ui_scale);
+        const scaled_line_height: c_int = dpi.scale(line_height, ui_scale);
+        var y_offset: c_int = rect.y + scaled_margin;
 
         // Render title
         const title_tex = cache.title;
@@ -363,7 +364,7 @@ pub const RecentFoldersOverlayComponent = struct {
             .w = @floatFromInt(title_tex.w),
             .h = @floatFromInt(title_tex.h),
         });
-        y_offset += title_tex.h + line_height;
+        y_offset += title_tex.h + scaled_line_height;
 
         // Render entries
         for (cache.entries, 0..) |entry_tex, idx| {
@@ -373,7 +374,7 @@ pub const RecentFoldersOverlayComponent = struct {
             // Highlight background for selected or hovered
             if (is_selected or is_hovered) {
                 const highlight_y = @as(f32, @floatFromInt(y_offset - dpi.scale(4, ui_scale)));
-                const highlight_h = @as(f32, @floatFromInt(line_height));
+                const highlight_h = @as(f32, @floatFromInt(scaled_line_height));
                 const fade_width: f32 = @as(f32, @floatFromInt(dpi.scale(40, ui_scale)));
                 const rect_x: f32 = @floatFromInt(rect.x);
                 const rect_w: f32 = @floatFromInt(rect.w);
@@ -421,7 +422,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
             // Render hotkey
             _ = c.SDL_RenderTexture(renderer, entry_tex.hotkey.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding),
+                .x = @floatFromInt(rect.x + scaled_margin),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.hotkey.w),
                 .h = @floatFromInt(entry_tex.hotkey.h),
@@ -429,7 +430,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
             // Render path (right-aligned)
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - entry_tex.path.w),
+                .x = @floatFromInt(rect.x + rect.w - scaled_margin - entry_tex.path.w),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.path.w),
                 .h = @floatFromInt(entry_tex.path.h),
@@ -441,7 +442,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 flowing_line.render(renderer, self.flow_animation_start_ms, host.now_ms, rect, flow_y, ui_scale, theme);
             }
 
-            y_offset += line_height;
+            y_offset += scaled_line_height;
         }
     }
 
@@ -465,12 +466,12 @@ pub const RecentFoldersOverlayComponent = struct {
         if (self.cache == null) return null;
         const cache = self.cache.?;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-        const padding: c_int = dpi.scale(20, host.ui_scale);
-        const line_height: c_int = dpi.scale(28, host.ui_scale);
-        const start_y = rect.y + padding + cache.title.h + line_height;
+        const scaled_margin: c_int = dpi.scale(button_margin, host.ui_scale);
+        const scaled_lh: c_int = dpi.scale(line_height, host.ui_scale);
+        const start_y = rect.y + scaled_margin + cache.title.h + scaled_lh;
         if (y < start_y) return null;
         const rel = y - start_y;
-        const idx = @as(usize, @intCast(@divFloor(rel, line_height)));
+        const idx = @as(usize, @intCast(@divFloor(rel, scaled_lh)));
         if (idx >= self.folders.items.len) return null;
         return idx;
     }
@@ -574,8 +575,9 @@ pub const RecentFoldersOverlayComponent = struct {
 
         self.cache = cache;
 
-        const line_height: c_int = dpi.scale(28, ui_scale);
-        const content_height = dpi.scale(2 * 20, ui_scale) + title_tex.h + line_height + @as(c_int, @intCast(entry_count)) * line_height;
+        const scaled_lh: c_int = dpi.scale(line_height, ui_scale);
+        const scaled_padding: c_int = dpi.scale(2 * button_margin, ui_scale);
+        const content_height = scaled_padding + title_tex.h + scaled_lh + @as(c_int, @intCast(entry_count)) * scaled_lh;
         self.overlay.setContentHeight(content_height);
 
         return cache;
