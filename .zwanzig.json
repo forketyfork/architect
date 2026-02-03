@@ -1,0 +1,31 @@
+{
+  "resource_models": [
+    { "kind": "free_owned", "method_name": "deinit" },
+
+    { "kind": "alloc", "method_name": "SDL_CreateWindow" },
+    { "kind": "free", "method_name": "SDL_DestroyWindow" },
+
+    { "kind": "alloc", "method_name": "SDL_CreateRenderer" },
+    { "kind": "free", "method_name": "SDL_DestroyRenderer" },
+
+    { "kind": "alloc", "method_name": "SDL_CreateTexture" },
+    { "kind": "alloc", "method_name": "SDL_CreateTextureFromSurface" },
+    { "kind": "free", "method_name": "SDL_DestroyTexture" },
+
+    { "kind": "alloc", "method_name": "SDL_CreateSurface" },
+    { "kind": "free", "method_name": "SDL_DestroySurface" },
+
+    { "kind": "alloc", "method_name": "SDL_CreateSystemCursor" },
+    { "kind": "free", "method_name": "SDL_DestroyCursor" },
+
+    { "kind": "alloc", "method_name": "SDL_IOFromConstMem" },
+    { "kind": "free", "method_name": "SDL_CloseIO" },
+
+    { "kind": "open", "method_name": "TTF_OpenFont" },
+    { "kind": "open", "method_name": "TTF_OpenFontIO" },
+    { "kind": "close", "method_name": "TTF_CloseFont" },
+
+    { "kind": "alloc", "method_name": "CFRetain" },
+    { "kind": "free", "method_name": "CFRelease" }
+  ]
+}

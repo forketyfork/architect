@@ -71,11 +71,12 @@ pub fn copySelectionToClipboard(
     const text = try screen.selectionString(allocator, .{ .sel = sel, .trim = true });
     defer allocator.free(text);
 
-    const clipboard_text = try allocator.allocSentinel(u8, text.len, 0);
-    defer allocator.free(clipboard_text);
-    @memcpy(clipboard_text[0..text.len], text);
+    const clipboard_buf = try allocator.alloc(u8, text.len + 1);
+    defer allocator.free(clipboard_buf);
+    @memcpy(clipboard_buf[0..text.len], text);
+    clipboard_buf[text.len] = 0;
 
-    if (!c.SDL_SetClipboardText(clipboard_text.ptr)) {
+    if (!c.SDL_SetClipboardText(clipboard_buf.ptr)) {
         ui.showToast("Failed to copy selection", now);
         return;
     }
