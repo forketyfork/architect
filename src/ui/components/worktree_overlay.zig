@@ -739,8 +739,9 @@ pub const WorktreeOverlayComponent = struct {
 
         self.cache = cache;
 
-        const line_height: c_int = 28;
-        const content_height = (2 * 20) + title_tex.h + line_height + @as(c_int, @intCast(entry_count)) * line_height;
+        const scaled_line_height: c_int = dpi.scale(28, ui_scale);
+        const scaled_padding: c_int = dpi.scale(2 * 20, ui_scale);
+        const content_height = scaled_padding + title_tex.h + scaled_line_height + @as(c_int, @intCast(entry_count)) * scaled_line_height;
         self.overlay.setContentHeight(content_height);
 
         return cache;
