@@ -1,28 +1,63 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const log = std.log.scoped(.open);
+
 const OpenError = error{
     SpawnFailed,
     OutOfMemory,
 };
 
-pub fn openUrl(allocator: std.mem.Allocator, url: []const u8) OpenError!void {
-    // Allocate with a thread-safe allocator because the buffer is freed on a worker thread.
-    const thread_allocator = std.heap.c_allocator;
-    const owned_url = try thread_allocator.dupe(u8, url);
+const argv_len = switch (builtin.os.tag) {
+    .linux, .freebsd => 2,
+    .windows => 3,
+    .macos => 2,
+    else => 0,
+};
 
-    const child = switch (builtin.os.tag) {
-        .linux, .freebsd => std.process.Child.init(&.{ "xdg-open", owned_url }, allocator),
-        .windows => std.process.Child.init(&.{ "rundll32", "url.dll,FileProtocolHandler", owned_url }, allocator),
-        .macos => std.process.Child.init(&.{ "open", owned_url }, allocator),
+const ThreadContext = struct {
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    argv: [argv_len][]const u8,
+
+    fn deinit(self: *ThreadContext) void {
+        self.allocator.free(self.url);
+        self.allocator.destroy(self);
+    }
+};
+
+pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
+    // Use c_allocator because it's thread-safe and the context is freed on a worker thread.
+    const thread_allocator = std.heap.c_allocator;
+
+    const ctx = thread_allocator.create(ThreadContext) catch return error.OutOfMemory;
+    errdefer thread_allocator.destroy(ctx);
+
+    ctx.allocator = thread_allocator;
+    ctx.url = thread_allocator.dupe(u8, url) catch {
+        thread_allocator.destroy(ctx);
+        return error.OutOfMemory;
+    };
+    errdefer thread_allocator.free(ctx.url);
+
+    switch (builtin.os.tag) {
+        .linux, .freebsd => {
+            ctx.argv = .{ "xdg-open", ctx.url };
+        },
+        .windows => {
+            ctx.argv = .{ "rundll32", "url.dll,FileProtocolHandler", ctx.url };
+        },
+        .macos => {
+            ctx.argv = .{ "open", ctx.url };
+        },
         else => {
-            thread_allocator.free(owned_url);
+            ctx.deinit();
             return error.SpawnFailed;
         },
-    };
+    }
 
-    const thread = std.Thread.spawn(.{}, openUrlThread, .{ thread_allocator, child, owned_url }) catch |err| {
-        thread_allocator.free(owned_url);
+    const thread = std.Thread.spawn(.{}, openUrlThread, .{ctx}) catch |err| {
+        ctx.deinit();
         return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.SpawnFailed,
@@ -31,11 +66,12 @@ pub fn openUrl(allocator: std.mem.Allocator, url: []const u8) OpenError!void {
     thread.detach();
 }
 
-fn openUrlThread(thread_allocator: std.mem.Allocator, child: std.process.Child, owned_url: []u8) void {
-    var process = child;
-    _ = process.spawnAndWait() catch {
-        thread_allocator.free(owned_url);
+fn openUrlThread(ctx: *ThreadContext) void {
+    defer ctx.deinit();
+
+    var child = std.process.Child.init(&ctx.argv, ctx.allocator);
+    _ = child.spawnAndWait() catch |err| {
+        log.warn("failed to open URL '{s}': {}", .{ ctx.url, err });
         return;
     };
-    thread_allocator.free(owned_url);
 }
