@@ -64,6 +64,8 @@ pub const ExpandingOverlay = struct {
         return dpi.scale(unscaled, ui_scale);
     }
 
+    /// Returns the overlay rectangle for rendering.
+    /// Note: content_height is expected to be already scaled by the caller.
     pub fn rect(self: *const ExpandingOverlay, now: i64, window_width: c_int, window_height: c_int, ui_scale: f32) geom.Rect {
         _ = window_height;
         const margin = dpi.scale(self.margin, ui_scale);
@@ -79,7 +81,8 @@ pub const ExpandingOverlay = struct {
 
             const small = dpi.scale(self.small_size, ui_scale);
             const large = dpi.scale(self.large_size, ui_scale);
-            const target_height = dpi.scale(self.content_height, ui_scale);
+            // content_height is already scaled by the overlay component
+            const target_height = self.content_height;
 
             switch (self.state) {
                 .Closed => break :blk small,
