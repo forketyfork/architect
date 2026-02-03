@@ -8,11 +8,11 @@ const OpenError = error{
     OutOfMemory,
 };
 
-const argv_len = switch (builtin.os.tag) {
+const argv_len: comptime_int = switch (builtin.os.tag) {
     .linux, .freebsd => 2,
     .windows => 3,
     .macos => 2,
-    else => 0,
+    else => @compileError("unsupported platform for openUrl"),
 };
 
 const ThreadContext = struct {
@@ -40,21 +40,12 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
     };
     errdefer thread_allocator.free(ctx.url);
 
-    switch (builtin.os.tag) {
-        .linux, .freebsd => {
-            ctx.argv = .{ "xdg-open", ctx.url };
-        },
-        .windows => {
-            ctx.argv = .{ "rundll32", "url.dll,FileProtocolHandler", ctx.url };
-        },
-        .macos => {
-            ctx.argv = .{ "open", ctx.url };
-        },
-        else => {
-            ctx.deinit();
-            return error.SpawnFailed;
-        },
-    }
+    ctx.argv = switch (builtin.os.tag) {
+        .linux, .freebsd => .{ "xdg-open", ctx.url },
+        .windows => .{ "rundll32", "url.dll,FileProtocolHandler", ctx.url },
+        .macos => .{ "open", ctx.url },
+        else => comptime unreachable,
+    };
 
     const thread = std.Thread.spawn(.{}, openUrlThread, .{ctx}) catch |err| {
         ctx.deinit();
