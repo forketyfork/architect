@@ -124,7 +124,10 @@ pub fn keyToChar(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
     };
 }
 
-pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, kitty_enabled: bool, buf: []u8) usize {
+/// Encodes an SDL key with modifiers into a terminal escape sequence.
+/// cursor_keys: when true (DECCKM mode set), arrow keys use SS3 sequences (\x1bO...)
+/// kitty_enabled: when true, use Kitty keyboard protocol for modified special keys
+pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool, kitty_enabled: bool, buf: []u8) usize {
     if (mod & c.SDL_KMOD_CTRL != 0) {
         if (key >= c.SDLK_A and key <= c.SDLK_Z) {
             buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
@@ -238,19 +241,19 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, kitty_enabled: bo
             break :blk 1;
         },
         c.SDLK_UP => blk: {
-            @memcpy(buf[0..3], "\x1b[A");
+            @memcpy(buf[0..3], if (cursor_keys) "\x1bOA" else "\x1b[A");
             break :blk 3;
         },
         c.SDLK_DOWN => blk: {
-            @memcpy(buf[0..3], "\x1b[B");
+            @memcpy(buf[0..3], if (cursor_keys) "\x1bOB" else "\x1b[B");
             break :blk 3;
         },
         c.SDLK_RIGHT => blk: {
-            @memcpy(buf[0..3], "\x1b[C");
+            @memcpy(buf[0..3], if (cursor_keys) "\x1bOC" else "\x1b[C");
             break :blk 3;
         },
         c.SDLK_LEFT => blk: {
-            @memcpy(buf[0..3], "\x1b[D");
+            @memcpy(buf[0..3], if (cursor_keys) "\x1bOD" else "\x1b[D");
             break :blk 3;
         },
         c.SDLK_HOME => blk: {
@@ -271,118 +274,138 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, kitty_enabled: bo
 
 test "encodeKeyWithMod - return key" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
 }
 
 test "encodeKeyWithMod - tab key" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_TAB, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\t'), buf[0]);
 }
 
 test "encodeKeyWithMod - backspace key" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 127), buf[0]);
 }
 
 test "encodeKeyWithMod - escape key" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_ESCAPE, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_ESCAPE, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 27), buf[0]);
 }
 
-test "encodeKeyWithMod - arrow keys" {
+test "encodeKeyWithMod - arrow keys normal mode" {
     var buf: [16]u8 = undefined;
 
-    const n_up = encodeKeyWithMod(c.SDLK_UP, 0, false, &buf);
+    const n_up = encodeKeyWithMod(c.SDLK_UP, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_up);
     try std.testing.expectEqualSlices(u8, "\x1b[A", buf[0..n_up]);
 
-    const n_down = encodeKeyWithMod(c.SDLK_DOWN, 0, false, &buf);
+    const n_down = encodeKeyWithMod(c.SDLK_DOWN, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_down);
     try std.testing.expectEqualSlices(u8, "\x1b[B", buf[0..n_down]);
 
-    const n_right = encodeKeyWithMod(c.SDLK_RIGHT, 0, false, &buf);
+    const n_right = encodeKeyWithMod(c.SDLK_RIGHT, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_right);
     try std.testing.expectEqualSlices(u8, "\x1b[C", buf[0..n_right]);
 
-    const n_left = encodeKeyWithMod(c.SDLK_LEFT, 0, false, &buf);
+    const n_left = encodeKeyWithMod(c.SDLK_LEFT, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 3), n_left);
     try std.testing.expectEqualSlices(u8, "\x1b[D", buf[0..n_left]);
 }
 
+test "encodeKeyWithMod - arrow keys application mode (DECCKM)" {
+    var buf: [16]u8 = undefined;
+
+    const n_up = encodeKeyWithMod(c.SDLK_UP, 0, true, false, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_up);
+    try std.testing.expectEqualSlices(u8, "\x1bOA", buf[0..n_up]);
+
+    const n_down = encodeKeyWithMod(c.SDLK_DOWN, 0, true, false, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_down);
+    try std.testing.expectEqualSlices(u8, "\x1bOB", buf[0..n_down]);
+
+    const n_right = encodeKeyWithMod(c.SDLK_RIGHT, 0, true, false, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_right);
+    try std.testing.expectEqualSlices(u8, "\x1bOC", buf[0..n_right]);
+
+    const n_left = encodeKeyWithMod(c.SDLK_LEFT, 0, true, false, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n_left);
+    try std.testing.expectEqualSlices(u8, "\x1bOD", buf[0..n_left]);
+}
+
 test "encodeKeyWithMod - ctrl+a" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_A, c.SDL_KMOD_CTRL, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_A, c.SDL_KMOD_CTRL, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
 }
 
 test "encodeKeyWithMod - cmd+left (beginning of line)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_GUI, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_GUI, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
 }
 
 test "encodeKeyWithMod - cmd+right (end of line)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_GUI, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_GUI, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 5), buf[0]);
 }
 
 test "encodeKeyWithMod - home (beginning of line)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_HOME, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_HOME, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 1), buf[0]);
 }
 
 test "encodeKeyWithMod - end (end of line)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_END, 0, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_END, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 5), buf[0]);
 }
 
 test "encodeKeyWithMod - alt+left (backward word)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_ALT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_LEFT, c.SDL_KMOD_ALT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 2), n);
     try std.testing.expectEqualSlices(u8, "\x1bb", buf[0..n]);
 }
 
 test "encodeKeyWithMod - alt+right (forward word)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_ALT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RIGHT, c.SDL_KMOD_ALT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 2), n);
     try std.testing.expectEqualSlices(u8, "\x1bf", buf[0..n]);
 }
 
 test "encodeKeyWithMod - cmd+backspace (delete line)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 21), buf[0]);
 }
 
 test "encodeKeyWithMod - alt+backspace (delete word)" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 23), buf[0]);
 }
 
 test "encodeKeyWithMod - unknown key" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(0, 0, false, &buf);
+    const n = encodeKeyWithMod(0, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 0), n);
 }
 
@@ -396,83 +419,83 @@ test "fontSizeShortcut - plus/minus variants" {
 
 test "encodeKeyWithMod - shift+tab legacy mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_SHIFT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_SHIFT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectEqualSlices(u8, "\x1b[Z", buf[0..n]);
 }
 
 test "encodeKeyWithMod - shift+tab kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_SHIFT, false, true, &buf);
     try std.testing.expectEqual(@as(usize, 6), n);
     try std.testing.expectEqualSlices(u8, "\x1b[9;2u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - shift+enter legacy mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
 }
 
 test "encodeKeyWithMod - shift+enter kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, false, true, &buf);
     try std.testing.expectEqual(@as(usize, 7), n);
     try std.testing.expectEqualSlices(u8, "\x1b[13;2u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - shift+backspace legacy mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_SHIFT, false, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_SHIFT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u8, 127), buf[0]);
 }
 
 test "encodeKeyWithMod - shift+backspace kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_SHIFT, false, true, &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[127;2u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - ctrl+shift+enter kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_CTRL | c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_CTRL | c.SDL_KMOD_SHIFT, false, true, &buf);
     // Ctrl(4) + Shift(1) + 1 = 6
     try std.testing.expectEqualSlices(u8, "\x1b[13;6u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - alt+shift+tab kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, false, true, &buf);
     // Alt(2) + Shift(1) + 1 = 4
     try std.testing.expectEqualSlices(u8, "\x1b[9;4u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - ctrl+alt+shift+backspace kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, false, true, &buf);
     // Ctrl(4) + Alt(2) + Shift(1) + 1 = 8
     try std.testing.expectEqualSlices(u8, "\x1b[127;8u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - alt+enter kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_ALT, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_ALT, false, true, &buf);
     // Alt(2) + 1 = 3
     try std.testing.expectEqualSlices(u8, "\x1b[13;3u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - ctrl+enter kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_CTRL, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_CTRL, false, true, &buf);
     // Ctrl(4) + 1 = 5
     try std.testing.expectEqualSlices(u8, "\x1b[13;5u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - ctrl+tab kitty mode" {
     var buf: [16]u8 = undefined;
-    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_CTRL, true, &buf);
+    const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_CTRL, false, true, &buf);
     // Ctrl(4) + 1 = 5
     try std.testing.expectEqualSlices(u8, "\x1b[9;5u", buf[0..n]);
 }
