@@ -34,10 +34,7 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
     errdefer thread_allocator.destroy(ctx);
 
     ctx.allocator = thread_allocator;
-    ctx.url = thread_allocator.dupe(u8, url) catch {
-        thread_allocator.destroy(ctx);
-        return error.OutOfMemory;
-    };
+    ctx.url = thread_allocator.dupe(u8, url) catch return error.OutOfMemory;
     errdefer thread_allocator.free(ctx.url);
 
     ctx.argv = switch (builtin.os.tag) {
@@ -48,7 +45,6 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
     };
 
     const thread = std.Thread.spawn(.{}, openUrlThread, .{ctx}) catch |err| {
-        ctx.deinit();
         return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.SpawnFailed,
