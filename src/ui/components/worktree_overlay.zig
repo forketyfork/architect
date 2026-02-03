@@ -43,6 +43,7 @@ pub const WorktreeOverlayComponent = struct {
     const button_size_large: c_int = 480;
     const button_margin: c_int = 20;
     const button_animation_duration_ms: i64 = 200;
+    const line_height: c_int = 28;
     const worktree_removal_refresh_delay_ms: i64 = 500;
     const max_worktrees: usize = 9;
     const modal_width: c_int = 520;
@@ -393,10 +394,10 @@ pub const WorktreeOverlayComponent = struct {
     fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
 
-        const padding: c_int = dpi.scale(20, ui_scale);
-        const line_height: c_int = dpi.scale(28, ui_scale);
+        const scaled_margin: c_int = dpi.scale(button_margin, ui_scale);
+        const scaled_line_height: c_int = dpi.scale(line_height, ui_scale);
         const trailing_gutter: c_int = dpi.scale(32, ui_scale);
-        var y_offset: c_int = rect.y + padding;
+        var y_offset: c_int = rect.y + scaled_margin;
 
         const title_tex = cache.title;
         const title_x = rect.x + @divFloor(rect.w - title_tex.w, 2);
@@ -406,7 +407,7 @@ pub const WorktreeOverlayComponent = struct {
             .w = @floatFromInt(title_tex.w),
             .h = @floatFromInt(title_tex.h),
         });
-        y_offset += title_tex.h + line_height;
+        y_offset += title_tex.h + scaled_line_height;
 
         const current_idx = self.findCurrentWorktreeIndex(host.focused_cwd);
 
@@ -414,7 +415,7 @@ pub const WorktreeOverlayComponent = struct {
             if (self.hovered_entry) |hover_idx| {
                 if (hover_idx == idx) {
                     const highlight_y = @as(f32, @floatFromInt(y_offset - dpi.scale(4, ui_scale)));
-                    const highlight_h = @as(f32, @floatFromInt(line_height));
+                    const highlight_h = @as(f32, @floatFromInt(scaled_line_height));
                     const fade_width: f32 = @as(f32, @floatFromInt(dpi.scale(40, ui_scale)));
                     const rect_x: f32 = @floatFromInt(rect.x);
                     const rect_w: f32 = @floatFromInt(rect.w);
@@ -460,7 +461,7 @@ pub const WorktreeOverlayComponent = struct {
             }
 
             _ = c.SDL_RenderTexture(renderer, entry_tex.hotkey.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding),
+                .x = @floatFromInt(rect.x + scaled_margin),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.hotkey.w),
                 .h = @floatFromInt(entry_tex.hotkey.h),
@@ -468,7 +469,7 @@ pub const WorktreeOverlayComponent = struct {
 
             const path_x_offset = trailing_gutter;
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - entry_tex.path.w - path_x_offset),
+                .x = @floatFromInt(rect.x + rect.w - scaled_margin - entry_tex.path.w - path_x_offset),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.path.w),
                 .h = @floatFromInt(entry_tex.path.h),
@@ -509,7 +510,7 @@ pub const WorktreeOverlayComponent = struct {
                 }
             }
 
-            y_offset += line_height;
+            y_offset += scaled_line_height;
         }
 
         if (self.creating) {
@@ -739,8 +740,9 @@ pub const WorktreeOverlayComponent = struct {
 
         self.cache = cache;
 
-        const line_height: c_int = 28;
-        const content_height = (2 * 20) + title_tex.h + line_height + @as(c_int, @intCast(entry_count)) * line_height;
+        const scaled_lh: c_int = dpi.scale(line_height, ui_scale);
+        const scaled_padding: c_int = dpi.scale(2 * button_margin, ui_scale);
+        const content_height = scaled_padding + title_tex.h + scaled_lh + @as(c_int, @intCast(entry_count)) * scaled_lh;
         self.overlay.setContentHeight(content_height);
 
         return cache;
@@ -1343,12 +1345,12 @@ pub const WorktreeOverlayComponent = struct {
         if (self.cache == null) return null;
         const cache = self.cache.?;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-        const padding: c_int = dpi.scale(20, host.ui_scale);
-        const line_height: c_int = dpi.scale(28, host.ui_scale);
-        const start_y = rect.y + padding + cache.title.h + line_height;
+        const scaled_margin: c_int = dpi.scale(button_margin, host.ui_scale);
+        const scaled_lh: c_int = dpi.scale(line_height, host.ui_scale);
+        const start_y = rect.y + scaled_margin + cache.title.h + scaled_lh;
         if (y < start_y) return null;
         const rel = y - start_y;
-        const idx = @as(usize, @intCast(@divFloor(rel, line_height)));
+        const idx = @as(usize, @intCast(@divFloor(rel, scaled_lh)));
         if (idx >= self.entryCount()) return null;
         return idx;
     }
@@ -1372,13 +1374,13 @@ pub const WorktreeOverlayComponent = struct {
         if (self.cache == null) return null;
         const cache = self.cache.?;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
-        const padding: c_int = dpi.scale(20, host.ui_scale);
-        const line_height: c_int = dpi.scale(28, host.ui_scale);
-        const start_y = rect.y + padding + cache.title.h + line_height;
-        const entry_y = start_y + @as(c_int, @intCast(entry_idx)) * line_height;
+        const scaled_margin: c_int = dpi.scale(button_margin, host.ui_scale);
+        const scaled_lh: c_int = dpi.scale(line_height, host.ui_scale);
+        const start_y = rect.y + scaled_margin + cache.title.h + scaled_lh;
+        const entry_y = start_y + @as(c_int, @intCast(entry_idx)) * scaled_lh;
 
         const button_size: c_int = dpi.scale(16, host.ui_scale);
-        const button_x = rect.x + rect.w - padding - button_size - dpi.scale(8, host.ui_scale);
+        const button_x = rect.x + rect.w - scaled_margin - button_size - dpi.scale(8, host.ui_scale);
         const entry_tex = cache.entries[entry_idx];
         const button_y = entry_y + @divFloor(entry_tex.path.h - button_size, 2);
 

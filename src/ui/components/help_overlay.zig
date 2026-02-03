@@ -59,6 +59,7 @@ pub const HelpOverlayComponent = struct {
     const help_button_size_large: c_int = 440;
     const help_button_margin: c_int = 20;
     const help_button_animation_duration_ms: i64 = 200;
+    const line_height: c_int = 28;
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(HelpOverlayComponent);
@@ -202,9 +203,9 @@ pub const HelpOverlayComponent = struct {
 
     fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
         const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
-        const padding: c_int = dpi.scale(20, ui_scale);
-        const line_height: c_int = dpi.scale(28, ui_scale);
-        var y_offset: c_int = rect.y + padding;
+        const scaled_margin: c_int = dpi.scale(help_button_margin, ui_scale);
+        const scaled_line_height: c_int = dpi.scale(line_height, ui_scale);
+        var y_offset: c_int = rect.y + scaled_margin;
 
         const title_tex = cache.title;
         const title_x = rect.x + @divFloor(rect.w - title_tex.w, 2);
@@ -215,24 +216,24 @@ pub const HelpOverlayComponent = struct {
             .h = @floatFromInt(title_tex.h),
         });
 
-        y_offset += title_tex.h + line_height;
+        y_offset += title_tex.h + scaled_line_height;
 
         for (cache.shortcuts) |shortcut_tex| {
             _ = c.SDL_RenderTexture(renderer, shortcut_tex.key.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + padding),
+                .x = @floatFromInt(rect.x + scaled_margin),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(shortcut_tex.key.w),
                 .h = @floatFromInt(shortcut_tex.key.h),
             });
 
             _ = c.SDL_RenderTexture(renderer, shortcut_tex.desc.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - padding - shortcut_tex.desc.w),
+                .x = @floatFromInt(rect.x + rect.w - scaled_margin - shortcut_tex.desc.w),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(shortcut_tex.desc.w),
                 .h = @floatFromInt(shortcut_tex.desc.h),
             });
 
-            y_offset += line_height;
+            y_offset += scaled_line_height;
         }
         self.first_frame.markDrawn();
     }
@@ -348,8 +349,9 @@ pub const HelpOverlayComponent = struct {
 
         self.cache = cache;
 
-        const line_height: c_int = 28;
-        const content_height = (2 * 20) + title_tex.h + line_height + @as(c_int, @intCast(shortcuts.len)) * line_height;
+        const scaled_lh: c_int = dpi.scale(line_height, ui_scale);
+        const scaled_padding: c_int = dpi.scale(2 * help_button_margin, ui_scale);
+        const content_height = scaled_padding + title_tex.h + scaled_lh + @as(c_int, @intCast(shortcuts.len)) * scaled_lh;
         self.overlay.setContentHeight(content_height);
 
         return cache;
