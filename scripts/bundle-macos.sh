@@ -125,6 +125,7 @@ $dep"
 echo "Analyzing dynamic library dependencies..."
 initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
 
+# Use a flag instead of early return: signing must always happen even without Nix deps
 skip_lib_patching=false
 if [[ -z "$initial_deps" ]]; then
     echo "No Nix store dependencies found"
