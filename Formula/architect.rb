@@ -66,7 +66,7 @@ class Architect < Formula
       </plist>
     EOS
 
-    install buildpath/"zig-out/bin/architect", macos/"architect"
+    macos.install buildpath/"zig-out/bin/architect"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
