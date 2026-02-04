@@ -46,20 +46,27 @@ class Architect < Formula
           <string>#{version}</string>
           <key>CFBundleShortVersionString</key>
           <string>#{version}</string>
+          <key>NSHighResolutionCapable</key>
+          <true/>
+          <key>NSAppleEventsUsageDescription</key>
+          <string>A program running in Architect would like to use AppleScript.</string>
+          <key>NSCameraUsageDescription</key>
+          <string>A program running in Architect would like to use the camera.</string>
+          <key>NSMicrophoneUsageDescription</key>
+          <string>A program running in Architect would like to use your microphone.</string>
+          <key>NSContactsUsageDescription</key>
+          <string>A program running in Architect would like to access your Contacts.</string>
+          <key>NSCalendarsUsageDescription</key>
+          <string>A program running in Architect would like to access your Calendar.</string>
+          <key>NSLocationUsageDescription</key>
+          <string>A program running in Architect would like to access your location.</string>
+          <key>NSPhotoLibraryUsageDescription</key>
+          <string>A program running in Architect would like to access your Photo Library.</string>
         </dict>
       </plist>
     EOS
 
-    (macos/"architect").write <<~EOS
-      #!/bin/bash
-      SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-      exec "$SCRIPT_DIR/architect.bin" "$@"
-    EOS
-
-    chmod 0755, macos/"architect"
-
-    (macos/"architect.bin").write (buildpath/"zig-out/bin/architect").read
-    chmod 0755, macos/"architect.bin"
+    install buildpath/"zig-out/bin/architect", macos/"architect"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
