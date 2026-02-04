@@ -89,13 +89,21 @@ jobs:
             for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
               codesign --force --options runtime --timestamp --sign "$IDENTITY" "$lib"
             done
-            codesign --force --options runtime --timestamp --sign "$IDENTITY" release/Architect.app/Contents/MacOS/architect.bin
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+              --entitlements macos/Architect.entitlements \
+              release/Architect.app/Contents/MacOS/architect
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+              --entitlements macos/Architect.entitlements \
+              release/Architect.app
           else
             echo "No Developer ID cert available; applying ad-hoc signature for Gatekeeper"
             for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
               codesign --force --sign - "$lib"
             done
-            codesign --force --sign - release/Architect.app/Contents/MacOS/architect.bin
+            codesign --force --sign - --entitlements macos/Architect.entitlements \
+              release/Architect.app/Contents/MacOS/architect
+            codesign --force --sign - --entitlements macos/Architect.entitlements \
+              release/Architect.app
           fi
           cd release
           tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
