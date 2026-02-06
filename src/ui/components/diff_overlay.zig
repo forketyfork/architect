@@ -7,6 +7,7 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
+const easing = @import("../../anim/easing.zig");
 const log = std.log.scoped(.diff_overlay);
 
 const Segment = struct {
@@ -61,7 +62,6 @@ const Cache = struct {
 
 pub const DiffOverlayComponent = struct {
     allocator: std.mem.Allocator,
-    visible: bool = false,
     scroll_offset: i32 = 0,
     lines: std.ArrayList(Line) = .{},
     line_file_indices: std.ArrayList(?usize) = .{},
@@ -69,6 +69,8 @@ pub const DiffOverlayComponent = struct {
     cache: ?*Cache = null,
     last_cwd: ?[]const u8 = null,
     first_frame: FirstFrameGuard = .{},
+    anim_state: OverlayAnimState = .Hidden,
+    anim_start_ms: i64 = 0,
 
     const base_font_size: c_int = 14;
     const title_font_size: c_int = 18;
@@ -78,6 +80,14 @@ pub const DiffOverlayComponent = struct {
     const border_radius: c_int = 8;
     const max_output_bytes: usize = 4 * 1024 * 1024;
     const scroll_lines_per_tick: i32 = 3;
+    const overlay_animation_duration_ms: i64 = 180;
+
+    const OverlayAnimState = enum {
+        Hidden,
+        Opening,
+        Open,
+        Closing,
+    };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(DiffOverlayComponent);
@@ -112,14 +122,14 @@ pub const DiffOverlayComponent = struct {
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
-                if (self.visible and key == c.SDLK_ESCAPE) {
-                    self.visible = false;
+                if (self.isActive() and key == c.SDLK_ESCAPE) {
+                    self.beginClose(host.now_ms);
                     return true;
                 }
 
                 if (has_gui and !has_blocking_mod and key == c.SDLK_D) {
-                    if (self.visible) {
-                        self.visible = false;
+                    if (self.isActive()) {
+                        self.beginClose(host.now_ms);
                     } else {
                         self.open(host);
                     }
@@ -127,12 +137,12 @@ pub const DiffOverlayComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (!self.visible) return false;
+                if (!self.isActive()) return false;
                 if (event.button.button != c.SDL_BUTTON_LEFT) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 if (geom.containsPoint(self.closeButtonRect(host), mouse_x, mouse_y)) {
-                    self.visible = false;
+                    self.beginClose(host.now_ms);
                     return true;
                 }
                 if (self.toggleFileAt(host, mouse_x, mouse_y)) {
@@ -140,7 +150,7 @@ pub const DiffOverlayComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
-                if (!self.visible) return false;
+                if (!self.isActive()) return false;
                 self.scrollByWheel(event);
                 return true;
             },
@@ -152,25 +162,30 @@ pub const DiffOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, _: *const types.UiHost, _: c_int, _: c_int) bool {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.visible;
+        return self.isActive();
     }
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.visible or self.first_frame.wantsFrame();
+        return self.isActive() or self.first_frame.wantsFrame();
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.visible) return;
+        const progress = self.animationProgress(host.now_ms);
+        if (self.anim_state == .Hidden) return;
+        if (progress <= 0) return;
 
         const cache = self.ensureCache(renderer, host, assets) orelse return;
+        const bg_alpha = alphaFromProgress(progress, 245);
+        const border_alpha = alphaFromProgress(progress, 200);
+        const text_alpha = alphaFromProgress(progress, 255);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const bg = host.theme.background;
-        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 245);
+        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, bg_alpha);
         const bg_rect = c.SDL_FRect{
             .x = 0,
             .y = 0,
@@ -180,7 +195,7 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const accent = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 200);
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, border_alpha);
         primitives.drawRoundedBorder(renderer, .{
             .x = 0,
             .y = 0,
@@ -190,8 +205,9 @@ pub const DiffOverlayComponent = struct {
 
         const scaled_padding = dpi.scale(padding, host.ui_scale);
         const close_rect = self.closeButtonRect(host);
-        self.renderCloseButton(renderer, close_rect, host);
+        self.renderCloseButton(renderer, close_rect, host, text_alpha);
 
+        _ = c.SDL_SetTextureAlphaMod(cache.title.tex, text_alpha);
         _ = c.SDL_RenderTexture(renderer, cache.title.tex, null, &c.SDL_FRect{
             .x = @floatFromInt(scaled_padding),
             .y = @floatFromInt(scaled_padding + @divFloor(close_rect.h - cache.title.h, 2)),
@@ -226,6 +242,7 @@ pub const DiffOverlayComponent = struct {
         while (idx < cache.lines.len and y < content_rect.y + content_rect.h) : (idx += 1) {
             const line_tex = cache.lines[idx];
             if (line_tex.tex) |tex| {
+                _ = c.SDL_SetTextureAlphaMod(tex, text_alpha);
                 _ = c.SDL_RenderTexture(renderer, tex, null, &c.SDL_FRect{
                     .x = @floatFromInt(content_rect.x),
                     .y = @floatFromInt(y),
@@ -280,10 +297,59 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn open(self: *DiffOverlayComponent, host: *const types.UiHost) void {
-        self.visible = true;
         self.scroll_offset = 0;
-        self.first_frame.markTransition();
+        self.beginOpen(host.now_ms);
         self.refreshDiff(host);
+    }
+
+    fn beginOpen(self: *DiffOverlayComponent, now_ms: i64) void {
+        if (self.anim_state == .Open or self.anim_state == .Opening) return;
+        self.anim_state = .Opening;
+        self.anim_start_ms = now_ms;
+        self.first_frame.markTransition();
+    }
+
+    fn beginClose(self: *DiffOverlayComponent, now_ms: i64) void {
+        if (self.anim_state == .Hidden or self.anim_state == .Closing) return;
+        self.anim_state = .Closing;
+        self.anim_start_ms = now_ms;
+        self.first_frame.markTransition();
+    }
+
+    fn isActive(self: *const DiffOverlayComponent) bool {
+        return self.anim_state != .Hidden;
+    }
+
+    fn animationProgress(self: *DiffOverlayComponent, now_ms: i64) f32 {
+        return switch (self.anim_state) {
+            .Hidden => 0.0,
+            .Open => 1.0,
+            .Opening => blk: {
+                const elapsed = now_ms - self.anim_start_ms;
+                if (elapsed >= overlay_animation_duration_ms) {
+                    self.anim_state = .Open;
+                    break :blk 1.0;
+                }
+                const raw = @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(overlay_animation_duration_ms));
+                break :blk easing.easeInOutCubic(@min(1.0, raw));
+            },
+            .Closing => blk: {
+                const elapsed = now_ms - self.anim_start_ms;
+                if (elapsed >= overlay_animation_duration_ms) {
+                    self.anim_state = .Hidden;
+                    break :blk 0.0;
+                }
+                const raw = @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(overlay_animation_duration_ms));
+                const eased = easing.easeInOutCubic(@min(1.0, raw));
+                break :blk 1.0 - eased;
+            },
+        };
+    }
+
+    fn alphaFromProgress(progress: f32, base: u8) u8 {
+        const clamped = std.math.clamp(progress, 0.0, 1.0);
+        const scaled = @as(f32, @floatFromInt(base)) * clamped;
+        return @intFromFloat(scaled);
     }
 
     fn refreshDiff(self: *DiffOverlayComponent, host: *const types.UiHost) void {
@@ -412,14 +478,14 @@ pub const DiffOverlayComponent = struct {
         };
     }
 
-    fn renderCloseButton(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, host: *const types.UiHost) void {
+    fn renderCloseButton(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, host: *const types.UiHost, alpha: u8) void {
         _ = self;
         const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, alphaFromProgress(@as(f32, @floatFromInt(alpha)) / 255.0, 220));
         const corner_radius = @max(@as(c_int, 1), @divTrunc(rect.w, @as(c_int, 4)));
         primitives.fillRoundedRect(renderer, rect, corner_radius);
         const acc = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
+        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, alpha);
         primitives.drawRoundedBorder(renderer, rect, corner_radius);
 
         const inset = dpi.scale(close_button_padding, host.ui_scale);
