@@ -466,7 +466,9 @@ pub const DiffOverlayComponent = struct {
 
         const line_height = dpi.scale(base_font_size + 6, host.ui_scale);
 
-        const title_tex = self.makeTextTexture(renderer, title_fonts.bold orelse title_fonts.regular, "Git Diff", host.theme.foreground) catch return null;
+        const title_text = self.buildTitleText() catch return null;
+        defer self.allocator.free(title_text);
+        const title_tex = self.makeTextTexture(renderer, title_fonts.bold orelse title_fonts.regular, title_text, host.theme.foreground) catch return null;
 
         const line_textures = self.allocator.alloc(LineTexture, self.lines.items.len) catch return null;
         var line_idx: usize = 0;
@@ -588,12 +590,19 @@ pub const DiffOverlayComponent = struct {
         text: []const u8,
         color: c.SDL_Color,
     ) !TextTex {
-        _ = self;
         var buf: [128]u8 = undefined;
-        if (text.len >= buf.len) return error.TextTooLong;
-        @memcpy(buf[0..text.len], text);
-        buf[text.len] = 0;
-        const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), text.len, color) orelse return error.SurfaceFailed;
+        var surface: *c.SDL_Surface = undefined;
+        if (text.len < buf.len) {
+            @memcpy(buf[0..text.len], text);
+            buf[text.len] = 0;
+            surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), @intCast(text.len), color) orelse return error.SurfaceFailed;
+        } else {
+            const heap_buf = try self.allocator.alloc(u8, text.len + 1);
+            defer self.allocator.free(heap_buf);
+            @memcpy(heap_buf[0..text.len], text);
+            heap_buf[text.len] = 0;
+            surface = c.TTF_RenderText_Blended(font, @ptrCast(heap_buf.ptr), @intCast(text.len), color) orelse return error.SurfaceFailed;
+        }
         defer c.SDL_DestroySurface(surface);
         const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
         var w: f32 = 0;
@@ -839,6 +848,23 @@ pub const DiffOverlayComponent = struct {
             .color = theme.accent,
         };
         try self.appendLine(segments, file_idx);
+    }
+
+    fn buildTitleText(self: *DiffOverlayComponent) ![]const u8 {
+        const base = "Git Diff - ";
+        const cwd = self.last_cwd orelse return self.allocator.dupe(u8, "Git Diff");
+        const max_len: usize = 120;
+        if (base.len + cwd.len <= max_len) {
+            return std.fmt.allocPrint(self.allocator, "{s}{s}", .{ base, cwd });
+        }
+
+        if (max_len <= base.len + 3) {
+            return self.allocator.dupe(u8, "Git Diff");
+        }
+
+        const tail_len = max_len - base.len - 3;
+        const tail = cwd[cwd.len - tail_len ..];
+        return std.fmt.allocPrint(self.allocator, "{s}...{s}", .{ base, tail });
     }
 
     fn appendDiffLine(self: *DiffOverlayComponent, line: DiffLine, old_width: usize, new_width: usize, theme: *const colors.Theme) !void {

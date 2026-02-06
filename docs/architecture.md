@@ -282,7 +282,7 @@ Text input notes:
 
 Components that consume events:
 - `HelpOverlayComponent`: ⌘? pill click or Cmd+/ to toggle overlay
-- `DiffOverlayComponent`: Cmd+D to toggle the git diff overlay in grid or full view; full-screen overlay uses collapsible file headers with line numbers and caps output to avoid blocking the UI thread
+- `DiffOverlayComponent`: Cmd+D to toggle the git diff overlay in grid or full view; full-screen overlay shows the current path, uses collapsible file headers with line numbers, and caps output to avoid blocking the UI thread
 - `WorktreeOverlayComponent`: ⌘T pill, Cmd+T, Cmd+1–9 to cd the focused shell into a worktree; Cmd+0 opens a creation modal that builds `.architect/<name>` via `git worktree add -b <name>` and cds into it; pill is hidden when a foreground process is running; refreshes its list on every open, reads worktrees from git metadata (commondir and linked worktree dirs only), highlights rows on hover with a gradient, supports click selection, limits the list to 9 entries, and displays paths relative to the primary worktree; includes delete (×) button to remove non-root worktrees
 - `EscapeHoldComponent`: ESC key down/up for hold-to-collapse
 - `RestartButtonsComponent`: Restart button clicks
