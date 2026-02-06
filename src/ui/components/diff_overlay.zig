@@ -18,6 +18,27 @@ const Line = struct {
     segments: []Segment,
 };
 
+const DiffLineKind = enum {
+    context,
+    add,
+    remove,
+};
+
+const DiffLine = struct {
+    kind: DiffLineKind,
+    old_no: ?u32,
+    new_no: ?u32,
+    text: []const u8,
+};
+
+const FileDiff = struct {
+    path: []const u8,
+    collapsed: bool = false,
+    additions: usize = 0,
+    deletions: usize = 0,
+    lines: []DiffLine,
+};
+
 const LineTexture = struct {
     tex: ?*c.SDL_Texture,
     w: c_int,
@@ -43,6 +64,8 @@ pub const DiffOverlayComponent = struct {
     visible: bool = false,
     scroll_offset: i32 = 0,
     lines: std.ArrayList(Line) = .{},
+    line_file_indices: std.ArrayList(?usize) = .{},
+    files: std.ArrayList(FileDiff) = .{},
     cache: ?*Cache = null,
     last_cwd: ?[]const u8 = null,
     first_frame: FirstFrameGuard = .{},
@@ -70,9 +93,12 @@ pub const DiffOverlayComponent = struct {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
         _ = renderer;
         self.destroyCache();
-        self.clearLines();
+        self.clearDisplayLines();
+        self.clearDiff();
         if (self.last_cwd) |cwd| self.allocator.free(cwd);
         self.lines.deinit(self.allocator);
+        self.line_file_indices.deinit(self.allocator);
+        self.files.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -92,7 +118,6 @@ pub const DiffOverlayComponent = struct {
                 }
 
                 if (has_gui and !has_blocking_mod and key == c.SDLK_D) {
-                    if (host.view_mode != .Full) return false;
                     if (self.visible) {
                         self.visible = false;
                     } else {
@@ -108,6 +133,9 @@ pub const DiffOverlayComponent = struct {
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 if (geom.containsPoint(self.closeButtonRect(host), mouse_x, mouse_y)) {
                     self.visible = false;
+                    return true;
+                }
+                if (self.toggleFileAt(host, mouse_x, mouse_y)) {
                     return true;
                 }
             },
@@ -171,16 +199,15 @@ pub const DiffOverlayComponent = struct {
             .h = @floatFromInt(cache.title.h),
         });
 
-        const content_top = scaled_padding + close_rect.h + scaled_padding;
-        const content_rect = c.SDL_Rect{
-            .x = scaled_padding,
-            .y = content_top,
-            .w = host.window_w - scaled_padding * 2,
-            .h = host.window_h - content_top - scaled_padding,
-        };
+        const content_rect = self.contentRect(host);
         if (content_rect.w <= 0 or content_rect.h <= 0) return;
-
-        _ = c.SDL_SetRenderClipRect(renderer, &content_rect);
+        const clip_rect = c.SDL_Rect{
+            .x = content_rect.x,
+            .y = content_rect.y,
+            .w = content_rect.w,
+            .h = content_rect.h,
+        };
+        _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
         defer _ = c.SDL_SetRenderClipRect(renderer, null);
 
         const total_height: i32 = @as(i32, cache.line_height) * @as(i32, @intCast(cache.lines.len));
@@ -211,6 +238,47 @@ pub const DiffOverlayComponent = struct {
         self.first_frame.markDrawn();
     }
 
+    fn contentRect(self: *DiffOverlayComponent, host: *const types.UiHost) geom.Rect {
+        const scaled_padding = dpi.scale(padding, host.ui_scale);
+        const close_rect = self.closeButtonRect(host);
+        const content_top = scaled_padding + close_rect.h + scaled_padding;
+        return .{
+            .x = scaled_padding,
+            .y = content_top,
+            .w = host.window_w - scaled_padding * 2,
+            .h = host.window_h - content_top - scaled_padding,
+        };
+    }
+
+    fn lineHeight(self: *DiffOverlayComponent, host: *const types.UiHost) c_int {
+        if (self.cache) |cache| {
+            return cache.line_height;
+        }
+        return dpi.scale(base_font_size + 6, host.ui_scale);
+    }
+
+    fn toggleFileAt(self: *DiffOverlayComponent, host: *const types.UiHost, mouse_x: c_int, mouse_y: c_int) bool {
+        if (self.lines.items.len == 0) return false;
+        const content_rect = self.contentRect(host);
+        if (!geom.containsPoint(content_rect, mouse_x, mouse_y)) return false;
+        const line_height = self.lineHeight(host);
+        if (line_height <= 0) return false;
+        const relative_y = mouse_y - content_rect.y + self.scroll_offset;
+        if (relative_y < 0) return false;
+        const line_index_signed: i32 = @divFloor(relative_y, line_height);
+        if (line_index_signed < 0) return false;
+        const line_index: usize = @intCast(line_index_signed);
+        if (line_index >= self.line_file_indices.items.len) return false;
+        const file_index = self.line_file_indices.items[line_index] orelse return false;
+        if (file_index >= self.files.items.len) return false;
+        self.files.items[file_index].collapsed = !self.files.items[file_index].collapsed;
+        self.rebuildLines(host.theme) catch |err| {
+            log.warn("failed to rebuild diff lines: {}", .{err});
+        };
+        self.destroyCache();
+        return true;
+    }
+
     fn open(self: *DiffOverlayComponent, host: *const types.UiHost) void {
         self.visible = true;
         self.scroll_offset = 0;
@@ -219,7 +287,8 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn refreshDiff(self: *DiffOverlayComponent, host: *const types.UiHost) void {
-        self.clearLines();
+        self.clearDisplayLines();
+        self.clearDiff();
         self.destroyCache();
 
         if (self.last_cwd) |cwd| {
@@ -243,7 +312,8 @@ pub const DiffOverlayComponent = struct {
             "--no-pager",
             "diff",
             "--no-ext-diff",
-            "--color=always",
+            "--color=never",
+            "--unified=3",
             "--",
             ".",
         };
@@ -548,7 +618,7 @@ pub const DiffOverlayComponent = struct {
         self.cache = null;
     }
 
-    fn clearLines(self: *DiffOverlayComponent) void {
+    fn clearDisplayLines(self: *DiffOverlayComponent) void {
         for (self.lines.items) |line| {
             for (line.segments) |segment| {
                 self.allocator.free(segment.text);
@@ -556,127 +626,353 @@ pub const DiffOverlayComponent = struct {
             self.allocator.free(line.segments);
         }
         self.lines.clearRetainingCapacity();
+        self.line_file_indices.clearRetainingCapacity();
+    }
+
+    fn clearDiff(self: *DiffOverlayComponent) void {
+        for (self.files.items) |file| {
+            self.allocator.free(file.path);
+            for (file.lines) |line| {
+                if (line.text.len > 0) {
+                    self.allocator.free(line.text);
+                }
+            }
+            if (file.lines.len > 0) {
+                self.allocator.free(file.lines);
+            }
+        }
+        self.files.clearRetainingCapacity();
     }
 
     fn setSingleLine(self: *DiffOverlayComponent, text: []const u8, theme: *const colors.Theme) void {
-        self.clearLines();
-        const segment = Segment{
-            .text = self.allocator.dupe(u8, text) catch return,
-            .color = theme.foreground,
-        };
+        self.clearDisplayLines();
+        self.clearDiff();
+        const text_copy = self.allocator.dupe(u8, text) catch return;
+        errdefer self.allocator.free(text_copy);
         const segments = self.allocator.alloc(Segment, 1) catch {
-            self.allocator.free(segment.text);
+            self.allocator.free(text_copy);
             return;
         };
-        segments[0] = segment;
-        self.lines.append(self.allocator, .{ .segments = segments }) catch {
-            self.allocator.free(segment.text);
+        segments[0] = .{
+            .text = text_copy,
+            .color = theme.foreground,
+        };
+        self.appendLine(segments, null) catch {
+            for (segments) |segment| self.allocator.free(segment.text);
             self.allocator.free(segments);
         };
     }
 
     fn parseDiffOutput(self: *DiffOverlayComponent, output: []const u8, theme: *const colors.Theme) !void {
-        var segments: std.ArrayList(Segment) = .empty;
-        defer segments.deinit(self.allocator);
-        var buffer: std.ArrayList(u8) = .empty;
-        defer buffer.deinit(self.allocator);
+        self.clearDisplayLines();
+        self.clearDiff();
 
-        var color_state = ColorState{ .current = theme.foreground };
+        var pending_lines: std.ArrayList(DiffLine) = .empty;
+        defer pending_lines.deinit(self.allocator);
 
-        var i: usize = 0;
-        while (i < output.len) : (i += 1) {
-            const ch = output[i];
-            if (ch == 0x1b and i + 1 < output.len and output[i + 1] == '[') {
-                const start = i + 2;
-                var j = start;
-                while (j < output.len and output[j] != 'm') : (j += 1) {}
-                if (j < output.len) {
-                    try self.flushSegment(&segments, &buffer, color_state.current);
-                    color_state.apply(output[start..j], theme);
-                    i = j;
-                    continue;
-                }
-            }
+        var current_index: ?usize = null;
+        var old_line: u32 = 0;
+        var new_line: u32 = 0;
 
-            if (ch == '\n') {
-                try self.flushSegment(&segments, &buffer, color_state.current);
-                try self.finishLine(&segments);
+        var iter = std.mem.splitScalar(u8, output, '\n');
+        while (iter.next()) |raw_line| {
+            if (std.mem.startsWith(u8, raw_line, "diff --git ")) {
+                try self.finishFile(&pending_lines, current_index);
+                current_index = null;
+                old_line = 0;
+                new_line = 0;
+
+                const path = self.parseDiffHeaderPath(raw_line) orelse continue;
+                const path_copy = try self.allocator.dupe(u8, path);
+                errdefer self.allocator.free(path_copy);
+                try self.files.append(self.allocator, .{
+                    .path = path_copy,
+                    .collapsed = false,
+                    .additions = 0,
+                    .deletions = 0,
+                    .lines = &.{},
+                });
+                current_index = self.files.items.len - 1;
                 continue;
             }
-            if (ch == '\r') continue;
-            try buffer.append(self.allocator, ch);
+
+            const file_index = current_index orelse continue;
+            if (std.mem.startsWith(u8, raw_line, "@@")) {
+                if (parseHunkHeader(raw_line)) |range| {
+                    old_line = range.old_start;
+                    new_line = range.new_start;
+                }
+                continue;
+            }
+            if (std.mem.startsWith(u8, raw_line, "index ") or
+                std.mem.startsWith(u8, raw_line, "--- ") or
+                std.mem.startsWith(u8, raw_line, "+++ ") or
+                std.mem.startsWith(u8, raw_line, "new file") or
+                std.mem.startsWith(u8, raw_line, "deleted file") or
+                std.mem.startsWith(u8, raw_line, "similarity index") or
+                std.mem.startsWith(u8, raw_line, "rename from") or
+                std.mem.startsWith(u8, raw_line, "rename to"))
+            {
+                continue;
+            }
+            if (raw_line.len == 0) continue;
+
+            const prefix = raw_line[0];
+            const content = raw_line[1..];
+            const kind: DiffLineKind = switch (prefix) {
+                ' ' => .context,
+                '+' => .add,
+                '-' => .remove,
+                else => continue,
+            };
+
+            var old_no: ?u32 = null;
+            var new_no: ?u32 = null;
+            switch (kind) {
+                .context => {
+                    old_no = old_line;
+                    new_no = new_line;
+                    old_line += 1;
+                    new_line += 1;
+                },
+                .remove => {
+                    old_no = old_line;
+                    old_line += 1;
+                },
+                .add => {
+                    new_no = new_line;
+                    new_line += 1;
+                },
+            }
+
+            const file = &self.files.items[file_index];
+            try self.appendParsedLine(&pending_lines, file, kind, old_no, new_no, content);
         }
 
-        try self.flushSegment(&segments, &buffer, color_state.current);
-        if (segments.items.len > 0) {
-            try self.finishLine(&segments);
+        try self.finishFile(&pending_lines, current_index);
+        if (self.files.items.len == 0) {
+            self.setSingleLine("Working tree clean.", theme);
+            return;
         }
+        try self.rebuildLines(theme);
+    }
+
+    fn appendParsedLine(
+        self: *DiffOverlayComponent,
+        pending_lines: *std.ArrayList(DiffLine),
+        file: *FileDiff,
+        kind: DiffLineKind,
+        old_no: ?u32,
+        new_no: ?u32,
+        text: []const u8,
+    ) !void {
+        const text_copy = if (text.len == 0) "" else try self.allocator.dupe(u8, text);
+        errdefer if (text_copy.len > 0) self.allocator.free(text_copy);
+        try pending_lines.append(self.allocator, .{
+            .kind = kind,
+            .old_no = old_no,
+            .new_no = new_no,
+            .text = text_copy,
+        });
+        switch (kind) {
+            .add => file.additions += 1,
+            .remove => file.deletions += 1,
+            else => {},
+        }
+    }
+
+    fn finishFile(self: *DiffOverlayComponent, pending_lines: *std.ArrayList(DiffLine), current_index: ?usize) !void {
+        const file_index = current_index orelse return;
+        if (pending_lines.items.len > 0) {
+            const slice = try self.allocator.alloc(DiffLine, pending_lines.items.len);
+            @memcpy(slice, pending_lines.items);
+            self.files.items[file_index].lines = slice;
+        }
+        pending_lines.clearRetainingCapacity();
+    }
+
+    fn rebuildLines(self: *DiffOverlayComponent, theme: *const colors.Theme) !void {
+        self.clearDisplayLines();
+
+        var max_old: u32 = 0;
+        var max_new: u32 = 0;
+        for (self.files.items) |file| {
+            for (file.lines) |line| {
+                if (line.old_no) |value| {
+                    if (value > max_old) max_old = value;
+                }
+                if (line.new_no) |value| {
+                    if (value > max_new) max_new = value;
+                }
+            }
+        }
+
+        const old_width = digits(max_old);
+        const new_width = digits(max_new);
+
+        var file_idx: usize = 0;
+        while (file_idx < self.files.items.len) : (file_idx += 1) {
+            const file = &self.files.items[file_idx];
+            try self.appendHeaderLine(file, file_idx, theme);
+            if (file.collapsed) continue;
+            for (file.lines) |line| {
+                try self.appendDiffLine(line, old_width, new_width, theme);
+            }
+        }
+
         if (self.lines.items.len == 0) {
             self.setSingleLine("Working tree clean.", theme);
         }
     }
 
-    fn flushSegment(
+    fn appendHeaderLine(self: *DiffOverlayComponent, file: *const FileDiff, file_idx: usize, theme: *const colors.Theme) !void {
+        const marker = if (file.collapsed) "[+]" else "[-]";
+        const header = if (file.additions > 0 or file.deletions > 0)
+            try std.fmt.allocPrint(self.allocator, "{s} {s} (+{d} -{d})", .{ marker, file.path, file.additions, file.deletions })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ marker, file.path });
+        errdefer self.allocator.free(header);
+
+        const segments = try self.allocator.alloc(Segment, 1);
+        segments[0] = .{
+            .text = header,
+            .color = theme.accent,
+        };
+        try self.appendLine(segments, file_idx);
+    }
+
+    fn appendDiffLine(self: *DiffOverlayComponent, line: DiffLine, old_width: usize, new_width: usize, theme: *const colors.Theme) !void {
+        const number_col = try self.formatLineNumberColumn(line.old_no, line.new_no, old_width, new_width);
+        errdefer self.allocator.free(number_col);
+        const content = try self.formatLineContent(line.kind, line.text);
+        errdefer self.allocator.free(content);
+
+        const segments = try self.allocator.alloc(Segment, 2);
+        segments[0] = .{
+            .text = number_col,
+            .color = theme.getPaletteColor(8),
+        };
+        segments[1] = .{
+            .text = content,
+            .color = colorForLineKind(line.kind, theme),
+        };
+        try self.appendLine(segments, null);
+    }
+
+    fn appendLine(self: *DiffOverlayComponent, segments: []Segment, file_index: ?usize) !void {
+        try self.lines.append(self.allocator, .{ .segments = segments });
+        errdefer {
+            self.lines.items.len -= 1;
+            for (segments) |segment| self.allocator.free(segment.text);
+            self.allocator.free(segments);
+        }
+        try self.line_file_indices.append(self.allocator, file_index);
+    }
+
+    fn formatLineNumberColumn(
         self: *DiffOverlayComponent,
-        segments: *std.ArrayList(Segment),
-        buffer: *std.ArrayList(u8),
-        color: c.SDL_Color,
-    ) !void {
-        if (buffer.items.len == 0) return;
-        const text = try self.allocator.dupe(u8, buffer.items);
-        try segments.append(self.allocator, .{ .text = text, .color = color });
-        buffer.clearRetainingCapacity();
+        old_no: ?u32,
+        new_no: ?u32,
+        old_width: usize,
+        new_width: usize,
+    ) ![]const u8 {
+        const total_len = old_width + 1 + new_width + 1;
+        const buf = try self.allocator.alloc(u8, total_len);
+        @memset(buf, ' ');
+        if (old_no) |value| {
+            writeNumberRightAligned(buf[0..old_width], value);
+        }
+        if (new_no) |value| {
+            const start = old_width + 1;
+            writeNumberRightAligned(buf[start .. start + new_width], value);
+        }
+        return buf;
     }
 
-    fn finishLine(self: *DiffOverlayComponent, segments: *std.ArrayList(Segment)) !void {
-        const seg_slice = try self.allocator.alloc(Segment, segments.items.len);
-        @memcpy(seg_slice, segments.items);
-        try self.lines.append(self.allocator, .{ .segments = seg_slice });
-        segments.clearRetainingCapacity();
+    fn formatLineContent(self: *DiffOverlayComponent, kind: DiffLineKind, text: []const u8) ![]const u8 {
+        const prefix: u8 = switch (kind) {
+            .context => ' ',
+            .add => '+',
+            .remove => '-',
+        };
+        const buf = try self.allocator.alloc(u8, text.len + 2);
+        buf[0] = prefix;
+        buf[1] = ' ';
+        if (text.len > 0) {
+            @memcpy(buf[2..], text);
+        }
+        return buf;
     }
 
-    const ColorState = struct {
-        current: c.SDL_Color,
-        bright: bool = false,
+    fn parseDiffHeaderPath(self: *DiffOverlayComponent, line: []const u8) ?[]const u8 {
+        _ = self;
+        const marker = " b/";
+        const idx = std.mem.indexOf(u8, line, marker) orelse return null;
+        return line[idx + marker.len ..];
+    }
 
-        fn apply(self: *ColorState, seq: []const u8, theme: *const colors.Theme) void {
-            if (seq.len == 0) {
-                self.reset(theme);
-                return;
-            }
-            var idx: usize = 0;
-            while (idx < seq.len) {
-                var end = idx;
-                while (end < seq.len and seq[end] != ';') : (end += 1) {}
-                const token = seq[idx..end];
-                if (token.len == 0) {
-                    self.reset(theme);
-                } else if (std.fmt.parseInt(u8, token, 10)) |value| {
-                    switch (value) {
-                        0 => self.reset(theme),
-                        1 => self.bright = true,
-                        22 => self.bright = false,
-                        30...37 => self.setPaletteColor(@intCast(value - 30), theme),
-                        90...97 => self.setPaletteColor(@intCast(value - 90 + 8), theme),
-                        39 => self.current = theme.foreground,
-                        else => {},
-                    }
-                } else |_| {}
-                idx = end + 1;
-            }
+    fn digits(value: u32) usize {
+        var remaining = value;
+        var count: usize = 1;
+        while (remaining >= 10) : (remaining /= 10) {
+            count += 1;
         }
+        return count;
+    }
 
-        fn reset(self: *ColorState, theme: *const colors.Theme) void {
-            self.current = theme.foreground;
-            self.bright = false;
-        }
+    fn writeNumberRightAligned(dest: []u8, value: u32) void {
+        var buf: [20]u8 = undefined;
+        const out = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+        if (out.len > dest.len) return;
+        const start = dest.len - out.len;
+        @memcpy(dest[start .. start + out.len], out);
+    }
 
-        fn setPaletteColor(self: *ColorState, idx: u8, theme: *const colors.Theme) void {
-            var palette_idx = idx;
-            if (self.bright and palette_idx < 8) palette_idx += 8;
-            self.current = theme.getPaletteColor(palette_idx);
-        }
+    fn colorForLineKind(kind: DiffLineKind, theme: *const colors.Theme) c.SDL_Color {
+        return switch (kind) {
+            .context => theme.foreground,
+            .add => theme.getPaletteColor(10),
+            .remove => theme.getPaletteColor(9),
+        };
+    }
+
+    const HunkRange = struct {
+        old_start: u32,
+        new_start: u32,
     };
+
+    fn parseHunkHeader(line: []const u8) ?HunkRange {
+        if (!std.mem.startsWith(u8, line, "@@")) return null;
+        var idx: usize = 2;
+        while (idx < line.len and line[idx] == ' ') : (idx += 1) {}
+        if (idx >= line.len or line[idx] != '-') return null;
+        idx += 1;
+        const old_start = parseNumber(line, &idx) orelse return null;
+        if (idx < line.len and line[idx] == ',') {
+            idx += 1;
+            _ = parseNumber(line, &idx) orelse return null;
+        }
+        while (idx < line.len and line[idx] != '+') : (idx += 1) {}
+        if (idx >= line.len) return null;
+        idx += 1;
+        const new_start = parseNumber(line, &idx) orelse return null;
+        return .{
+            .old_start = old_start,
+            .new_start = new_start,
+        };
+    }
+
+    fn parseNumber(line: []const u8, idx: *usize) ?u32 {
+        const start = idx.*;
+        var value: u32 = 0;
+        while (idx.* < line.len) : (idx.* += 1) {
+            const ch = line[idx.*];
+            if (ch < '0' or ch > '9') break;
+            value = value * 10 + @as(u32, ch - '0');
+        }
+        if (idx.* == start) return null;
+        return value;
+    }
 
     const vtable = UiComponent.VTable{
         .deinit = deinit,
