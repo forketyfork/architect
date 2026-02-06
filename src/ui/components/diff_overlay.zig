@@ -330,6 +330,8 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn appendSingleUntrackedFile(self: *DiffOverlayComponent, repo_root: []const u8, rel_path: []const u8, combined: *std.ArrayList(u8)) void {
+        if (rel_path.len > 0 and rel_path[rel_path.len - 1] == '/') return;
+
         const abs_path = std.fs.path.join(self.allocator, &.{ repo_root, rel_path }) catch |err| {
             log.warn("failed to join path for untracked file: {}", .{err});
             return;
