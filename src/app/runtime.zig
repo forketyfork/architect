@@ -1826,8 +1826,11 @@ pub fn run() !void {
                     sessions[anim_state.focused_session].cwd_path
                 else
                     null;
-                diff_overlay_component.toggle(focused_cwd, now);
-                if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now);
+                switch (diff_overlay_component.toggle(focused_cwd, now)) {
+                    .not_a_repo => ui.showToast("Not a git repository", now),
+                    .clean => ui.showToast("Working tree clean", now),
+                    .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now),
+                }
             },
         };
 

@@ -36,7 +36,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged), ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
