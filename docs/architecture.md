@@ -127,6 +127,14 @@ src/
 ├── os/
 │   └── open.zig          # Cross-platform URL opening
 │
+├── state/                # Reactive state management (MobX-inspired)
+│   ├── mod.zig           # Public exports
+│   ├── tracker.zig       # Dependency tracking context
+│   ├── signal.zig        # Observable state primitive
+│   ├── computed.zig      # Derived reactive values
+│   ├── effect.zig        # Side effect reactions
+│   └── store.zig         # Collections and transactions
+│
 └── ui/
     ├── mod.zig           # Public UI module exports
     ├── root.zig          # UiRoot: component registry, dispatch
@@ -261,10 +269,22 @@ struct {
 | Renderer | `src/render/renderer.zig` (`RenderCache`) | Per-session cache textures and last presented/cache epochs |
 | UI    | Component structs | Visibility flags, animation timers, cached textures |
 | Shared | `UiHost` | Read-only snapshot passed each frame |
+| Reactive | `src/state/` | MobX-inspired signals, computeds, effects (prototype) |
 
 `SessionState` bumps its render epoch on content changes; the renderer compares this against `RenderCache` epochs to decide when to redraw and when to refresh cached textures. Unspawned sessions are excluded from dirty checks and cache allocation to avoid extra GPU work.
 
 **Key rule**: Scene code must not own UI state; UI state lives inside components.
+
+### Reactive State (Prototype)
+
+The `src/state/` module provides reactive primitives for future state management:
+
+- **Signal(T)**: Observable state with automatic change notifications
+- **Computed(T)**: Derived values that track dependencies and auto-update
+- **Effect**: Side effects that re-run when dependencies change
+- **Transaction**: Batch updates for atomic state changes
+
+See `docs/state_management_refactor.md` for the migration plan.
 
 ## Input Routing
 
