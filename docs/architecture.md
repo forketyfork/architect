@@ -145,7 +145,7 @@ src/
     │   ├── help_overlay.zig      # Keyboard shortcut overlay (? pill)
     │   ├── hotkey_indicator.zig  # Hotkey visual feedback indicator
     │   ├── marquee_label.zig     # Reusable scrolling text label
-    │   ├── diff_overlay.zig      # Git diff overlay (Cmd+D in full view)
+    │   ├── diff_overlay.zig      # Git diff overlay (Cmd+D)
     │   ├── metrics_overlay.zig   # Metrics overlay (Cmd+Shift+M)
     │   ├── pill_group.zig        # Pill overlay coordinator (collapses others)
     │   ├── quit_confirm.zig      # Quit confirmation dialog
@@ -290,7 +290,7 @@ Components that consume events:
 - `PillGroupComponent`: Coordinates pill overlays (collapses one when another expands)
 - `GlobalShortcutsComponent`: Handles global shortcuts like Cmd+, to open config
 - `MetricsOverlayComponent`: Cmd+Shift+M to toggle metrics overlay (when enabled in config)
-- `DiffOverlayComponent`: Cmd+D to toggle git diff overlay (full view only); runs `git diff` in the focused session's cwd, shows colorized scrollable output with close button and ESC to dismiss
+- `DiffOverlayComponent`: Cmd+D to toggle git diff overlay (grid and full view); runs a repo-wide `git diff` (staged + unstaged) for the focused session's working tree, shows a GitHub-style unified diff with collapsible file headers, line number gutters, and colored add/remove lines, and labels the title bar with the repo root folder; dismiss with close button or ESC
 
 ## Rendering Order
 
