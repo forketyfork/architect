@@ -130,6 +130,8 @@ pub const DiffOverlayComponent = struct {
     const chevron_size: c_int = 12;
     const file_header_pad: c_int = 8;
     const max_output_bytes: usize = 4 * 1024 * 1024;
+    const tab_display_width: usize = 4;
+    const min_printable_char: u8 = 32;
 
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
@@ -365,7 +367,13 @@ pub const DiffOverlayComponent = struct {
         };
         defer self.allocator.free(content);
 
-        if (content.len == 0) return;
+        if (content.len == 0) {
+            self.appendUntrackedHeader(rel_path, combined);
+            combined.appendSlice(self.allocator, "@@ -0,0 +0,0 @@\n") catch |err| {
+                log.warn("failed to append empty file hunk: {}", .{err});
+            };
+            return;
+        }
 
         if (looksLikeBinary(content)) {
             self.appendUntrackedHeader(rel_path, combined);
@@ -798,7 +806,7 @@ pub const DiffOverlayComponent = struct {
     fn textDisplayCols(text: []const u8) usize {
         var cols: usize = 0;
         for (text) |ch| {
-            if (ch == '\t') cols += 4 else if (ch >= 32) cols += 1;
+            if (ch == '\t') cols += tab_display_width else if (ch >= min_printable_char) cols += 1;
         }
         return cols;
     }
@@ -807,10 +815,14 @@ pub const DiffOverlayComponent = struct {
         var cols: usize = 0;
         var i: usize = start;
         while (i < text.len) {
-            const advance: usize = if (text[i] == '\t') 4 else if (text[i] >= 32) 1 else 0;
+            const byte_len = std.unicode.utf8ByteSequenceLength(text[i]) catch |err| blk: {
+                log.warn("invalid UTF-8 lead byte at offset {}: {}", .{ i, err });
+                break :blk 1;
+            };
+            const advance: usize = if (text[i] == '\t') tab_display_width else if (text[i] >= min_printable_char) 1 else 0;
             if (cols + advance > max_cols and cols > 0) break;
             cols += advance;
-            i += 1;
+            i += @min(byte_len, text.len - i);
         }
         return i;
     }
