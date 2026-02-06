@@ -53,6 +53,7 @@ pub const UiAction = union(enum) {
     ChangeDirectory: ChangeDirAction,
     DespawnSession: usize,
     ToggleMetrics: void,
+    ToggleDiffOverlay: void,
 };
 
 pub const SwitchWorktreeAction = struct {
