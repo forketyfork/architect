@@ -148,13 +148,15 @@ pub const DiffOverlayComponent = struct {
         };
     }
 
-    pub fn show(self: *DiffOverlayComponent, cwd: ?[]const u8, now_ms: i64) void {
+    pub const ShowResult = enum { opened, not_a_repo, clean };
+
+    pub fn show(self: *DiffOverlayComponent, cwd: ?[]const u8, now_ms: i64) ShowResult {
         self.visible = true;
         self.scroll_offset = 0;
         self.animation_state = .opening;
         self.animation_start_ms = now_ms;
         self.first_frame.markTransition();
-        self.loadDiff(cwd);
+        return self.loadDiff(cwd);
     }
 
     pub fn hide(self: *DiffOverlayComponent, now_ms: i64) void {
@@ -163,11 +165,14 @@ pub const DiffOverlayComponent = struct {
         self.first_frame.markTransition();
     }
 
-    pub fn toggle(self: *DiffOverlayComponent, cwd: ?[]const u8, now_ms: i64) void {
+    pub fn toggle(self: *DiffOverlayComponent, cwd: ?[]const u8, now_ms: i64) ShowResult {
         switch (self.animation_state) {
-            .open, .opening => self.hide(now_ms),
-            .closed => self.show(cwd, now_ms),
-            .closing => {},
+            .open, .opening => {
+                self.hide(now_ms);
+                return .opened;
+            },
+            .closed => return self.show(cwd, now_ms),
+            .closing => return .opened,
         }
     }
 
@@ -176,19 +181,19 @@ pub const DiffOverlayComponent = struct {
         self.animation_state = .closed;
     }
 
-    fn loadDiff(self: *DiffOverlayComponent, cwd: ?[]const u8) void {
+    fn loadDiff(self: *DiffOverlayComponent, cwd: ?[]const u8) ShowResult {
         self.clearContent();
 
         const dir = cwd orelse {
             self.cancelShow();
-            return;
+            return .not_a_repo;
         };
 
         self.updateRepoRoot(dir);
 
         if (self.last_repo_root == null) {
             self.cancelShow();
-            return;
+            return .not_a_repo;
         }
 
         const argv_unstaged = [_][]const u8{
@@ -212,41 +217,41 @@ pub const DiffOverlayComponent = struct {
         var combined = std.ArrayList(u8).initCapacity(self.allocator, 1024) catch |err| {
             log.warn("failed to allocate diff buffer: {}", .{err});
             self.setSingleLine("Failed to allocate diff buffer.");
-            return;
+            return .opened;
         };
         defer combined.deinit(self.allocator);
 
         const unstaged = self.runGitCommand(dir, &argv_unstaged) catch |err| {
             self.handleGitError(err);
-            return;
+            return .opened;
         };
         defer self.freeGitResult(unstaged);
         if (self.gitExitErrorText(unstaged)) |err_text| {
             self.setSingleLine(err_text);
-            return;
+            return .opened;
         }
 
         if (unstaged.stdout.len > 0) {
             combined.appendSlice(self.allocator, unstaged.stdout) catch |err| {
                 log.warn("failed to append unstaged diff: {}", .{err});
                 self.setSingleLine("Failed to build git diff output.");
-                return;
+                return .opened;
             };
         }
 
         const staged = self.runGitCommand(dir, &argv_staged) catch |err| {
             if (combined.items.len == 0) {
                 self.handleGitError(err);
-                return;
+                return .opened;
             }
             log.warn("failed to run staged git diff: {}", .{err});
-            return;
+            return .opened;
         };
         defer self.freeGitResult(staged);
         if (self.gitExitErrorText(staged)) |err_text| {
             if (combined.items.len == 0) {
                 self.setSingleLine(err_text);
-                return;
+                return .opened;
             }
             log.warn("staged git diff failed: {s}", .{err_text});
         } else if (staged.stdout.len > 0) {
@@ -254,40 +259,41 @@ pub const DiffOverlayComponent = struct {
                 combined.append(self.allocator, '\n') catch |err| {
                     log.warn("failed to append diff separator: {}", .{err});
                     self.setSingleLine("Failed to build git diff output.");
-                    return;
+                    return .opened;
                 };
             }
             if (combined.items.len > 0) {
                 combined.append(self.allocator, '\n') catch |err| {
                     log.warn("failed to append diff separator: {}", .{err});
                     self.setSingleLine("Failed to build git diff output.");
-                    return;
+                    return .opened;
                 };
             }
             combined.appendSlice(self.allocator, staged.stdout) catch |err| {
                 log.warn("failed to append staged diff: {}", .{err});
                 self.setSingleLine("Failed to build git diff output.");
-                return;
+                return .opened;
             };
         }
 
         self.appendUntrackedFiles(dir, &combined);
 
         if (combined.items.len == 0) {
-            self.setSingleLine("Working tree clean — no changes or untracked files.");
-            return;
+            self.cancelShow();
+            return .clean;
         }
 
         self.raw_output = combined.toOwnedSlice(self.allocator) catch |err| {
             log.warn("failed to store git diff output: {}", .{err});
             self.setSingleLine("Failed to build git diff output.");
-            return;
+            return .opened;
         };
         const output = self.raw_output orelse {
             self.setSingleLine("Failed to build git diff output.");
-            return;
+            return .opened;
         };
         self.parseDiffOutput(output);
+        return .opened;
     }
 
     fn appendUntrackedFiles(self: *DiffOverlayComponent, cwd: []const u8, combined: *std.ArrayList(u8)) void {
