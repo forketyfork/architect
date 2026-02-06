@@ -30,6 +30,7 @@ This document covers local setup, build/test commands, and release steps.
    zig version  # Should show 0.15.2+ (compatible with ghostty-vt)
    just --list  # Show available commands
    ```
+   Zig 0.15 removes `std.ArrayList.init`; use `initCapacity` or `.empty` when editing code.
 
 ## Build and Run
 

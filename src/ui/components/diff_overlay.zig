@@ -259,52 +259,72 @@ pub const DiffOverlayComponent = struct {
             return;
         };
 
-        const stdout = child.stdout.?.readToEndAlloc(self.allocator, max_output_bytes) catch |err| blk: {
-            log.warn("failed to read git diff stdout: {}", .{err});
-            break :blk null;
+        var stdout = std.ArrayList(u8).initCapacity(self.allocator, 1024) catch |err| {
+            log.warn("failed to allocate stdout buffer: {}", .{err});
+            self.setSingleLine("Failed to allocate diff buffer.", host.theme);
+            return;
         };
-        const stderr = child.stderr.?.readToEndAlloc(self.allocator, max_output_bytes) catch |err| blk: {
-            log.warn("failed to read git diff stderr: {}", .{err});
-            break :blk null;
+        defer stdout.deinit(self.allocator);
+        var stderr = std.ArrayList(u8).initCapacity(self.allocator, 256) catch |err| {
+            log.warn("failed to allocate stderr buffer: {}", .{err});
+            self.setSingleLine("Failed to allocate diff buffer.", host.theme);
+            return;
         };
+        defer stderr.deinit(self.allocator);
+
+        child.collectOutput(self.allocator, &stdout, &stderr, max_output_bytes) catch |err| {
+            log.warn("failed to collect git diff output: {}", .{err});
+            const terminate = child.kill() catch |kill_err| switch (kill_err) {
+                error.AlreadyTerminated => child.wait() catch |wait_err| {
+                    log.warn("failed to wait on git diff: {}", .{wait_err});
+                    self.setSingleLine("Failed to stop git diff.", host.theme);
+                    return;
+                },
+                else => {
+                    log.warn("failed to terminate git diff: {}", .{kill_err});
+                    self.setSingleLine("Failed to stop git diff.", host.theme);
+                    return;
+                },
+            };
+            _ = terminate;
+            switch (err) {
+                error.StdoutStreamTooLong, error.StderrStreamTooLong => {
+                    self.setSingleLine("Git diff output too large to display.", host.theme);
+                },
+                else => {
+                    self.setSingleLine("Failed to read git diff output.", host.theme);
+                },
+            }
+            return;
+        };
+
         const term = child.wait() catch |err| {
             log.warn("failed to wait on git diff: {}", .{err});
-            if (stdout) |buf| self.allocator.free(buf);
-            if (stderr) |buf| self.allocator.free(buf);
             self.setSingleLine("Failed to run git diff.", host.theme);
             return;
         };
 
-        defer if (stdout) |buf| self.allocator.free(buf);
-        defer if (stderr) |buf| self.allocator.free(buf);
-
-        if (stdout == null) {
-            self.setSingleLine("Failed to read git diff output.", host.theme);
-            return;
-        }
-
         switch (term) {
             .Exited => |code| {
                 if (code != 0) {
-                    const err_text = if (stderr) |buf| buf else "Not a git repository.";
+                    const err_text = if (stderr.items.len > 0) stderr.items else "Not a git repository.";
                     self.setSingleLine(err_text, host.theme);
                     return;
                 }
             },
             else => {
-                const err_text = if (stderr) |buf| buf else "Not a git repository.";
+                const err_text = if (stderr.items.len > 0) stderr.items else "Not a git repository.";
                 self.setSingleLine(err_text, host.theme);
                 return;
             },
         }
 
-        const output = stdout.?;
-        if (output.len == 0) {
+        if (stdout.items.len == 0) {
             self.setSingleLine("Working tree clean.", host.theme);
             return;
         }
 
-        self.parseDiffOutput(output, host.theme) catch |err| {
+        self.parseDiffOutput(stdout.items, host.theme) catch |err| {
             log.warn("failed to parse diff output: {}", .{err});
             self.setSingleLine("Failed to parse git diff output.", host.theme);
         };
@@ -326,18 +346,23 @@ pub const DiffOverlayComponent = struct {
         _ = self;
         const sel = host.theme.selection;
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
-        primitives.fillRoundedRect(renderer, rect, @max(1, rect.w / 4));
+        const corner_radius = @max(@as(c_int, 1), @divTrunc(rect.w, @as(c_int, 4)));
+        primitives.fillRoundedRect(renderer, rect, corner_radius);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, rect, @max(1, rect.w / 4));
+        primitives.drawRoundedBorder(renderer, rect, corner_radius);
 
         const inset = dpi.scale(close_button_padding, host.ui_scale);
         const x1 = rect.x + inset;
         const y1 = rect.y + inset;
         const x2 = rect.x + rect.w - inset;
         const y2 = rect.y + rect.h - inset;
-        _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
-        _ = c.SDL_RenderLine(renderer, x1, y2, x2, y1);
+        const fx1: f32 = @floatFromInt(x1);
+        const fy1: f32 = @floatFromInt(y1);
+        const fx2: f32 = @floatFromInt(x2);
+        const fy2: f32 = @floatFromInt(y2);
+        _ = c.SDL_RenderLine(renderer, fx1, fy1, fx2, fy2);
+        _ = c.SDL_RenderLine(renderer, fx1, fy2, fx2, fy1);
     }
 
     fn scrollByWheel(self: *DiffOverlayComponent, event: *const c.SDL_Event) void {
@@ -364,7 +389,7 @@ pub const DiffOverlayComponent = struct {
             }
         }
 
-        self.destroyCache(renderer);
+        self.destroyCache();
 
         const line_fonts = cache.get(font_size) catch return null;
         const title_fonts = cache.get(title_size) catch return null;
@@ -381,10 +406,13 @@ pub const DiffOverlayComponent = struct {
                 line_fonts.regular,
                 self.lines.items[line_idx],
                 line_height,
-            ) catch LineTexture{
-                .tex = null,
-                .w = 0,
-                .h = line_height,
+            ) catch |err| blk: {
+                log.warn("failed to build diff line texture: {}", .{err});
+                break :blk LineTexture{
+                    .tex = null,
+                    .w = 0,
+                    .h = line_height,
+                };
             };
         }
 
@@ -411,11 +439,11 @@ pub const DiffOverlayComponent = struct {
             return LineTexture{ .tex = null, .w = 0, .h = line_height };
         }
 
-        var surfaces = std.ArrayList(*c.SDL_Surface).init(self.allocator);
+        var surfaces = try std.ArrayList(*c.SDL_Surface).initCapacity(self.allocator, line.segments.len);
         defer surfaces.deinit(self.allocator);
-        var widths = std.ArrayList(c_int).init(self.allocator);
+        var widths = try std.ArrayList(c_int).initCapacity(self.allocator, line.segments.len);
         defer widths.deinit(self.allocator);
-        var heights = std.ArrayList(c_int).init(self.allocator);
+        var heights = try std.ArrayList(c_int).initCapacity(self.allocator, line.segments.len);
         defer heights.deinit(self.allocator);
 
         var total_width: c_int = 0;
@@ -490,6 +518,7 @@ pub const DiffOverlayComponent = struct {
         text: []const u8,
         color: c.SDL_Color,
     ) !TextTex {
+        _ = self;
         var buf: [128]u8 = undefined;
         if (text.len >= buf.len) return error.TextTooLong;
         @memcpy(buf[0..text.len], text);
@@ -547,9 +576,9 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn parseDiffOutput(self: *DiffOverlayComponent, output: []const u8, theme: *const colors.Theme) !void {
-        var segments = std.ArrayList(Segment).init(self.allocator);
+        var segments: std.ArrayList(Segment) = .empty;
         defer segments.deinit(self.allocator);
-        var buffer = std.ArrayList(u8).init(self.allocator);
+        var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(self.allocator);
 
         var color_state = ColorState{ .current = theme.foreground };
