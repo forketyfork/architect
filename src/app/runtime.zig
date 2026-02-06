@@ -632,6 +632,8 @@ pub fn run() !void {
     try ui.register(cwd_bar_component.asComponent());
     const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
     try ui.register(metrics_overlay_component.asComponent());
+    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
+    try ui.register(diff_overlay_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -1818,6 +1820,14 @@ pub fn run() !void {
                 } else {
                     ui.showToast("Metrics disabled in config", now);
                 }
+            },
+            .ToggleDiffOverlay => {
+                const focused_cwd = if (anim_state.focused_session < sessions.len)
+                    sessions[anim_state.focused_session].cwd_path
+                else
+                    null;
+                diff_overlay_component.toggle(focused_cwd);
+                if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now);
             },
         };
 
