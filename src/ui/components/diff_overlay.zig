@@ -45,6 +45,7 @@ const DisplayRow = struct {
     hunk_index: ?usize = null,
     line_index: ?usize = null,
     message: ?[]u8 = null,
+    text_byte_offset: usize = 0,
 };
 
 const SegmentKind = enum {
@@ -105,6 +106,8 @@ pub const DiffOverlayComponent = struct {
 
     close_hovered: bool = false,
     hovered_file: ?usize = null,
+
+    wrap_cols: usize = 0,
 
     animation_state: AnimationState = .closed,
     animation_start_ms: i64 = 0,
@@ -168,15 +171,25 @@ pub const DiffOverlayComponent = struct {
         }
     }
 
+    fn cancelShow(self: *DiffOverlayComponent) void {
+        self.visible = false;
+        self.animation_state = .closed;
+    }
+
     fn loadDiff(self: *DiffOverlayComponent, cwd: ?[]const u8) void {
         self.clearContent();
 
         const dir = cwd orelse {
-            self.setSingleLine("No working directory detected.");
+            self.cancelShow();
             return;
         };
 
         self.updateRepoRoot(dir);
+
+        if (self.last_repo_root == null) {
+            self.cancelShow();
+            return;
+        }
 
         const argv_unstaged = [_][]const u8{
             "git",
@@ -258,8 +271,10 @@ pub const DiffOverlayComponent = struct {
             };
         }
 
+        self.appendUntrackedFiles(dir, &combined);
+
         if (combined.items.len == 0) {
-            self.setSingleLine("Working tree clean.");
+            self.setSingleLine("Working tree clean — no changes or untracked files.");
             return;
         }
 
@@ -273,6 +288,144 @@ pub const DiffOverlayComponent = struct {
             return;
         };
         self.parseDiffOutput(output);
+    }
+
+    fn appendUntrackedFiles(self: *DiffOverlayComponent, cwd: []const u8, combined: *std.ArrayList(u8)) void {
+        const repo_root = self.last_repo_root orelse cwd;
+
+        const argv = [_][]const u8{
+            "git",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        };
+
+        const result = self.runGitCommand(repo_root, &argv) catch |err| {
+            log.warn("failed to list untracked files: {}", .{err});
+            return;
+        };
+        defer self.freeGitResult(result);
+
+        if (self.gitExitErrorText(result) != null) return;
+        if (result.stdout.len == 0) return;
+
+        var pos: usize = 0;
+        while (pos < result.stdout.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, result.stdout, pos, '\n') orelse result.stdout.len;
+            const rel_path = result.stdout[pos..line_end];
+            pos = if (line_end < result.stdout.len) line_end + 1 else result.stdout.len;
+
+            if (rel_path.len == 0) continue;
+
+            self.appendSingleUntrackedFile(repo_root, rel_path, combined);
+
+            if (combined.items.len >= max_output_bytes) break;
+        }
+    }
+
+    fn appendSingleUntrackedFile(self: *DiffOverlayComponent, repo_root: []const u8, rel_path: []const u8, combined: *std.ArrayList(u8)) void {
+        const abs_path = std.fs.path.join(self.allocator, &.{ repo_root, rel_path }) catch |err| {
+            log.warn("failed to join path for untracked file: {}", .{err});
+            return;
+        };
+        defer self.allocator.free(abs_path);
+
+        const file = std.fs.openFileAbsolute(abs_path, .{}) catch |err| {
+            log.warn("failed to open untracked file {s}: {}", .{ rel_path, err });
+            return;
+        };
+        defer file.close();
+
+        const stat = file.stat() catch |err| {
+            log.warn("failed to stat untracked file {s}: {}", .{ rel_path, err });
+            return;
+        };
+
+        // Skip files that are too large or likely binary
+        const max_file_bytes: usize = 256 * 1024;
+        if (stat.size > max_file_bytes) {
+            self.appendUntrackedHeader(rel_path, combined);
+            combined.appendSlice(self.allocator, "@@ -0,0 +1 @@\n+<file too large to display>\n") catch |err| {
+                log.warn("failed to append untracked placeholder: {}", .{err});
+            };
+            return;
+        }
+
+        const content = file.readToEndAlloc(self.allocator, max_file_bytes) catch |err| {
+            log.warn("failed to read untracked file {s}: {}", .{ rel_path, err });
+            return;
+        };
+        defer self.allocator.free(content);
+
+        if (content.len == 0) return;
+
+        if (looksLikeBinary(content)) {
+            self.appendUntrackedHeader(rel_path, combined);
+            combined.appendSlice(self.allocator, "@@ -0,0 +1 @@\n+<binary file>\n") catch |err| {
+                log.warn("failed to append binary placeholder: {}", .{err});
+            };
+            return;
+        }
+
+        // Count lines
+        var line_count: usize = 0;
+        for (content) |ch| {
+            if (ch == '\n') line_count += 1;
+        }
+        if (content.len > 0 and content[content.len - 1] != '\n') line_count += 1;
+
+        self.appendUntrackedHeader(rel_path, combined);
+
+        // Hunk header: @@ -0,0 +1,N @@
+        var hunk_buf: [64]u8 = undefined;
+        const hunk_header = std.fmt.bufPrint(&hunk_buf, "@@ -0,0 +1,{d} @@\n", .{line_count}) catch return;
+        combined.appendSlice(self.allocator, hunk_header) catch |err| {
+            log.warn("failed to append hunk header: {}", .{err});
+            return;
+        };
+
+        // Each line prefixed with '+'
+        var line_pos: usize = 0;
+        while (line_pos < content.len) {
+            if (combined.items.len >= max_output_bytes) break;
+            const eol = std.mem.indexOfScalarPos(u8, content, line_pos, '\n') orelse content.len;
+            combined.append(self.allocator, '+') catch |err| {
+                log.warn("failed to append line marker: {}", .{err});
+                return;
+            };
+            combined.appendSlice(self.allocator, content[line_pos..eol]) catch |err| {
+                log.warn("failed to append line content: {}", .{err});
+                return;
+            };
+            combined.append(self.allocator, '\n') catch |err| {
+                log.warn("failed to append newline: {}", .{err});
+                return;
+            };
+            line_pos = if (eol < content.len) eol + 1 else content.len;
+        }
+    }
+
+    fn appendUntrackedHeader(self: *DiffOverlayComponent, rel_path: []const u8, combined: *std.ArrayList(u8)) void {
+        if (combined.items.len > 0 and combined.items[combined.items.len - 1] != '\n') {
+            combined.append(self.allocator, '\n') catch return;
+        }
+
+        // diff --git a/<path> b/<path>
+        combined.appendSlice(self.allocator, "diff --git a/") catch return;
+        combined.appendSlice(self.allocator, rel_path) catch return;
+        combined.appendSlice(self.allocator, " b/") catch return;
+        combined.appendSlice(self.allocator, rel_path) catch return;
+        combined.appendSlice(self.allocator, "\nnew file\n--- /dev/null\n+++ b/") catch return;
+        combined.appendSlice(self.allocator, rel_path) catch return;
+        combined.append(self.allocator, '\n') catch return;
+    }
+
+    fn looksLikeBinary(content: []const u8) bool {
+        const check_len = @min(content.len, 8192);
+        for (content[0..check_len]) |ch| {
+            if (ch == 0) return true;
+        }
+        return false;
     }
 
     fn updateRepoRoot(self: *DiffOverlayComponent, cwd: []const u8) void {
@@ -598,18 +751,60 @@ pub const DiffOverlayComponent = struct {
                 var line_idx: usize = 0;
                 const hunk = &file.hunks.items[hunk_idx];
                 while (line_idx < hunk.lines.items.len) : (line_idx += 1) {
-                    self.display_rows.append(self.allocator, .{
-                        .kind = .diff_line,
-                        .file_index = file_idx,
-                        .hunk_index = hunk_idx,
-                        .line_index = line_idx,
-                    }) catch |err| {
-                        log.warn("failed to append diff row: {}", .{err});
-                        return;
-                    };
+                    const line_text = hunk.lines.items[line_idx].text;
+                    self.appendWrappedDiffRows(file_idx, hunk_idx, line_idx, line_text);
                 }
             }
         }
+    }
+
+    fn appendWrappedDiffRows(self: *DiffOverlayComponent, file_idx: usize, hunk_idx: usize, line_idx: usize, text: []const u8) void {
+        if (self.wrap_cols == 0 or textDisplayCols(text) <= self.wrap_cols) {
+            self.display_rows.append(self.allocator, .{
+                .kind = .diff_line,
+                .file_index = file_idx,
+                .hunk_index = hunk_idx,
+                .line_index = line_idx,
+            }) catch |err| {
+                log.warn("failed to append diff row: {}", .{err});
+            };
+            return;
+        }
+
+        var byte_off: usize = 0;
+        while (byte_off < text.len) {
+            self.display_rows.append(self.allocator, .{
+                .kind = .diff_line,
+                .file_index = file_idx,
+                .hunk_index = hunk_idx,
+                .line_index = line_idx,
+                .text_byte_offset = byte_off,
+            }) catch |err| {
+                log.warn("failed to append wrapped diff row: {}", .{err});
+                return;
+            };
+            byte_off = byteOffsetAtDisplayCol(text, byte_off, self.wrap_cols);
+        }
+    }
+
+    fn textDisplayCols(text: []const u8) usize {
+        var cols: usize = 0;
+        for (text) |ch| {
+            if (ch == '\t') cols += 4 else if (ch >= 32) cols += 1;
+        }
+        return cols;
+    }
+
+    fn byteOffsetAtDisplayCol(text: []const u8, start: usize, max_cols: usize) usize {
+        var cols: usize = 0;
+        var i: usize = start;
+        while (i < text.len) {
+            const advance: usize = if (text[i] == '\t') 4 else if (text[i] >= 32) 1 else 0;
+            if (cols + advance > max_cols and cols > 0) break;
+            cols += advance;
+            i += 1;
+        }
+        return i;
     }
 
     // --- Animation helpers ---
@@ -918,7 +1113,7 @@ pub const DiffOverlayComponent = struct {
         });
     }
 
-    fn renderCloseButton(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect, scaled_font_size: c_int) void {
+    fn renderCloseButton(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets, overlay_rect: geom.Rect, _: c_int) void {
         const scaled_btn_size = dpi.scale(close_btn_size, host.ui_scale);
         const scaled_btn_margin = dpi.scale(close_btn_margin, host.ui_scale);
         const btn_rect = geom.Rect{
@@ -927,50 +1122,63 @@ pub const DiffOverlayComponent = struct {
             .w = scaled_btn_size,
             .h = scaled_btn_size,
         };
-        const radius = dpi.scale(6, host.ui_scale);
-        const btn_alpha: u8 = @intFromFloat(200.0 * self.render_alpha);
 
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        if (self.close_hovered) {
-            const red = host.theme.palette[1];
-            _ = c.SDL_SetRenderDrawColor(renderer, red.r, red.g, red.b, btn_alpha);
-        } else {
-            const sel = host.theme.selection;
-            _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, btn_alpha);
-        }
-        primitives.fillRoundedRect(renderer, btn_rect, radius);
-
-        const cache = assets.font_cache orelse return;
-        const fonts = cache.get(scaled_font_size) catch return;
-
-        const x_text = "X";
         const fg = host.theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        const alpha: u8 = @intFromFloat(if (self.close_hovered) 255.0 * self.render_alpha else 160.0 * self.render_alpha);
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, alpha);
 
-        var buf: [4]u8 = undefined;
-        @memcpy(buf[0..x_text.len], x_text);
-        buf[x_text.len] = 0;
+        const cross_size: c_int = @divFloor(btn_rect.w * 6, 10);
+        const cross_x = btn_rect.x + @divFloor(btn_rect.w - cross_size, 2);
+        const cross_y = btn_rect.y + @divFloor(btn_rect.h - cross_size, 2);
 
-        const surface = c.TTF_RenderText_Blended(fonts.regular, @ptrCast(&buf), x_text.len, fg_color) orelse return;
+        const x1: f32 = @floatFromInt(cross_x);
+        const y1: f32 = @floatFromInt(cross_y);
+        const x2: f32 = @floatFromInt(cross_x + cross_size);
+        const y2: f32 = @floatFromInt(cross_y + cross_size);
+
+        _ = c.SDL_RenderLine(renderer, x1, y1, x2, y2);
+        _ = c.SDL_RenderLine(renderer, x2, y1, x1, y2);
+
+        if (self.close_hovered) {
+            const bold_offset: f32 = 1.0;
+            _ = c.SDL_RenderLine(renderer, x1 + bold_offset, y1, x2 + bold_offset, y2);
+            _ = c.SDL_RenderLine(renderer, x2 + bold_offset, y1, x1 + bold_offset, y2);
+            _ = c.SDL_RenderLine(renderer, x1, y1 + bold_offset, x2, y2 + bold_offset);
+            _ = c.SDL_RenderLine(renderer, x2, y1 + bold_offset, x1, y2 + bold_offset);
+        }
+    }
+
+    fn updateWrapCols(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, mono_font: *c.TTF_Font) void {
+        const char_w = measureCharWidth(renderer, mono_font) orelse return;
+        if (char_w <= 0) return;
+
+        const rect = overlayRect(host);
+        const scaled_gutter_w = dpi.scale(gutter_width, host.ui_scale);
+        const scaled_marker_w = dpi.scale(marker_width, host.ui_scale);
+        const scaled_padding = dpi.scale(text_padding, host.ui_scale);
+        const scrollbar_w = dpi.scale(10, host.ui_scale);
+        const text_area_w = rect.w - scaled_gutter_w * 2 - scaled_marker_w - scaled_padding - scrollbar_w;
+        if (text_area_w <= 0) return;
+
+        const new_wrap: usize = @intCast(@divFloor(text_area_w, char_w));
+        if (new_wrap != self.wrap_cols and new_wrap > 0) {
+            self.wrap_cols = new_wrap;
+            self.rebuildDisplayRows();
+        }
+    }
+
+    fn measureCharWidth(renderer: *c.SDL_Renderer, font: *c.TTF_Font) ?c_int {
+        const probe = "0";
+        var buf: [2]u8 = .{ probe[0], 0 };
+        const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), 1, c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }) orelse return null;
         defer c.SDL_DestroySurface(surface);
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        const tex_alpha: u8 = @intFromFloat(255.0 * self.render_alpha);
-        _ = c.SDL_SetTextureAlphaMod(texture, tex_alpha);
-
-        var tw: f32 = 0;
-        var th: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &tw, &th);
-
-        const text_x = btn_rect.x + @divFloor(btn_rect.w - @as(c_int, @intFromFloat(tw)), 2);
-        const text_y = btn_rect.y + @divFloor(btn_rect.h - @as(c_int, @intFromFloat(th)), 2);
-        _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = tw,
-            .h = th,
-        });
+        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return null;
+        defer c.SDL_DestroyTexture(tex);
+        var w: f32 = 0;
+        var h: f32 = 0;
+        _ = c.SDL_GetTextureSize(tex, &w, &h);
+        return @intFromFloat(w);
     }
 
     fn ensureCache(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets) ?*Cache {
@@ -992,6 +1200,8 @@ pub const DiffOverlayComponent = struct {
 
         const mono_font = line_fonts.regular;
         const bold_font = line_fonts.bold orelse line_fonts.regular;
+
+        self.updateWrapCols(renderer, host, mono_font);
 
         const title_text = self.buildTitleText() catch return null;
         defer self.allocator.free(title_text);
@@ -1145,61 +1355,71 @@ pub const DiffOverlayComponent = struct {
                 const hunk_idx = row.hunk_index orelse return LineTexture{ .segments = &.{} };
                 const line_idx = row.line_index orelse return LineTexture{ .segments = &.{} };
                 const line = &self.files.items[file_idx].hunks.items[hunk_idx].lines.items[line_idx];
+                const is_continuation = row.text_byte_offset > 0;
 
-                if (line.old_line) |num| {
-                    var num_buf: [12]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
-                    if (num_str.len > 0) {
-                        const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
-                        errdefer c.SDL_DestroyTexture(tex.tex);
-                        const right_pad: f32 = 6.0;
-                        const text_x = @as(f32, @floatFromInt(scaled_gutter_w)) - @as(f32, @floatFromInt(tex.w)) - right_pad;
-                        try segments.append(self.allocator, .{
-                            .tex = tex.tex,
-                            .kind = .line_number_old,
-                            .x_offset = @intFromFloat(text_x),
-                            .w = tex.w,
-                            .h = tex.h,
-                        });
+                if (!is_continuation) {
+                    if (line.old_line) |num| {
+                        var num_buf: [12]u8 = undefined;
+                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
+                        if (num_str.len > 0) {
+                            const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
+                            errdefer c.SDL_DestroyTexture(tex.tex);
+                            const right_pad: f32 = 6.0;
+                            const text_x = @as(f32, @floatFromInt(scaled_gutter_w)) - @as(f32, @floatFromInt(tex.w)) - right_pad;
+                            try segments.append(self.allocator, .{
+                                .tex = tex.tex,
+                                .kind = .line_number_old,
+                                .x_offset = @intFromFloat(text_x),
+                                .w = tex.w,
+                                .h = tex.h,
+                            });
+                        }
                     }
-                }
 
-                if (line.new_line) |num| {
-                    var num_buf: [12]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
-                    if (num_str.len > 0) {
-                        const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
-                        errdefer c.SDL_DestroyTexture(tex.tex);
-                        const right_pad: f32 = 6.0;
-                        const gutter_x: c_int = scaled_gutter_w;
-                        const text_x = @as(f32, @floatFromInt(gutter_x + scaled_gutter_w)) - @as(f32, @floatFromInt(tex.w)) - right_pad;
-                        try segments.append(self.allocator, .{
-                            .tex = tex.tex,
-                            .kind = .line_number_new,
-                            .x_offset = @intFromFloat(text_x),
-                            .w = tex.w,
-                            .h = tex.h,
-                        });
+                    if (line.new_line) |num| {
+                        var num_buf: [12]u8 = undefined;
+                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
+                        if (num_str.len > 0) {
+                            const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
+                            errdefer c.SDL_DestroyTexture(tex.tex);
+                            const right_pad: f32 = 6.0;
+                            const gutter_x: c_int = scaled_gutter_w;
+                            const text_x = @as(f32, @floatFromInt(gutter_x + scaled_gutter_w)) - @as(f32, @floatFromInt(tex.w)) - right_pad;
+                            try segments.append(self.allocator, .{
+                                .tex = tex.tex,
+                                .kind = .line_number_new,
+                                .x_offset = @intFromFloat(text_x),
+                                .w = tex.w,
+                                .h = tex.h,
+                            });
+                        }
                     }
-                }
 
-                const marker_str: []const u8 = switch (line.kind) {
-                    .add => "+",
-                    .remove => "-",
-                    .context => "",
-                };
-                if (marker_str.len > 0) {
-                    const marker_color: c.SDL_Color = switch (line.kind) {
-                        .add => host.theme.palette[2],
-                        .remove => host.theme.palette[1],
-                        .context => fg,
+                    const marker_str: []const u8 = switch (line.kind) {
+                        .add => "+",
+                        .remove => "-",
+                        .context => "",
                     };
-                    try self.appendSegmentTexture(&segments, renderer, mono_font, marker_str, marker_color, .marker, gutter_total_w);
+                    if (marker_str.len > 0) {
+                        const marker_color: c.SDL_Color = switch (line.kind) {
+                            .add => host.theme.palette[2],
+                            .remove => host.theme.palette[1],
+                            .context => fg,
+                        };
+                        try self.appendSegmentTexture(&segments, renderer, mono_font, marker_str, marker_color, .marker, gutter_total_w);
+                    }
                 }
 
-                if (line.text.len > 0) {
+                const slice_start = @min(row.text_byte_offset, line.text.len);
+                const slice_end = if (self.wrap_cols > 0)
+                    @min(byteOffsetAtDisplayCol(line.text, slice_start, self.wrap_cols), line.text.len)
+                else
+                    line.text.len;
+                const text_slice = line.text[slice_start..slice_end];
+
+                if (text_slice.len > 0) {
                     var text_buf: [max_display_buffer]u8 = undefined;
-                    const text = sanitizeText(line.text, &text_buf);
+                    const text = sanitizeText(text_slice, &text_buf);
                     if (text.len > 0) {
                         const text_color: c.SDL_Color = switch (line.kind) {
                             .add => host.theme.palette[2],
