@@ -33,10 +33,11 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches
 - **Recent folders** (⌘O) — quickly `cd` into recently visited directories with arrow key selection
+- **Git diff overlay** (⌘D) — preview a full-screen diff for the focused directory
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for git diff, ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
 - Scrollback with trackpad/wheel support and grid indicator when scrolled
 - OSC 8 hyperlink support (Cmd+Click to open)

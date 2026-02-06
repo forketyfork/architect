@@ -601,6 +601,9 @@ pub fn run() !void {
     try ui.register(recent_folders_component);
     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
 
+    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.create(allocator);
+    try ui.register(diff_overlay_component);
+
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
     help_comp_ptr.* = .{ .allocator = allocator };
     const help_component = ui_mod.UiComponent{

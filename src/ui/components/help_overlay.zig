@@ -18,6 +18,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘↵", .desc = "Expand focused terminal" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },
+    .{ .key = "⌘D", .desc = "Show git diff" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
