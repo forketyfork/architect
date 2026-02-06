@@ -47,8 +47,6 @@ pub const DiffOverlayComponent = struct {
     const text_padding: c_int = 12;
     const font_size: c_int = 13;
     const scroll_speed: f32 = 40.0;
-    const max_visible_cache: usize = 200;
-
     const CachedLineTex = struct {
         texture: *c.SDL_Texture,
         w: c_int,
@@ -114,14 +112,18 @@ pub const DiffOverlayComponent = struct {
         };
 
         const stdout_file = child.stdout orelse {
-            _ = child.wait() catch {};
+            _ = child.wait() catch |err| {
+                log.warn("failed to wait for git: {}", .{err});
+            };
             return null;
         };
 
         const max_output = 10 * 1024 * 1024; // 10 MB
         const output = stdout_file.readToEndAlloc(allocator, max_output) catch |err| {
             log.warn("failed to read git output: {}", .{err});
-            _ = child.wait() catch {};
+            _ = child.wait() catch |wait_err| {
+                log.warn("failed to wait for git: {}", .{wait_err});
+            };
             return null;
         };
 
@@ -135,56 +137,30 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn runGitDiff(allocator: std.mem.Allocator, cwd: ?[]const u8) ?[]u8 {
-        // Use git -C <dir> to run in the target directory
-        if (cwd) |dir| {
-            const argv = [_][]const u8{ "git", "-C", dir, "diff", "--no-ext-diff" };
-            const output = runGitCommand(allocator, &argv);
-            if (output) |out| {
-                if (out.len == 0) {
-                    allocator.free(out);
-                    return runGitDiffStaged(allocator, cwd);
-                }
-                return out;
+        const dir = cwd orelse return null;
+        const argv = [_][]const u8{ "git", "-C", dir, "diff", "--no-ext-diff" };
+        const output = runGitCommand(allocator, &argv);
+        if (output) |out| {
+            if (out.len == 0) {
+                allocator.free(out);
+                return runGitDiffStaged(allocator, dir);
             }
-            return null;
-        } else {
-            const argv = [_][]const u8{ "git", "diff", "--no-ext-diff" };
-            const output = runGitCommand(allocator, &argv);
-            if (output) |out| {
-                if (out.len == 0) {
-                    allocator.free(out);
-                    return runGitDiffStaged(allocator, null);
-                }
-                return out;
-            }
-            return null;
+            return out;
         }
+        return null;
     }
 
-    fn runGitDiffStaged(allocator: std.mem.Allocator, cwd: ?[]const u8) ?[]u8 {
-        if (cwd) |dir| {
-            const argv = [_][]const u8{ "git", "-C", dir, "diff", "--staged", "--no-ext-diff" };
-            const output = runGitCommand(allocator, &argv);
-            if (output) |out| {
-                if (out.len == 0) {
-                    allocator.free(out);
-                    return null;
-                }
-                return out;
+    fn runGitDiffStaged(allocator: std.mem.Allocator, dir: []const u8) ?[]u8 {
+        const argv = [_][]const u8{ "git", "-C", dir, "diff", "--staged", "--no-ext-diff" };
+        const output = runGitCommand(allocator, &argv);
+        if (output) |out| {
+            if (out.len == 0) {
+                allocator.free(out);
+                return null;
             }
-            return null;
-        } else {
-            const argv = [_][]const u8{ "git", "diff", "--staged", "--no-ext-diff" };
-            const output = runGitCommand(allocator, &argv);
-            if (output) |out| {
-                if (out.len == 0) {
-                    allocator.free(out);
-                    return null;
-                }
-                return out;
-            }
-            return null;
+            return out;
         }
+        return null;
     }
 
     fn parseDiffOutput(self: *DiffOverlayComponent, output: []const u8) void {
@@ -580,13 +556,14 @@ pub const DiffOverlayComponent = struct {
         }
     }
 
+    // max_chars plus room for tab-to-spaces expansion (up to 4 spaces per tab)
+    const max_display_buffer: usize = 520;
+
     fn renderLineText(_: *DiffOverlayComponent, renderer: *c.SDL_Renderer, font: *c.TTF_Font, text: []const u8, color: c.SDL_Color, x: c_int, y: c_int, max_width: c_int) void {
-        // Truncate very long lines for performance
         const max_chars: usize = 512;
         const display_len = @min(text.len, max_chars);
 
-        // Replace tabs with spaces for display
-        var buf: [520]u8 = undefined;
+        var buf: [max_display_buffer]u8 = undefined;
         var buf_pos: usize = 0;
         for (text[0..display_len]) |ch| {
             if (ch == '\t') {
