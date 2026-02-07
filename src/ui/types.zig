@@ -81,7 +81,9 @@ pub const ChangeDirAction = struct {
 
 pub const SendDiffCommentsAction = struct {
     session: usize,
+    /// Heap-allocated; ownership transfers to runtime, which frees after send.
     comments_text: []const u8,
+    /// Heap-allocated; ownership transfers to runtime, which frees after send.
     agent_command: ?[]const u8,
 };
 

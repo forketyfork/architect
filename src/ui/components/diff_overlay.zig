@@ -1258,7 +1258,17 @@ pub const DiffOverlayComponent = struct {
                                     }
                                 }
                             },
-                            .comment_box => want_cursor = .pointer,
+                            .comment_box => |box_row| {
+                                if (self.editing) |ed| {
+                                    if (ed.target_display_row == box_row) {
+                                        want_cursor = .text;
+                                    } else {
+                                        want_cursor = .pointer;
+                                    }
+                                } else {
+                                    want_cursor = .pointer;
+                                }
+                            },
                             else => {},
                         }
                     }
@@ -1801,11 +1811,8 @@ pub const DiffOverlayComponent = struct {
         const row_height = cache.line_height;
         if (row_height <= 0 or content_h <= 0) return;
 
-        // With comments, we can't simply divide to find first_visible
-        // Use conservative estimate: start from 0 if we have comments
         const has_comments = self.comments.items.len > 0 or self.editing != null;
         const first_visible: usize = if (has_comments) 0 else @intCast(@divFloor(scroll_int, row_height));
-        const visible_count: usize = if (has_comments) self.display_rows.items.len else @intCast(@divFloor(content_h, row_height) + 2);
 
         const scaled_gutter_w = dpi.scale(gutter_width, host.ui_scale);
         const scaled_chevron_sz = dpi.scale(chevron_size, host.ui_scale);
@@ -1815,21 +1822,26 @@ pub const DiffOverlayComponent = struct {
         const fg = host.theme.foreground;
         const accent = host.theme.accent;
 
-        const end_row = @min(self.display_rows.items.len, first_visible + visible_count);
-        var row_index: usize = first_visible;
-        while (row_index < end_row) : (row_index += 1) {
-            const row = self.display_rows.items[row_index];
-            const y_pos = if (has_comments)
-                content_top + self.computeRowY(row_index, row_height, host.ui_scale) - scroll_int
-            else
-                content_top + @as(c_int, @intCast(row_index)) * row_height - scroll_int;
+        // Compute y_pos incrementally to avoid O(n²) from per-row computeRowY calls
+        var cumulative_y: c_int = if (has_comments)
+            content_top + self.computeRowY(first_visible, row_height, host.ui_scale) - scroll_int
+        else
+            content_top + @as(c_int, @intCast(first_visible)) * row_height - scroll_int;
 
-            // Skip rows that are above the viewport
+        var row_index: usize = first_visible;
+        while (row_index < self.display_rows.items.len) : (row_index += 1) {
+            const row = self.display_rows.items[row_index];
+            const y_pos = cumulative_y;
+
+            // Advance cumulative_y for the next iteration (row height + any comment height)
+            cumulative_y += row_height + self.commentHeightAtRow(row_index, host.ui_scale);
+
+            // Skip rows above the viewport, but render their attached comments
             if (y_pos + row_height < content_top) {
-                // But still need to render any comments attached to this row
+                self.renderRowComments(host, renderer, assets, rect, y_pos + row_height, row_index);
                 continue;
             }
-            // Skip rows that are below the viewport
+            // Stop when below the viewport
             if (y_pos > content_top + content_h) break;
 
             switch (row.kind) {
@@ -1972,21 +1984,24 @@ pub const DiffOverlayComponent = struct {
                 });
             }
 
-            // Render comments attached to this row
-            var comment_y = y_pos + row_height;
-            for (self.comments.items) |comment| {
-                if (comment.sent) continue;
-                if (comment.display_row_index) |dri| {
-                    if (dri == row_index) {
-                        self.renderSavedComment(host, renderer, assets, rect, comment_y, comment);
-                        comment_y += dpi.scale(saved_comment_height, host.ui_scale);
-                    }
+            self.renderRowComments(host, renderer, assets, rect, y_pos + row_height, row_index);
+        }
+    }
+
+    fn renderRowComments(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, base_y: c_int, row_index: usize) void {
+        var comment_y = base_y;
+        for (self.comments.items) |comment| {
+            if (comment.sent) continue;
+            if (comment.display_row_index) |dri| {
+                if (dri == row_index) {
+                    self.renderSavedComment(host, renderer, assets, rect, comment_y, comment);
+                    comment_y += dpi.scale(saved_comment_height, host.ui_scale);
                 }
             }
-            if (self.editing) |_| {
-                if (self.editing.?.target_display_row == row_index) {
-                    self.renderEditingComment(host, renderer, assets, rect, comment_y);
-                }
+        }
+        if (self.editing) |_| {
+            if (self.editing.?.target_display_row == row_index) {
+                self.renderEditingComment(host, renderer, assets, rect, comment_y);
             }
         }
     }
@@ -2371,7 +2386,6 @@ pub const DiffOverlayComponent = struct {
             comment.display_row_index = null;
         }
         self.destroyCache();
-        self.saveCommentsToFile();
     }
 
     fn sendButtonRect(host: *const types.UiHost, overlay_rect: geom.Rect) geom.Rect {
@@ -2455,7 +2469,15 @@ pub const DiffOverlayComponent = struct {
                 '\n' => buf.appendSlice(self.allocator, "\\n") catch return,
                 '\r' => buf.appendSlice(self.allocator, "\\r") catch return,
                 '\t' => buf.appendSlice(self.allocator, "\\t") catch return,
-                else => buf.append(self.allocator, ch) catch return,
+                else => {
+                    if (ch < 0x20) {
+                        var esc_buf: [6]u8 = undefined;
+                        const esc = std.fmt.bufPrint(&esc_buf, "\\u{X:0>4}", .{ch}) catch return;
+                        buf.appendSlice(self.allocator, esc) catch return;
+                    } else {
+                        buf.append(self.allocator, ch) catch return;
+                    }
+                },
             }
         }
     }

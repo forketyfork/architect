@@ -1868,6 +1868,7 @@ pub fn run() !void {
                         continue;
                     };
                     allocator.free(cmd);
+                    if (pending_comment_send) |prev| allocator.free(prev.text);
                     pending_comment_send = .{
                         .session = dc_action.session,
                         .text = dc_action.comments_text,
