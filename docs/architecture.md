@@ -290,7 +290,7 @@ Components that consume events:
 - `PillGroupComponent`: Coordinates pill overlays (collapses one when another expands)
 - `GlobalShortcutsComponent`: Handles global shortcuts like Cmd+, to open config
 - `MetricsOverlayComponent`: Cmd+Shift+M to toggle metrics overlay (when enabled in config)
-- `DiffOverlayComponent`: Cmd+D to toggle git diff overlay (grid and full view); runs a repo-wide `git diff` (staged + unstaged) for the focused session's working tree, shows a GitHub-style unified diff with collapsible file headers, line number gutters, and colored add/remove lines, and labels the title bar with the repo root folder; dismiss with close button or ESC
+- `DiffOverlayComponent`: Cmd+D to toggle git diff overlay (grid and full view); runs a repo-wide `git diff` (staged + unstaged) for the focused session's working tree, shows a GitHub-style unified diff with collapsible file headers, line number gutters, and colored add/remove lines, and labels the title bar with the repo root folder; dismiss with close button or ESC. Supports inline review comments: click any diff line to open a comment box, submit to save. Comments persist in `.architect/diff_comments.json` relative to the repo root and survive close/reopen. A green "Send to agent" button appears when unsent comments exist; it detects whether an agent is running in the focused terminal and either sends comments directly or shows a dropdown to start claude/codex/gemini first
 
 ## Rendering Order
 

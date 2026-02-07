@@ -48,6 +48,34 @@ const DisplayRow = struct {
     text_byte_offset: usize = 0,
 };
 
+const CommentKey = struct {
+    file_path: []const u8,
+    line_number: usize,
+};
+
+const DiffComment = struct {
+    key: CommentKey,
+    text: []const u8,
+    sent: bool,
+    display_row_index: ?usize,
+};
+
+const EditingComment = struct {
+    target_display_row: usize,
+    key: CommentKey,
+    input_buf: std.ArrayList(u8),
+    cursor_blink_start_ms: i64,
+    existing_index: ?usize,
+};
+
+const ClickTarget = union(enum) {
+    diff_row: usize,
+    comment_box: usize,
+    send_button: void,
+    dropdown_item: usize,
+    other: void,
+};
+
 const SegmentKind = enum {
     file_path,
     hunk_header,
@@ -107,12 +135,24 @@ pub const DiffOverlayComponent = struct {
     close_hovered: bool = false,
     hovered_file: ?usize = null,
 
+    comments: std.ArrayList(DiffComment) = .{},
+    editing: ?EditingComment = null,
+    show_agent_dropdown: bool = false,
+    agent_dropdown_hovered: ?usize = null,
+    send_button_hovered: bool = false,
+
     wrap_cols: usize = 0,
+
+    arrow_cursor: ?*c.SDL_Cursor = null,
+    pointer_cursor: ?*c.SDL_Cursor = null,
+    text_cursor: ?*c.SDL_Cursor = null,
+    current_cursor: CursorKind = .arrow,
 
     animation_state: AnimationState = .closed,
     animation_start_ms: i64 = 0,
     render_alpha: f32 = 1.0,
 
+    const CursorKind = enum { arrow, pointer, text };
     const AnimationState = enum { closed, opening, open, closing };
     const animation_duration_ms: i64 = 250;
     const scale_from: f32 = 0.97;
@@ -133,12 +173,26 @@ pub const DiffOverlayComponent = struct {
     const tab_display_width: usize = 4;
     const min_printable_char: u8 = 32;
 
+    const saved_comment_height: c_int = 32;
+    const editing_comment_height: c_int = 90;
+    const comment_input_height: c_int = 44;
+    const comment_button_height: c_int = 28;
+    const comment_button_width: c_int = 70;
+    const agent_dropdown_item_height: c_int = 28;
+    const agent_dropdown_width: c_int = 140;
+    const send_button_width: c_int = 110;
+    const send_button_height: c_int = 26;
+    const dropdown_items = [_][]const u8{ "Paste directly", "claude", "codex", "gemini" };
+
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
 
     pub fn init(allocator: std.mem.Allocator) !*DiffOverlayComponent {
         const comp = try allocator.create(DiffOverlayComponent);
         comp.* = .{ .allocator = allocator };
+        comp.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
+        comp.pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+        comp.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
         return comp;
     }
 
@@ -162,6 +216,8 @@ pub const DiffOverlayComponent = struct {
     }
 
     pub fn hide(self: *DiffOverlayComponent, now_ms: i64) void {
+        self.saveCommentsToFile();
+        self.setCursor(.arrow);
         self.animation_state = .closing;
         self.animation_start_ms = now_ms;
         self.first_frame.markTransition();
@@ -295,6 +351,8 @@ pub const DiffOverlayComponent = struct {
             return .opened;
         };
         self.parseDiffOutput(output);
+        self.loadCommentsFromFile();
+        self.resolveCommentPositions();
         return .opened;
     }
 
@@ -701,6 +759,11 @@ pub const DiffOverlayComponent = struct {
         self.files.deinit(self.allocator);
         self.files = .{};
         self.hovered_file = null;
+        self.freeComments();
+        self.cancelEditing();
+        self.show_agent_dropdown = false;
+        self.agent_dropdown_hovered = null;
+        self.send_button_hovered = false;
         if (self.last_repo_root) |root| {
             self.allocator.free(root);
             self.last_repo_root = null;
@@ -911,9 +974,56 @@ pub const DiffOverlayComponent = struct {
                 const key = event.key.key;
                 const mod = event.key.mod;
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
                 const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT)) != 0;
 
+                // Editing text input: handle special keys
+                if (self.editing != null) {
+                    if (key == c.SDLK_ESCAPE) {
+                        if (self.show_agent_dropdown) {
+                            self.show_agent_dropdown = false;
+                        } else {
+                            self.cancelEditing();
+                        }
+                        return true;
+                    }
+                    if (key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER) {
+                        if (has_shift) {
+                            self.editing.?.input_buf.append(self.allocator, '\n') catch |err| {
+                                log.warn("failed to append newline: {}", .{err});
+                            };
+                            self.editing.?.cursor_blink_start_ms = host.now_ms;
+                        } else {
+                            self.submitComment();
+                        }
+                        return true;
+                    }
+                    if (key == c.SDLK_BACKSPACE) {
+                        if (self.editing) |*ed| {
+                            if (has_gui) {
+                                ed.input_buf.clearRetainingCapacity();
+                            } else if (ed.input_buf.items.len > 0) {
+                                // Remove last UTF-8 codepoint
+                                var remove_len: usize = 1;
+                                while (remove_len < ed.input_buf.items.len and
+                                    (ed.input_buf.items[ed.input_buf.items.len - remove_len] & 0xC0) == 0x80)
+                                {
+                                    remove_len += 1;
+                                }
+                                ed.input_buf.shrinkRetainingCapacity(ed.input_buf.items.len - remove_len);
+                            }
+                            ed.cursor_blink_start_ms = host.now_ms;
+                        }
+                        return true;
+                    }
+                    return true;
+                }
+
                 if (key == c.SDLK_ESCAPE) {
+                    if (self.show_agent_dropdown) {
+                        self.show_agent_dropdown = false;
+                        return true;
+                    }
                     actions.append(.ToggleDiffOverlay) catch |err| {
                         log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
                     };
@@ -938,6 +1048,16 @@ pub const DiffOverlayComponent = struct {
 
                 return true;
             },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (self.editing) |*ed| {
+                    const text = std.mem.span(event.text.text);
+                    ed.input_buf.appendSlice(self.allocator, text) catch |err| {
+                        log.warn("failed to append text input: {}", .{err});
+                    };
+                    ed.cursor_blink_start_ms = host.now_ms;
+                }
+                return true;
+            },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 const wheel_y = event.wheel.y;
                 self.scroll_offset = @max(0, self.scroll_offset - wheel_y * scroll_speed);
@@ -948,12 +1068,85 @@ pub const DiffOverlayComponent = struct {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
 
+                // Agent dropdown click
+                if (self.show_agent_dropdown) {
+                    const dd = agentDropdownRect(host, overlayRect(host));
+                    if (geom.containsPoint(dd, mouse_x, mouse_y)) {
+                        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+                        const rel_y = mouse_y - dd.y;
+                        const item_idx: usize = @intCast(@divFloor(rel_y, item_h));
+                        if (item_idx < dropdown_items.len) {
+                            if (item_idx == 0) {
+                                // "Paste directly" — send to terminal without starting an agent
+                                self.sendCommentsToAgent(host, actions, null);
+                            } else {
+                                self.sendCommentsToAgent(host, actions, dropdown_items[item_idx]);
+                            }
+                        }
+                        self.show_agent_dropdown = false;
+                        return true;
+                    }
+                    self.show_agent_dropdown = false;
+                    return true;
+                }
+
                 const close_rect = closeButtonRect(host);
                 if (geom.containsPoint(close_rect, mouse_x, mouse_y)) {
                     actions.append(.ToggleDiffOverlay) catch |err| {
                         log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
                     };
                     return true;
+                }
+
+                // Send to agent button
+                if (self.hasUnsentComments()) {
+                    const sb = sendButtonRect(host, overlayRect(host));
+                    if (geom.containsPoint(sb, mouse_x, mouse_y)) {
+                        if (host.focused_has_foreground_process) {
+                            self.sendCommentsToAgent(host, actions, null);
+                        } else {
+                            self.show_agent_dropdown = true;
+                        }
+                        return true;
+                    }
+                }
+
+                // Comment editing button clicks
+                if (self.editing) |ed| {
+                    const rect = overlayRect(host);
+                    const scaled_title_h = dpi.scale(title_height, host.ui_scale);
+                    const scaled_line_h = self.lineHeight(host);
+                    const total_h = dpi.scale(editing_comment_height, host.ui_scale);
+                    const btn_h = dpi.scale(comment_button_height, host.ui_scale);
+                    const btn_w = dpi.scale(comment_button_width, host.ui_scale);
+                    const scaled_padding = dpi.scale(text_padding, host.ui_scale);
+                    const scroll_int: c_int = @intFromFloat(self.scroll_offset);
+                    const content_top = rect.y + scaled_title_h;
+
+                    const comment_y_base = self.computeRowY(ed.target_display_row, scaled_line_h, host.ui_scale) + scaled_line_h;
+                    // Subtract any saved comment height at this row (editing comes after saved)
+                    var saved_h: c_int = 0;
+                    for (self.comments.items) |comment| {
+                        if (comment.sent) continue;
+                        if (comment.display_row_index) |dri| {
+                            if (dri == ed.target_display_row) {
+                                saved_h += dpi.scale(saved_comment_height, host.ui_scale);
+                            }
+                        }
+                    }
+                    const edit_y = content_top + comment_y_base + saved_h - scroll_int;
+                    const btn_y = edit_y + total_h - btn_h - dpi.scale(6, host.ui_scale);
+                    const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
+                    const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
+
+                    if (geom.containsPoint(.{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, mouse_x, mouse_y)) {
+                        self.submitComment();
+                        return true;
+                    }
+                    if (geom.containsPoint(.{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, mouse_x, mouse_y)) {
+                        self.cancelEditing();
+                        return true;
+                    }
                 }
 
                 const rect = overlayRect(host);
@@ -965,15 +1158,49 @@ pub const DiffOverlayComponent = struct {
                 if (mouse_y >= content_top and scaled_line_h > 0) {
                     const relative_y = mouse_y - content_top + scroll_int;
                     if (relative_y >= 0) {
-                        const click_row: usize = @intCast(@divFloor(relative_y, scaled_line_h));
-                        if (click_row < self.display_rows.items.len) {
-                            const row = self.display_rows.items[click_row];
-                            if (row.kind == .file_header) {
-                                if (row.file_index) |file_idx| {
-                                    self.files.items[file_idx].collapsed = !self.files.items[file_idx].collapsed;
-                                    self.rebuildDisplayRows();
+                        const target = self.resolveClickTarget(relative_y, scaled_line_h, host.ui_scale);
+                        switch (target) {
+                            .diff_row => |row_idx| {
+                                const row = self.display_rows.items[row_idx];
+                                if (row.kind == .file_header) {
+                                    if (row.file_index) |file_idx| {
+                                        self.files.items[file_idx].collapsed = !self.files.items[file_idx].collapsed;
+                                        self.rebuildDisplayRows();
+                                        self.resolveCommentPositions();
+                                    }
+                                } else if (row.kind == .diff_line and row.text_byte_offset == 0) {
+                                    self.openCommentForRow(row_idx, host.now_ms);
                                 }
-                            }
+                            },
+                            .comment_box => |row_idx| {
+                                // Click on saved comment opens for editing
+                                for (self.comments.items, 0..) |comment, ci| {
+                                    if (comment.sent) continue;
+                                    if (comment.display_row_index) |dri| {
+                                        if (dri == row_idx) {
+                                            // Open this comment for editing
+                                            self.cancelEditing();
+                                            const key_dup = self.allocator.dupe(u8, comment.key.file_path) catch return true;
+                                            var input_buf = std.ArrayList(u8){};
+                                            input_buf.appendSlice(self.allocator, comment.text) catch |err| {
+                                                log.warn("failed to copy comment: {}", .{err});
+                                                self.allocator.free(key_dup);
+                                                return true;
+                                            };
+                                            self.editing = EditingComment{
+                                                .target_display_row = row_idx,
+                                                .key = .{ .file_path = key_dup, .line_number = comment.key.line_number },
+                                                .input_buf = input_buf,
+                                                .cursor_blink_start_ms = host.now_ms,
+                                                .existing_index = ci,
+                                            };
+                                            self.first_frame.markTransition();
+                                            break;
+                                        }
+                                    }
+                                }
+                            },
+                            else => {},
                         }
                     }
                 }
@@ -985,6 +1212,23 @@ pub const DiffOverlayComponent = struct {
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
                 const close_rect = closeButtonRect(host);
                 self.close_hovered = geom.containsPoint(close_rect, mouse_x, mouse_y);
+                self.send_button_hovered = if (self.hasUnsentComments())
+                    geom.containsPoint(sendButtonRect(host, overlayRect(host)), mouse_x, mouse_y)
+                else
+                    false;
+
+                // Agent dropdown hover
+                if (self.show_agent_dropdown) {
+                    const dd = agentDropdownRect(host, overlayRect(host));
+                    if (geom.containsPoint(dd, mouse_x, mouse_y)) {
+                        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+                        const rel_y = mouse_y - dd.y;
+                        const idx: usize = @intCast(@divFloor(rel_y, item_h));
+                        self.agent_dropdown_hovered = if (idx < dropdown_items.len) idx else null;
+                    } else {
+                        self.agent_dropdown_hovered = null;
+                    }
+                }
 
                 const rect = overlayRect(host);
                 const scaled_title_h = dpi.scale(title_height, host.ui_scale);
@@ -993,22 +1237,37 @@ pub const DiffOverlayComponent = struct {
                 const scroll_int: c_int = @intFromFloat(self.scroll_offset);
 
                 self.hovered_file = null;
-                if (mouse_y >= content_top and scaled_line_h > 0) {
+                var want_cursor: CursorKind = .arrow;
+                if (self.close_hovered or self.send_button_hovered) {
+                    want_cursor = .pointer;
+                } else if (self.show_agent_dropdown and self.agent_dropdown_hovered != null) {
+                    want_cursor = .pointer;
+                } else if (mouse_y >= content_top and scaled_line_h > 0) {
                     const relative_y = mouse_y - content_top + scroll_int;
                     if (relative_y >= 0) {
-                        const hover_row: usize = @intCast(@divFloor(relative_y, scaled_line_h));
-                        if (hover_row < self.display_rows.items.len) {
-                            const row = self.display_rows.items[hover_row];
-                            if (row.kind == .file_header) {
-                                self.hovered_file = row.file_index;
-                            }
+                        const target = self.resolveClickTarget(relative_y, scaled_line_h, host.ui_scale);
+                        switch (target) {
+                            .diff_row => |row_idx| {
+                                if (row_idx < self.display_rows.items.len) {
+                                    const row = self.display_rows.items[row_idx];
+                                    if (row.kind == .file_header) {
+                                        self.hovered_file = row.file_index;
+                                        want_cursor = .pointer;
+                                    } else if (row.kind == .diff_line and row.text_byte_offset == 0) {
+                                        want_cursor = .pointer;
+                                    }
+                                }
+                            },
+                            .comment_box => want_cursor = .pointer,
+                            else => {},
                         }
                     }
                 }
+                self.setCursor(want_cursor);
 
                 return true;
             },
-            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_TEXT_INPUT, c.SDL_EVENT_TEXT_EDITING => return true,
+            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_TEXT_EDITING => return true,
             else => return false,
         }
     }
@@ -1073,7 +1332,8 @@ pub const DiffOverlayComponent = struct {
 
         const row_count_f: f32 = @floatFromInt(self.display_rows.items.len);
         const scaled_line_h_f: f32 = @floatFromInt(cache.line_height);
-        const content_height: f32 = row_count_f * scaled_line_h_f;
+        const total_comment_h: f32 = @floatFromInt(self.totalCommentPixelHeight(host));
+        const content_height: f32 = row_count_f * scaled_line_h_f + total_comment_h;
         const viewport_height: f32 = @floatFromInt(rect.h - scaled_title_h);
         self.max_scroll = @max(0, content_height - viewport_height);
         self.scroll_offset = @min(self.max_scroll, self.scroll_offset);
@@ -1101,6 +1361,7 @@ pub const DiffOverlayComponent = struct {
             @floatFromInt(rect.y + scaled_title_h),
         );
 
+        self.renderSendButton(host, renderer, assets, rect);
         self.renderCloseButton(host, renderer, assets, rect, scaled_font_size);
 
         const content_clip = c.SDL_Rect{
@@ -1111,11 +1372,12 @@ pub const DiffOverlayComponent = struct {
         };
         _ = c.SDL_SetRenderClipRect(renderer, &content_clip);
 
-        self.renderDiffContent(host, renderer, rect, scaled_title_h, scaled_padding, cache);
+        self.renderDiffContent(host, renderer, rect, scaled_title_h, scaled_padding, cache, assets);
 
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
         self.renderScrollbar(host, renderer, rect, scaled_title_h, content_height, viewport_height);
+        self.renderAgentDropdown(host, renderer, assets, rect);
 
         self.first_frame.markDrawn();
     }
@@ -1185,6 +1447,7 @@ pub const DiffOverlayComponent = struct {
         if (new_wrap != self.wrap_cols and new_wrap > 0) {
             self.wrap_cols = new_wrap;
             self.rebuildDisplayRows();
+            self.resolveCommentPositions();
         }
     }
 
@@ -1529,7 +1792,7 @@ pub const DiffOverlayComponent = struct {
         }
     }
 
-    fn renderDiffContent(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, rect: geom.Rect, title_h: c_int, padding: c_int, cache: *Cache) void {
+    fn renderDiffContent(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, rect: geom.Rect, title_h: c_int, padding: c_int, cache: *Cache, assets: *types.UiAssets) void {
         const alpha = self.render_alpha;
         const scroll_int: c_int = @intFromFloat(self.scroll_offset);
         const content_top = rect.y + title_h;
@@ -1538,8 +1801,11 @@ pub const DiffOverlayComponent = struct {
         const row_height = cache.line_height;
         if (row_height <= 0 or content_h <= 0) return;
 
-        const first_visible: usize = @intCast(@divFloor(scroll_int, row_height));
-        const visible_count: usize = @intCast(@divFloor(content_h, row_height) + 2);
+        // With comments, we can't simply divide to find first_visible
+        // Use conservative estimate: start from 0 if we have comments
+        const has_comments = self.comments.items.len > 0 or self.editing != null;
+        const first_visible: usize = if (has_comments) 0 else @intCast(@divFloor(scroll_int, row_height));
+        const visible_count: usize = if (has_comments) self.display_rows.items.len else @intCast(@divFloor(content_h, row_height) + 2);
 
         const scaled_gutter_w = dpi.scale(gutter_width, host.ui_scale);
         const scaled_chevron_sz = dpi.scale(chevron_size, host.ui_scale);
@@ -1553,7 +1819,18 @@ pub const DiffOverlayComponent = struct {
         var row_index: usize = first_visible;
         while (row_index < end_row) : (row_index += 1) {
             const row = self.display_rows.items[row_index];
-            const y_pos = content_top + @as(c_int, @intCast(row_index)) * row_height - scroll_int;
+            const y_pos = if (has_comments)
+                content_top + self.computeRowY(row_index, row_height, host.ui_scale) - scroll_int
+            else
+                content_top + @as(c_int, @intCast(row_index)) * row_height - scroll_int;
+
+            // Skip rows that are above the viewport
+            if (y_pos + row_height < content_top) {
+                // But still need to render any comments attached to this row
+                continue;
+            }
+            // Skip rows that are below the viewport
+            if (y_pos > content_top + content_h) break;
 
             switch (row.kind) {
                 .file_header => {
@@ -1694,6 +1971,23 @@ pub const DiffOverlayComponent = struct {
                     .h = @floatFromInt(render_h),
                 });
             }
+
+            // Render comments attached to this row
+            var comment_y = y_pos + row_height;
+            for (self.comments.items) |comment| {
+                if (comment.sent) continue;
+                if (comment.display_row_index) |dri| {
+                    if (dri == row_index) {
+                        self.renderSavedComment(host, renderer, assets, rect, comment_y, comment);
+                        comment_y += dpi.scale(saved_comment_height, host.ui_scale);
+                    }
+                }
+            }
+            if (self.editing) |_| {
+                if (self.editing.?.target_display_row == row_index) {
+                    self.renderEditingComment(host, renderer, assets, rect, comment_y);
+                }
+            }
         }
     }
 
@@ -1755,10 +2049,797 @@ pub const DiffOverlayComponent = struct {
         });
     }
 
+    // --- Comment management ---
+
+    fn freeComments(self: *DiffOverlayComponent) void {
+        for (self.comments.items) |comment| {
+            self.allocator.free(comment.key.file_path);
+            self.allocator.free(comment.text);
+        }
+        self.comments.deinit(self.allocator);
+        self.comments = .{};
+    }
+
+    fn cancelEditing(self: *DiffOverlayComponent) void {
+        if (self.editing) |*ed| {
+            ed.input_buf.deinit(self.allocator);
+            self.allocator.free(ed.key.file_path);
+            self.editing = null;
+        }
+    }
+
+    fn commentKeyForRow(self: *DiffOverlayComponent, row_index: usize) ?CommentKey {
+        if (row_index >= self.display_rows.items.len) return null;
+        const row = self.display_rows.items[row_index];
+        if (row.kind != .diff_line) return null;
+        if (row.text_byte_offset != 0) return null;
+
+        const file_idx = row.file_index orelse return null;
+        const hunk_idx = row.hunk_index orelse return null;
+        const line_idx = row.line_index orelse return null;
+
+        if (file_idx >= self.files.items.len) return null;
+        const file = &self.files.items[file_idx];
+        if (hunk_idx >= file.hunks.items.len) return null;
+        const hunk = &file.hunks.items[hunk_idx];
+        if (line_idx >= hunk.lines.items.len) return null;
+        const hunk_line = &hunk.lines.items[line_idx];
+
+        const line_num = switch (hunk_line.kind) {
+            .add, .context => hunk_line.new_line orelse return null,
+            .remove => hunk_line.old_line orelse return null,
+        };
+
+        const file_path = self.allocator.dupe(u8, file.path) catch return null;
+        return CommentKey{
+            .file_path = file_path,
+            .line_number = line_num,
+        };
+    }
+
+    fn findCommentIndex(self: *DiffOverlayComponent, key: CommentKey) ?usize {
+        for (self.comments.items, 0..) |comment, i| {
+            if (comment.sent) continue;
+            if (comment.key.line_number == key.line_number and std.mem.eql(u8, comment.key.file_path, key.file_path)) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    fn lastWrappedRowForLine(self: *DiffOverlayComponent, row_index: usize) usize {
+        const row = self.display_rows.items[row_index];
+        if (row.kind != .diff_line) return row_index;
+        const fi = row.file_index orelse return row_index;
+        const hi = row.hunk_index orelse return row_index;
+        const li = row.line_index orelse return row_index;
+
+        var last = row_index;
+        var i = row_index + 1;
+        while (i < self.display_rows.items.len) : (i += 1) {
+            const r = self.display_rows.items[i];
+            if (r.kind != .diff_line) break;
+            if (r.file_index != fi or r.hunk_index != hi or r.line_index != li) break;
+            last = i;
+        }
+        return last;
+    }
+
+    fn openCommentForRow(self: *DiffOverlayComponent, row_index: usize, now_ms: i64) void {
+        const key = self.commentKeyForRow(row_index) orelse return;
+        const attach_row = self.lastWrappedRowForLine(row_index);
+
+        if (self.editing) |*existing| {
+            if (existing.target_display_row == attach_row) {
+                self.allocator.free(key.file_path);
+                return;
+            }
+            self.cancelEditing();
+        }
+
+        const existing_idx = self.findCommentIndex(key);
+        var input_buf = std.ArrayList(u8){};
+        if (existing_idx) |idx| {
+            input_buf.appendSlice(self.allocator, self.comments.items[idx].text) catch |err| {
+                log.warn("failed to copy comment text: {}", .{err});
+            };
+        }
+
+        self.editing = EditingComment{
+            .target_display_row = attach_row,
+            .key = key,
+            .input_buf = input_buf,
+            .cursor_blink_start_ms = now_ms,
+            .existing_index = existing_idx,
+        };
+        self.first_frame.markTransition();
+    }
+
+    fn submitComment(self: *DiffOverlayComponent) void {
+        const ed = &(self.editing orelse return);
+        if (ed.input_buf.items.len == 0) {
+            if (ed.existing_index) |idx| {
+                self.removeComment(idx);
+            }
+            self.cancelEditing();
+            self.saveCommentsToFile();
+            return;
+        }
+
+        const text = self.allocator.dupe(u8, ed.input_buf.items) catch |err| {
+            log.warn("failed to dupe comment text: {}", .{err});
+            return;
+        };
+        const file_path = self.allocator.dupe(u8, ed.key.file_path) catch |err| {
+            log.warn("failed to dupe comment path: {}", .{err});
+            self.allocator.free(text);
+            return;
+        };
+
+        if (ed.existing_index) |idx| {
+            self.allocator.free(self.comments.items[idx].text);
+            self.comments.items[idx].text = text;
+            self.allocator.free(file_path);
+        } else {
+            self.comments.append(self.allocator, DiffComment{
+                .key = .{ .file_path = file_path, .line_number = ed.key.line_number },
+                .text = text,
+                .sent = false,
+                .display_row_index = ed.target_display_row,
+            }) catch |err| {
+                log.warn("failed to append comment: {}", .{err});
+                self.allocator.free(text);
+                self.allocator.free(file_path);
+                return;
+            };
+        }
+
+        self.cancelEditing();
+        self.destroyCache();
+        self.saveCommentsToFile();
+    }
+
+    fn removeComment(self: *DiffOverlayComponent, idx: usize) void {
+        const comment = self.comments.items[idx];
+        self.allocator.free(comment.key.file_path);
+        self.allocator.free(comment.text);
+        _ = self.comments.orderedRemove(idx);
+    }
+
+    fn setCursor(self: *DiffOverlayComponent, kind: CursorKind) void {
+        if (self.current_cursor == kind) return;
+        self.current_cursor = kind;
+        const cursor = switch (kind) {
+            .arrow => self.arrow_cursor,
+            .pointer => self.pointer_cursor,
+            .text => self.text_cursor,
+        };
+        if (cursor) |cur| _ = c.SDL_SetCursor(cur);
+    }
+
+    fn hasUnsentComments(self: *DiffOverlayComponent) bool {
+        for (self.comments.items) |comment| {
+            if (!comment.sent) return true;
+        }
+        return false;
+    }
+
+    fn resolveCommentPositions(self: *DiffOverlayComponent) void {
+        for (self.comments.items) |*comment| {
+            comment.display_row_index = null;
+            if (comment.sent) continue;
+
+            for (self.display_rows.items, 0..) |row, i| {
+                if (row.kind != .diff_line) continue;
+                if (row.text_byte_offset != 0) continue;
+                const fi = row.file_index orelse continue;
+                const hi = row.hunk_index orelse continue;
+                const li = row.line_index orelse continue;
+
+                if (fi >= self.files.items.len) continue;
+                const file = &self.files.items[fi];
+                if (hi >= file.hunks.items.len) continue;
+                const hunk = &file.hunks.items[hi];
+                if (li >= hunk.lines.items.len) continue;
+                const hunk_line = &hunk.lines.items[li];
+
+                const line_num = switch (hunk_line.kind) {
+                    .add, .context => hunk_line.new_line orelse continue,
+                    .remove => hunk_line.old_line orelse continue,
+                };
+
+                if (line_num == comment.key.line_number and std.mem.eql(u8, file.path, comment.key.file_path)) {
+                    comment.display_row_index = self.lastWrappedRowForLine(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn commentHeightAtRow(self: *DiffOverlayComponent, row_index: usize, ui_scale: f32) c_int {
+        var h: c_int = 0;
+        for (self.comments.items) |comment| {
+            if (comment.sent) continue;
+            if (comment.display_row_index) |dri| {
+                if (dri == row_index) {
+                    h += dpi.scale(saved_comment_height, ui_scale);
+                }
+            }
+        }
+        if (self.editing) |ed| {
+            if (ed.target_display_row == row_index) {
+                h += dpi.scale(editing_comment_height, ui_scale);
+            }
+        }
+        return h;
+    }
+
+    fn totalCommentPixelHeight(self: *DiffOverlayComponent, host: *const types.UiHost) c_int {
+        var total: c_int = 0;
+        for (self.comments.items) |comment| {
+            if (!comment.sent and comment.display_row_index != null) {
+                total += dpi.scale(saved_comment_height, host.ui_scale);
+            }
+        }
+        if (self.editing) |_| {
+            total += dpi.scale(editing_comment_height, host.ui_scale);
+        }
+        return total;
+    }
+
+    fn computeRowY(self: *DiffOverlayComponent, row_index: usize, row_height: c_int, ui_scale: f32) c_int {
+        var y: c_int = @as(c_int, @intCast(row_index)) * row_height;
+        var i: usize = 0;
+        while (i < row_index) : (i += 1) {
+            y += self.commentHeightAtRow(i, ui_scale);
+        }
+        return y;
+    }
+
+    fn resolveClickTarget(self: *DiffOverlayComponent, relative_y: c_int, row_height: c_int, ui_scale: f32) ClickTarget {
+        if (row_height <= 0) return .{ .other = {} };
+        var cumulative_y: c_int = 0;
+        for (self.display_rows.items, 0..) |_, i| {
+            const row_start = cumulative_y;
+            const row_end = cumulative_y + row_height;
+            if (relative_y >= row_start and relative_y < row_end) {
+                return .{ .diff_row = i };
+            }
+            cumulative_y = row_end;
+            const comment_h = self.commentHeightAtRow(i, ui_scale);
+            if (comment_h > 0 and relative_y >= cumulative_y and relative_y < cumulative_y + comment_h) {
+                return .{ .comment_box = i };
+            }
+            cumulative_y += comment_h;
+        }
+        return .{ .other = {} };
+    }
+
+    fn formatCommentsForAgent(self: *DiffOverlayComponent) ?[]const u8 {
+        var buf = std.ArrayList(u8){};
+        var first = true;
+        for (self.comments.items) |comment| {
+            if (comment.sent) continue;
+            if (!first) {
+                buf.appendSlice(self.allocator, "\n\n") catch return null;
+            }
+            buf.appendSlice(self.allocator, comment.key.file_path) catch return null;
+            buf.append(self.allocator, ':') catch return null;
+            var num_buf: [20]u8 = undefined;
+            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{comment.key.line_number}) catch return null;
+            buf.appendSlice(self.allocator, num_str) catch return null;
+            buf.appendSlice(self.allocator, ": ") catch return null;
+            buf.appendSlice(self.allocator, comment.text) catch return null;
+            first = false;
+        }
+        buf.append(self.allocator, '\n') catch return null;
+        return buf.toOwnedSlice(self.allocator) catch |err| {
+            log.warn("failed to format comments: {}", .{err});
+            return null;
+        };
+    }
+
+    fn sendCommentsToAgent(self: *DiffOverlayComponent, host: *const types.UiHost, actions: *types.UiActionQueue, agent_name: ?[]const u8) void {
+        const comments_text = self.formatCommentsForAgent() orelse return;
+        var agent_cmd: ?[]const u8 = null;
+        if (agent_name) |name| {
+            agent_cmd = std.fmt.allocPrint(self.allocator, "{s}\n", .{name}) catch {
+                self.allocator.free(comments_text);
+                return;
+            };
+        }
+        actions.append(.{ .SendDiffComments = .{
+            .session = host.focused_session,
+            .comments_text = comments_text,
+            .agent_command = agent_cmd,
+        } }) catch |err| {
+            log.warn("failed to queue SendDiffComments action: {}", .{err});
+            self.allocator.free(comments_text);
+            if (agent_cmd) |cmd| self.allocator.free(cmd);
+            return;
+        };
+        self.markCommentsSent();
+        // Close the diff overlay after sending
+        actions.append(.ToggleDiffOverlay) catch |err| {
+            log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
+        };
+    }
+
+    fn markCommentsSent(self: *DiffOverlayComponent) void {
+        for (self.comments.items) |*comment| {
+            comment.sent = true;
+            comment.display_row_index = null;
+        }
+        self.destroyCache();
+        self.saveCommentsToFile();
+    }
+
+    fn sendButtonRect(host: *const types.UiHost, overlay_rect: geom.Rect) geom.Rect {
+        const btn_w = dpi.scale(send_button_width, host.ui_scale);
+        const btn_h = dpi.scale(send_button_height, host.ui_scale);
+        const btn_margin = dpi.scale(close_btn_margin, host.ui_scale);
+        const close_w = dpi.scale(close_btn_size, host.ui_scale);
+        return geom.Rect{
+            .x = overlay_rect.x + overlay_rect.w - close_w - btn_margin * 2 - btn_w,
+            .y = overlay_rect.y + btn_margin,
+            .w = btn_w,
+            .h = btn_h,
+        };
+    }
+
+    fn agentDropdownRect(host: *const types.UiHost, overlay_rect: geom.Rect) geom.Rect {
+        const sb = sendButtonRect(host, overlay_rect);
+        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+        const dd_w = dpi.scale(agent_dropdown_width, host.ui_scale);
+        return geom.Rect{
+            .x = sb.x + sb.w - dd_w,
+            .y = sb.y + sb.h + dpi.scale(2, host.ui_scale),
+            .w = dd_w,
+            .h = item_h * @as(c_int, @intCast(dropdown_items.len)),
+        };
+    }
+
+    // --- Persistence ---
+
+    fn saveCommentsToFile(self: *DiffOverlayComponent) void {
+        const repo_root = self.last_repo_root orelse return;
+
+        const dir_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect" }) catch return;
+        defer self.allocator.free(dir_path);
+        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                log.warn("failed to create .architect dir: {}", .{err});
+                return;
+            },
+        };
+
+        const file_path = std.fs.path.join(self.allocator, &.{ dir_path, "diff_comments.json" }) catch return;
+        defer self.allocator.free(file_path);
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(self.allocator);
+        buf.appendSlice(self.allocator, "[\n") catch return;
+        var first = true;
+        for (self.comments.items) |comment| {
+            if (comment.sent) continue;
+            if (!first) buf.appendSlice(self.allocator, ",\n") catch return;
+            buf.appendSlice(self.allocator, "  {\"file\":\"") catch return;
+            self.appendJsonEscaped(&buf, comment.key.file_path);
+            buf.appendSlice(self.allocator, "\",\"line\":") catch return;
+            var num_buf: [20]u8 = undefined;
+            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{comment.key.line_number}) catch return;
+            buf.appendSlice(self.allocator, num_str) catch return;
+            buf.appendSlice(self.allocator, ",\"text\":\"") catch return;
+            self.appendJsonEscaped(&buf, comment.text);
+            buf.appendSlice(self.allocator, "\"}") catch return;
+            first = false;
+        }
+        buf.appendSlice(self.allocator, "\n]\n") catch return;
+
+        const file = std.fs.createFileAbsolute(file_path, .{ .truncate = true }) catch |err| {
+            log.warn("failed to create comments file: {}", .{err});
+            return;
+        };
+        defer file.close();
+        file.writeAll(buf.items) catch |err| {
+            log.warn("failed to write comments file: {}", .{err});
+        };
+    }
+
+    fn appendJsonEscaped(self: *DiffOverlayComponent, buf: *std.ArrayList(u8), text: []const u8) void {
+        for (text) |ch| {
+            switch (ch) {
+                '"' => buf.appendSlice(self.allocator, "\\\"") catch return,
+                '\\' => buf.appendSlice(self.allocator, "\\\\") catch return,
+                '\n' => buf.appendSlice(self.allocator, "\\n") catch return,
+                '\r' => buf.appendSlice(self.allocator, "\\r") catch return,
+                '\t' => buf.appendSlice(self.allocator, "\\t") catch return,
+                else => buf.append(self.allocator, ch) catch return,
+            }
+        }
+    }
+
+    fn loadCommentsFromFile(self: *DiffOverlayComponent) void {
+        const repo_root = self.last_repo_root orelse return;
+        const file_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect", "diff_comments.json" }) catch return;
+        defer self.allocator.free(file_path);
+
+        const file = std.fs.openFileAbsolute(file_path, .{}) catch return;
+        defer file.close();
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return;
+        defer self.allocator.free(content);
+
+        self.parseCommentsJson(content);
+    }
+
+    fn parseCommentsJson(self: *DiffOverlayComponent, content: []const u8) void {
+        var pos: usize = 0;
+        // Skip to '['
+        while (pos < content.len and content[pos] != '[') pos += 1;
+        if (pos >= content.len) return;
+        pos += 1;
+
+        while (pos < content.len) {
+            // Skip whitespace and commas
+            while (pos < content.len and (content[pos] == ' ' or content[pos] == '\n' or content[pos] == '\r' or content[pos] == '\t' or content[pos] == ',')) pos += 1;
+            if (pos >= content.len or content[pos] == ']') break;
+            if (content[pos] != '{') break;
+            pos += 1;
+
+            var file_str: ?[]const u8 = null;
+            var line_num: usize = 0;
+            var text_str: ?[]const u8 = null;
+
+            // Parse object fields
+            while (pos < content.len and content[pos] != '}') {
+                while (pos < content.len and content[pos] != '"' and content[pos] != '}') pos += 1;
+                if (pos >= content.len or content[pos] == '}') break;
+                pos += 1; // skip opening quote
+                const key_start = pos;
+                while (pos < content.len and content[pos] != '"') pos += 1;
+                const key = content[key_start..pos];
+                if (pos < content.len) pos += 1; // skip closing quote
+                // skip colon
+                while (pos < content.len and content[pos] != ':') pos += 1;
+                if (pos < content.len) pos += 1;
+                // skip whitespace
+                while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t')) pos += 1;
+
+                if (std.mem.eql(u8, key, "file") or std.mem.eql(u8, key, "text")) {
+                    if (pos < content.len and content[pos] == '"') {
+                        pos += 1;
+                        const val = self.parseJsonString(content, &pos) orelse continue;
+                        if (std.mem.eql(u8, key, "file")) {
+                            if (file_str) |old| self.allocator.free(old);
+                            file_str = val;
+                        } else {
+                            if (text_str) |old| self.allocator.free(old);
+                            text_str = val;
+                        }
+                    }
+                } else if (std.mem.eql(u8, key, "line")) {
+                    var n: usize = 0;
+                    while (pos < content.len and content[pos] >= '0' and content[pos] <= '9') {
+                        n = n * 10 + @as(usize, content[pos] - '0');
+                        pos += 1;
+                    }
+                    line_num = n;
+                }
+            }
+            if (pos < content.len and content[pos] == '}') pos += 1;
+
+            if (file_str) |fp| {
+                if (text_str) |txt| {
+                    self.comments.append(self.allocator, DiffComment{
+                        .key = .{ .file_path = fp, .line_number = line_num },
+                        .text = txt,
+                        .sent = false,
+                        .display_row_index = null,
+                    }) catch |err| {
+                        log.warn("failed to load comment: {}", .{err});
+                        self.allocator.free(fp);
+                        self.allocator.free(txt);
+                    };
+                    continue;
+                }
+            }
+            if (file_str) |fp| self.allocator.free(fp);
+            if (text_str) |txt| self.allocator.free(txt);
+        }
+    }
+
+    fn parseJsonString(self: *DiffOverlayComponent, content: []const u8, pos: *usize) ?[]const u8 {
+        var buf = std.ArrayList(u8){};
+        while (pos.* < content.len and content[pos.*] != '"') {
+            if (content[pos.*] == '\\' and pos.* + 1 < content.len) {
+                pos.* += 1;
+                switch (content[pos.*]) {
+                    'n' => buf.append(self.allocator, '\n') catch return null,
+                    'r' => buf.append(self.allocator, '\r') catch return null,
+                    't' => buf.append(self.allocator, '\t') catch return null,
+                    '"' => buf.append(self.allocator, '"') catch return null,
+                    '\\' => buf.append(self.allocator, '\\') catch return null,
+                    else => buf.append(self.allocator, content[pos.*]) catch return null,
+                }
+            } else {
+                buf.append(self.allocator, content[pos.*]) catch return null;
+            }
+            pos.* += 1;
+        }
+        if (pos.* < content.len) pos.* += 1; // skip closing quote
+        return buf.toOwnedSlice(self.allocator) catch |err| {
+            log.warn("failed to parse JSON string: {}", .{err});
+            return null;
+        };
+    }
+
+    // --- Comment rendering ---
+
+    fn renderSavedComment(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment) void {
+        const comment_h = dpi.scale(saved_comment_height, host.ui_scale);
+        const scaled_padding = dpi.scale(text_padding, host.ui_scale);
+        const accent_w = dpi.scale(4, host.ui_scale);
+        const alpha = self.render_alpha;
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+        // Background — more visible amber/orange tint
+        _ = c.SDL_SetRenderDrawColor(renderer, 180, 140, 40, @intFromFloat(50.0 * alpha));
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x + 1),
+            .y = @floatFromInt(y_pos),
+            .w = @floatFromInt(rect.w - 2),
+            .h = @floatFromInt(comment_h),
+        });
+
+        // Left accent bar — thick amber
+        _ = c.SDL_SetRenderDrawColor(renderer, 220, 170, 50, @intFromFloat(220.0 * alpha));
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x + 1),
+            .y = @floatFromInt(y_pos),
+            .w = @floatFromInt(accent_w),
+            .h = @floatFromInt(comment_h),
+        });
+
+        const font_cache = assets.font_cache orelse return;
+        const scaled_font_size = dpi.scale(font_size, host.ui_scale);
+        const fonts = font_cache.get(scaled_font_size) catch return;
+
+        // Render comment text in warm yellow/amber color
+        const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
+        const display_text = if (comment.text.len > 200) comment.text[0..200] else comment.text;
+        const tex = self.makeTextTexture(renderer, fonts.regular, display_text, comment_color) catch return;
+        defer c.SDL_DestroyTexture(tex.tex);
+        _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
+        const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
+        const text_y = y_pos + @divFloor(comment_h - tex.h, 2);
+        const max_w = rect.w - scaled_padding * 2 - accent_w - dpi.scale(8, host.ui_scale);
+        const render_w = @min(tex.w, max_w);
+        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(text_x),
+            .y = @floatFromInt(text_y),
+            .w = @floatFromInt(render_w),
+            .h = @floatFromInt(tex.h),
+        });
+    }
+
+    fn renderEditingComment(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int) void {
+        const ed = self.editing orelse return;
+        const total_h = dpi.scale(editing_comment_height, host.ui_scale);
+        const scaled_padding = dpi.scale(text_padding, host.ui_scale);
+        const input_h = dpi.scale(comment_input_height, host.ui_scale);
+        const btn_h = dpi.scale(comment_button_height, host.ui_scale);
+        const btn_w = dpi.scale(comment_button_width, host.ui_scale);
+        const alpha = self.render_alpha;
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+        // Background
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 44, 52, @intFromFloat(230.0 * alpha));
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x + 1),
+            .y = @floatFromInt(y_pos),
+            .w = @floatFromInt(rect.w - 2),
+            .h = @floatFromInt(total_h),
+        });
+
+        // Left accent bar
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, @intFromFloat(200.0 * alpha));
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x + 1),
+            .y = @floatFromInt(y_pos),
+            .w = @floatFromInt(dpi.scale(3, host.ui_scale)),
+            .h = @floatFromInt(total_h),
+        });
+
+        // Input area
+        const input_x = rect.x + scaled_padding + dpi.scale(6, host.ui_scale);
+        const input_y = y_pos + dpi.scale(4, host.ui_scale);
+        const input_w = rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale);
+
+        _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(input_x),
+            .y = @floatFromInt(input_y),
+            .w = @floatFromInt(input_w),
+            .h = @floatFromInt(input_h),
+        });
+
+        // Input border
+        const accent = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(100.0 * alpha));
+        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(input_x),
+            .y = @floatFromInt(input_y),
+            .w = @floatFromInt(input_w),
+            .h = @floatFromInt(input_h),
+        });
+
+        // Render input text
+        const font_cache = assets.font_cache orelse return;
+        const scaled_font_size = dpi.scale(font_size, host.ui_scale);
+        const fonts = font_cache.get(scaled_font_size) catch return;
+
+        if (ed.input_buf.items.len > 0) {
+            const display_text = if (ed.input_buf.items.len > 500) ed.input_buf.items[0..500] else ed.input_buf.items;
+            const tex = self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground) catch return;
+            defer c.SDL_DestroyTexture(tex.tex);
+            _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
+            const text_y = input_y + dpi.scale(4, host.ui_scale);
+            const max_text_w = input_w - dpi.scale(8, host.ui_scale);
+            const render_w = @min(tex.w, max_text_w);
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                .x = @floatFromInt(input_x + dpi.scale(4, host.ui_scale)),
+                .y = @floatFromInt(text_y),
+                .w = @floatFromInt(render_w),
+                .h = @floatFromInt(tex.h),
+            });
+        }
+
+        // Blinking cursor
+        const blink_ms = host.now_ms - ed.cursor_blink_start_ms;
+        const show_cursor = @mod(@divFloor(blink_ms, 500), 2) == 0;
+        if (show_cursor) {
+            var cursor_x = input_x + dpi.scale(4, host.ui_scale);
+            if (ed.input_buf.items.len > 0) {
+                const display_text = if (ed.input_buf.items.len > 500) ed.input_buf.items[0..500] else ed.input_buf.items;
+                if (self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground)) |tex| {
+                    cursor_x += tex.w;
+                    c.SDL_DestroyTexture(tex.tex);
+                } else |_| {}
+            }
+            const cursor_top = input_y + dpi.scale(4, host.ui_scale);
+            const cursor_h = scaled_font_size + dpi.scale(4, host.ui_scale);
+            const fg = host.theme.foreground;
+            _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(200.0 * alpha));
+            _ = c.SDL_RenderLine(
+                renderer,
+                @floatFromInt(cursor_x),
+                @floatFromInt(cursor_top),
+                @floatFromInt(cursor_x),
+                @floatFromInt(cursor_top + cursor_h),
+            );
+        }
+
+        // Submit button
+        const btn_y = y_pos + total_h - btn_h - dpi.scale(6, host.ui_scale);
+        const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, @intFromFloat(220.0 * alpha));
+        primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        const submit_tex = self.makeTextTexture(renderer, fonts.regular, "Submit", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
+        defer c.SDL_DestroyTexture(submit_tex.tex);
+        _ = c.SDL_SetTextureAlphaMod(submit_tex.tex, @intFromFloat(255.0 * alpha));
+        _ = c.SDL_RenderTexture(renderer, submit_tex.tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(submit_x + @divFloor(btn_w - submit_tex.w, 2)),
+            .y = @floatFromInt(btn_y + @divFloor(btn_h - submit_tex.h, 2)),
+            .w = @floatFromInt(submit_tex.w),
+            .h = @floatFromInt(submit_tex.h),
+        });
+
+        // Cancel button
+        const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
+        const fg = host.theme.foreground;
+        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(40.0 * alpha));
+        primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(80.0 * alpha));
+        primitives.drawRoundedBorder(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        const cancel_tex = self.makeTextTexture(renderer, fonts.regular, "Cancel", host.theme.foreground) catch return;
+        defer c.SDL_DestroyTexture(cancel_tex.tex);
+        _ = c.SDL_SetTextureAlphaMod(cancel_tex.tex, @intFromFloat(255.0 * alpha));
+        _ = c.SDL_RenderTexture(renderer, cancel_tex.tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(cancel_x + @divFloor(btn_w - cancel_tex.w, 2)),
+            .y = @floatFromInt(btn_y + @divFloor(btn_h - cancel_tex.h, 2)),
+            .w = @floatFromInt(cancel_tex.w),
+            .h = @floatFromInt(cancel_tex.h),
+        });
+    }
+
+    fn renderSendButton(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect) void {
+        if (!self.hasUnsentComments()) return;
+
+        const btn = sendButtonRect(host, overlay_rect);
+        const alpha = self.render_alpha;
+        const radius = dpi.scale(4, host.ui_scale);
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        const green_alpha: u8 = @intFromFloat(if (self.send_button_hovered) 255.0 * alpha else 200.0 * alpha);
+        _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, green_alpha);
+        primitives.fillRoundedRect(renderer, btn, radius);
+
+        const font_cache = assets.font_cache orelse return;
+        const scaled_font_size = dpi.scale(font_size, host.ui_scale);
+        const fonts = font_cache.get(scaled_font_size) catch return;
+        const tex = self.makeTextTexture(renderer, fonts.regular, "Send to agent", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
+        defer c.SDL_DestroyTexture(tex.tex);
+        _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
+        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(btn.x + @divFloor(btn.w - tex.w, 2)),
+            .y = @floatFromInt(btn.y + @divFloor(btn.h - tex.h, 2)),
+            .w = @floatFromInt(tex.w),
+            .h = @floatFromInt(tex.h),
+        });
+    }
+
+    fn renderAgentDropdown(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect) void {
+        if (!self.show_agent_dropdown) return;
+
+        const dd = agentDropdownRect(host, overlay_rect);
+        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+        const alpha = self.render_alpha;
+        const radius = dpi.scale(4, host.ui_scale);
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        const bg = host.theme.background;
+        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, @intFromFloat(250.0 * alpha));
+        primitives.fillRoundedRect(renderer, dd, radius);
+
+        const accent = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(150.0 * alpha));
+        primitives.drawRoundedBorder(renderer, dd, radius);
+
+        const font_cache = assets.font_cache orelse return;
+        const scaled_font_size = dpi.scale(font_size, host.ui_scale);
+        const fonts = font_cache.get(scaled_font_size) catch return;
+
+        for (dropdown_items, 0..) |name, i| {
+            const item_y = dd.y + @as(c_int, @intCast(i)) * item_h;
+
+            if (self.agent_dropdown_hovered) |h| {
+                if (h == i) {
+                    const sel = host.theme.selection;
+                    _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, @intFromFloat(60.0 * alpha));
+                    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                        .x = @floatFromInt(dd.x + 1),
+                        .y = @floatFromInt(item_y),
+                        .w = @floatFromInt(dd.w - 2),
+                        .h = @floatFromInt(item_h),
+                    });
+                }
+            }
+
+            const tex = self.makeTextTexture(renderer, fonts.regular, name, host.theme.foreground) catch |err| {
+                log.warn("failed to render dropdown text: {}", .{err});
+                continue;
+            };
+            defer c.SDL_DestroyTexture(tex.tex);
+            _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                .x = @floatFromInt(dd.x + dpi.scale(text_padding, host.ui_scale)),
+                .y = @floatFromInt(item_y + @divFloor(item_h - tex.h, 2)),
+                .w = @floatFromInt(tex.w),
+                .h = @floatFromInt(tex.h),
+            });
+        }
+    }
+
     fn destroy(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
         self.clearContent();
         self.display_rows.deinit(self.allocator);
+        if (self.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);
+        if (self.pointer_cursor) |cur| c.SDL_DestroyCursor(cur);
+        if (self.text_cursor) |cur| c.SDL_DestroyCursor(cur);
         self.allocator.destroy(self);
     }
 

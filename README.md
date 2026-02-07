@@ -33,6 +33,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches
 - **Recent folders** (⌘O) — quickly `cd` into recently visited directories with arrow key selection
+- **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments, then send them all to a running agent (or start one) with the "Send to agent" button
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)

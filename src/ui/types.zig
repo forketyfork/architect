@@ -10,6 +10,7 @@ pub const SessionUiInfo = struct {
     spawned: bool,
     cwd_path: ?[]const u8 = null,
     cwd_basename: ?[]const u8 = null,
+    session_status: app_state.SessionStatus = .idle,
 };
 
 pub const UiHost = struct {
@@ -54,6 +55,7 @@ pub const UiAction = union(enum) {
     DespawnSession: usize,
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
+    SendDiffComments: SendDiffCommentsAction,
 };
 
 pub const SwitchWorktreeAction = struct {
@@ -75,6 +77,12 @@ pub const RemoveWorktreeAction = struct {
 pub const ChangeDirAction = struct {
     session: usize,
     path: []const u8,
+};
+
+pub const SendDiffCommentsAction = struct {
+    session: usize,
+    comments_text: []const u8,
+    agent_command: ?[]const u8,
 };
 
 pub const UiAssets = struct {
