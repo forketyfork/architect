@@ -4,7 +4,7 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 
 ## Documentation
 
-- Architecture overview lives in `docs/architecture.md`. Read it to understand the app architecture.
+- Architecture overview lives in `docs/ARCHITECTURE.md`. Read it to understand the app architecture.
 - Configuration reference lives in `docs/configuration.md`. Consult it for config.toml and persistence.toml structure.
 
 ## Quick Workflow
@@ -121,7 +121,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 ## Documentation Hygiene (REQUIRED)
 - **ALWAYS** update documentation when making changes. This is not optional.
 - Update `README.md` for any user-facing changes: new features, configuration options, keyboard shortcuts, or behavior changes.
-- Update `docs/architecture.md` when adding new components, modules, or changing the system structure.
+- Update `docs/ARCHITECTURE.md` when adding new components, modules, or changing the system structure.
 - Update `docs/configuration.md` when adding, removing, or changing configuration options in `config.toml` or `persistence.toml`.
 - Keep this `CLAUDE.md` aligned when workflows or automation expectations change.
 - Documentation updates should be part of the same PR as the code changes.
