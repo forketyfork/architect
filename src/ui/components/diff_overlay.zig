@@ -1059,10 +1059,12 @@ pub const DiffOverlayComponent = struct {
                     }
                     if (key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER) {
                         if (has_shift) {
-                            self.editing.?.input_buf.append(self.allocator, '\n') catch |err| {
-                                log.warn("failed to append newline: {}", .{err});
-                            };
-                            self.editing.?.cursor_blink_start_ms = host.now_ms;
+                            if (self.editing) |*ed| {
+                                ed.input_buf.append(self.allocator, '\n') catch |err| {
+                                    log.warn("failed to append newline: {}", .{err});
+                                };
+                                ed.cursor_blink_start_ms = host.now_ms;
+                            }
                         } else {
                             self.submitComment(host.now_ms);
                         }

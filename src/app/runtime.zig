@@ -101,26 +101,20 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
 fn terminalHasAgentPrompt(session: *const SessionState) bool {
     const terminal = session.terminal orelse return false;
     const pages = terminal.screens.active.pages;
-    const rows = session.pty_size.ws_row;
     const cols = session.pty_size.ws_col;
-    var row: usize = rows;
-    while (row > 0) {
-        row -= 1;
-        var col: usize = 0;
-        while (col < cols) : (col += 1) {
-            const list_cell = pages.getCell(.{ .active = .{
-                .x = @intCast(col),
-                .y = @intCast(row),
-            } }) orelse continue;
-            const cp: u21 = if (list_cell.cell.content_tag == .codepoint)
-                list_cell.cell.content.codepoint
-            else
-                0;
-            if (cp == ' ' or cp == 0) continue;
-            // First non-whitespace codepoint on this row
-            if (cp == '>' or cp == 0x276F or cp == 0x203A) return true;
-            break; // non-matching, non-whitespace — try next row
-        }
+    const row = terminal.screens.active.cursor.y;
+    var col: usize = 0;
+    while (col < cols) : (col += 1) {
+        const list_cell = pages.getCell(.{ .active = .{
+            .x = @intCast(col),
+            .y = @intCast(row),
+        } }) orelse continue;
+        const cp: u21 = if (list_cell.cell.content_tag == .codepoint)
+            list_cell.cell.content.codepoint
+        else
+            0;
+        if (cp == ' ' or cp == 0) continue;
+        return cp == '>' or cp == 0x276F or cp == 0x203A;
     }
     return false;
 }
