@@ -86,6 +86,7 @@ Platform    Session    Rendering    UI Overlay
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
 - The only background thread is the notification socket listener (`session/notify.zig`); it communicates with the main thread via a thread-safe queue drained once per frame.
 - Shared Utilities (`geom`, `colors`, `config`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
+- **Exception:** `app/*` modules may import `c.zig` directly for SDL type definitions used in input handling. This is a pragmatic shortcut for FFI constants, not a general license to depend on the Platform layer.
 
 ## Rules for New Code
 
