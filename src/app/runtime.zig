@@ -98,25 +98,8 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     return null;
 }
 
-fn terminalHasAgentPrompt(session: *const SessionState) bool {
-    const terminal = session.terminal orelse return false;
-    const pages = terminal.screens.active.pages;
-    const cols = session.pty_size.ws_col;
-    const row = terminal.screens.active.cursor.y;
-    var col: usize = 0;
-    while (col < cols) : (col += 1) {
-        const list_cell = pages.getCell(.{ .active = .{
-            .x = @intCast(col),
-            .y = @intCast(row),
-        } }) orelse continue;
-        const cp: u21 = if (list_cell.cell.content_tag == .codepoint)
-            list_cell.cell.content.codepoint
-        else
-            0;
-        if (cp == ' ' or cp == 0) continue;
-        return cp == '>' or cp == 0x276F or cp == 0x203A;
-    }
-    return false;
+fn agentProcessStarted(session: *const SessionState) bool {
+    return session.hasForegroundProcess();
 }
 
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
@@ -1441,7 +1424,7 @@ pub fn run() !void {
 
         if (pending_comment_send) |pcs| {
             const prompt_ready = pcs.session < sessions.len and
-                terminalHasAgentPrompt(sessions[pcs.session]);
+                agentProcessStarted(sessions[pcs.session]);
             if (now >= pcs.send_after_ms or prompt_ready) {
                 if (pcs.session < sessions.len) {
                     sessions[pcs.session].sendInput(pcs.text) catch |err| {
