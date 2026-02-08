@@ -1011,7 +1011,7 @@ pub const DiffOverlayComponent = struct {
     fn handleEventFn(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (!self.visible or self.animation_state == .closing) {
+        if (!self.visible) {
             if (event.type == c.SDL_EVENT_KEY_DOWN) {
                 const key = event.key.key;
                 const mod = event.key.mod;
@@ -1026,6 +1026,15 @@ pub const DiffOverlayComponent = struct {
                 }
             }
             return false;
+        }
+
+        // During close animation, consume all input events to prevent
+        // key repeats (e.g. Escape) from leaking to the terminal.
+        if (self.animation_state == .closing) {
+            return switch (event.type) {
+                c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_INPUT, c.SDL_EVENT_TEXT_EDITING, c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL, c.SDL_EVENT_MOUSE_MOTION => true,
+                else => false,
+            };
         }
 
         switch (event.type) {
