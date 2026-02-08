@@ -3,10 +3,12 @@ const c = @import("../c.zig");
 const colors_mod = @import("../colors.zig");
 const session_state = @import("../session/state.zig");
 const ui_mod = @import("../ui/mod.zig");
+const view_state = @import("../ui/session_view_state.zig");
 
 const AnimationState = app_state.AnimationState;
 const Rect = app_state.Rect;
 const SessionState = session_state.SessionState;
+const SessionViewState = view_state.SessionViewState;
 
 pub fn applyMouseContext(ui: *ui_mod.UiRoot, host: *ui_mod.UiHost, event: *const c.SDL_Event) void {
     switch (event.type) {
@@ -60,6 +62,7 @@ pub fn makeUiHost(
     anim_state: *const AnimationState,
     sessions: []const *SessionState,
     buffer: []ui_mod.SessionUiInfo,
+    views: []const SessionViewState,
     focused_has_foreground_process: bool,
     theme: *const colors_mod.Theme,
 ) ui_mod.UiHost {
@@ -69,6 +72,7 @@ pub fn makeUiHost(
             .spawned = session.spawned,
             .cwd_path = session.cwd_path,
             .cwd_basename = session.cwd_basename,
+            .session_status = if (i < views.len) views[i].status else .idle,
         };
     }
 

@@ -48,25 +48,22 @@ pub const EscapeHoldComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, _: *types.UiActionQueue) bool {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (!input.canHandleEscapePress(host.view_mode)) return false;
-
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
-                if (event.key.key == c.SDLK_ESCAPE and !event.key.repeat) {
-                    self.gesture.start(host.now_ms, esc_hold_total_ms);
-                    self.first_frame.markTransition();
-                    return true;
+                if (event.key.key == c.SDLK_ESCAPE) {
+                    if (!input.canHandleEscapePress(host.view_mode)) return false;
+                    if (!event.key.repeat) {
+                        self.gesture.start(host.now_ms, esc_hold_total_ms);
+                        self.first_frame.markTransition();
+                    }
+                    return self.gesture.active;
                 }
             },
             c.SDL_EVENT_KEY_UP => {
-                if (event.key.key == c.SDLK_ESCAPE) {
-                    if (self.gesture.isComplete(host.now_ms) or self.gesture.consumed) {
-                        self.gesture.stop();
-                        return true;
-                    }
-                    // quick tap: let main handle ESC to terminal
+                if (event.key.key == c.SDLK_ESCAPE and self.gesture.active) {
+                    const was_consumed = self.gesture.consumed;
                     self.gesture.stop();
-                    return false;
+                    return was_consumed;
                 }
             },
             else => {},
@@ -86,11 +83,7 @@ pub const EscapeHoldComponent = struct {
         }
 
         if (self.gesture.consumed) {
-            const elapsed_since_complete = host.now_ms - (self.gesture.start_ms + esc_hold_total_ms);
-            const flash_duration_ms: i64 = 200;
-            if (elapsed_since_complete >= flash_duration_ms) {
-                self.gesture.stop();
-            }
+            self.first_frame.markTransition();
         }
     }
 

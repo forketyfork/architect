@@ -98,6 +98,10 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     return null;
 }
 
+fn agentProcessStarted(session: *const SessionState) bool {
+    return session.hasForegroundProcess();
+}
+
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
     return switch (mode) {
         .Grid, .Expanding, .Collapsing, .GridResizing => blk: {
@@ -579,6 +583,13 @@ pub fn run() !void {
     var relaunch_trace_frames: u8 = 0;
     var window_close_suppress_countdown: u8 = 0;
 
+    const PendingCommentSend = struct {
+        session: usize,
+        text: []const u8,
+        send_after_ms: i64,
+    };
+    var pending_comment_send: ?PendingCommentSend = null;
+
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
@@ -689,6 +700,7 @@ pub fn run() !void {
                 &anim_state,
                 sessions,
                 session_ui_info,
+                session_interaction_component.viewSlice(),
                 focused_has_foreground_process,
                 &theme,
             );
@@ -1410,6 +1422,20 @@ pub fn run() !void {
             std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ note.session, session_idx, @tagName(note.state) });
         }
 
+        if (pending_comment_send) |pcs| {
+            const prompt_ready = pcs.session < sessions.len and
+                agentProcessStarted(sessions[pcs.session]);
+            if (now >= pcs.send_after_ms or prompt_ready) {
+                if (pcs.session < sessions.len) {
+                    sessions[pcs.session].sendInput(pcs.text) catch |err| {
+                        log.warn("failed to send pending diff comments: {}", .{err});
+                    };
+                }
+                allocator.free(pcs.text);
+                pending_comment_send = null;
+            }
+        }
+
         var focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
         const ui_update_host = ui_host.makeUiHost(
             now,
@@ -1425,6 +1451,7 @@ pub fn run() !void {
             &anim_state,
             sessions,
             session_ui_info,
+            session_interaction_component.viewSlice(),
             focused_has_foreground_process,
             &theme,
         );
@@ -1832,6 +1859,34 @@ pub fn run() !void {
                     .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now),
                 }
             },
+            .SendDiffComments => |dc_action| {
+                if (dc_action.session >= sessions.len) {
+                    allocator.free(dc_action.comments_text);
+                    if (dc_action.agent_command) |cmd| allocator.free(cmd);
+                    continue;
+                }
+                var dc_session = sessions[dc_action.session];
+                if (dc_action.agent_command) |cmd| {
+                    dc_session.sendInput(cmd) catch |err| {
+                        log.warn("failed to send agent command: {}", .{err});
+                        allocator.free(dc_action.comments_text);
+                        allocator.free(cmd);
+                        continue;
+                    };
+                    allocator.free(cmd);
+                    if (pending_comment_send) |prev| allocator.free(prev.text);
+                    pending_comment_send = .{
+                        .session = dc_action.session,
+                        .text = dc_action.comments_text,
+                        .send_after_ms = now + 2000,
+                    };
+                } else {
+                    dc_session.sendInput(dc_action.comments_text) catch |err| {
+                        log.warn("failed to send diff comments: {}", .{err});
+                    };
+                    allocator.free(dc_action.comments_text);
+                }
+            },
         };
 
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
@@ -1896,6 +1951,7 @@ pub fn run() !void {
             &anim_state,
             sessions,
             session_ui_info,
+            session_interaction_component.viewSlice(),
             focused_has_foreground_process,
             &theme,
         );
