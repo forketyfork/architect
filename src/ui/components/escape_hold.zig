@@ -48,11 +48,10 @@ pub const EscapeHoldComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, _: *types.UiActionQueue) bool {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (!input.canHandleEscapePress(host.view_mode)) return false;
-
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 if (event.key.key == c.SDLK_ESCAPE) {
+                    if (!input.canHandleEscapePress(host.view_mode)) return false;
                     if (!event.key.repeat) {
                         self.gesture.start(host.now_ms, esc_hold_total_ms);
                         self.first_frame.markTransition();
@@ -61,7 +60,7 @@ pub const EscapeHoldComponent = struct {
                 }
             },
             c.SDL_EVENT_KEY_UP => {
-                if (event.key.key == c.SDLK_ESCAPE) {
+                if (event.key.key == c.SDLK_ESCAPE and self.gesture.active) {
                     const was_consumed = self.gesture.consumed;
                     self.gesture.stop();
                     return was_consumed;
