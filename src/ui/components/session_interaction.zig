@@ -19,6 +19,7 @@ const SessionViewState = view_state.SessionViewState;
 
 const scroll_lines_per_tick: isize = 1;
 const max_scroll_velocity: f32 = 30.0;
+const wave_total_ms: i64 = 600;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -121,6 +122,9 @@ pub const SessionInteractionComponent = struct {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
         const view = &self.views[idx];
         if (view.attention == attention) return;
+        if (attention) {
+            view.wave_start_time = std.time.milliTimestamp();
+        }
         view.attention = attention;
         self.sessions[idx].markDirty();
     }
@@ -360,13 +364,23 @@ pub const SessionInteractionComponent = struct {
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
             updateScrollInertia(session, &self.views[idx], delta_time_s);
+            const view = &self.views[idx];
+            if (view.wave_start_time > 0) {
+                const wave_elapsed = host.now_ms - view.wave_start_time;
+                if (wave_elapsed < wave_total_ms) {
+                    session.markDirty();
+                } else {
+                    view.wave_start_time = 0;
+                }
+            }
         }
     }
 
-    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
+            if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
         }
         return false;
     }
