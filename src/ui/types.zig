@@ -56,6 +56,7 @@ pub const UiAction = union(enum) {
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     SendDiffComments: SendDiffCommentsAction,
+    OpenStory: OpenStoryAction,
 };
 
 pub const SwitchWorktreeAction = struct {
@@ -85,6 +86,11 @@ pub const SendDiffCommentsAction = struct {
     comments_text: []const u8,
     /// Heap-allocated; ownership transfers to runtime, which frees after send.
     agent_command: ?[]const u8,
+};
+
+pub const OpenStoryAction = struct {
+    /// Heap-allocated path; ownership transfers to runtime, which frees after use.
+    path: []const u8,
 };
 
 pub const UiAssets = struct {

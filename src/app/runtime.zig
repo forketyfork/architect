@@ -645,6 +645,8 @@ pub fn run() !void {
     try ui.register(metrics_overlay_component.asComponent());
     const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
     try ui.register(diff_overlay_component.asComponent());
+    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
+    try ui.register(story_overlay_component.asComponent());
 
     // Main loop: handle SDL input, feed PTY output into terminals, apply async
     // notifications, drive animations, and render at ~60 FPS.
@@ -1411,15 +1413,25 @@ pub fn run() !void {
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
-            const session_idx = findSessionIndexById(sessions, note.session) orelse continue;
-            session_interaction_component.setStatus(session_idx, note.state);
-            const wants_attention = switch (note.state) {
-                .awaiting_approval, .done => true,
-                else => false,
-            };
-            const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
-            session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention);
-            std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ note.session, session_idx, @tagName(note.state) });
+            switch (note) {
+                .status => |s| {
+                    const session_idx = findSessionIndexById(sessions, s.session) orelse continue;
+                    session_interaction_component.setStatus(session_idx, s.state);
+                    const wants_attention = switch (s.state) {
+                        .awaiting_approval, .done => true,
+                        else => false,
+                    };
+                    const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
+                    session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention);
+                    std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ s.session, session_idx, @tagName(s.state) });
+                },
+                .story => |s| {
+                    if (!story_overlay_component.show(s.path, now)) {
+                        ui.showToast("Failed to open story file", now);
+                    }
+                    allocator.free(s.path);
+                },
+            }
         }
 
         if (pending_comment_send) |pcs| {
@@ -1886,6 +1898,12 @@ pub fn run() !void {
                     };
                     allocator.free(dc_action.comments_text);
                 }
+            },
+            .OpenStory => |story_action| {
+                if (!story_overlay_component.show(story_action.path, now)) {
+                    ui.showToast("Failed to open story file", now);
+                }
+                allocator.free(story_action.path);
             },
         };
 

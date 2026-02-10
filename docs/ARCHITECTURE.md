@@ -236,14 +236,16 @@ External tool (Claude Code, Codex, Gemini)
     v
 session/notify.zig (background thread)
     | parse {"session": N, "state": "awaiting_approval"}
+    | or    {"session": N, "type": "story", "path": "/abs/path"}
     v
 NotificationQueue (thread-safe)
     | main loop drains each frame
     v
-SessionStatus updated (idle -> awaiting_approval)
+Status notifications -> SessionStatus updated (idle -> awaiting_approval)
+Story notifications  -> StoryOverlay opens with file content
     |
     v
-Renderer draws attention border (pulsing yellow / solid green)
+Renderer draws attention border / story overlay
 ```
 
 ### Entry Points
@@ -286,7 +288,7 @@ Renderer draws attention border (pulsing yellow / solid green)
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
 | `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher | `SessionState`, `init()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
-| `session/notify.zig` | Background notification socket thread and queue | `NotificationQueue`, `startThread()`, `push()`, `drain()` | std (socket, thread) |
+| `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
@@ -296,7 +298,7 @@ Renderer draws attention border (pulsing yellow / solid green)
 | `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
 | `ui/session_view_state.zig` | Per-session UI interaction state (selection, scroll, hover, agent status) | `SessionViewState` (selection, scroll offset, hover, status) | `app/app_state` (for `SessionStatus` enum) |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
-| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), session interaction, toast, quit confirm, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), story viewer (PR story file visualization), session interaction, toast, quit confirm, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
 | Shared Utilities (`geom`, `colors`, `config`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, TOML config loading/persistence, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `Metrics`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
 ## Key Architectural Decisions
