@@ -19,7 +19,9 @@ const SessionViewState = view_state.SessionViewState;
 
 const scroll_lines_per_tick: isize = 1;
 const max_scroll_velocity: f32 = 30.0;
-const wave_total_ms: i64 = 600;
+pub const wave_total_ms: i64 = 600;
+pub const wave_row_anim_ms: i64 = 200;
+pub const wave_amplitude: f32 = 0.25;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -118,12 +120,12 @@ pub const SessionInteractionComponent = struct {
         self.sessions[idx].markDirty();
     }
 
-    pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool) void {
+    pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool, now_ms: i64) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
         const view = &self.views[idx];
         if (view.attention == attention) return;
         if (attention) {
-            view.wave_start_time = std.time.milliTimestamp();
+            view.wave_start_time = now_ms;
         }
         view.attention = attention;
         self.sessions[idx].markDirty();
@@ -371,6 +373,7 @@ pub const SessionInteractionComponent = struct {
                     session.markDirty();
                 } else {
                     view.wave_start_time = 0;
+                    session.markDirty();
                 }
             }
         }

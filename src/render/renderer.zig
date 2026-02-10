@@ -12,6 +12,7 @@ const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
+const session_interaction = @import("../ui/components/session_interaction.zig");
 
 const log = std.log.scoped(.render);
 
@@ -361,10 +362,15 @@ fn renderSessionContent(
         @as(f32, @floatFromInt(current_time_ms - view.wave_start_time))
     else
         0;
-    const wave_total: f32 = 600.0;
-    const wave_row_anim: f32 = 200.0;
+    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const wave_row_anim: f32 = @floatFromInt(session_interaction.wave_row_anim_ms);
     const wave_stagger: f32 = wave_total - wave_row_anim;
-    const wave_amplitude: f32 = 0.25;
+    const wave_amplitude: f32 = session_interaction.wave_amplitude;
+
+    const visible_rows_inv: f32 = if (visible_rows > 1)
+        1.0 / @as(f32, @floatFromInt(visible_rows - 1))
+    else
+        0.0;
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
@@ -375,10 +381,7 @@ fn renderSessionContent(
         var wave_y_adj: c_int = 0;
 
         if (wave_active and wave_elapsed_ms < wave_total) {
-            const row_frac: f32 = if (visible_rows > 1)
-                @as(f32, @floatFromInt(visible_rows - 1 - row)) / @as(f32, @floatFromInt(visible_rows - 1))
-            else
-                0.0;
+            const row_frac: f32 = @as(f32, @floatFromInt(visible_rows - 1 - row)) * visible_rows_inv;
             const row_delay: f32 = row_frac * wave_stagger;
             const row_t: f32 = wave_elapsed_ms - row_delay;
 
