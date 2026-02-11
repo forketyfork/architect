@@ -19,9 +19,10 @@ const SessionViewState = view_state.SessionViewState;
 
 const scroll_lines_per_tick: isize = 1;
 const max_scroll_velocity: f32 = 30.0;
-pub const wave_total_ms: i64 = 600;
-pub const wave_row_anim_ms: i64 = 200;
-pub const wave_amplitude: f32 = 0.25;
+pub const wave_total_ms: i64 = 400;
+pub const wave_row_anim_ms: i64 = 150;
+pub const wave_amplitude: f32 = 0.08;
+pub const wave_strip_height: i64 = 8;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -123,12 +124,15 @@ pub const SessionInteractionComponent = struct {
     pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool, now_ms: i64) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
         const view = &self.views[idx];
-        if (view.attention == attention) return;
         if (attention) {
             view.wave_start_time = now_ms;
+            view.attention = true;
+            self.sessions[idx].markDirty();
+        } else {
+            if (!view.attention) return;
+            view.attention = false;
+            self.sessions[idx].markDirty();
         }
-        view.attention = attention;
-        self.sessions[idx].markDirty();
     }
 
     pub fn resetScrollIfNeeded(self: *SessionInteractionComponent, idx: usize) void {
@@ -369,9 +373,7 @@ pub const SessionInteractionComponent = struct {
             const view = &self.views[idx];
             if (view.wave_start_time > 0) {
                 const wave_elapsed = host.now_ms - view.wave_start_time;
-                if (wave_elapsed < wave_total_ms) {
-                    session.markDirty();
-                } else {
+                if (wave_elapsed >= wave_total_ms) {
                     view.wave_start_time = 0;
                     session.markDirty();
                 }

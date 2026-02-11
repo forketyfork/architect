@@ -302,7 +302,7 @@ fn renderSessionContent(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
-    current_time_ms: i64,
+    _: i64,
     theme: *const colors.Theme,
 ) RenderError!void {
     if (!session.spawned) return;
@@ -356,49 +356,10 @@ fn renderSessionContent(
     const default_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
     const active_selection = screen.selection;
 
-    // Wave animation state: bottom-to-top row scale pulse
-    const wave_active = view.wave_start_time > 0 and current_time_ms > view.wave_start_time;
-    const wave_elapsed_ms: f32 = if (wave_active)
-        @as(f32, @floatFromInt(current_time_ms - view.wave_start_time))
-    else
-        0;
-    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
-    const wave_row_anim: f32 = @floatFromInt(session_interaction.wave_row_anim_ms);
-    const wave_stagger: f32 = wave_total - wave_row_anim;
-    const wave_amplitude: f32 = session_interaction.wave_amplitude;
-
-    const visible_rows_inv: f32 = if (visible_rows > 1)
-        1.0 / @as(f32, @floatFromInt(visible_rows - 1))
-    else
-        0.0;
-
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
-        // Per-row wave effect: compute effective cell dimensions
-        var eff_cw = cell_width_actual;
-        var eff_ch = cell_height_actual;
-        var wave_x_adj: c_int = 0;
-        var wave_y_adj: c_int = 0;
-
-        if (wave_active and wave_elapsed_ms < wave_total) {
-            const row_frac: f32 = @as(f32, @floatFromInt(visible_rows - 1 - row)) * visible_rows_inv;
-            const row_delay: f32 = row_frac * wave_stagger;
-            const row_t: f32 = wave_elapsed_ms - row_delay;
-
-            if (row_t > 0 and row_t < wave_row_anim) {
-                const t: f32 = row_t / wave_row_anim;
-                const pulse: f32 = @sin(t * std.math.pi);
-                const row_scale: f32 = 1.0 + wave_amplitude * pulse;
-
-                eff_cw = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(cell_width_actual)) * row_scale)));
-                eff_ch = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(cell_height_actual)) * row_scale)));
-
-                const row_width = @as(c_int, @intCast(visible_cols)) * eff_cw;
-                const normal_width = @as(c_int, @intCast(visible_cols)) * cell_width_actual;
-                wave_x_adj = @divFloor(normal_width - row_width, 2);
-                wave_y_adj = -@divFloor(eff_ch - cell_height_actual, 2);
-            }
-        }
+        const eff_cw = cell_width_actual;
+        const eff_ch = cell_height_actual;
 
         // Buffer for a single shaped render run.
         // 512 codepoints comfortably exceeds typical terminal line widths,
@@ -426,8 +387,8 @@ fn renderSessionContent(
                 else => 1,
             };
 
-            const x: c_int = origin_x + wave_x_adj + @as(c_int, @intCast(col)) * eff_cw;
-            const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual + wave_y_adj;
+            const x: c_int = origin_x + @as(c_int, @intCast(col)) * eff_cw;
+            const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
 
             if (x + eff_cw <= rect.x or x >= rect.x + rect.w) continue;
             if (y + eff_ch <= rect.y or y >= rect.y + rect.h) continue;
@@ -600,7 +561,7 @@ fn renderSessionContent(
             }
         }
 
-        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual + wave_y_adj, run_cells, eff_cw, eff_ch, run_fg, run_variant);
+        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, eff_cw, eff_ch, run_fg, run_variant);
     }
 
     if (session.dead) {
@@ -770,6 +731,11 @@ fn renderGridSessionCached(
     }
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
 
+    const wave_active = view.wave_start_time > 0 and current_time_ms >= view.wave_start_time;
+    const wave_elapsed_ms: f32 = if (wave_active) @as(f32, @floatFromInt(current_time_ms - view.wave_start_time)) else 0;
+    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const is_waving = wave_active and wave_elapsed_ms < wave_total;
+
     if (can_cache) {
         if (cache_entry.texture) |tex| {
             if (cache_entry.cache_epoch != session.render_epoch) {
@@ -780,19 +746,26 @@ fn renderGridSessionCached(
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
+                if (is_waving and render_overlays) {
+                    renderSessionOverlays(renderer, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme);
+                }
                 cache_entry.cache_epoch = session.render_epoch;
                 _ = c.SDL_SetRenderTarget(renderer, null);
             }
 
-            const dest_rect = c.SDL_FRect{
-                .x = @floatFromInt(rect.x),
-                .y = @floatFromInt(rect.y),
-                .w = @floatFromInt(rect.w),
-                .h = @floatFromInt(rect.h),
-            };
-            _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            if (render_overlays) {
-                renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+            if (is_waving) {
+                renderWaveStrips(renderer, tex, rect, wave_elapsed_ms);
+            } else {
+                const dest_rect = c.SDL_FRect{
+                    .x = @floatFromInt(rect.x),
+                    .y = @floatFromInt(rect.y),
+                    .w = @floatFromInt(rect.w),
+                    .h = @floatFromInt(rect.h),
+                };
+                _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+                if (render_overlays) {
+                    renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+                }
             }
             cache_entry.presented_epoch = session.render_epoch;
             return;
@@ -806,6 +779,68 @@ fn renderGridSessionCached(
 
     try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
     cache_entry.presented_epoch = session.render_epoch;
+}
+
+/// Render the cached tile texture in horizontal strips with per-strip wave scaling.
+/// The wave sweeps from bottom to top: bottom strips animate first, top strips last.
+/// Only the width of each strip is scaled (centered horizontally), preserving vertical layout.
+fn renderWaveStrips(
+    renderer: *c.SDL_Renderer,
+    tex: *c.SDL_Texture,
+    rect: Rect,
+    wave_elapsed_ms: f32,
+) void {
+    const total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const row_anim: f32 = @floatFromInt(session_interaction.wave_row_anim_ms);
+    const amplitude: f32 = session_interaction.wave_amplitude;
+    const strip_h: c_int = @intCast(session_interaction.wave_strip_height);
+    const tile_h = rect.h;
+    const tile_w = rect.w;
+    if (tile_h <= 0 or tile_w <= 0) return;
+
+    const num_strips: c_int = @divTrunc(tile_h + strip_h - 1, strip_h);
+    const stagger: f32 = total - row_anim;
+    const num_strips_f: f32 = @floatFromInt(@max(1, num_strips - 1));
+    const tile_w_f: f32 = @floatFromInt(tile_w);
+
+    var i: c_int = 0;
+    while (i < num_strips) : (i += 1) {
+        const src_y = i * strip_h;
+        const src_h = @min(strip_h, tile_h - src_y);
+        if (src_h <= 0) break;
+
+        // Bottom strips (high i) animate first → strip_frac=0 for bottom, 1 for top
+        const strip_frac: f32 = @as(f32, @floatFromInt(num_strips - 1 - i)) / num_strips_f;
+        const delay: f32 = strip_frac * stagger;
+        const strip_t: f32 = wave_elapsed_ms - delay;
+
+        // Envelope: taper amplitude to zero at top and bottom edges so corners stay fixed
+        const pos_frac: f32 = @as(f32, @floatFromInt(i)) / num_strips_f;
+        const envelope: f32 = @sin(pos_frac * std.math.pi);
+
+        var scale: f32 = 1.0;
+        if (strip_t > 0 and strip_t < row_anim) {
+            const t: f32 = strip_t / row_anim;
+            scale = 1.0 + amplitude * envelope * @sin(t * std.math.pi);
+        }
+
+        const scaled_w: f32 = tile_w_f * scale;
+        const x_offset: f32 = (tile_w_f - scaled_w) * 0.5;
+
+        const src_rect = c.SDL_FRect{
+            .x = 0,
+            .y = @floatFromInt(src_y),
+            .w = @floatFromInt(tile_w),
+            .h = @floatFromInt(src_h),
+        };
+        const dst_rect = c.SDL_FRect{
+            .x = @as(f32, @floatFromInt(rect.x)) + x_offset,
+            .y = @floatFromInt(rect.y + src_y),
+            .w = scaled_w,
+            .h = @floatFromInt(src_h),
+        };
+        _ = c.SDL_RenderTexture(renderer, tex, &src_rect, &dst_rect);
+    }
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {
