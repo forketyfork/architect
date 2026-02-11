@@ -99,7 +99,10 @@ pub fn startNotifyThread(
                     const path_val = obj.get("path") orelse return null;
                     if (path_val != .string) return null;
                     // Allocate path with persistent allocator so it survives arena cleanup
-                    const path_dupe = persistent_alloc.dupe(u8, path_val.string) catch return null;
+                    const path_dupe = persistent_alloc.dupe(u8, path_val.string) catch |err| {
+                        log.err("failed to duplicate story path for session {d}: {}", .{ session_idx, err });
+                        return null;
+                    };
                     return Notification{ .story = .{
                         .session = session_idx,
                         .path = path_dupe,

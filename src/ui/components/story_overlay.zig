@@ -279,7 +279,7 @@ pub const StoryOverlayComponent = struct {
 
     fn addProseRows(self: *StoryOverlayComponent, text: []const u8) void {
         var line_start: usize = 0;
-        while (line_start <= text.len) {
+        while (line_start < text.len) {
             const line_end = std.mem.indexOfScalarPos(u8, text, line_start, '\n') orelse text.len;
             const line = std.mem.trimRight(u8, text[line_start..line_end], " \t\r");
 
@@ -347,7 +347,7 @@ pub const StoryOverlayComponent = struct {
             self.display_rows.append(self.allocator, .{
                 .kind = .prose_line,
                 .text = text[pos..end],
-                .bold = if (pos == 0) bold else false,
+                .bold = bold,
             }) catch |err| {
                 log.warn("failed to append wrapped prose row: {}", .{err});
                 return;
@@ -1122,7 +1122,7 @@ pub const StoryOverlayComponent = struct {
                 try self.appendSegmentTexture(&segments, renderer, mono_font, marker_str, marker_color, .marker, scaled_padding + scaled_code_indent);
 
                 // Line text (skip the first character which is the +/-/ marker)
-                const text_slice = if (d_row.text.len > 0) d_row.text else "";
+                const text_slice = if (d_row.text.len > 1) d_row.text[1..] else "";
                 if (text_slice.len > 0) {
                     var buf: [max_display_buffer]u8 = undefined;
                     const text = sanitizeText(text_slice, &buf);
