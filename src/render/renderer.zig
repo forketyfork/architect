@@ -12,6 +12,7 @@ const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
+const session_interaction = @import("../ui/components/session_interaction.zig");
 
 const log = std.log.scoped(.render);
 
@@ -286,7 +287,7 @@ fn renderSession(
     is_grid_view: bool,
     theme: *const colors.Theme,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, theme);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
     renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -301,6 +302,7 @@ fn renderSessionContent(
     font: *font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    _: i64,
     theme: *const colors.Theme,
 ) RenderError!void {
     if (!session.spawned) return;
@@ -356,6 +358,9 @@ fn renderSessionContent(
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
+        const eff_cw = cell_width_actual;
+        const eff_ch = cell_height_actual;
+
         // Buffer for a single shaped render run.
         // 512 codepoints comfortably exceeds typical terminal line widths,
         // avoids excessive splitting in normal use, and bounds per-run work.
@@ -382,11 +387,11 @@ fn renderSessionContent(
                 else => 1,
             };
 
-            const x: c_int = origin_x + @as(c_int, @intCast(col)) * cell_width_actual;
+            const x: c_int = origin_x + @as(c_int, @intCast(col)) * eff_cw;
             const y: c_int = origin_y + @as(c_int, @intCast(row)) * cell_height_actual;
 
-            if (x + cell_width_actual <= rect.x or x >= rect.x + rect.w) continue;
-            if (y + cell_height_actual <= rect.y or y >= rect.y + rect.h) continue;
+            if (x + eff_cw <= rect.x or x >= rect.x + rect.w) continue;
+            if (y + eff_ch <= rect.y or y >= rect.y + rect.h) continue;
 
             const on_cursor = should_render_cursor and cursor_col == col and cursor_row == row;
 
@@ -418,8 +423,8 @@ fn renderSessionContent(
                 const cell_rect = c.SDL_FRect{
                     .x = @floatFromInt(x),
                     .y = @floatFromInt(y),
-                    .w = @floatFromInt(cell_width_actual),
-                    .h = @floatFromInt(cell_height_actual),
+                    .w = @floatFromInt(eff_cw),
+                    .h = @floatFromInt(eff_ch),
                 };
                 _ = c.SDL_RenderFillRect(renderer, &cell_rect);
             }
@@ -436,8 +441,8 @@ fn renderSessionContent(
                         const sel_rect = c.SDL_FRect{
                             .x = @floatFromInt(x),
                             .y = @floatFromInt(y),
-                            .w = @floatFromInt(cell_width_actual * glyph_width_cells),
-                            .h = @floatFromInt(cell_height_actual),
+                            .w = @floatFromInt(eff_cw * glyph_width_cells),
+                            .h = @floatFromInt(eff_ch),
                         };
                         _ = c.SDL_RenderFillRect(renderer, &sel_rect);
                     }
@@ -454,18 +459,18 @@ fn renderSessionContent(
                         const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
                         if (link_sel.contains(screen, link_pin)) {
                             _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
-                            const underline_y: f32 = @floatFromInt(y + cell_height_actual - 1);
+                            const underline_y: f32 = @floatFromInt(y + eff_ch - 1);
                             const x_start: f32 = @floatFromInt(x);
-                            const x_end: f32 = @floatFromInt(x + cell_width_actual * glyph_width_cells - 1);
+                            const x_end: f32 = @floatFromInt(x + eff_cw * glyph_width_cells - 1);
                             _ = c.SDL_RenderLine(renderer, x_start, underline_y, x_end, underline_y);
                         }
                     }
                 }
             }
 
-            const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, cell_width_actual, cell_height_actual, fg_color);
+            const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, eff_cw, eff_ch, fg_color);
             if (is_box_drawing) {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
@@ -475,13 +480,13 @@ fn renderSessionContent(
             const is_fill_glyph = cp != 0 and cp != ' ' and !style.flags.invisible and isFullCellGlyph(cp);
 
             if (is_fill_glyph) {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
 
-                const draw_width = cell_width_actual * glyph_width_cells;
-                try font.renderGlyphFill(cp, x, y, draw_width, cell_height_actual, fg_color, variant);
+                const draw_width = eff_cw * glyph_width_cells;
+                try font.renderGlyphFill(cp, x, y, draw_width, eff_ch, fg_color, variant);
                 continue;
             }
 
@@ -522,11 +527,11 @@ fn renderSessionContent(
                     run_width_cells,
                     glyph_width_cells,
                     run_cells,
-                    cell_width_actual,
+                    eff_cw,
                     run_variant,
                     variant,
                 )) {
-                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
+                    try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
                     run_x = x;
                     run_fg = fg_color;
                     run_fallback = fallback_choice;
@@ -537,8 +542,8 @@ fn renderSessionContent(
                 }
 
                 if (cluster_len > run_buf.len) {
-                    const draw_width = cell_width_actual * glyph_width_cells;
-                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, cell_height_actual, fg_color, variant);
+                    const draw_width = eff_cw * glyph_width_cells;
+                    try font.renderCluster(cluster_buf[0..cluster_len], x, y, draw_width, eff_ch, fg_color, variant);
                     run_len = 0;
                     run_cells = 0;
                     run_width_cells = 0;
@@ -549,14 +554,14 @@ fn renderSessionContent(
                 run_len += cluster_len;
                 run_cells += glyph_width_cells;
             } else {
-                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
+                try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
                 run_len = 0;
                 run_cells = 0;
                 run_width_cells = 0;
             }
         }
 
-        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, cell_width_actual, cell_height_actual, run_fg, run_variant);
+        try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, eff_cw, eff_ch, run_fg, run_variant);
     }
 
     if (session.dead) {
@@ -726,6 +731,11 @@ fn renderGridSessionCached(
     }
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
 
+    const wave_active = view.wave_start_time > 0 and current_time_ms >= view.wave_start_time;
+    const wave_elapsed_ms: f32 = if (wave_active) @as(f32, @floatFromInt(current_time_ms - view.wave_start_time)) else 0;
+    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const is_waving = wave_active and wave_elapsed_ms < wave_total;
+
     if (can_cache) {
         if (cache_entry.texture) |tex| {
             if (cache_entry.cache_epoch != session.render_epoch) {
@@ -735,20 +745,27 @@ fn renderGridSessionCached(
                 _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-                try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, theme);
+                try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
+                if (is_waving and render_overlays) {
+                    renderSessionOverlays(renderer, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme);
+                }
                 cache_entry.cache_epoch = session.render_epoch;
                 _ = c.SDL_SetRenderTarget(renderer, null);
             }
 
-            const dest_rect = c.SDL_FRect{
-                .x = @floatFromInt(rect.x),
-                .y = @floatFromInt(rect.y),
-                .w = @floatFromInt(rect.w),
-                .h = @floatFromInt(rect.h),
-            };
-            _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-            if (render_overlays) {
-                renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+            if (is_waving) {
+                renderWaveStrips(renderer, tex, rect, wave_elapsed_ms);
+            } else {
+                const dest_rect = c.SDL_FRect{
+                    .x = @floatFromInt(rect.x),
+                    .y = @floatFromInt(rect.y),
+                    .w = @floatFromInt(rect.w),
+                    .h = @floatFromInt(rect.h),
+                };
+                _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+                if (render_overlays) {
+                    renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+                }
             }
             cache_entry.presented_epoch = session.render_epoch;
             return;
@@ -760,8 +777,70 @@ fn renderGridSessionCached(
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, theme);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
     cache_entry.presented_epoch = session.render_epoch;
+}
+
+/// Render the cached tile texture in horizontal strips with per-strip wave scaling.
+/// The wave sweeps from bottom to top: bottom strips animate first, top strips last.
+/// Only the width of each strip is scaled (centered horizontally), preserving vertical layout.
+fn renderWaveStrips(
+    renderer: *c.SDL_Renderer,
+    tex: *c.SDL_Texture,
+    rect: Rect,
+    wave_elapsed_ms: f32,
+) void {
+    const total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const row_anim: f32 = @floatFromInt(session_interaction.wave_row_anim_ms);
+    const amplitude: f32 = session_interaction.wave_amplitude;
+    const strip_h: c_int = @intCast(session_interaction.wave_strip_height);
+    const tile_h = rect.h;
+    const tile_w = rect.w;
+    if (tile_h <= 0 or tile_w <= 0) return;
+
+    const num_strips: c_int = @divTrunc(tile_h + strip_h - 1, strip_h);
+    const stagger: f32 = total - row_anim;
+    const num_strips_f: f32 = @floatFromInt(@max(1, num_strips - 1));
+    const tile_w_f: f32 = @floatFromInt(tile_w);
+
+    var i: c_int = 0;
+    while (i < num_strips) : (i += 1) {
+        const src_y = i * strip_h;
+        const src_h = @min(strip_h, tile_h - src_y);
+        if (src_h <= 0) break;
+
+        // Bottom strips (high i) animate first → strip_frac=0 for bottom, 1 for top
+        const strip_frac: f32 = @as(f32, @floatFromInt(num_strips - 1 - i)) / num_strips_f;
+        const delay: f32 = strip_frac * stagger;
+        const strip_t: f32 = wave_elapsed_ms - delay;
+
+        // Envelope: taper amplitude to zero at top and bottom edges so corners stay fixed
+        const pos_frac: f32 = @as(f32, @floatFromInt(i)) / num_strips_f;
+        const envelope: f32 = @sin(pos_frac * std.math.pi);
+
+        var scale: f32 = 1.0;
+        if (strip_t > 0 and strip_t < row_anim) {
+            const t: f32 = strip_t / row_anim;
+            scale = 1.0 + amplitude * envelope * @sin(t * std.math.pi);
+        }
+
+        const scaled_w: f32 = tile_w_f * scale;
+        const x_offset: f32 = (tile_w_f - scaled_w) * 0.5;
+
+        const src_rect = c.SDL_FRect{
+            .x = 0,
+            .y = @floatFromInt(src_y),
+            .w = @floatFromInt(tile_w),
+            .h = @floatFromInt(src_h),
+        };
+        const dst_rect = c.SDL_FRect{
+            .x = @as(f32, @floatFromInt(rect.x)) + x_offset,
+            .y = @floatFromInt(rect.y + src_y),
+            .w = scaled_w,
+            .h = @floatFromInt(src_h),
+        };
+        _ = c.SDL_RenderTexture(renderer, tex, &src_rect, &dst_rect);
+    }
 }
 
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {

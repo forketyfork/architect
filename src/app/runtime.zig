@@ -812,7 +812,7 @@ pub fn run() !void {
                         std.debug.print("Text input failed: {}\n", .{err});
                     };
                     if (anim_state.mode == .Grid) {
-                        session_interaction_component.setAttention(anim_state.focused_session, false);
+                        session_interaction_component.setAttention(anim_state.focused_session, false, now);
                     }
                 },
                 c.SDL_EVENT_TEXT_EDITING => {
@@ -921,7 +921,7 @@ pub fn run() !void {
                                 try session.relaunch(working_dir.cwd_z, &loop);
                                 session_interaction_component.resetView(session_idx);
                                 session_interaction_component.setStatus(session_idx, .running);
-                                session_interaction_component.setAttention(session_idx, false);
+                                session_interaction_component.setAttention(session_idx, false, now);
                                 session.markDirty();
                                 grid.cancelResize();
                                 log.info("relaunch complete idx={d} spawned={} dead={}", .{
@@ -1171,7 +1171,7 @@ pub fn run() !void {
                             // Spawn new terminal
                             try sessions[new_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
                             session_interaction_component.setStatus(new_idx, .running);
-                            session_interaction_component.setAttention(new_idx, false);
+                            session_interaction_component.setAttention(new_idx, false, now);
 
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
@@ -1203,7 +1203,7 @@ pub fn run() !void {
 
                                 try sessions[next_free_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
                                 session_interaction_component.setStatus(next_free_idx, .running);
-                                session_interaction_component.setAttention(next_free_idx, false);
+                                session_interaction_component.setAttention(next_free_idx, false, now);
 
                                 session_interaction_component.clearSelection(anim_state.focused_session);
                                 session_interaction_component.clearSelection(next_free_idx);
@@ -1227,7 +1227,7 @@ pub fn run() !void {
                         if (anim_state.mode == .Grid) {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
                             session_interaction_component.setStatus(idx, .running);
-                            session_interaction_component.setAttention(idx, false);
+                            session_interaction_component.setAttention(idx, false, now);
 
                             const grid_row: c_int = @intCast(idx / grid.cols);
                             const grid_col: c_int = @intCast(idx % grid.cols);
@@ -1258,7 +1258,7 @@ pub fn run() !void {
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(idx);
                             session_interaction_component.setStatus(idx, .running);
-                            session_interaction_component.setAttention(idx, false);
+                            session_interaction_component.setAttention(idx, false, now);
                             anim_state.focused_session = idx;
 
                             const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
@@ -1317,7 +1317,7 @@ pub fn run() !void {
                         try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
                         session_interaction_component.setStatus(clicked_session, .running);
-                        session_interaction_component.setAttention(clicked_session, false);
+                        session_interaction_component.setAttention(clicked_session, false, now);
 
                         const grid_row: c_int = @intCast(clicked_session / grid.cols);
                         const grid_col: c_int = @intCast(clicked_session % grid.cols);
@@ -1346,7 +1346,7 @@ pub fn run() !void {
                     } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
                         session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                         if (anim_state.mode == .Grid) {
-                            session_interaction_component.setAttention(anim_state.focused_session, false);
+                            session_interaction_component.setAttention(anim_state.focused_session, false, now);
                         }
                         try input_keys.handleKeyInput(focused, key, mod);
                     }
@@ -1422,7 +1422,7 @@ pub fn run() !void {
                         else => false,
                     };
                     const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
-                    session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention);
+                    session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention, now);
                     std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ s.session, session_idx, @tagName(s.state) });
                 },
                 .story => |s| {
@@ -1484,7 +1484,7 @@ pub fn run() !void {
                 session_interaction_component.clearSelection(anim_state.focused_session);
                 try sessions[idx].ensureSpawnedWithLoop(&loop);
                 session_interaction_component.setStatus(idx, .running);
-                session_interaction_component.setAttention(idx, false);
+                session_interaction_component.setAttention(idx, false, now);
 
                 const grid_row: c_int = @intCast(idx / grid.cols);
                 const grid_col: c_int = @intCast(idx % grid.cols);
@@ -1726,7 +1726,7 @@ pub fn run() !void {
                 };
 
                 session_interaction_component.setStatus(switch_action.session, .running);
-                session_interaction_component.setAttention(switch_action.session, false);
+                session_interaction_component.setAttention(switch_action.session, false, now);
                 ui.showToast("Switched worktree", now);
             },
             .CreateWorktree => |create_action| {
@@ -1767,7 +1767,7 @@ pub fn run() !void {
                 }
 
                 session_interaction_component.setStatus(create_action.session, .running);
-                session_interaction_component.setAttention(create_action.session, false);
+                session_interaction_component.setAttention(create_action.session, false, now);
                 ui.showToast("Creating worktree…", now);
             },
             .RemoveWorktree => |remove_action| {
@@ -1816,7 +1816,7 @@ pub fn run() !void {
                 };
 
                 session_interaction_component.setStatus(remove_action.session, .running);
-                session_interaction_component.setAttention(remove_action.session, false);
+                session_interaction_component.setAttention(remove_action.session, false, now);
                 ui.showToast("Removing worktree…", now);
             },
             .ChangeDirectory => |cd_action| {
@@ -1844,7 +1844,7 @@ pub fn run() !void {
                 // to avoid double-counting when cwd changes are detected
 
                 session_interaction_component.setStatus(cd_action.session, .running);
-                session_interaction_component.setAttention(cd_action.session, false);
+                session_interaction_component.setAttention(cd_action.session, false, now);
 
                 const basename = std.fs.path.basename(cd_action.path);
                 const toast_msg_buf = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch null;
