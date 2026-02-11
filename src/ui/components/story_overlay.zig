@@ -387,7 +387,7 @@ pub const StoryOverlayComponent = struct {
                 }
             }
 
-            // Render anchor circles
+            // Track anchor positions for bezier arrows (emojis are rendered inline by SDL_TTF)
             if (row.anchors.len > 0 and cache.char_width > 0) {
                 const is_code = row.kind == .diff_line or row.kind == .code_line;
                 for (row.anchors) |anc| {
@@ -400,9 +400,6 @@ pub const StoryOverlayComponent = struct {
 
                     const anchor_x: c_int = base_x + @as(c_int, @intCast(anc.char_offset)) * cache.char_width;
                     const anchor_y: c_int = y_pos + @divFloor(line_h, 2);
-                    const scaled_r = dpi.scale(anchor_radius, host.ui_scale);
-
-                    self.renderAnchorCircle(renderer, host, anchor_x, anchor_y, scaled_r, anc.number, alpha);
 
                     self.anchor_positions.append(self.allocator, .{
                         .number = anc.number,
@@ -414,65 +411,6 @@ pub const StoryOverlayComponent = struct {
                     };
                 }
             }
-        }
-    }
-
-    fn renderAnchorCircle(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, cx: c_int, cy: c_int, radius: c_int, number: u8, alpha: f32) void {
-        _ = self;
-        const accent = host.theme.accent;
-        const circle_alpha: u8 = @intFromFloat(200.0 * alpha);
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, circle_alpha);
-        primitives.fillCircle(renderer, @floatFromInt(cx), @floatFromInt(cy), @floatFromInt(radius));
-
-        // Render the number inside the circle
-        const scaled_font_size = dpi.scale(font_size - 3, host.ui_scale);
-        _ = scaled_font_size;
-        // For digits 1-9, draw a simple representation using lines
-        const fg = host.theme.background;
-        const num_alpha: u8 = @intFromFloat(255.0 * alpha);
-        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, num_alpha);
-
-        const fx: f32 = @floatFromInt(cx);
-        const fy: f32 = @floatFromInt(cy);
-        const r: f32 = @floatFromInt(radius);
-        const half_r = r * 0.4;
-
-        // Draw a simple centered digit using primitive lines
-        switch (number) {
-            1 => {
-                _ = c.SDL_RenderLine(renderer, fx, fy - half_r, fx, fy + half_r);
-                _ = c.SDL_RenderLine(renderer, fx - half_r * 0.5, fy - half_r * 0.5, fx, fy - half_r);
-            },
-            2 => {
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy - half_r, fx + half_r, fy - half_r);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy - half_r, fx + half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy, fx - half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy, fx - half_r, fy + half_r);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy + half_r, fx + half_r, fy + half_r);
-            },
-            3 => {
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy - half_r, fx + half_r, fy - half_r);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy - half_r, fx + half_r, fy + half_r);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy, fx + half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy + half_r, fx + half_r, fy + half_r);
-            },
-            4 => {
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy - half_r, fx - half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy, fx + half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy - half_r, fx + half_r, fy + half_r);
-            },
-            5 => {
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy - half_r, fx - half_r, fy - half_r);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy - half_r, fx - half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx - half_r, fy, fx + half_r, fy);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy, fx + half_r, fy + half_r);
-                _ = c.SDL_RenderLine(renderer, fx + half_r, fy + half_r, fx - half_r, fy + half_r);
-            },
-            else => {
-                // For 6+ just draw a dot
-                _ = c.SDL_RenderLine(renderer, fx - 1, fy, fx + 1, fy);
-            },
         }
     }
 

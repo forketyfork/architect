@@ -362,27 +362,43 @@ const ParseContext = struct {
             else
                 .context;
 
-            // Strip <!--ref:N--> from line end
+            // Strip <!--ref:N--> and append circled-number emoji if present
             const ref_result = stripCodeRef(raw_line);
-
+            var row_text: []const u8 = ref_result.text;
+            var text_owned = false;
             var anchors: []const LineAnchor = &.{};
+
             if (ref_result.ref_number) |num| {
-                anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
-                    .number = num,
-                    .char_offset = ref_result.text.len,
-                }}) catch |err| blk: {
-                    log.warn("failed to dupe anchor: {}", .{err});
-                    break :blk &[0]LineAnchor{};
-                };
+                const emoji = circledDigit(num);
+                const base_text = ref_result.text;
+                if (self.allocator.alloc(u8, base_text.len + 1 + 3)) |buf| {
+                    @memcpy(buf[0..base_text.len], base_text);
+                    buf[base_text.len] = ' ';
+                    @memcpy(buf[base_text.len + 1 ..][0..3], &emoji);
+                    row_text = buf;
+                    text_owned = true;
+                    const cp_offset = bytesToCodepoints(base_text) + 1;
+                    anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
+                        .number = num,
+                        .char_offset = cp_offset,
+                    }}) catch |err| blk: {
+                        log.warn("failed to dupe anchor: {}", .{err});
+                        break :blk &[0]LineAnchor{};
+                    };
+                } else |err| {
+                    log.warn("failed to allocate code line with anchor: {}", .{err});
+                }
             }
 
             self.rows.append(self.allocator, .{
                 .kind = .diff_line,
-                .text = ref_result.text,
+                .text = row_text,
                 .code_line_kind = kind,
                 .anchors = anchors,
+                .owns_text = text_owned,
             }) catch |err| {
                 log.warn("failed to append diff line: {}", .{err});
+                if (text_owned) self.allocator.free(row_text);
                 return;
             };
 
@@ -448,26 +464,42 @@ const ParseContext = struct {
             const line_end = std.mem.indexOfScalarPos(u8, content, pos, '\n') orelse content.len;
             const raw_line = content[pos..line_end];
 
-            // Strip <!--ref:N--> from line end
+            // Strip <!--ref:N--> and append circled-number emoji if present
             const ref_result = stripCodeRef(raw_line);
-
+            var row_text: []const u8 = ref_result.text;
+            var text_owned = false;
             var anchors: []const LineAnchor = &.{};
+
             if (ref_result.ref_number) |num| {
-                anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
-                    .number = num,
-                    .char_offset = ref_result.text.len,
-                }}) catch |err| blk: {
-                    log.warn("failed to dupe anchor: {}", .{err});
-                    break :blk &[0]LineAnchor{};
-                };
+                const emoji = circledDigit(num);
+                const base_text = ref_result.text;
+                if (self.allocator.alloc(u8, base_text.len + 1 + 3)) |buf| {
+                    @memcpy(buf[0..base_text.len], base_text);
+                    buf[base_text.len] = ' ';
+                    @memcpy(buf[base_text.len + 1 ..][0..3], &emoji);
+                    row_text = buf;
+                    text_owned = true;
+                    const cp_offset = bytesToCodepoints(base_text) + 1;
+                    anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
+                        .number = num,
+                        .char_offset = cp_offset,
+                    }}) catch |err| blk: {
+                        log.warn("failed to dupe anchor: {}", .{err});
+                        break :blk &[0]LineAnchor{};
+                    };
+                } else |err| {
+                    log.warn("failed to allocate code line with anchor: {}", .{err});
+                }
             }
 
             self.rows.append(self.allocator, .{
                 .kind = .code_line,
-                .text = ref_result.text,
+                .text = row_text,
                 .anchors = anchors,
+                .owns_text = text_owned,
             }) catch |err| {
                 log.warn("failed to append code line: {}", .{err});
+                if (text_owned) self.allocator.free(row_text);
                 return;
             };
 
@@ -488,39 +520,42 @@ const StripResult = struct {
     anchor_count: usize,
 };
 
-/// Strip **[N]** markers from prose text, recording their positions.
+/// Replace **[N]** markers with circled-number emoji, recording their codepoint positions.
 fn stripProseAnchors(text: []const u8, out_buf: []u8, anchors: []LineAnchor) StripResult {
     var out_pos: usize = 0;
+    var cp_pos: usize = 0;
     var anchor_count: usize = 0;
     var i: usize = 0;
 
     while (i < text.len) {
-        // Look for **[
         if (i + 5 <= text.len and std.mem.eql(u8, text[i..][0..3], "**[")) {
-            // Find closing ]**
             const num_start = i + 3;
             var num_end = num_start;
             while (num_end < text.len and text[num_end] >= '0' and text[num_end] <= '9') {
                 num_end += 1;
             }
             if (num_end > num_start and num_end + 3 <= text.len and std.mem.eql(u8, text[num_end..][0..3], "]**")) {
-                // Parse the number
                 const num = std.fmt.parseInt(u8, text[num_start..num_end], 10) catch |err| {
                     log.warn("failed to parse anchor number: {}", .{err});
                     if (out_pos < out_buf.len) {
                         out_buf[out_pos] = text[i];
                         out_pos += 1;
+                        if (text[i] & 0xC0 != 0x80) cp_pos += 1;
                     }
                     i += 1;
                     continue;
                 };
 
-                if (anchor_count < anchors.len) {
+                if (anchor_count < anchors.len and out_pos + 3 <= out_buf.len) {
+                    const emoji = circledDigit(num);
+                    @memcpy(out_buf[out_pos..][0..3], &emoji);
                     anchors[anchor_count] = .{
                         .number = num,
-                        .char_offset = out_pos,
+                        .char_offset = cp_pos,
                     };
                     anchor_count += 1;
+                    out_pos += 3;
+                    cp_pos += 1;
                 }
                 i = num_end + 3;
                 continue;
@@ -530,6 +565,7 @@ fn stripProseAnchors(text: []const u8, out_buf: []u8, anchors: []LineAnchor) Str
         if (out_pos < out_buf.len) {
             out_buf[out_pos] = text[i];
             out_pos += 1;
+            if (text[i] & 0xC0 != 0x80) cp_pos += 1;
         }
         i += 1;
     }
@@ -538,6 +574,26 @@ fn stripProseAnchors(text: []const u8, out_buf: []u8, anchors: []LineAnchor) Str
         .text = out_buf[0..out_pos],
         .anchor_count = anchor_count,
     };
+}
+
+/// UTF-8 bytes for circled digits ① (U+2460) through ⑨ (U+2468).
+/// Numbers outside 1-9 get ① as fallback.
+fn circledDigit(n: u8) [3]u8 {
+    const base: u21 = 0x2460;
+    const cp: u21 = if (n >= 1 and n <= 9) base + @as(u21, n) - 1 else base;
+    return .{
+        @intCast(0xE0 | (cp >> 12)),
+        @intCast(0x80 | ((cp >> 6) & 0x3F)),
+        @intCast(0x80 | (cp & 0x3F)),
+    };
+}
+
+fn bytesToCodepoints(text: []const u8) usize {
+    var count: usize = 0;
+    for (text) |byte| {
+        if (byte & 0xC0 != 0x80) count += 1;
+    }
+    return count;
 }
 
 const CodeRefResult = struct {
