@@ -150,6 +150,7 @@ const architect_command_script =
     \\        print("Usage: architect notify <state|json>", file=sys.stderr)
     \\        print("       architect notify  (reads stdin)", file=sys.stderr)
     \\        print("       architect hook claude|codex|gemini", file=sys.stderr)
+    \\        print("       architect story <filename>", file=sys.stderr)
     \\
     \\def timestamp_suffix() -> str:
     \\    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -459,6 +460,33 @@ const architect_command_script =
     \\            return install_gemini()
     \\        print_usage()
     \\        return 1
+    \\    if cmd == "story":
+    \\        if len(sys.argv) < 3:
+    \\            print("Usage: architect story <filename>", file=sys.stderr)
+    \\            return 1
+    \\        path = os.path.abspath(sys.argv[2])
+    \\        if not os.path.isfile(path):
+    \\            print(f"File not found: {path}", file=sys.stderr)
+    \\            return 1
+    \\        session_id = os.environ.get("ARCHITECT_SESSION_ID")
+    \\        sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\        if not session_id or not sock_path:
+    \\            print("Not running inside Architect", file=sys.stderr)
+    \\            return 1
+    \\        message = json.dumps({
+    \\            "session": int(session_id),
+    \\            "type": "story",
+    \\            "path": path
+    \\        }) + "\n"
+    \\        try:
+    \\            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    \\            sock.connect(sock_path)
+    \\            sock.sendall(message.encode())
+    \\            sock.close()
+    \\        except Exception as e:
+    \\            print(f"Failed to notify Architect: {e}", file=sys.stderr)
+    \\            return 1
+    \\        return 0
     \\
     \\    print_usage()
     \\    return 1

@@ -21,3 +21,4 @@ pub const global_shortcuts = @import("components/global_shortcuts.zig");
 pub const cwd_bar = @import("components/cwd_bar.zig");
 pub const metrics_overlay = @import("components/metrics_overlay.zig");
 pub const diff_overlay = @import("components/diff_overlay.zig");
+pub const story_overlay = @import("components/story_overlay.zig");

@@ -5,9 +5,20 @@ const atomic = std.atomic;
 
 const log = std.log.scoped(.notify);
 
-pub const Notification = struct {
+pub const Notification = union(enum) {
+    status: StatusNotification,
+    story: StoryNotification,
+};
+
+pub const StatusNotification = struct {
     session: usize,
     state: app_state.SessionStatus,
+};
+
+pub const StoryNotification = struct {
+    session: usize,
+    /// Heap-allocated path; caller must free after processing.
+    path: []const u8,
 };
 
 pub const NotificationQueue = struct {
@@ -64,7 +75,7 @@ pub fn startNotifyThread(
     };
 
     const handler = struct {
-        fn parseNotification(bytes: []const u8) ?Notification {
+        fn parseNotification(bytes: []const u8, persistent_alloc: std.mem.Allocator) ?Notification {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
 
@@ -76,6 +87,30 @@ pub fn startNotifyThread(
             if (root != .object) return null;
             const obj = root.object;
 
+            const session_val = obj.get("session") orelse return null;
+            if (session_val != .integer) return null;
+            if (session_val.integer < 0) return null;
+            const session_idx: usize = @intCast(session_val.integer);
+
+            // Check for "type" field to distinguish notification kinds
+            const type_val = obj.get("type");
+            if (type_val) |tv| {
+                if (tv == .string and std.mem.eql(u8, tv.string, "story")) {
+                    const path_val = obj.get("path") orelse return null;
+                    if (path_val != .string) return null;
+                    // Allocate path with persistent allocator so it survives arena cleanup
+                    const path_dupe = persistent_alloc.dupe(u8, path_val.string) catch |err| {
+                        log.err("failed to duplicate story path for session {d}: {}", .{ session_idx, err });
+                        return null;
+                    };
+                    return Notification{ .story = .{
+                        .session = session_idx,
+                        .path = path_dupe,
+                    } };
+                }
+            }
+
+            // Default: status notification
             const state_val = obj.get("state") orelse return null;
             if (state_val != .string) return null;
             const state_str = state_val.string;
@@ -88,14 +123,10 @@ pub fn startNotifyThread(
             else
                 return null;
 
-            const session_val = obj.get("session") orelse return null;
-            if (session_val != .integer) return null;
-            if (session_val.integer < 0) return null;
-
-            return Notification{
-                .session = @intCast(session_val.integer),
+            return Notification{ .status = .{
+                .session = session_idx,
                 .state = state,
-            };
+            } };
         }
 
         fn run(ctx: NotifyContext) !void {
@@ -170,9 +201,18 @@ pub fn startNotifyThread(
 
                 if (buffer.items.len == 0) continue;
 
-                if (parseNotification(buffer.items)) |note| {
+                if (parseNotification(buffer.items, ctx.allocator)) |note| {
                     ctx.queue.push(ctx.allocator, note) catch |err| {
-                        log.warn("failed to queue notification for session {d}: {}", .{ note.session, err });
+                        const session_id = switch (note) {
+                            .status => |s| s.session,
+                            .story => |s| s.session,
+                        };
+                        log.warn("failed to queue notification for session {d}: {}", .{ session_id, err });
+                        // Free heap-allocated data on failure
+                        switch (note) {
+                            .story => |s| ctx.allocator.free(s.path),
+                            .status => {},
+                        }
                     };
                 }
             }
@@ -188,18 +228,15 @@ test "NotificationQueue - push and drain" {
     var queue = NotificationQueue{};
     defer queue.deinit(allocator);
 
-    try queue.push(allocator, .{ .session = 0, .state = .running });
-    try queue.push(allocator, .{ .session = 1, .state = .awaiting_approval });
-    try queue.push(allocator, .{ .session = 2, .state = .done });
+    try queue.push(allocator, .{ .status = .{ .session = 0, .state = .running } });
+    try queue.push(allocator, .{ .status = .{ .session = 1, .state = .awaiting_approval } });
+    try queue.push(allocator, .{ .status = .{ .session = 2, .state = .done } });
 
     var items = queue.drainAll();
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 3), items.items.len);
-    try std.testing.expectEqual(@as(usize, 0), items.items[0].session);
-    try std.testing.expectEqual(app_state.SessionStatus.running, items.items[0].state);
-    try std.testing.expectEqual(@as(usize, 1), items.items[1].session);
-    try std.testing.expectEqual(app_state.SessionStatus.awaiting_approval, items.items[1].state);
-    try std.testing.expectEqual(@as(usize, 2), items.items[2].session);
-    try std.testing.expectEqual(app_state.SessionStatus.done, items.items[2].state);
+    try std.testing.expectEqual(Notification{ .status = .{ .session = 0, .state = .running } }, items.items[0]);
+    try std.testing.expectEqual(Notification{ .status = .{ .session = 1, .state = .awaiting_approval } }, items.items[1]);
+    try std.testing.expectEqual(Notification{ .status = .{ .session = 2, .state = .done } }, items.items[2]);
 }
