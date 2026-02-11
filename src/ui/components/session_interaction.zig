@@ -19,6 +19,10 @@ const SessionViewState = view_state.SessionViewState;
 
 const scroll_lines_per_tick: isize = 1;
 const max_scroll_velocity: f32 = 30.0;
+pub const wave_total_ms: i64 = 400;
+pub const wave_row_anim_ms: i64 = 150;
+pub const wave_amplitude: f32 = 0.08;
+pub const wave_strip_height: i64 = 8;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -117,12 +121,18 @@ pub const SessionInteractionComponent = struct {
         self.sessions[idx].markDirty();
     }
 
-    pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool) void {
+    pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool, now_ms: i64) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
         const view = &self.views[idx];
-        if (view.attention == attention) return;
-        view.attention = attention;
-        self.sessions[idx].markDirty();
+        if (attention) {
+            view.wave_start_time = now_ms;
+            view.attention = true;
+            self.sessions[idx].markDirty();
+        } else {
+            if (!view.attention) return;
+            view.attention = false;
+            self.sessions[idx].markDirty();
+        }
     }
 
     pub fn resetScrollIfNeeded(self: *SessionInteractionComponent, idx: usize) void {
@@ -360,13 +370,22 @@ pub const SessionInteractionComponent = struct {
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
             updateScrollInertia(session, &self.views[idx], delta_time_s);
+            const view = &self.views[idx];
+            if (view.wave_start_time > 0) {
+                const wave_elapsed = host.now_ms - view.wave_start_time;
+                if (wave_elapsed >= wave_total_ms) {
+                    view.wave_start_time = 0;
+                    session.markDirty();
+                }
+            }
         }
     }
 
-    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
+            if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
         }
         return false;
     }
