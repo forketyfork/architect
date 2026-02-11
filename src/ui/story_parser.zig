@@ -362,22 +362,22 @@ const ParseContext = struct {
             else
                 .context;
 
-            // Strip <!--ref:N--> and append circled-number emoji if present
+            // Strip <!--ref:N--> from line end
             const ref_result = stripCodeRef(raw_line);
             var row_text: []const u8 = ref_result.text;
             var text_owned = false;
             var anchors: []const LineAnchor = &.{};
 
             if (ref_result.ref_number) |num| {
-                const emoji = circledDigit(num);
-                const base_text = ref_result.text;
-                if (self.allocator.alloc(u8, base_text.len + 1 + 3)) |buf| {
-                    @memcpy(buf[0..base_text.len], base_text);
-                    buf[base_text.len] = ' ';
-                    @memcpy(buf[base_text.len + 1 ..][0..3], &emoji);
+                const base = ref_result.text;
+                if (self.allocator.alloc(u8, base.len + 3)) |buf| {
+                    @memcpy(buf[0..base.len], base);
+                    buf[base.len] = ' ';
+                    buf[base.len + 1] = ' ';
+                    buf[base.len + 2] = ' ';
                     row_text = buf;
                     text_owned = true;
-                    const cp_offset = bytesToCodepoints(base_text) + 1;
+                    const cp_offset = bytesToCodepoints(base) + 1;
                     anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
                         .number = num,
                         .char_offset = cp_offset,
@@ -386,7 +386,7 @@ const ParseContext = struct {
                         break :blk &[0]LineAnchor{};
                     };
                 } else |err| {
-                    log.warn("failed to allocate code line with anchor: {}", .{err});
+                    log.warn("failed to allocate code line with anchor padding: {}", .{err});
                 }
             }
 
@@ -398,7 +398,7 @@ const ParseContext = struct {
                 .owns_text = text_owned,
             }) catch |err| {
                 log.warn("failed to append diff line: {}", .{err});
-                if (text_owned) self.allocator.free(row_text);
+                if (text_owned) self.allocator.free(@constCast(row_text));
                 return;
             };
 
@@ -464,22 +464,22 @@ const ParseContext = struct {
             const line_end = std.mem.indexOfScalarPos(u8, content, pos, '\n') orelse content.len;
             const raw_line = content[pos..line_end];
 
-            // Strip <!--ref:N--> and append circled-number emoji if present
+            // Strip <!--ref:N--> from line end
             const ref_result = stripCodeRef(raw_line);
             var row_text: []const u8 = ref_result.text;
             var text_owned = false;
             var anchors: []const LineAnchor = &.{};
 
             if (ref_result.ref_number) |num| {
-                const emoji = circledDigit(num);
-                const base_text = ref_result.text;
-                if (self.allocator.alloc(u8, base_text.len + 1 + 3)) |buf| {
-                    @memcpy(buf[0..base_text.len], base_text);
-                    buf[base_text.len] = ' ';
-                    @memcpy(buf[base_text.len + 1 ..][0..3], &emoji);
+                const base = ref_result.text;
+                if (self.allocator.alloc(u8, base.len + 3)) |buf| {
+                    @memcpy(buf[0..base.len], base);
+                    buf[base.len] = ' ';
+                    buf[base.len + 1] = ' ';
+                    buf[base.len + 2] = ' ';
                     row_text = buf;
                     text_owned = true;
-                    const cp_offset = bytesToCodepoints(base_text) + 1;
+                    const cp_offset = bytesToCodepoints(base) + 1;
                     anchors = self.allocator.dupe(LineAnchor, &[1]LineAnchor{.{
                         .number = num,
                         .char_offset = cp_offset,
@@ -488,7 +488,7 @@ const ParseContext = struct {
                         break :blk &[0]LineAnchor{};
                     };
                 } else |err| {
-                    log.warn("failed to allocate code line with anchor: {}", .{err});
+                    log.warn("failed to allocate code line with anchor padding: {}", .{err});
                 }
             }
 
@@ -499,7 +499,7 @@ const ParseContext = struct {
                 .owns_text = text_owned,
             }) catch |err| {
                 log.warn("failed to append code line: {}", .{err});
-                if (text_owned) self.allocator.free(row_text);
+                if (text_owned) self.allocator.free(@constCast(row_text));
                 return;
             };
 
@@ -547,15 +547,16 @@ fn stripProseAnchors(text: []const u8, out_buf: []u8, anchors: []LineAnchor) Str
                 };
 
                 if (anchor_count < anchors.len and out_pos + 3 <= out_buf.len) {
-                    const emoji = circledDigit(num);
-                    @memcpy(out_buf[out_pos..][0..3], &emoji);
+                    out_buf[out_pos] = ' ';
+                    out_buf[out_pos + 1] = ' ';
+                    out_buf[out_pos + 2] = ' ';
                     anchors[anchor_count] = .{
                         .number = num,
-                        .char_offset = cp_pos,
+                        .char_offset = cp_pos + 1,
                     };
                     anchor_count += 1;
                     out_pos += 3;
-                    cp_pos += 1;
+                    cp_pos += 3;
                 }
                 i = num_end + 3;
                 continue;
@@ -573,18 +574,6 @@ fn stripProseAnchors(text: []const u8, out_buf: []u8, anchors: []LineAnchor) Str
     return .{
         .text = out_buf[0..out_pos],
         .anchor_count = anchor_count,
-    };
-}
-
-/// UTF-8 bytes for circled digits ① (U+2460) through ⑨ (U+2468).
-/// Numbers outside 1-9 get ① as fallback.
-fn circledDigit(n: u8) [3]u8 {
-    const base: u21 = 0x2460;
-    const cp: u21 = if (n >= 1 and n <= 9) base + @as(u21, n) - 1 else base;
-    return .{
-        @intCast(0xE0 | (cp >> 12)),
-        @intCast(0x80 | ((cp >> 6) & 0x3F)),
-        @intCast(0x80 | (cp & 0x3F)),
     };
 }
 

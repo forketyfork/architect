@@ -42,6 +42,7 @@ const Cache = struct {
     char_width: c_int,
     title: TextTex,
     lines: []LineTexture,
+    bold_font: *c.TTF_Font,
 };
 
 // === Anchor tracking ===
@@ -70,16 +71,22 @@ pub const StoryOverlayComponent = struct {
     hovered_anchor: ?u8 = null,
     hover_start_ms: i64 = 0,
 
+    pointer_cursor: ?*c.SDL_Cursor = null,
+    arrow_cursor: ?*c.SDL_Cursor = null,
+
     const row_height: c_int = 22;
     const font_size: c_int = 13;
     const marker_width: c_int = 20;
     const code_indent: c_int = 8;
     const max_display_buffer: usize = 520;
-    const anchor_radius: c_int = 8;
 
     pub fn init(allocator: std.mem.Allocator) !*StoryOverlayComponent {
         const comp = try allocator.create(StoryOverlayComponent);
-        comp.* = .{ .allocator = allocator };
+        comp.* = .{
+            .allocator = allocator,
+            .pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER),
+            .arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT),
+        };
         return comp;
     }
 
@@ -120,6 +127,8 @@ pub const StoryOverlayComponent = struct {
 
     pub fn hide(self: *StoryOverlayComponent, now_ms: i64) void {
         self.overlay.hide(now_ms);
+        self.hovered_anchor = null;
+        if (self.arrow_cursor) |cur| _ = c.SDL_SetCursor(cur);
     }
 
     fn readFile(self: *StoryOverlayComponent, path: []const u8) ?[]u8 {
@@ -187,7 +196,12 @@ pub const StoryOverlayComponent = struct {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
                 self.overlay.updateCloseHover(mouse_x, mouse_y, host);
+                const prev_hovered = self.hovered_anchor;
                 self.updateAnchorHover(mouse_x, mouse_y, host);
+                if (self.hovered_anchor != prev_hovered) {
+                    const cursor = if (self.hovered_anchor != null) self.pointer_cursor else self.arrow_cursor;
+                    if (cursor) |cur| _ = c.SDL_SetCursor(cur);
+                }
                 return true;
             },
             else => return false,
@@ -212,8 +226,8 @@ pub const StoryOverlayComponent = struct {
     // --- Anchor hover ---
 
     fn updateAnchorHover(self: *StoryOverlayComponent, mouse_x: c_int, mouse_y: c_int, host: *const types.UiHost) void {
-        const scaled_radius = dpi.scale(anchor_radius, host.ui_scale);
-        const hit_radius_sq: i64 = @as(i64, scaled_radius + 4) * @as(i64, scaled_radius + 4);
+        const hit_radius: i64 = if (self.cache) |ch| @as(i64, ch.line_height) else 12;
+        const hit_radius_sq: i64 = hit_radius * hit_radius;
         var found: ?u8 = null;
 
         for (self.anchor_positions.items) |ap| {
@@ -387,19 +401,31 @@ pub const StoryOverlayComponent = struct {
                 }
             }
 
-            // Track anchor positions for bezier arrows (emojis are rendered inline by SDL_TTF)
+            // Render anchor circles and track positions for bezier arrows
             if (row.anchors.len > 0 and cache.char_width > 0) {
                 const is_code = row.kind == .diff_line or row.kind == .code_line;
+                const is_diff = row.kind == .diff_line;
                 for (row.anchors) |anc| {
                     const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
                     const scaled_code_indent = dpi.scale(code_indent, host.ui_scale);
-                    const base_x: c_int = if (is_code)
-                        rect.x + scaled_padding + scaled_code_indent
-                    else
-                        rect.x + scaled_padding;
 
-                    const anchor_x: c_int = base_x + @as(c_int, @intCast(anc.char_offset)) * cache.char_width;
-                    const anchor_y: c_int = y_pos + @divFloor(line_h, 2);
+                    // For diff lines, the first character (+/-/space) uses a fixed-width
+                    // marker slot, not char_width. Account for this offset difference.
+                    const char_off: c_int = @intCast(anc.char_offset);
+                    const anchor_x: c_int = if (is_diff) blk: {
+                        const scaled_marker_w = dpi.scale(marker_width, host.ui_scale);
+                        break :blk rect.x + scaled_padding + scaled_code_indent + scaled_marker_w + (char_off - 1) * cache.char_width + @divFloor(cache.char_width, 2);
+                    } else if (is_code) blk: {
+                        break :blk rect.x + scaled_padding + scaled_code_indent + char_off * cache.char_width + @divFloor(cache.char_width, 2);
+                    } else blk: {
+                        break :blk rect.x + scaled_padding + char_off * cache.char_width + @divFloor(cache.char_width, 2);
+                    };
+                    const anchor_y: c_int = y_pos + @divFloor(line_h * 9, 20);
+                    const base_radius = @divFloor(line_h * 2, 5);
+                    const is_hovered = self.hovered_anchor != null and self.hovered_anchor.? == anc.number;
+                    const radius = if (is_hovered) base_radius + dpi.scale(2, host.ui_scale) else base_radius;
+
+                    renderAnchorBadge(renderer, host, anchor_x, anchor_y, radius, anc.number, alpha, cache.bold_font);
 
                     self.anchor_positions.append(self.allocator, .{
                         .number = anc.number,
@@ -412,6 +438,51 @@ pub const StoryOverlayComponent = struct {
                 }
             }
         }
+    }
+
+    fn renderAnchorBadge(renderer: *c.SDL_Renderer, host: *const types.UiHost, cx: c_int, cy: c_int, half_h: c_int, number: u8, alpha: f32, font: *c.TTF_Font) void {
+        // Render the number as text to get its dimensions
+        var num_buf: [4]u8 = undefined;
+        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{number}) catch return;
+        num_buf[num_str.len] = 0;
+        const num_z: [*c]const u8 = @ptrCast(num_str.ptr);
+
+        const bg = host.theme.background;
+        const surface = c.TTF_RenderText_Blended(font, num_z, num_str.len, c.SDL_Color{ .r = bg.r, .g = bg.g, .b = bg.b, .a = 255 }) orelse return;
+        defer c.SDL_DestroySurface(surface);
+        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
+        defer c.SDL_DestroyTexture(tex);
+
+        var tex_w_f: f32 = 0;
+        var tex_h_f: f32 = 0;
+        _ = c.SDL_GetTextureSize(tex, &tex_w_f, &tex_h_f);
+        const tex_w: c_int = @intFromFloat(tex_w_f);
+        const tex_h: c_int = @intFromFloat(tex_h_f);
+
+        // Pill dimensions: height = 2 * half_h, width stretches to fit text + padding
+        const pad_x: c_int = @max(half_h, @divFloor(tex_w, 2) + @divFloor(half_h, 2));
+        const pill_w = pad_x * 2;
+        const pill_h = half_h * 2;
+        const pill_x = cx - @divFloor(pill_w, 2);
+        const pill_y = cy - half_h;
+        const corner_r: c_int = half_h;
+
+        // Draw the pill background
+        const accent = host.theme.accent;
+        const bg_alpha: u8 = @intFromFloat(200.0 * alpha);
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, bg_alpha);
+        primitives.fillRoundedRect(renderer, .{ .x = pill_x, .y = pill_y, .w = pill_w, .h = pill_h }, corner_r);
+
+        // Draw the number text centered in the pill
+        const tex_alpha: u8 = @intFromFloat(255.0 * alpha);
+        _ = c.SDL_SetTextureAlphaMod(tex, tex_alpha);
+        _ = c.SDL_RenderTexture(renderer, tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(cx - @divFloor(tex_w, 2)),
+            .y = @floatFromInt(cy - @divFloor(tex_h, 2)),
+            .w = @floatFromInt(tex_w),
+            .h = @floatFromInt(tex_h),
+        });
     }
 
     fn renderBezierArrows(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost) void {
@@ -508,6 +579,7 @@ pub const StoryOverlayComponent = struct {
             .char_width = char_w,
             .title = title_tex,
             .lines = line_textures,
+            .bold_font = bold_font,
         };
         self.cache = new_cache;
         return new_cache;
@@ -757,6 +829,8 @@ pub const StoryOverlayComponent = struct {
             self.allocator.free(path);
             self.file_path = null;
         }
+        if (self.pointer_cursor) |cur| c.SDL_DestroyCursor(cur);
+        if (self.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);
         self.allocator.destroy(self);
     }
 
