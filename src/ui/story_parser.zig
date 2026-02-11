@@ -32,6 +32,7 @@ pub const DisplayRow = struct {
     code_line_kind: CodeLineKind = .context,
     bold: bool = false,
     anchors: []const LineAnchor = &.{},
+    owns_text: bool = false,
 };
 
 // === Public API ===
@@ -49,7 +50,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8, wrap_cols: usize
 
 pub fn freeDisplayRows(allocator: std.mem.Allocator, rows: *std.ArrayList(DisplayRow)) void {
     for (rows.items) |row| {
-        if (row.kind == .diff_header) {
+        if (row.owns_text) {
             allocator.free(row.text);
         }
         if (row.anchors.len > 0) {
@@ -206,18 +207,37 @@ const ParseContext = struct {
     fn addWrappedProseRows(self: *ParseContext, text: []const u8, bold: bool) void {
         if (text.len == 0) return;
 
-        // Strip anchors and record their positions
-        var stripped_buf: [4096]u8 = undefined;
+        // Check for anchors. If none, use original text directly (it's a slice of
+        // the content buffer and outlives the display rows). If anchors exist, strip
+        // them into a heap-allocated buffer so the rows don't hold dangling pointers.
         var anchors_buf: [32]LineAnchor = undefined;
-        const strip_result = stripProseAnchors(text, &stripped_buf, &anchors_buf);
-        const stripped = strip_result.text;
-        const anchor_count = strip_result.anchor_count;
+        var anchor_count: usize = 0;
+        var stripped: []const u8 = text;
+        var stripped_is_owned = false;
+
+        if (std.mem.indexOf(u8, text, "**[") != null) {
+            var stack_buf: [4096]u8 = undefined;
+            const strip_result = stripProseAnchors(text, &stack_buf, &anchors_buf);
+            anchor_count = strip_result.anchor_count;
+            if (anchor_count > 0) {
+                if (self.allocator.dupe(u8, strip_result.text)) |duped| {
+                    stripped = duped;
+                    stripped_is_owned = true;
+                } else |err| {
+                    log.warn("failed to allocate stripped prose text: {}", .{err});
+                    anchor_count = 0;
+                }
+            }
+        }
 
         const max_cols = if (self.wrap_cols > 0) self.wrap_cols else 120;
 
         if (stripped.len <= max_cols) {
             const anchors = if (anchor_count > 0)
-                self.allocator.dupe(LineAnchor, anchors_buf[0..anchor_count]) catch &[0]LineAnchor{}
+                self.allocator.dupe(LineAnchor, anchors_buf[0..anchor_count]) catch |err| blk: {
+                    log.warn("failed to dupe anchor: {}", .{err});
+                    break :blk &[0]LineAnchor{};
+                }
             else
                 &[0]LineAnchor{};
 
@@ -226,13 +246,17 @@ const ParseContext = struct {
                 .text = stripped,
                 .bold = bold,
                 .anchors = anchors,
+                .owns_text = stripped_is_owned,
             }) catch |err| {
                 log.warn("failed to append prose row: {}", .{err});
+                if (stripped_is_owned) self.allocator.free(stripped);
             };
             return;
         }
 
-        // Word-wrap with anchor position tracking
+        // Word-wrap with anchor position tracking.
+        // When stripped_is_owned, each segment gets its own heap allocation
+        // so it can be freed independently in freeDisplayRows.
         var pos: usize = 0;
         while (pos < stripped.len) {
             var end = @min(pos + max_cols, stripped.len);
@@ -263,23 +287,41 @@ const ParseContext = struct {
             }
 
             const line_anchors = if (line_anchor_count > 0)
-                self.allocator.dupe(LineAnchor, line_anchors_buf[0..line_anchor_count]) catch &[0]LineAnchor{}
+                self.allocator.dupe(LineAnchor, line_anchors_buf[0..line_anchor_count]) catch |err| blk: {
+                    log.warn("failed to dupe anchor: {}", .{err});
+                    break :blk &[0]LineAnchor{};
+                }
             else
                 &[0]LineAnchor{};
 
+            const segment = stripped[pos..end];
+            const row_text = if (stripped_is_owned)
+                self.allocator.dupe(u8, segment) catch |err| blk: {
+                    log.warn("failed to allocate wrapped segment: {}", .{err});
+                    break :blk segment;
+                }
+            else
+                segment;
+            const segment_owned = stripped_is_owned and row_text.ptr != segment.ptr;
+
             self.rows.append(self.allocator, .{
                 .kind = .prose_line,
-                .text = stripped[pos..end],
+                .text = row_text,
                 .bold = bold,
                 .anchors = line_anchors,
+                .owns_text = segment_owned,
             }) catch |err| {
                 log.warn("failed to append wrapped prose row: {}", .{err});
+                if (segment_owned) self.allocator.free(row_text);
                 return;
             };
 
             pos = end;
             if (pos < stripped.len and stripped[pos] == ' ') pos += 1;
         }
+
+        // Free the original stripped buffer now that all segments have their own copies
+        if (stripped_is_owned) self.allocator.free(stripped);
     }
 
     // --- Code block parsing ---
@@ -388,6 +430,7 @@ const ParseContext = struct {
             .kind = .diff_header,
             .text = header_text,
             .bold = true,
+            .owns_text = true,
         }) catch |err| {
             log.warn("failed to append diff header: {}", .{err});
             self.allocator.free(header_text);
