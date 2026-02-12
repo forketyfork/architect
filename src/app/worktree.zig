@@ -38,22 +38,54 @@ pub fn changeSessionDirectory(session: *SessionState, allocator: std.mem.Allocat
 }
 
 /// Resolve the absolute worktree target directory for a new worktree.
-/// If `config_dir` is set, expands `~` and appends `<repo-name>/<worktree-name>`.
-/// Otherwise defaults to `~/.architect-worktrees/<repo-name>/<worktree-name>`.
+/// If `config_dir` is set, expands `~` and appends `<repo-subpath>/<worktree-name>`.
+/// Otherwise defaults to `~/.architect-worktrees/<repo-subpath>/<worktree-name>`.
+/// The repo subpath is relative to $HOME when possible, or the full path minus
+/// leading `/` otherwise, to avoid collisions between repos with the same basename.
 pub fn resolveWorktreeDir(allocator: std.mem.Allocator, repo_root: []const u8, name: []const u8, config_dir: ?[]const u8) ![]u8 {
     const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-    const repo_name = std.fs.path.basename(repo_root);
+    const repo_subpath = repoSubpath(home, repo_root);
 
-    const base = if (config_dir) |dir|
-        if (dir.len > 0 and dir[0] == '~')
-            try std.fs.path.join(allocator, &.{ home, dir[1..], repo_name })
-        else
-            try std.fs.path.join(allocator, &.{ dir, repo_name })
-    else
-        try std.fs.path.join(allocator, &.{ home, ".architect-worktrees", repo_name });
+    const resolved_dir = try resolveConfigDir(allocator, home, config_dir);
+    defer allocator.free(resolved_dir);
+
+    const base = try std.fs.path.join(allocator, &.{ resolved_dir, repo_subpath });
     defer allocator.free(base);
 
     return std.fs.path.join(allocator, &.{ base, name });
+}
+
+/// Resolve the config directory to an absolute path.
+/// Expands `~`/`~/...` relative to home, resolves relative paths against home,
+/// and returns absolute paths as-is. Returns default when config_dir is null.
+fn resolveConfigDir(allocator: std.mem.Allocator, home: []const u8, config_dir: ?[]const u8) ![]u8 {
+    const dir = config_dir orelse
+        return std.fs.path.join(allocator, &.{ home, ".architect-worktrees" });
+
+    if (dir.len > 0 and dir[0] == '~') {
+        if (dir.len == 1) return allocator.dupe(u8, home);
+        if (dir[1] == '/') return std.fs.path.join(allocator, &.{ home, dir[2..] });
+        return std.fs.path.join(allocator, &.{ home, dir[1..] });
+    }
+
+    if (!std.fs.path.isAbsolute(dir)) {
+        return std.fs.path.join(allocator, &.{ home, dir });
+    }
+
+    return allocator.dupe(u8, dir);
+}
+
+/// Derive a collision-safe repo identifier from repo_root.
+/// Uses the path relative to $HOME when possible, or the full path minus
+/// leading `/` when the repo is outside $HOME.
+fn repoSubpath(home: []const u8, repo_root: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, repo_root, home)) {
+        const after_home = repo_root[home.len..];
+        if (after_home.len > 0 and after_home[0] == '/') return after_home[1..];
+        if (after_home.len == 0) return std.fs.path.basename(repo_root);
+    }
+    if (repo_root.len > 0 and repo_root[0] == '/') return repo_root[1..];
+    return repo_root;
 }
 
 pub fn buildCreateWorktreeCommand(
