@@ -1744,7 +1744,25 @@ pub fn run() !void {
                     continue;
                 }
 
-                const command = worktree.buildCreateWorktreeCommand(allocator, create_action.base_path, create_action.name) catch |err| {
+                const target_path = worktree.resolveWorktreeDir(
+                    allocator,
+                    create_action.base_path,
+                    create_action.name,
+                    config.worktree.directory,
+                ) catch |err| {
+                    std.debug.print("Failed to resolve worktree directory: {}\n", .{err});
+                    ui.showToast("Could not create worktree", now);
+                    continue;
+                };
+                defer allocator.free(target_path);
+
+                const command = worktree.buildCreateWorktreeCommand(
+                    allocator,
+                    create_action.base_path,
+                    target_path,
+                    create_action.name,
+                    config.worktree.init_command,
+                ) catch |err| {
                     std.debug.print("Failed to build worktree command: {}\n", .{err});
                     ui.showToast("Could not create worktree", now);
                     continue;
@@ -1757,14 +1775,9 @@ pub fn run() !void {
                     continue;
                 };
 
-                // Update cwd to the new worktree path for UI purposes.
-                const new_path = std.fs.path.join(allocator, &.{ create_action.base_path, ".architect", create_action.name }) catch null;
-                if (new_path) |abs| {
-                    session.recordCwd(abs) catch |err| {
-                        log.warn("session {d}: failed to record cwd: {}", .{ create_action.session, err });
-                    };
-                    allocator.free(abs);
-                }
+                session.recordCwd(target_path) catch |err| {
+                    log.warn("session {d}: failed to record cwd: {}", .{ create_action.session, err });
+                };
 
                 session_interaction_component.setStatus(create_action.session, .running);
                 session_interaction_component.setAttention(create_action.session, false, now);

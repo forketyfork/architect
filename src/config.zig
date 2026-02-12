@@ -230,6 +230,38 @@ pub const MetricsConfig = struct {
     enabled: bool = false,
 };
 
+pub const WorktreeConfig = struct {
+    directory: ?[]const u8 = null,
+    init_command: ?[]const u8 = null,
+    directory_owned: bool = false,
+    init_command_owned: bool = false,
+
+    pub fn deinit(self: *WorktreeConfig, allocator: std.mem.Allocator) void {
+        if (self.directory_owned) {
+            if (self.directory) |v| allocator.free(v);
+        }
+        if (self.init_command_owned) {
+            if (self.init_command) |v| allocator.free(v);
+        }
+        self.directory = null;
+        self.init_command = null;
+        self.directory_owned = false;
+        self.init_command_owned = false;
+    }
+
+    pub fn duplicate(self: WorktreeConfig, allocator: std.mem.Allocator) !WorktreeConfig {
+        const dir_dup = if (self.directory) |d| try allocator.dupe(u8, d) else null;
+        errdefer if (dir_dup) |d| allocator.free(d);
+        const cmd_dup = if (self.init_command) |c| try allocator.dupe(u8, c) else null;
+        return WorktreeConfig{
+            .directory = dir_dup,
+            .init_command = cmd_dup,
+            .directory_owned = dir_dup != null,
+            .init_command_owned = cmd_dup != null,
+        };
+    }
+};
+
 pub const Persistence = struct {
     const terminal_key_prefix = "terminal_";
     const max_recent_folders: usize = 10;
@@ -601,6 +633,7 @@ pub const Config = struct {
     ui: UiConfig = .{},
     rendering: Rendering = .{},
     metrics: MetricsConfig = .{},
+    worktree: WorktreeConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -679,6 +712,11 @@ pub const Config = struct {
             \\# [metrics]
             \\# enabled = false
             \\
+            \\# Worktree options
+            \\# [worktree]
+            \\# directory = "~/.architect-worktrees"  # Base directory for new worktrees (default: ~/.architect-worktrees)
+            \\# init_command = "script/setup"          # Command to run after creating a worktree
+            \\
         ;
 
         const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
@@ -711,6 +749,7 @@ pub const Config = struct {
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
+        config.worktree = try config.worktree.duplicate(allocator);
 
         return config;
     }
@@ -718,6 +757,7 @@ pub const Config = struct {
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         self.font.deinit(allocator);
         self.theme.deinit(allocator);
+        self.worktree.deinit(allocator);
     }
 
     pub fn getFontSize(self: Config) i32 {
