@@ -636,11 +636,18 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn makeDisplayPath(self: *WorktreeOverlayComponent, base: []const u8, abs: []const u8) ![]const u8 {
-        const rel = std.fs.path.relative(self.allocator, base, abs) catch {
-            return self.allocator.dupe(u8, abs);
-        };
-        if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);
-        return rel;
+        if (std.mem.startsWith(u8, abs, base)) {
+            const rel = std.fs.path.relative(self.allocator, base, abs) catch {
+                return self.allocator.dupe(u8, abs);
+            };
+            if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);
+            return rel;
+        }
+        const home = std.posix.getenv("HOME") orelse return self.allocator.dupe(u8, abs);
+        if (std.mem.startsWith(u8, abs, home) and abs.len > home.len and abs[home.len] == '/') {
+            return std.fmt.allocPrint(self.allocator, "~{s}", .{abs[home.len..]});
+        }
+        return self.allocator.dupe(u8, abs);
     }
 
     fn ensureCache(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
@@ -886,6 +893,62 @@ pub const WorktreeOverlayComponent = struct {
             .w = @intFromFloat(w),
             .h = @intFromFloat(h),
         };
+    }
+
+    fn renderWrappedPath(
+        renderer: *c.SDL_Renderer,
+        font: *c.TTF_Font,
+        text: []const u8,
+        color: c.SDL_Color,
+        modal_x: f32,
+        start_y: f32,
+        modal_w: f32,
+        max_w: c_int,
+        row_height: c_int,
+    ) void {
+        var full_w: c_int = 0;
+        var full_h: c_int = 0;
+        _ = c.TTF_GetStringSize(font, text.ptr, text.len, &full_w, &full_h);
+
+        if (full_w <= max_w) {
+            const tex = makeTextTexture(renderer, font, text, color) catch return;
+            defer c.SDL_DestroyTexture(tex.tex);
+            const x = modal_x + (modal_w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{ .x = x, .y = start_y, .w = @floatFromInt(tex.w), .h = @floatFromInt(tex.h) });
+            return;
+        }
+
+        var y = start_y;
+        var line_start: usize = 0;
+        var last_slash: usize = 0;
+
+        for (text, 0..) |ch, i| {
+            if (ch == '/' and i > line_start) last_slash = i;
+
+            const segment = text[line_start .. i + 1];
+            var seg_w: c_int = 0;
+            var seg_h: c_int = 0;
+            _ = c.TTF_GetStringSize(font, segment.ptr, segment.len, &seg_w, &seg_h);
+
+            if (seg_w > max_w and last_slash > line_start) {
+                const line = text[line_start .. last_slash + 1];
+                const tex = makeTextTexture(renderer, font, line, color) catch return;
+                defer c.SDL_DestroyTexture(tex.tex);
+                const x = modal_x + (modal_w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+                _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{ .x = x, .y = y, .w = @floatFromInt(tex.w), .h = @floatFromInt(tex.h) });
+                y += @floatFromInt(row_height);
+                line_start = last_slash + 1;
+                last_slash = line_start;
+            }
+        }
+
+        if (line_start < text.len) {
+            const line = text[line_start..];
+            const tex = makeTextTexture(renderer, font, line, color) catch return;
+            defer c.SDL_DestroyTexture(tex.tex);
+            const x = modal_x + (modal_w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{ .x = x, .y = y, .w = @floatFromInt(tex.w), .h = @floatFromInt(tex.h) });
+        }
     }
 
     fn destroyEntryTextures(entries: []EntryTex) void {
@@ -1316,20 +1379,9 @@ pub const WorktreeOverlayComponent = struct {
                 const worktree = self.worktrees.items[wt_idx];
                 const message_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(50, host.ui_scale)));
                 const message_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 200 };
-                const message_tex = makeTextTexture(renderer, entry_fonts.regular, worktree.display, message_color) catch |err| blk: {
-                    log.warn("failed to create worktree message texture: {}", .{err});
-                    break :blk null;
-                };
-                if (message_tex) |tex| {
-                    defer c.SDL_DestroyTexture(tex.tex);
-                    const message_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
-                    _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                        .x = message_x,
-                        .y = message_y,
-                        .w = @floatFromInt(tex.w),
-                        .h = @floatFromInt(tex.h),
-                    });
-                }
+                const max_w: c_int = @as(c_int, @intFromFloat(layout.modal.w)) - 2 * dpi.scale(modal_padding, host.ui_scale);
+                const scaled_lh: c_int = dpi.scale(line_height, host.ui_scale);
+                renderWrappedPath(renderer, entry_fonts.regular, worktree.display, message_color, layout.modal.x, message_y, layout.modal.w, max_w, scaled_lh);
             }
         }
 

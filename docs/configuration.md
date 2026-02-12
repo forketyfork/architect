@@ -138,6 +138,25 @@ When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-ri
 
 Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
 
+### Worktree Configuration
+
+```toml
+[worktree]
+directory = "~/.architect-worktrees"  # Base directory for new worktrees
+init_command = "script/setup"         # Command to run after creating a worktree
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `directory` | `~/.architect-worktrees` | Base directory where new worktrees are created. Each repo gets a subdirectory mirroring its path relative to `$HOME`, and each worktree is a subdirectory within that. Supports `~` expansion. Relative paths are resolved against `$HOME`. |
+| `init_command` | *(auto-detect)* | Shell command to run in the new worktree after creation. When not set, Architect automatically runs `script/setup` or `.architect-init.sh` if either exists and is executable. |
+
+New worktrees are created at `<directory>/<repo-subpath>/<worktree-name>`, where `<repo-subpath>` is the repo's path relative to `$HOME`. For example, if the repo is at `~/dev/myproject`, creating a worktree called `feature-x` produces `~/.architect-worktrees/dev/myproject/feature-x`.
+
+Creating worktrees outside the repository tree prevents agents (Claude Code, Codex, etc.) from discovering the parent repository's configuration files when traversing up the directory tree.
+
+Existing worktrees (including legacy ones under `.architect/` inside the repo) remain visible in the worktree picker and can be switched to or removed normally.
+
 ### Complete Example
 
 ```toml
@@ -183,6 +202,10 @@ vsync = true
 
 [metrics]
 enabled = false
+
+[worktree]
+# directory = "~/.architect-worktrees"
+# init_command = "script/setup"
 ```
 
 ## persistence.toml
