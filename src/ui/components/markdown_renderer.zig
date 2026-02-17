@@ -17,12 +17,18 @@ pub const RenderRun = struct {
     href: ?[]u8 = null,
 };
 
+pub const TableCell = struct {
+    runs: []RenderRun = &.{},
+    plain_text: []u8,
+};
+
 pub const RenderLine = struct {
     kind: LineKind,
     heading_level: u8 = 0,
     quote_depth: u8 = 0,
     indent_level: u8 = 0,
     runs: []RenderRun = &.{},
+    table_cells: []TableCell = &.{},
     plain_text: []u8,
 };
 
@@ -83,12 +89,14 @@ pub fn buildLines(
                         .marker = false,
                     });
                 }
+                const line_idx = lines.items.len;
                 try appendLineFromInputs(allocator, &lines, .{
                     .kind = .table,
                     .heading_level = 0,
                     .quote_depth = 0,
                     .indent_level = 0,
                 }, run_inputs.items);
+                lines.items[line_idx].table_cells = try parseTableCells(allocator, lines.items[line_idx].plain_text);
             },
             .heading, .paragraph, .list_item, .blockquote => {
                 var run_inputs = std.ArrayList(RunInput).empty;
@@ -161,10 +169,23 @@ pub fn freeLines(allocator: std.mem.Allocator, lines: *std.ArrayList(RenderLine)
             if (run.href) |href| allocator.free(href);
         }
         if (line.runs.len > 0) allocator.free(line.runs);
+        freeTableCells(allocator, line.table_cells);
         allocator.free(line.plain_text);
     }
     lines.deinit(allocator);
     lines.* = .{};
+}
+
+fn freeTableCells(allocator: std.mem.Allocator, table_cells: []TableCell) void {
+    for (table_cells) |cell| {
+        for (cell.runs) |run| {
+            allocator.free(run.text);
+            if (run.href) |href| allocator.free(href);
+        }
+        if (cell.runs.len > 0) allocator.free(cell.runs);
+        allocator.free(cell.plain_text);
+    }
+    if (table_cells.len > 0) allocator.free(table_cells);
 }
 
 const RunInput = struct {
@@ -330,6 +351,93 @@ fn appendLineFromInputs(
     });
 }
 
+fn parseTableCells(allocator: std.mem.Allocator, row_text: []const u8) ![]TableCell {
+    var cells_buf: [parser.max_table_columns][]const u8 = undefined;
+    const col_count = splitTableCells(row_text, &cells_buf);
+    if (col_count == 0) return &.{};
+    if (isTableSeparatorLine(cells_buf[0..col_count])) return &.{};
+
+    var table_cells = std.ArrayList(TableCell).empty;
+    errdefer {
+        freeTableCells(allocator, table_cells.items);
+    }
+
+    for (cells_buf[0..col_count]) |cell_text| {
+        const spans = try parser.parseInlineSpans(allocator, cell_text);
+        defer parser.freeStyledSpans(allocator, spans);
+
+        var runs = std.ArrayList(RenderRun).empty;
+        errdefer {
+            for (runs.items) |run| {
+                allocator.free(run.text);
+                if (run.href) |href| allocator.free(href);
+            }
+            runs.deinit(allocator);
+        }
+
+        for (spans) |span| {
+            const href = if (span.href) |span_href| try allocator.dupe(u8, span_href) else null;
+            try runs.append(allocator, .{
+                .text = try allocator.dupe(u8, span.text),
+                .style = span.style,
+                .marker = false,
+                .href = href,
+            });
+        }
+
+        const plain = try joinRunText(allocator, runs.items);
+        try table_cells.append(allocator, .{
+            .runs = try runs.toOwnedSlice(allocator),
+            .plain_text = plain,
+        });
+    }
+
+    return table_cells.toOwnedSlice(allocator);
+}
+
+fn splitTableCells(line: []const u8, cells: *[parser.max_table_columns][]const u8) usize {
+    var inner = std.mem.trim(u8, line, " \t");
+    if (inner.len == 0) return 0;
+    if (inner[0] == '|') inner = inner[1..];
+    if (inner.len > 0 and inner[inner.len - 1] == '|') inner = inner[0 .. inner.len - 1];
+    if (inner.len == 0) {
+        cells[0] = "";
+        return 1;
+    }
+
+    var count: usize = 0;
+    var start: usize = 0;
+    while (start <= inner.len and count < parser.max_table_columns) {
+        const end = std.mem.indexOfScalarPos(u8, inner, start, '|') orelse inner.len;
+        cells[count] = std.mem.trim(u8, inner[start..end], " \t");
+        count += 1;
+        if (end == inner.len) break;
+        start = end + 1;
+    }
+    return count;
+}
+
+fn isSeparatorCell(cell: []const u8) bool {
+    if (cell.len == 0) return false;
+    var dash_count: usize = 0;
+    for (cell) |ch| {
+        switch (ch) {
+            '-' => dash_count += 1,
+            ':' => {},
+            else => return false,
+        }
+    }
+    return dash_count >= 3;
+}
+
+fn isTableSeparatorLine(cells: []const []const u8) bool {
+    if (cells.len == 0) return false;
+    for (cells) |cell| {
+        if (!isSeparatorCell(cell)) return false;
+    }
+    return true;
+}
+
 fn joinRunText(allocator: std.mem.Allocator, runs: []const RenderRun) ![]u8 {
     var total: usize = 0;
     for (runs) |run| total += run.text.len;
@@ -386,6 +494,32 @@ test "renderer emits table line kind for markdown tables" {
     try std.testing.expectEqual(@as(usize, 3), lines.items.len);
     try std.testing.expectEqual(LineKind.table, lines.items[0].kind);
     try std.testing.expect(std.mem.indexOf(u8, lines.items[2].plain_text, "alpha") != null);
+}
+
+test "renderer parses inline styles inside table cells" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parser.parse(
+        allocator,
+        "| Name | Value |\n| --- | --- |\n| **bold** | *italic* and `code` |\n",
+    );
+    defer parser.freeBlocks(allocator, &blocks);
+
+    var lines = try buildLines(allocator, blocks.items, 80);
+    defer freeLines(allocator, &lines);
+
+    try std.testing.expectEqual(@as(usize, 3), lines.items.len);
+    try std.testing.expectEqual(LineKind.table, lines.items[2].kind);
+    try std.testing.expectEqual(@as(usize, 2), lines.items[2].table_cells.len);
+    try std.testing.expectEqual(parser.InlineStyle.bold, lines.items[2].table_cells[0].runs[0].style);
+    try std.testing.expectEqualStrings("bold", lines.items[2].table_cells[0].runs[0].text);
+
+    const value_runs = lines.items[2].table_cells[1].runs;
+    try std.testing.expectEqual(@as(usize, 3), value_runs.len);
+    try std.testing.expectEqual(parser.InlineStyle.italic, value_runs[0].style);
+    try std.testing.expectEqualStrings("italic", value_runs[0].text);
+    try std.testing.expectEqual(parser.InlineStyle.code, value_runs[2].style);
+    try std.testing.expectEqualStrings("code", value_runs[2].text);
 }
 
 test "renderer blockquote line omits marker characters" {

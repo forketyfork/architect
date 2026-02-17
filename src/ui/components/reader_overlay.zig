@@ -50,6 +50,12 @@ const DrawSize = struct {
     h: c_int,
 };
 
+const WrappedTableRun = struct {
+    text: []const u8,
+    style: markdown_parser.InlineStyle,
+    href: ?[]const u8 = null,
+};
+
 const max_table_columns: usize = markdown_parser.max_table_columns;
 
 pub const ToggleResult = enum {
@@ -449,7 +455,11 @@ pub const ReaderOverlayComponent = struct {
             var max_lines: usize = 1;
             var idx: usize = 0;
             while (idx < metrics.col_count) : (idx += 1) {
-                const lines = wrappedLineCount(metrics.cells[idx], metrics.cell_cols);
+                const plain_cell = if (idx < line.table_cells.len)
+                    line.table_cells[idx].plain_text
+                else
+                    metrics.cells[idx];
+                const lines = wrappedLineCount(plain_cell, metrics.cell_cols);
                 if (lines > max_lines) max_lines = lines;
             }
             metrics.max_lines = max_lines;
@@ -1010,7 +1020,7 @@ pub const ReaderOverlayComponent = struct {
             if (y > content_clip.y + content_clip.h) break;
 
             if (line.kind == .table) {
-                self.renderTableLine(renderer, host, font_cache, col_rect, y, lh, idx, line, progress, scaled_padding);
+                self.renderTableLine(renderer, host, font_cache, col_rect, y, lh, idx, line, hovered_href, progress, scaled_padding);
                 y += lh;
                 continue;
             }
@@ -1150,6 +1160,7 @@ pub const ReaderOverlayComponent = struct {
         lh: c_int,
         line_idx: usize,
         line: markdown_renderer.RenderLine,
+        hovered_href: ?[]const u8,
         progress: f32,
         scaled_padding: c_int,
     ) void {
@@ -1217,22 +1228,31 @@ pub const ReaderOverlayComponent = struct {
             log.warn("failed to load reader table font size {d}: {}", .{ line_font_size, err });
             return;
         };
-        const text_color = host.theme.palette[6];
         const cell_pad = dpi.scale(8, host.ui_scale);
 
         var cell_idx: usize = 0;
         while (cell_idx < metrics.col_count) : (cell_idx += 1) {
             const cell_left = left + @divFloor(row_rect.w * @as(c_int, @intCast(cell_idx)), count_i);
-            const cell_text = metrics.cells[cell_idx];
-            if (cell_text.len == 0) continue;
+            const cell_plain = if (cell_idx < line.table_cells.len)
+                line.table_cells[cell_idx].plain_text
+            else
+                metrics.cells[cell_idx];
+            const cell_runs: []const markdown_renderer.RenderRun = if (cell_idx < line.table_cells.len)
+                line.table_cells[cell_idx].runs
+            else
+                &.{};
+            if (cell_plain.len == 0) continue;
 
             const text_x = cell_left + cell_pad;
             const text_y = y + @divFloor(lh - (@as(c_int, @intCast(metrics.max_lines)) * metrics.line_px), 2);
-            self.renderWrappedTableCellText(
+            self.renderWrappedTableCellRuns(
                 renderer,
-                line_fonts.regular,
-                text_color,
-                cell_text,
+                host,
+                line,
+                line_fonts,
+                cell_runs,
+                cell_plain,
+                hovered_href,
                 text_x,
                 text_y,
                 metrics.cell_cols,
@@ -1242,95 +1262,196 @@ pub const ReaderOverlayComponent = struct {
         }
     }
 
-    fn renderWrappedTableCellText(
+    fn renderWrappedTableCellRuns(
         self: *ReaderOverlayComponent,
         renderer: *c.SDL_Renderer,
-        font: *c.TTF_Font,
-        color: c.SDL_Color,
-        text: []const u8,
+        host: *const types.UiHost,
+        line: markdown_renderer.RenderLine,
+        fonts: *FontSet,
+        runs: []const markdown_renderer.RenderRun,
+        plain_text: []const u8,
+        hovered_href: ?[]const u8,
         x: c_int,
         y: c_int,
         max_cols: usize,
         line_px: c_int,
         progress: f32,
     ) void {
-        if (text.len == 0 or max_cols == 0) return;
+        if (plain_text.len == 0 or max_cols == 0) return;
+        if (runs.len == 0) {
+            const fallback_color = if (line.kind == .table) host.theme.palette[6] else host.theme.foreground;
+            self.renderTableCellPlainLine(renderer, fonts.regular, fallback_color, plain_text, x, y, line_px, progress);
+            return;
+        }
 
-        var line_buf = std.ArrayList(u8).empty;
-        defer line_buf.deinit(self.allocator);
+        var wrapped_runs = std.ArrayList(WrappedTableRun).empty;
+        defer wrapped_runs.deinit(self.allocator);
 
         var draw_y = y;
         var cols: usize = 0;
-        var i: usize = 0;
-        while (i < text.len) {
-            if (text[i] == '\n') {
-                self.renderTableCellLine(renderer, font, color, line_buf.items, x, draw_y, line_px, progress);
-                line_buf.clearRetainingCapacity();
-                cols = 0;
-                draw_y += line_px;
-                i += 1;
-                continue;
-            }
-
-            const is_space = text[i] == ' ' or text[i] == '\t';
-            var end = i + 1;
-            while (end < text.len and text[end] != '\n' and ((text[end] == ' ' or text[end] == '\t') == is_space)) : (end += 1) {}
-
-            var token = text[i..end];
-            while (token.len > 0) {
-                if (is_space and cols == 0) break;
-
-                if (!is_space and token.len > max_cols) {
-                    if (cols > 0) {
-                        self.renderTableCellLine(renderer, font, color, line_buf.items, x, draw_y, line_px, progress);
-                        line_buf.clearRetainingCapacity();
-                        cols = 0;
-                        draw_y += line_px;
-                    }
-
-                    const chunk_len = @min(max_cols, token.len);
-                    line_buf.appendSlice(self.allocator, token[0..chunk_len]) catch |err| {
-                        log.warn("failed to build wrapped table cell line: {}", .{err});
-                        return;
-                    };
-                    cols += chunk_len;
-                    token = token[chunk_len..];
-
-                    if (cols >= max_cols and token.len > 0) {
-                        self.renderTableCellLine(renderer, font, color, line_buf.items, x, draw_y, line_px, progress);
-                        line_buf.clearRetainingCapacity();
-                        cols = 0;
-                        draw_y += line_px;
-                    }
+        for (runs) |run| {
+            var token_start: usize = 0;
+            while (token_start < run.text.len) {
+                if (run.text[token_start] == '\n') {
+                    self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
+                    wrapped_runs.clearRetainingCapacity();
+                    cols = 0;
+                    draw_y += line_px;
+                    token_start += 1;
                     continue;
                 }
 
-                if (cols + token.len > max_cols and cols > 0) {
-                    self.renderTableCellLine(renderer, font, color, line_buf.items, x, draw_y, line_px, progress);
-                    line_buf.clearRetainingCapacity();
-                    cols = 0;
-                    draw_y += line_px;
-                    if (is_space) {
-                        token = "";
+                const is_space = run.text[token_start] == ' ' or run.text[token_start] == '\t';
+                var token_end = token_start + 1;
+                while (token_end < run.text.len and run.text[token_end] != '\n' and ((run.text[token_end] == ' ' or run.text[token_end] == '\t') == is_space)) : (token_end += 1) {}
+
+                var token = run.text[token_start..token_end];
+                token_start = token_end;
+                while (token.len > 0) {
+                    if (is_space and cols == 0) break;
+
+                    if (!is_space and token.len > max_cols) {
+                        if (cols > 0) {
+                            self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
+                            wrapped_runs.clearRetainingCapacity();
+                            cols = 0;
+                            draw_y += line_px;
+                        }
+
+                        const chunk_len = @min(max_cols, token.len);
+                        wrapped_runs.append(self.allocator, .{
+                            .text = token[0..chunk_len],
+                            .style = run.style,
+                            .href = run.href,
+                        }) catch |err| {
+                            log.warn("failed to append wrapped table run chunk: {}", .{err});
+                            return;
+                        };
+                        cols += chunk_len;
+                        token = token[chunk_len..];
+
+                        if (cols >= max_cols and token.len > 0) {
+                            self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
+                            wrapped_runs.clearRetainingCapacity();
+                            cols = 0;
+                            draw_y += line_px;
+                        }
                         continue;
                     }
+
+                    if (cols + token.len > max_cols and cols > 0) {
+                        self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
+                        wrapped_runs.clearRetainingCapacity();
+                        cols = 0;
+                        draw_y += line_px;
+                        if (is_space) {
+                            token = "";
+                            continue;
+                        }
+                    }
+
+                    wrapped_runs.append(self.allocator, .{
+                        .text = token,
+                        .style = run.style,
+                        .href = run.href,
+                    }) catch |err| {
+                        log.warn("failed to append wrapped table run token: {}", .{err});
+                        return;
+                    };
+                    cols += token.len;
+                    token = "";
                 }
-
-                line_buf.appendSlice(self.allocator, token) catch |err| {
-                    log.warn("failed to append wrapped table cell token: {}", .{err});
-                    return;
-                };
-                cols += token.len;
-                token = "";
             }
-
-            i = end;
         }
 
-        self.renderTableCellLine(renderer, font, color, line_buf.items, x, draw_y, line_px, progress);
+        self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
     }
 
-    fn renderTableCellLine(
+    fn renderWrappedTableCellLine(
+        self: *ReaderOverlayComponent,
+        renderer: *c.SDL_Renderer,
+        host: *const types.UiHost,
+        line: markdown_renderer.RenderLine,
+        fonts: *FontSet,
+        wrapped_runs: []const WrappedTableRun,
+        x: c_int,
+        y: c_int,
+        max_h: c_int,
+        hovered_href: ?[]const u8,
+        progress: f32,
+    ) void {
+        if (wrapped_runs.len == 0) return;
+
+        var draw_x = x;
+        for (wrapped_runs) |wrapped_run| {
+            if (wrapped_run.text.len == 0) continue;
+
+            const run_font = chooseFontForStyle(fonts, wrapped_run.style, false);
+            const link_hovered = if (hovered_href) |href|
+                wrapped_run.href != null and std.mem.eql(u8, wrapped_run.href.?, href)
+            else
+                false;
+            const run_color = chooseRunColorForStyle(host, line, wrapped_run.style, false, link_hovered);
+            const tex = makeTextTexture(self.allocator, renderer, run_font, wrapped_run.text, run_color) catch |err| {
+                log.warn("failed to render wrapped table run texture: {}", .{err});
+                continue;
+            };
+            defer c.SDL_DestroyTexture(tex.tex);
+
+            const draw_size = fitTextureHeight(tex.w, tex.h, @max(1, max_h - 2));
+            const draw_y = y + @divFloor(max_h - draw_size.h, 2);
+            _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * progress));
+            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                .x = @floatFromInt(draw_x),
+                .y = @floatFromInt(draw_y),
+                .w = @floatFromInt(draw_size.w),
+                .h = @floatFromInt(draw_size.h),
+            });
+
+            if (wrapped_run.href) |href| {
+                self.link_hits.append(self.allocator, .{
+                    .rect = .{
+                        .x = draw_x,
+                        .y = draw_y,
+                        .w = draw_size.w,
+                        .h = draw_size.h,
+                    },
+                    .href = href,
+                }) catch |err| {
+                    log.warn("failed to track reader table link hitbox: {}", .{err});
+                };
+            }
+
+            if (wrapped_run.style == .strikethrough) {
+                const strike_y = y + @divFloor(max_h, 2);
+                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                _ = c.SDL_SetRenderDrawColor(renderer, run_color.r, run_color.g, run_color.b, @intFromFloat(220.0 * progress));
+                _ = c.SDL_RenderLine(
+                    renderer,
+                    @floatFromInt(draw_x),
+                    @floatFromInt(strike_y),
+                    @floatFromInt(draw_x + draw_size.w),
+                    @floatFromInt(strike_y),
+                );
+            }
+            if (wrapped_run.style == .link) {
+                const underline_y = y + @divFloor(max_h * 3, 4);
+                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                _ = c.SDL_SetRenderDrawColor(renderer, run_color.r, run_color.g, run_color.b, @intFromFloat(220.0 * progress));
+                _ = c.SDL_RenderLine(
+                    renderer,
+                    @floatFromInt(draw_x),
+                    @floatFromInt(underline_y),
+                    @floatFromInt(draw_x + draw_size.w),
+                    @floatFromInt(underline_y),
+                );
+            }
+
+            draw_x += draw_size.w;
+        }
+    }
+
+    fn renderTableCellPlainLine(
         self: *ReaderOverlayComponent,
         renderer: *c.SDL_Renderer,
         font: *c.TTF_Font,
@@ -1344,7 +1465,7 @@ pub const ReaderOverlayComponent = struct {
         if (text.len == 0) return;
 
         const tex = makeTextTexture(self.allocator, renderer, font, text, color) catch |err| {
-            log.warn("failed to render table cell wrapped line texture: {}", .{err});
+            log.warn("failed to render table cell plain line texture: {}", .{err});
             return;
         };
         defer c.SDL_DestroyTexture(tex.tex);
@@ -1538,30 +1659,51 @@ pub const ReaderOverlayComponent = struct {
     }
 
     fn chooseRunColor(host: *const types.UiHost, line: markdown_renderer.RenderLine, run: markdown_renderer.RenderRun, link_hovered: bool) c.SDL_Color {
+        return chooseRunColorForStyle(host, line, run.style, run.marker, link_hovered);
+    }
+
+    fn chooseRunColorForStyle(
+        host: *const types.UiHost,
+        line: markdown_renderer.RenderLine,
+        style: markdown_parser.InlineStyle,
+        marker: bool,
+        link_hovered: bool,
+    ) c.SDL_Color {
         if (line.heading_level > 0) {
             return host.theme.accent;
         }
-        if (line.kind == .code or line.kind == .table or run.style == .code) {
-            return host.theme.palette[6];
-        }
-        if (run.style == .bold) {
-            return host.theme.foreground;
-        }
-        if (run.style == .italic) {
-            return host.theme.palette[4];
-        }
-        if (run.style == .link) {
+
+        if (style == .link) {
             return if (link_hovered) host.theme.palette[5] else host.theme.accent;
         }
-        if (run.marker) {
+        if (style == .code) {
             return host.theme.palette[3];
+        }
+        if (style == .bold) {
+            return host.theme.foreground;
+        }
+        if (style == .italic) {
+            return host.theme.palette[4];
+        }
+        if (line.kind == .code) {
+            return host.theme.palette[6];
+        }
+        if (marker) {
+            return host.theme.palette[3];
+        }
+        if (line.kind == .table) {
+            return host.theme.palette[6];
         }
         return host.theme.foreground;
     }
 
     fn chooseFont(fonts: *FontSet, run: markdown_renderer.RenderRun, force_bold: bool) *c.TTF_Font {
-        const want_bold = force_bold or run.style == .bold;
-        const want_italic = run.style == .italic;
+        return chooseFontForStyle(fonts, run.style, force_bold);
+    }
+
+    fn chooseFontForStyle(fonts: *FontSet, style: markdown_parser.InlineStyle, force_bold: bool) *c.TTF_Font {
+        const want_bold = force_bold or style == .bold;
+        const want_italic = style == .italic;
 
         if (want_bold and want_italic) {
             if (fonts.bold_italic) |font| return font;

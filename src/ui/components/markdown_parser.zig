@@ -188,16 +188,18 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
 pub fn freeBlocks(allocator: std.mem.Allocator, blocks: *std.ArrayList(DisplayBlock)) void {
     for (blocks.items) |block| {
         if (block.code_language) |lang| allocator.free(lang);
-        for (block.spans) |span| {
-            allocator.free(span.text);
-            if (span.href) |href| allocator.free(href);
-        }
-        if (block.spans.len > 0) {
-            allocator.free(block.spans);
-        }
+        freeStyledSpans(allocator, block.spans);
     }
     blocks.deinit(allocator);
     blocks.* = .{};
+}
+
+pub fn freeStyledSpans(allocator: std.mem.Allocator, spans: []StyledSpan) void {
+    for (spans) |span| {
+        allocator.free(span.text);
+        if (span.href) |href| allocator.free(href);
+    }
+    if (spans.len > 0) allocator.free(spans);
 }
 
 fn trimRightSpaces(line: []const u8) []const u8 {
@@ -571,7 +573,7 @@ fn buildSingleSpan(allocator: std.mem.Allocator, text: []const u8, style: Inline
     return spans.toOwnedSlice(allocator);
 }
 
-fn parseInlineSpans(allocator: std.mem.Allocator, text: []const u8) ![]StyledSpan {
+pub fn parseInlineSpans(allocator: std.mem.Allocator, text: []const u8) ![]StyledSpan {
     var spans = std.ArrayList(StyledSpan).empty;
     errdefer {
         for (spans.items) |span| {
