@@ -50,7 +50,7 @@ const DrawSize = struct {
     h: c_int,
 };
 
-const max_table_columns: usize = 24;
+const max_table_columns: usize = markdown_parser.max_table_columns;
 
 pub const ToggleResult = enum {
     opened,
@@ -996,6 +996,7 @@ pub const ReaderOverlayComponent = struct {
 
         const col_rect = readingColumnRect(host, overlay_rect, self.wrap_cols);
         const scaled_padding = dpi.scale(10, host.ui_scale);
+        const cached_char_w = layoutCharWidth(self, host);
         const hovered_href = self.hoveredLinkHref();
         self.link_hits.clearRetainingCapacity();
         var y: c_int = overlay_rect.y + title_h + scaled_padding - @as(c_int, @intFromFloat(self.overlay.scroll_offset));
@@ -1049,10 +1050,8 @@ pub const ReaderOverlayComponent = struct {
                 y += lh;
                 continue;
             };
-            const regular = line_fonts.regular;
-            const cw = measureCharWidth(self.allocator, renderer, regular) orelse @max(1, host.cell_w);
 
-            self.renderSearchHighlights(renderer, host, col_rect, y, lh, cw, idx);
+            self.renderSearchHighlights(renderer, host, col_rect, y, lh, cached_char_w, idx);
 
             var x = col_rect.x + scaled_padding;
             if (line.quote_depth > 0) {
@@ -1483,12 +1482,12 @@ pub const ReaderOverlayComponent = struct {
         const fonts = try font_cache.get(dpi.scale(14, host.ui_scale));
         const prefix = "Search: ";
         const query = self.search_query.items;
+        var count_buf: [32]u8 = undefined;
         const count_text = if (self.matches.items.len == 0)
             "0/0"
         else blk: {
-            var buf: [32]u8 = undefined;
             const selected = (self.selected_match orelse 0) + 1;
-            break :blk try std.fmt.bufPrint(&buf, "{d}/{d}", .{ selected, self.matches.items.len });
+            break :blk try std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ selected, self.matches.items.len });
         };
 
         var text_buf = std.ArrayList(u8).empty;

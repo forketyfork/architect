@@ -384,7 +384,7 @@ fn isPromptHeuristicLine(line: []const u8) bool {
         std.mem.indexOfScalar(u8, trimmed, '@') != null;
 }
 
-const max_table_columns: usize = 32;
+pub const max_table_columns: usize = 32;
 const prompt_marker_line = "@@ARCH_PROMPT@@";
 
 fn splitTableCellsFixed(line: []const u8, cells: *[max_table_columns][]const u8) usize {
