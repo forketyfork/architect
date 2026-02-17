@@ -41,7 +41,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
-- Scrollback with trackpad/wheel support and grid indicator when scrolled
+- Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions

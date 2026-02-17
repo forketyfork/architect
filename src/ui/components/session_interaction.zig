@@ -3,12 +3,14 @@ const c = @import("../../c.zig");
 const ghostty_vt = @import("ghostty-vt");
 const input = @import("../../input/mapper.zig");
 const open_url = @import("../../os/open.zig");
+const geom = @import("../../geom.zig");
 const renderer_mod = @import("../../render/renderer.zig");
 const session_state = @import("../../session/state.zig");
 const url_matcher = @import("../../url_matcher.zig");
 const font_mod = @import("../../font.zig");
 const app_state = @import("../../app/app_state.zig");
 const types = @import("../types.zig");
+const scrollbar = @import("scrollbar.zig");
 const view_state = @import("../session_view_state.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 
@@ -154,6 +156,11 @@ pub const SessionInteractionComponent = struct {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
+                if (event.button.button == c.SDL_BUTTON_LEFT and
+                    self.handleTerminalScrollbarMouseDown(host, mouse_x, mouse_y))
+                {
+                    return true;
+                }
 
                 if (host.view_mode == .Grid) {
                     const grid_col_idx: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
@@ -202,6 +209,9 @@ pub const SessionInteractionComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.button == c.SDL_BUTTON_LEFT and self.finishTerminalScrollbarDrag(host.now_ms)) {
+                    return true;
+                }
                 if (host.view_mode == .Full and event.button.button == c.SDL_BUTTON_LEFT) {
                     const focused_idx = host.focused_session;
                     if (focused_idx >= self.views.len) return false;
@@ -214,8 +224,10 @@ pub const SessionInteractionComponent = struct {
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
 
                 var desired_cursor: CursorKind = .arrow;
+                const dragging_scrollbar = self.handleTerminalScrollbarDrag(host, mouse_x, mouse_y);
+                const over_scrollbar = self.updateTerminalScrollbarHover(host, mouse_x, mouse_y) or dragging_scrollbar;
 
-                if (host.view_mode == .Full) {
+                if (!dragging_scrollbar and host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
                     if (focused_idx < self.sessions.len) {
                         var focused = self.sessions[focused_idx];
@@ -280,6 +292,9 @@ pub const SessionInteractionComponent = struct {
                     }
                 }
 
+                if (over_scrollbar) {
+                    desired_cursor = .pointer;
+                }
                 self.updateCursor(desired_cursor);
                 return true;
             },
@@ -369,8 +384,9 @@ pub const SessionInteractionComponent = struct {
 
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
-            updateScrollInertia(session, &self.views[idx], delta_time_s);
             const view = &self.views[idx];
+            updateScrollInertia(session, view, delta_time_s, host.now_ms);
+            view.terminal_scrollbar.update(host.now_ms);
             if (view.wave_start_time > 0) {
                 const wave_elapsed = host.now_ms - view.wave_start_time;
                 if (wave_elapsed >= wave_total_ms) {
@@ -386,8 +402,128 @@ pub const SessionInteractionComponent = struct {
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
             if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
+            if (view.terminal_scrollbar.wantsFrame(host.now_ms)) return true;
         }
         return false;
+    }
+
+    const ScrollbarContext = struct {
+        session: *SessionState,
+        view: *SessionViewState,
+        metrics: scrollbar.Metrics,
+        layout: scrollbar.Layout,
+    };
+
+    fn finishTerminalScrollbarDrag(self: *SessionInteractionComponent, now_ms: i64) bool {
+        var handled = false;
+        for (self.views) |*view| {
+            if (view.terminal_scrollbar.dragging) {
+                view.terminal_scrollbar.endDrag(now_ms);
+                handled = true;
+            }
+        }
+        return handled;
+    }
+
+    fn handleTerminalScrollbarMouseDown(self: *SessionInteractionComponent, host: *const types.UiHost, mouse_x: c_int, mouse_y: c_int) bool {
+        const hovered_session = calculateHoveredSession(mouse_x, mouse_y, host) orelse return false;
+        const ctx = self.terminalScrollbarContext(host, hovered_session) orelse return false;
+
+        switch (scrollbar.hitTest(ctx.layout, mouse_x, mouse_y)) {
+            .thumb => {
+                ctx.view.terminal_scrollbar.beginDrag(ctx.layout, mouse_y, host.now_ms);
+                ctx.session.markDirty();
+                return true;
+            },
+            .track => {
+                const target_offset = scrollbar.offsetForTrackClick(ctx.layout, ctx.metrics, mouse_y);
+                self.applyTerminalScrollbarOffset(ctx, target_offset, host.now_ms);
+                return true;
+            },
+            .none => return false,
+        }
+    }
+
+    fn handleTerminalScrollbarDrag(self: *SessionInteractionComponent, host: *const types.UiHost, _: c_int, mouse_y: c_int) bool {
+        for (self.views, 0..) |*view, idx| {
+            if (!view.terminal_scrollbar.dragging) continue;
+            if (self.terminalScrollbarContext(host, idx)) |ctx| {
+                const target_offset = scrollbar.offsetForDrag(&view.terminal_scrollbar, ctx.layout, ctx.metrics, mouse_y);
+                self.applyTerminalScrollbarOffset(ctx, target_offset, host.now_ms);
+            } else {
+                view.terminal_scrollbar.endDrag(host.now_ms);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn updateTerminalScrollbarHover(self: *SessionInteractionComponent, host: *const types.UiHost, mouse_x: c_int, mouse_y: c_int) bool {
+        const hovered_session = calculateHoveredSession(mouse_x, mouse_y, host);
+        var over_scrollbar = false;
+
+        for (self.views, 0..) |*view, idx| {
+            if (view.terminal_scrollbar.dragging) {
+                view.terminal_scrollbar.setHovered(true, host.now_ms);
+                over_scrollbar = true;
+                continue;
+            }
+
+            if (hovered_session != null and hovered_session.? == idx) {
+                if (self.terminalScrollbarContext(host, idx)) |ctx| {
+                    const hovered = scrollbar.hitTest(ctx.layout, mouse_x, mouse_y) != .none;
+                    view.terminal_scrollbar.setHovered(hovered, host.now_ms);
+                    if (hovered) {
+                        over_scrollbar = true;
+                    }
+                } else {
+                    view.terminal_scrollbar.setHovered(false, host.now_ms);
+                }
+                continue;
+            }
+
+            view.terminal_scrollbar.setHovered(false, host.now_ms);
+        }
+
+        return over_scrollbar;
+    }
+
+    fn terminalScrollbarContext(self: *SessionInteractionComponent, host: *const types.UiHost, session_idx: usize) ?ScrollbarContext {
+        if (session_idx >= self.sessions.len or session_idx >= self.views.len) return null;
+        const session = self.sessions[session_idx];
+        if (!session.spawned) return null;
+        const terminal = session.terminal orelse return null;
+        const session_rect = sessionRectForIndex(host, session_idx) orelse return null;
+        const content_rect = terminalContentRect(session_rect) orelse return null;
+        const bar = terminal.screens.active.pages.scrollbar();
+        const metrics = scrollbar.Metrics.init(
+            @as(f32, @floatFromInt(bar.total)),
+            @as(f32, @floatFromInt(bar.offset)),
+            @as(f32, @floatFromInt(bar.len)),
+        );
+        const layout = scrollbar.computeLayout(content_rect, host.ui_scale, metrics) orelse return null;
+        return .{
+            .session = session,
+            .view = &self.views[session_idx],
+            .metrics = metrics,
+            .layout = layout,
+        };
+    }
+
+    fn applyTerminalScrollbarOffset(_: *SessionInteractionComponent, ctx: ScrollbarContext, raw_offset: f32, now_ms: i64) void {
+        const clamped_offset = std.math.clamp(raw_offset, 0.0, ctx.metrics.maxOffset());
+        if (ctx.session.terminal) |*terminal| {
+            var pages = &terminal.screens.active.pages;
+            const target_row: usize = @intFromFloat(std.math.round(clamped_offset));
+            pages.scroll(.{ .row = target_row });
+            ctx.view.is_viewing_scrollback = (pages.viewport != .active);
+            ctx.view.scroll_velocity = 0.0;
+            ctx.view.scroll_remainder = 0.0;
+            ctx.view.scroll_inertia_allowed = false;
+            ctx.view.last_scroll_time = now_ms;
+            ctx.view.terminal_scrollbar.noteActivity(now_ms);
+            ctx.session.markDirty();
+        }
     }
 
     fn updateCursor(self: *SessionInteractionComponent, desired: CursorKind) void {
@@ -828,6 +964,7 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
         var pages = &terminal.screens.active.pages;
         pages.scroll(.{ .delta_row = delta });
         view.is_viewing_scrollback = (pages.viewport != .active);
+        view.terminal_scrollbar.noteActivity(now);
         session.markDirty();
     }
 
@@ -836,7 +973,7 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
     view.scroll_velocity = std.math.clamp(view.scroll_velocity, -max_scroll_velocity, max_scroll_velocity);
 }
 
-fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32) void {
+fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32, now_ms: i64) void {
     if (!session.spawned) return;
     if (!view.scroll_inertia_allowed) return;
     if (view.scroll_velocity == 0.0) return;
@@ -862,6 +999,7 @@ fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_ti
             var pages = &terminal.screens.active.pages;
             pages.scroll(.{ .delta_row = scroll_lines });
             view.is_viewing_scrollback = (pages.viewport != .active);
+            view.terminal_scrollbar.noteActivity(now_ms);
             session.markDirty();
         }
 
@@ -895,5 +1033,43 @@ fn calculateHoveredSession(
             }
             return null;
         },
+    };
+}
+
+fn sessionRectForIndex(host: *const types.UiHost, idx: usize) ?geom.Rect {
+    return switch (host.view_mode) {
+        .Grid, .GridResizing => {
+            const max_slots = host.grid_cols * host.grid_rows;
+            if (idx >= max_slots) return null;
+            const grid_col: c_int = @intCast(idx % host.grid_cols);
+            const grid_row: c_int = @intCast(idx / host.grid_cols);
+            return .{
+                .x = grid_col * host.cell_w,
+                .y = grid_row * host.cell_h,
+                .w = host.cell_w,
+                .h = host.cell_h,
+            };
+        },
+        .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => {
+            if (idx != host.focused_session) return null;
+            return .{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
+        },
+        .Expanding, .Collapsing => {
+            if (idx != host.focused_session) return null;
+            return host.animating_rect orelse geom.Rect{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
+        },
+    };
+}
+
+fn terminalContentRect(session_rect: geom.Rect) ?geom.Rect {
+    const padding = renderer_mod.terminal_padding;
+    const w = session_rect.w - padding * 2;
+    const h = session_rect.h - padding * 2;
+    if (w <= 0 or h <= 0) return null;
+    return .{
+        .x = session_rect.x + padding,
+        .y = session_rect.y + padding,
+        .w = w,
+        .h = h,
     };
 }

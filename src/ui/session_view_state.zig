@@ -1,5 +1,6 @@
 const app_state = @import("../app/app_state.zig");
 const ghostty_vt = @import("ghostty-vt");
+const scrollbar = @import("components/scrollbar.zig");
 
 pub const SessionViewState = struct {
     status: app_state.SessionStatus = .running,
@@ -15,6 +16,7 @@ pub const SessionViewState = struct {
     hovered_link_start: ?ghostty_vt.Pin = null,
     hovered_link_end: ?ghostty_vt.Pin = null,
     wave_start_time: i64 = 0,
+    terminal_scrollbar: scrollbar.State = .{},
 
     pub fn reset(self: *SessionViewState) void {
         self.* = .{};
@@ -37,5 +39,6 @@ pub const SessionViewState = struct {
         self.scroll_remainder = 0.0;
         self.last_scroll_time = 0;
         self.scroll_inertia_allowed = true;
+        self.terminal_scrollbar.hideNow();
     }
 };

@@ -2013,6 +2013,7 @@ pub fn run() !void {
                 render_width,
                 render_height,
                 &theme,
+                ui_scale,
                 config.grid.font_scale,
                 &grid,
             ) catch |err| {
