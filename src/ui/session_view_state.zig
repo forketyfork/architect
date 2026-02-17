@@ -19,6 +19,7 @@ pub const SessionViewState = struct {
     terminal_scrollbar: scrollbar.State = .{},
 
     pub fn reset(self: *SessionViewState) void {
+        self.terminal_scrollbar.deinit();
         self.* = .{};
     }
 

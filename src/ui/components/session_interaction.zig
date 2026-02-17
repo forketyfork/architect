@@ -81,6 +81,9 @@ pub const SessionInteractionComponent = struct {
 
     pub fn destroy(self: *SessionInteractionComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        for (self.views) |*view| {
+            view.terminal_scrollbar.deinit();
+        }
         if (self.arrow_cursor) |cursor| {
             c.SDL_DestroyCursor(cursor);
         }

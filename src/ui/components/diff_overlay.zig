@@ -3347,6 +3347,7 @@ pub const DiffOverlayComponent = struct {
 
     fn destroy(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.scrollbar_state.deinit();
         self.clearContent();
         self.display_rows.deinit(self.allocator);
         if (self.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);
