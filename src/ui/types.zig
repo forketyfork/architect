@@ -55,6 +55,7 @@ pub const UiAction = union(enum) {
     DespawnSession: usize,
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
+    ToggleReaderOverlay: void,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
 };

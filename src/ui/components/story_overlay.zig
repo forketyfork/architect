@@ -35,6 +35,11 @@ const TextTex = struct {
     h: c_int,
 };
 
+const DrawSize = struct {
+    w: c_int,
+    h: c_int,
+};
+
 const Cache = struct {
     ui_scale: f32,
     font_generation: u64,
@@ -372,8 +377,9 @@ pub const StoryOverlayComponent = struct {
                     const dest_x: c_int = rect.x + segment.x_offset;
                     const dest_y: c_int = y_pos;
 
-                    var render_w: c_int = segment.w;
-                    const render_h: c_int = segment.h;
+                    const max_text_h = @max(1, line_h - dpi.scale(4, host.ui_scale));
+                    const draw_size = fitTextureHeight(segment.w, segment.h, max_text_h);
+                    var render_w: c_int = draw_size.w;
                     var clip_src: c.SDL_FRect = undefined;
                     var src_ptr: ?*const c.SDL_FRect = null;
 
@@ -381,22 +387,24 @@ pub const StoryOverlayComponent = struct {
                     const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
                     const max_width = rect.w - used - scaled_padding;
                     if (max_width <= 0) continue;
-                    if (segment.w > max_width) {
+                    if (render_w > max_width) {
                         render_w = max_width;
-                        clip_src = c.SDL_FRect{
-                            .x = 0,
-                            .y = 0,
-                            .w = @floatFromInt(render_w),
-                            .h = @floatFromInt(render_h),
-                        };
-                        src_ptr = &clip_src;
+                        if (draw_size.w == segment.w and draw_size.h == segment.h) {
+                            clip_src = c.SDL_FRect{
+                                .x = 0,
+                                .y = 0,
+                                .w = @floatFromInt(render_w),
+                                .h = @floatFromInt(draw_size.h),
+                            };
+                            src_ptr = &clip_src;
+                        }
                     }
 
                     _ = c.SDL_RenderTexture(renderer, segment.tex, src_ptr, &c.SDL_FRect{
                         .x = @floatFromInt(dest_x),
-                        .y = @floatFromInt(dest_y),
+                        .y = @floatFromInt(dest_y + @divFloor(line_h - draw_size.h, 2)),
                         .w = @floatFromInt(render_w),
-                        .h = @floatFromInt(render_h),
+                        .h = @floatFromInt(draw_size.h),
                     });
                 }
             }
@@ -483,6 +491,17 @@ pub const StoryOverlayComponent = struct {
             .w = @floatFromInt(tex_w),
             .h = @floatFromInt(tex_h),
         });
+    }
+
+    fn fitTextureHeight(tex_w: c_int, tex_h: c_int, max_h: c_int) DrawSize {
+        if (tex_w <= 0 or tex_h <= 0) return .{ .w = 0, .h = 0 };
+        if (max_h <= 0 or tex_h <= max_h) return .{ .w = tex_w, .h = tex_h };
+
+        const scale = @as(f32, @floatFromInt(max_h)) / @as(f32, @floatFromInt(tex_h));
+        return .{
+            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(tex_w)) * scale))),
+            .h = max_h,
+        };
     }
 
     fn renderBezierArrows(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost) void {
