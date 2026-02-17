@@ -7,6 +7,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../scale.zig");
 const easing = @import("../../anim/easing.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
+const scrollbar = @import("scrollbar.zig");
 
 const log = std.log.scoped(.diff_overlay);
 
@@ -121,6 +122,7 @@ const GitResult = struct {
 pub const DiffOverlayComponent = struct {
     allocator: std.mem.Allocator,
     overlay: FullscreenOverlay = .{},
+    scrollbar_state: scrollbar.State = .{},
 
     files: std.ArrayList(DiffFile) = .{},
     raw_output: ?[]u8 = null,
@@ -215,6 +217,7 @@ pub const DiffOverlayComponent = struct {
     pub fn hide(self: *DiffOverlayComponent, now_ms: i64) void {
         self.saveCommentsToFile();
         self.setCursor(.arrow);
+        self.scrollbar_state.hideNow();
         self.overlay.hide(now_ms);
     }
 
@@ -768,6 +771,7 @@ pub const DiffOverlayComponent = struct {
             self.raw_output = null;
         }
         self.overlay.scroll_offset = 0;
+        self.scrollbar_state.hideNow();
     }
 
     fn clearDisplayRows(self: *DiffOverlayComponent) void {
@@ -936,6 +940,27 @@ pub const DiffOverlayComponent = struct {
         return dpi.scale(line_height, host.ui_scale);
     }
 
+    fn scrollContentRect(rect: geom.Rect, title_h: c_int) geom.Rect {
+        return .{
+            .x = rect.x,
+            .y = rect.y + title_h,
+            .w = rect.w,
+            .h = @max(0, rect.h - title_h),
+        };
+    }
+
+    fn syncScrollMetrics(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, title_h: c_int) scrollbar.Metrics {
+        const content_rect = scrollContentRect(rect, title_h);
+        const row_count_f: f32 = @floatFromInt(self.display_rows.items.len);
+        const line_h_f: f32 = @floatFromInt(self.lineHeight(host));
+        const total_comment_h: f32 = @floatFromInt(self.totalCommentPixelHeight(host));
+        const content_height = row_count_f * line_h_f + total_comment_h;
+        const viewport_height: f32 = @floatFromInt(content_rect.h);
+        self.overlay.max_scroll = @max(0, content_height - viewport_height);
+        self.overlay.scroll_offset = @min(self.overlay.max_scroll, self.overlay.scroll_offset);
+        return scrollbar.Metrics.init(content_height, self.overlay.scroll_offset, viewport_height);
+    }
+
     // --- Event handling ---
 
     fn handleEventFn(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -1039,7 +1064,10 @@ pub const DiffOverlayComponent = struct {
                     return true;
                 }
 
-                if (self.overlay.handleScrollKey(key, host)) return true;
+                if (self.overlay.handleScrollKey(key, host)) {
+                    self.scrollbar_state.noteActivity(host.now_ms);
+                    return true;
+                }
 
                 return true;
             },
@@ -1058,6 +1086,7 @@ pub const DiffOverlayComponent = struct {
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 self.overlay.handleMouseWheel(event.wheel.y);
+                self.scrollbar_state.noteActivity(host.now_ms);
                 return true;
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -1104,6 +1133,27 @@ pub const DiffOverlayComponent = struct {
                             self.show_agent_dropdown = true;
                         }
                         return true;
+                    }
+                }
+
+                if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    const rect = FullscreenOverlay.overlayRect(host);
+                    const title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
+                    const metrics = self.syncScrollMetrics(host, rect, title_h);
+                    if (scrollbar.computeLayout(scrollContentRect(rect, title_h), host.ui_scale, metrics)) |layout| {
+                        switch (scrollbar.hitTest(layout, mouse_x, mouse_y)) {
+                            .thumb => {
+                                self.scrollbar_state.beginDrag(layout, mouse_y, host.now_ms);
+                                return true;
+                            },
+                            .track => {
+                                self.overlay.scroll_offset = scrollbar.offsetForTrackClick(layout, metrics, mouse_y);
+                                self.scrollbar_state.noteActivity(host.now_ms);
+                                self.overlay.first_frame.markTransition();
+                                return true;
+                            },
+                            .none => {},
+                        }
                     }
                 }
 
@@ -1243,9 +1293,22 @@ pub const DiffOverlayComponent = struct {
 
                 const rect = FullscreenOverlay.overlayRect(host);
                 const scaled_title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
+                const metrics = self.syncScrollMetrics(host, rect, scaled_title_h);
+                const scroll_layout = scrollbar.computeLayout(scrollContentRect(rect, scaled_title_h), host.ui_scale, metrics);
                 const scaled_line_h = self.lineHeight(host);
                 const content_top = rect.y + scaled_title_h;
                 const scroll_int: c_int = @intFromFloat(self.overlay.scroll_offset);
+
+                if (self.scrollbar_state.dragging) {
+                    if (scroll_layout) |layout| {
+                        self.overlay.scroll_offset = scrollbar.offsetForDrag(&self.scrollbar_state, layout, metrics, mouse_y);
+                        self.scrollbar_state.noteActivity(host.now_ms);
+                    } else {
+                        self.scrollbar_state.endDrag(host.now_ms);
+                    }
+                }
+                const scroll_hit = if (scroll_layout) |layout| scrollbar.hitTest(layout, mouse_x, mouse_y) else .none;
+                self.scrollbar_state.setHovered(self.scrollbar_state.dragging or scroll_hit != .none, host.now_ms);
 
                 self.hovered_file = null;
                 self.delete_hovered_comment = null;
@@ -1288,11 +1351,21 @@ pub const DiffOverlayComponent = struct {
                         }
                     }
                 }
+                if (self.scrollbar_state.dragging or scroll_hit != .none) {
+                    want_cursor = .pointer;
+                }
                 self.setCursor(want_cursor);
 
                 return true;
             },
-            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_TEXT_EDITING => return true,
+            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.button == c.SDL_BUTTON_LEFT and self.scrollbar_state.dragging) {
+                    self.scrollbar_state.endDrag(host.now_ms);
+                    return true;
+                }
+                return true;
+            },
+            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_EDITING => return true,
             else => return false,
         }
     }
@@ -1304,6 +1377,7 @@ pub const DiffOverlayComponent = struct {
                 self.clearContent();
             }
         }
+        self.scrollbar_state.update(host.now_ms);
 
         if (self.comment_anim) |anim| {
             const comment_elapsed = host.now_ms - self.comment_anim_start_ms;
@@ -1343,9 +1417,12 @@ pub const DiffOverlayComponent = struct {
         return self.overlay.hitTest(host, x, y);
     }
 
-    fn wantsFrameFn(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+    fn wantsFrameFn(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.overlay.wantsFrame() or self.overlay.visible or self.comment_anim != null;
+        return self.overlay.wantsFrame() or
+            self.overlay.visible or
+            self.comment_anim != null or
+            self.scrollbar_state.wantsFrame(host.now_ms);
     }
 
     // --- Rendering ---
@@ -1364,13 +1441,15 @@ pub const DiffOverlayComponent = struct {
         const rect = FullscreenOverlay.animatedOverlayRect(host, progress);
         const scaled_title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
+        const content_rect = scrollContentRect(rect, scaled_title_h);
         const row_count_f: f32 = @floatFromInt(self.display_rows.items.len);
         const scaled_line_h_f: f32 = @floatFromInt(cache.line_height);
         const total_comment_h: f32 = @floatFromInt(self.totalCommentPixelHeight(host));
         const content_height: f32 = row_count_f * scaled_line_h_f + total_comment_h;
-        const viewport_height: f32 = @floatFromInt(rect.h - scaled_title_h);
+        const viewport_height: f32 = @floatFromInt(content_rect.h);
         self.overlay.max_scroll = @max(0, content_height - viewport_height);
         self.overlay.scroll_offset = @min(self.overlay.max_scroll, self.overlay.scroll_offset);
+        const scroll_metrics = scrollbar.Metrics.init(content_height, self.overlay.scroll_offset, viewport_height);
 
         self.overlay.renderFrame(renderer, host, rect, progress);
 
@@ -1392,7 +1471,12 @@ pub const DiffOverlayComponent = struct {
 
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
-        self.overlay.renderScrollbar(renderer, host, rect, scaled_title_h, content_height, viewport_height);
+        if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
+            scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
+            self.scrollbar_state.markDrawn();
+        } else {
+            self.scrollbar_state.hideNow();
+        }
         self.renderAgentDropdown(host, renderer, assets, rect);
 
         self.overlay.first_frame.markDrawn();
@@ -1419,7 +1503,7 @@ pub const DiffOverlayComponent = struct {
         const scaled_gutter_w = dpi.scale(gutter_width, host.ui_scale);
         const scaled_marker_w = dpi.scale(marker_width, host.ui_scale);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
-        const scrollbar_w = dpi.scale(10, host.ui_scale);
+        const scrollbar_w = scrollbar.reservedWidth(host.ui_scale);
         const text_area_w = rect.w - scaled_gutter_w * 2 - scaled_marker_w - scaled_padding - scrollbar_w;
         if (text_area_w <= 0) return;
 
@@ -3263,6 +3347,7 @@ pub const DiffOverlayComponent = struct {
 
     fn destroy(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.scrollbar_state.deinit();
         self.clearContent();
         self.display_rows.deinit(self.allocator);
         if (self.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);

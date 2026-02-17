@@ -13,6 +13,7 @@ const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
+const scrollbar = @import("../ui/components/scrollbar.zig");
 
 const log = std.log.scoped(.render);
 
@@ -79,7 +80,7 @@ pub fn render(
     renderer: *c.SDL_Renderer,
     render_cache: *RenderCache,
     sessions: []const *SessionState,
-    views: []const SessionViewState,
+    views: []SessionViewState,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
     grid_cols: usize,
@@ -92,6 +93,7 @@ pub fn render(
     window_width: c_int,
     window_height: c_int,
     theme: *const colors.Theme,
+    ui_scale: f32,
     grid_font_scale: f32,
     grid: ?*const GridLayout,
 ) RenderError!void {
@@ -123,13 +125,13 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme);
+                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -141,7 +143,7 @@ pub fn render(
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
@@ -149,7 +151,7 @@ pub fn render(
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -161,7 +163,7 @@ pub fn render(
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
@@ -169,7 +171,7 @@ pub fn render(
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -197,13 +199,13 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, font, term_cols, term_rows, current_time, theme);
+                    try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, true, theme);
+            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, true, theme, ui_scale);
         },
         .GridResizing => {
             // Render session contents first so borders draw on top.
@@ -236,7 +238,7 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, font, term_cols, term_rows, current_time, theme);
+                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, font, term_cols, term_rows, current_time, theme, ui_scale);
             }
 
             // Render borders and overlays on top of the animated content.
@@ -265,7 +267,7 @@ pub fn render(
                     };
                 };
 
-                renderSessionOverlays(renderer, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme);
+                renderSessionOverlays(renderer, session, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme, ui_scale);
             }
         },
     }
@@ -274,7 +276,7 @@ pub fn render(
 fn renderSession(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
-    view: *const SessionViewState,
+    view: *SessionViewState,
     cache_entry: *RenderCache.Entry,
     rect: Rect,
     scale: f32,
@@ -286,9 +288,10 @@ fn renderSession(
     current_time_ms: i64,
     is_grid_view: bool,
     theme: *const colors.Theme,
+    ui_scale: f32,
 ) RenderError!void {
     try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
-    renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme);
+    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
@@ -584,13 +587,15 @@ fn renderSessionContent(
 
 fn renderSessionOverlays(
     renderer: *c.SDL_Renderer,
-    view: *const SessionViewState,
+    session: *SessionState,
+    view: *SessionViewState,
     rect: Rect,
     is_focused: bool,
     apply_effects: bool,
     current_time_ms: i64,
     is_grid_view: bool,
     theme: *const colors.Theme,
+    ui_scale: f32,
 ) void {
     const has_attention = is_grid_view and view.attention;
     const border_thickness: c_int = attention_thickness;
@@ -627,18 +632,6 @@ fn renderSessionOverlays(
                 primitives.drawThickBorder(renderer, focus_rect, border_thickness, focus_blue);
             }
         }
-    }
-
-    if (is_grid_view and view.is_viewing_scrollback) {
-        const yellow = theme.palette[3];
-        _ = c.SDL_SetRenderDrawColor(renderer, yellow.r, yellow.g, yellow.b, 220);
-        const indicator_rect = c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y + rect.h - 4),
-            .w = @floatFromInt(rect.w),
-            .h = 4.0,
-        };
-        _ = c.SDL_RenderFillRect(renderer, &indicator_rect);
     }
 
     if (has_attention) {
@@ -681,6 +674,54 @@ fn renderSessionOverlays(
         };
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
+
+    renderTerminalScrollbar(renderer, session, view, rect, theme, ui_scale);
+}
+
+fn renderTerminalScrollbar(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    rect: Rect,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) void {
+    if (!session.spawned) {
+        view.terminal_scrollbar.hideNow();
+        return;
+    }
+    const terminal = session.terminal orelse {
+        view.terminal_scrollbar.hideNow();
+        return;
+    };
+    const content_rect = terminalContentRect(rect) orelse {
+        view.terminal_scrollbar.hideNow();
+        return;
+    };
+    const bar = terminal.screens.active.pages.scrollbar();
+    const metrics = scrollbar.Metrics.init(
+        @as(f32, @floatFromInt(bar.total)),
+        @as(f32, @floatFromInt(bar.offset)),
+        @as(f32, @floatFromInt(bar.len)),
+    );
+    const layout = scrollbar.computeLayout(content_rect, ui_scale, metrics) orelse {
+        view.terminal_scrollbar.hideNow();
+        return;
+    };
+    scrollbar.render(renderer, layout, theme.accent, &view.terminal_scrollbar);
+    view.terminal_scrollbar.markDrawn();
+}
+
+fn terminalContentRect(rect: Rect) ?Rect {
+    const padded_w = rect.w - terminal_padding * 2;
+    const padded_h = rect.h - terminal_padding * 2;
+    if (padded_w <= 0 or padded_h <= 0) return null;
+    return .{
+        .x = rect.x + terminal_padding,
+        .y = rect.y + terminal_padding,
+        .w = padded_w,
+        .h = padded_h,
+    };
 }
 
 fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry, session: *SessionState, width: c_int, height: c_int) bool {
@@ -712,7 +753,7 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
 fn renderGridSessionCached(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
-    view: *const SessionViewState,
+    view: *SessionViewState,
     cache_entry: *RenderCache.Entry,
     rect: Rect,
     scale: f32,
@@ -724,6 +765,7 @@ fn renderGridSessionCached(
     term_rows: u16,
     current_time_ms: i64,
     theme: *const colors.Theme,
+    ui_scale: f32,
 ) RenderError!void {
     if (!session.spawned) {
         cache_entry.presented_epoch = session.render_epoch;
@@ -747,7 +789,7 @@ fn renderGridSessionCached(
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
                 if (is_waving and render_overlays) {
-                    renderSessionOverlays(renderer, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme);
+                    renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
                 }
                 cache_entry.cache_epoch = session.render_epoch;
                 _ = c.SDL_SetRenderTarget(renderer, null);
@@ -764,7 +806,7 @@ fn renderGridSessionCached(
                 };
                 _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
                 if (render_overlays) {
-                    renderSessionOverlays(renderer, view, rect, is_focused, apply_effects, current_time_ms, true, theme);
+                    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
                 }
             }
             cache_entry.presented_epoch = session.render_epoch;
@@ -773,7 +815,7 @@ fn renderGridSessionCached(
     }
 
     if (render_overlays) {
-        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, theme);
+        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, theme, ui_scale);
         return;
     }
 
