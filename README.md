@@ -35,10 +35,11 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Recent folders** (⌘O) — quickly `cd` into recently visited directories with arrow key selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
+- **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views

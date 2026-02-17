@@ -38,7 +38,7 @@ graph TD
     subgraph UI Overlay Layer
         UR["ui/root.zig<br/><i>Component registry, z-index dispatch</i>"]
         UI_CORE["component.zig, types.zig,<br/>session_view_state, first_frame_guard"]
-        COMPONENTS["ui/components/*<br/><i>15+ overlay and widget implementations</i>"]
+        COMPONENTS["ui/components/*<br/><i>16+ overlay and widget implementations</i>"]
     end
 
     subgraph Shared Utilities
@@ -204,6 +204,27 @@ font.zig -> HarfBuzz shaping -> glyph textures
 SDL_RenderTexture() -> frame presented
 ```
 
+### Reader Mode Content Path
+
+```
+Focused terminal session
+    | dump scrollback + viewport
+    v
+app/terminal_history.extractSessionText()
+    | ANSI escape stripping
+    v
+Raw UTF-8 terminal history text
+    | markdown parse
+    v
+ui/components/markdown_parser.DisplayBlock[]
+    | line layout + wrapping
+    v
+ui/components/markdown_renderer.RenderLine[]
+    | render as SDL text runs in centered reader column
+    v
+Reader overlay (live updates + search)
+```
+
 ### Terminal Input Path
 
 ```
@@ -283,6 +304,7 @@ Renderer draws attention border / story overlay
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint | `main()` | `app/runtime` |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, all `app/*` modules |
+| `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, and convert OSC 133 prompt markers into reader-friendly prompt marker lines | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
@@ -298,8 +320,11 @@ Renderer draws attention border / story overlay
 | `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
 | `ui/session_view_state.zig` | Per-session UI interaction state (selection, scroll, hover, agent status, scrollbar fade/drag state) | `SessionViewState` (selection, scroll offset, hover, status, terminal scrollbar state) | `app/app_state` (for `SessionStatus` enum), `ui/components/scrollbar` |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
+| `ui/components/markdown_parser.zig` | Reader-mode markdown parser for headings, paragraphs, lists (including task checkboxes), blockquotes, markdown tables, fenced code, horizontal rules, inline styles (bold/italic/code/strikethrough/link), and prompt separator blocks (OSC-marker + heuristic prompt detection) | `parse()`, `freeBlocks()`, `DisplayBlock`, `StyledSpan` | std |
+| `ui/components/markdown_renderer.zig` | Reader-mode line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator line kinds | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |
 | `ui/story_parser.zig` | Standalone markdown parser for story files. No SDL/UI dependencies. Parses prose wrapping, `story-diff` fenced blocks, code block metadata, and anchor extraction (`**[N]**` in prose, `<!--ref:N-->` in code). | `parse()`, `freeDisplayRows()`, `DisplayRow`, `LineAnchor`, `CodeBlockMeta` | std |
-| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), story viewer (PR story file visualization with anchor badges and bezier arrows), fullscreen overlay helper (shared animation/scroll/close logic embedded by story and diff overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/reader_overlay.zig` | Fullscreen reader overlay for the selected terminal history (full view or grid selection) with live markdown updates, centered reading-width layout, bottom pinning, jump-to-bottom, incremental search, clickable links, shared scrollbar interactions, styled inline markdown in table cells, and left-to-right gradient prompt separators | `ReaderOverlayComponent`, `toggle()` | `ui/components/fullscreen_overlay`, `ui/components/scrollbar`, `app/terminal_history`, `ui/components/markdown_parser`, `ui/components/markdown_renderer`, `os/open`, `font_cache`, `geom`, `c` |
+| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), story viewer (PR story file visualization with anchor badges and bezier arrows), reader mode overlay, fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
 | Shared Utilities (`geom`, `colors`, `config`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, TOML config loading/persistence, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `Metrics`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
 ## Key Architectural Decisions
@@ -316,7 +341,7 @@ Renderer draws attention border / story overlay
 ### ADR-002: Component-Based UI Overlay System with VTable Dispatch
 
 - **Decision:** UI overlays are implemented as components registered with a central `UiRoot` registry, each conforming to a `VTable` interface (handleEvent, update, render, hitTest, wantsFrame, deinit). Components are dispatched by z-index, highest first.
-- **Context:** The application has 15+ distinct UI elements (help overlay, worktree picker, diff viewer, toast, quit dialog, etc.) that need independent lifecycle management, event handling priority, and rendering order. A centralized registry prevents ad-hoc event handling scattered across the main loop.
+- **Context:** The application has 16+ distinct UI elements (help overlay, worktree picker, diff viewer, reader mode, toast, quit dialog, etc.) that need independent lifecycle management, event handling priority, and rendering order. A centralized registry prevents ad-hoc event handling scattered across the main loop.
 - **Alternatives considered:**
   - *Immediate-mode GUI* -- rejected because retain-mode components with cached textures reduce per-frame CPU work, and the vtable pattern is idiomatic in Zig for polymorphic dispatch.
   - *Ad-hoc event handling in main.zig* -- rejected because it leads to unmaintainable event switch growth as UI features are added; the component pattern isolates concerns.
@@ -400,7 +425,7 @@ Renderer draws attention border / story overlay
 ### ADR-011: Hardcoded Keybindings
 
 - **Decision:** All keyboard shortcuts are hardcoded in the source code. There is no user-configurable keybinding system.
-- **Context:** The application has a small, focused set of shortcuts (Cmd+N, Cmd+W, Cmd+T, Cmd+D, Cmd+/, Cmd+1-0, Cmd+Return, Cmd+Q). A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
+- **Context:** The application has a small, focused set of shortcuts (Cmd+N, Cmd+W, Cmd+T, Cmd+D, Cmd+R, Cmd+/, Cmd+1-0, Cmd+Return, Cmd+Q, plus overlay-local bindings like Cmd+F in reader mode). A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
 - **Alternatives considered:**
   - *Config-driven keybindings* -- deferred, not rejected; may be added as the shortcut set grows, but current simplicity is preferred during early development.
 - **Date:** 2025 (input system implementation)

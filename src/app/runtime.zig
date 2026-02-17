@@ -645,6 +645,8 @@ pub fn run() !void {
     try ui.register(metrics_overlay_component.asComponent());
     const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
     try ui.register(diff_overlay_component.asComponent());
+    const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
+    try ui.register(reader_overlay_component.asComponent());
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
     try ui.register(story_overlay_component.asComponent());
 
@@ -1882,6 +1884,35 @@ pub fn run() !void {
                     .not_a_repo => ui.showToast("Not a git repository", now),
                     .clean => ui.showToast("Working tree clean", now),
                     .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now),
+                }
+            },
+            .ToggleReaderOverlay => {
+                const focused_has_foreground = foreground_cache.get(now, anim_state.focused_session, sessions);
+                const host_snapshot = ui_host.makeUiHost(
+                    now,
+                    render_width,
+                    render_height,
+                    ui_scale,
+                    cell_width_pixels,
+                    cell_height_pixels,
+                    grid.cols,
+                    grid.rows,
+                    full_cols,
+                    full_rows,
+                    &anim_state,
+                    sessions,
+                    session_ui_info,
+                    session_interaction_component.viewSlice(),
+                    focused_has_foreground,
+                    &theme,
+                );
+                switch (reader_overlay_component.toggle(&host_snapshot, now)) {
+                    .opened => {
+                        ui.showToast("Reader Mode", now);
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘R", now);
+                    },
+                    .closed => {},
+                    .unavailable => ui.showToast("Reader mode requires a selected running terminal", now),
                 }
             },
             .SendDiffComments => |dc_action| {
