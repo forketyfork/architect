@@ -202,7 +202,7 @@ pub fn renderBezierArrow(
         }
     }
 
-    // Arrowhead at the end
+    // Filled triangle arrowhead at the end
     const arrow_t = 1.0 - 2.0 / @as(f32, @floatFromInt(num_segments));
     const inv_at = 1.0 - arrow_t;
     const tail_x = inv_at * inv_at * inv_at * x1 + 3.0 * inv_at * inv_at * arrow_t * cp1x + 3.0 * inv_at * arrow_t * arrow_t * cp2x + arrow_t * arrow_t * arrow_t * x2;
@@ -215,21 +215,27 @@ pub fn renderBezierArrow(
 
     const adx = arrow_dx / arrow_len;
     const ady = arrow_dy / arrow_len;
-    const arrow_size: f32 = 8.0;
+    const arrow_size: f32 = 12.0;
+    const arrow_half_w: f32 = arrow_size * 0.45;
 
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 180);
-    _ = c.SDL_RenderLine(
-        renderer,
-        x2,
-        y2,
-        x2 - adx * arrow_size + ady * arrow_size * 0.5,
-        y2 - ady * arrow_size - adx * arrow_size * 0.5,
-    );
-    _ = c.SDL_RenderLine(
-        renderer,
-        x2,
-        y2,
-        x2 - adx * arrow_size - ady * arrow_size * 0.5,
-        y2 - ady * arrow_size + adx * arrow_size * 0.5,
-    );
+    // Animated alpha matching the line shimmer at t=1.0
+    const wave = @sin((1.0 * 8.0 - flow_offset) * std.math.pi);
+    const wave2 = @sin((1.0 * 13.0 + flow_offset * 1.3) * std.math.pi) * 0.5;
+    const combined = (wave + wave2) / 1.5;
+    const arrow_alpha: u8 = @intFromFloat(@max(0, @min(255.0, (120.0 + combined * 60.0) * 0.8)));
+
+    const tip_x = x2;
+    const tip_y = y2;
+    const left_x = x2 - adx * arrow_size + ady * arrow_half_w;
+    const left_y = y2 - ady * arrow_size - adx * arrow_half_w;
+    const right_x = x2 - adx * arrow_size - ady * arrow_half_w;
+    const right_y = y2 - ady * arrow_size + adx * arrow_half_w;
+
+    const verts = [3]c.SDL_Vertex{
+        .{ .position = .{ .x = tip_x, .y = tip_y }, .color = .{ .r = @as(f32, @floatFromInt(color.r)) / 255.0, .g = @as(f32, @floatFromInt(color.g)) / 255.0, .b = @as(f32, @floatFromInt(color.b)) / 255.0, .a = @as(f32, @floatFromInt(arrow_alpha)) / 255.0 } },
+        .{ .position = .{ .x = left_x, .y = left_y }, .color = .{ .r = @as(f32, @floatFromInt(color.r)) / 255.0, .g = @as(f32, @floatFromInt(color.g)) / 255.0, .b = @as(f32, @floatFromInt(color.b)) / 255.0, .a = @as(f32, @floatFromInt(arrow_alpha)) / 255.0 } },
+        .{ .position = .{ .x = right_x, .y = right_y }, .color = .{ .r = @as(f32, @floatFromInt(color.r)) / 255.0, .g = @as(f32, @floatFromInt(color.g)) / 255.0, .b = @as(f32, @floatFromInt(color.b)) / 255.0, .a = @as(f32, @floatFromInt(arrow_alpha)) / 255.0 } },
+    };
+    const indices = [3]c_int{ 0, 1, 2 };
+    _ = c.SDL_RenderGeometry(renderer, null, &verts, 3, &indices, 3);
 }
