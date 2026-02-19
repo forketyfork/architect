@@ -136,6 +136,7 @@ pub const SessionState = struct {
             .cols = self.pty_size.ws_col,
             .rows = self.pty_size.ws_row,
             .max_scrollback = 10_000_000,
+            .default_modes = .{ .grapheme_cluster = true },
         });
         errdefer terminal.deinit(self.allocator);
 
