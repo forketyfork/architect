@@ -126,7 +126,7 @@ pub const Font = struct {
     }
 
     fn shouldBaselineAlign(fallback: Fallback, cluster: []const u21) bool {
-        if (fallback == .emoji) return cluster.len == 1;
+        if (fallback == .emoji) return true;
         if (fallback != .primary) return true;
         if (cluster.len != 1) return false;
         return isSymbolLike(cluster[0]);
@@ -464,7 +464,7 @@ pub const Font = struct {
         var dest_x = base_x + (avail_w - dest_w) * 0.5;
         var dest_y = base_y + (avail_h - dest_h) * 0.5;
 
-        if (align_baseline and cluster.len == 1) {
+        if (align_baseline) {
             if (glyphMetrics(metrics_font, cluster[0])) |glyph| {
                 const glyph_h = glyph.max_y - glyph.min_y;
                 const glyph_center_x = (glyph.min_x + glyph.max_x) * 0.5;

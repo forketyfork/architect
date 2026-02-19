@@ -384,7 +384,7 @@ fn renderSessionContent(
                 .{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse continue;
 
             const cell = list_cell.cell;
-            const cp: u21 = if (cell.content_tag == .codepoint) cell.content.codepoint else 0;
+            const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint else 0;
             const glyph_width_cells: c_int = switch (cell.wide) {
                 .wide => 2,
                 else => 1,
