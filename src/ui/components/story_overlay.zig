@@ -57,7 +57,6 @@ pub const StoryOverlayComponent = struct {
     file_path: ?[]u8 = null,
 
     wrap_cols: usize = 0,
-    layout_char_w_px: c_int = 0,
 
     anchor_positions: std.ArrayList(AnchorPosition) = .{},
     hovered_anchor: ?u8 = null,
@@ -558,13 +557,6 @@ pub const StoryOverlayComponent = struct {
             };
         }
 
-        // Update layout_char_w_px for search highlight positioning
-        if (font_cache.get(dpi.scale(base_font_size, host.ui_scale)) catch null) |body_fonts| {
-            if (measureCharWidth(self.allocator, renderer, body_fonts.regular)) |measured| {
-                if (measured > 0) self.layout_char_w_px = measured;
-            }
-        }
-
         const content_clip = c.SDL_Rect{
             .x = overlay_rect.x,
             .y = overlay_rect.y + title_h,
@@ -1041,7 +1033,7 @@ pub const StoryOverlayComponent = struct {
             // Diff line first run: marker char uses fixed width, rest rendered separately
             if (line.kind == .story_diff_line and run_idx == 0 and run.text.len > 0 and run.anchor_number == null) {
                 // Marker character (1 byte, fixed pixel width)
-                if (target_byte <= byte_pos + 1) return pixel_x;
+                if (target_byte < byte_pos + 1) return pixel_x;
                 const mw = dpi.scale(marker_width, ui_scale);
                 byte_pos += 1;
                 pixel_x += mw;
@@ -1214,12 +1206,6 @@ pub const StoryOverlayComponent = struct {
         _ = c.SDL_GetTextureSize(texture, &w, &h);
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
         return .{ .tex = texture, .w = @intFromFloat(w), .h = @intFromFloat(h) };
-    }
-
-    fn measureCharWidth(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font: *c.TTF_Font) ?c_int {
-        const tex = makeTextTexture(allocator, renderer, font, "0", c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return null;
-        defer c.SDL_DestroyTexture(tex.tex);
-        return @max(1, tex.w);
     }
 
     fn fitTextureHeight(tex_w: c_int, tex_h: c_int, max_h: c_int) DrawSize {
