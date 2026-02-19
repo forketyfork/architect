@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.markdown_parser);
 
 pub const BlockKind = enum {
     heading,
@@ -10,6 +11,9 @@ pub const BlockKind = enum {
     code,
     horizontal_rule,
     blank,
+    story_diff_header,
+    story_diff_line,
+    story_code_line,
 };
 
 pub const InlineStyle = enum {
@@ -25,12 +29,26 @@ pub const StyledSpan = struct {
     text: []u8,
     style: InlineStyle,
     href: ?[]u8 = null,
+    anchor_number: ?u8 = null,
 };
 
 pub const TaskState = enum {
     none,
     unchecked,
     checked,
+};
+
+pub const CodeLineKind = enum { context, add, remove };
+
+pub const CodeBlockMeta = struct {
+    file: ?[]const u8 = null,
+    commit: ?[]const u8 = null,
+    change_type: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+};
+
+pub const ParseOptions = struct {
+    story_mode: bool = false,
 };
 
 pub const DisplayBlock = struct {
@@ -40,9 +58,18 @@ pub const DisplayBlock = struct {
     task_state: TaskState = .none,
     code_language: ?[]u8 = null,
     spans: []StyledSpan = &.{},
+    code_line_kind: CodeLineKind = .context,
 };
 
 pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(DisplayBlock) {
+    return parseWithOptions(allocator, input, .{});
+}
+
+pub fn parseStory(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(DisplayBlock) {
+    return parseWithOptions(allocator, input, .{ .story_mode = true });
+}
+
+fn parseWithOptions(allocator: std.mem.Allocator, input: []const u8, options: ParseOptions) !std.ArrayList(DisplayBlock) {
     var blocks = std.ArrayList(DisplayBlock).empty;
     errdefer freeBlocks(allocator, &blocks);
     if (input.len == 0) return blocks;
@@ -52,6 +79,8 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
 
     var in_code = false;
     var code_language: ?[]u8 = null;
+    var is_story_diff = false;
+    var story_diff_first_line = true;
 
     var line_start: usize = 0;
     while (line_start < input.len) {
@@ -64,6 +93,14 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
                 in_code = false;
                 if (code_language) |lang| allocator.free(lang);
                 code_language = null;
+                if (is_story_diff or (options.story_mode and !is_story_diff)) {
+                    try blocks.append(allocator, .{ .kind = .blank });
+                }
+                is_story_diff = false;
+            } else if (is_story_diff) {
+                try appendStoryDiffLine(allocator, &blocks, line, &story_diff_first_line);
+            } else if (options.story_mode) {
+                try appendStoryCodeLine(allocator, &blocks, line);
             } else {
                 var block = DisplayBlock{ .kind = .code };
                 if (code_language) |lang| {
@@ -77,41 +114,52 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         }
 
         if (isFenceLine(line)) {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             in_code = true;
             const lang = parseFenceLanguage(line);
-            if (lang.len > 0) {
-                code_language = try allocator.dupe(u8, lang);
+            if (options.story_mode and std.mem.eql(u8, lang, "story-diff")) {
+                is_story_diff = true;
+                story_diff_first_line = true;
+                try blocks.append(allocator, .{ .kind = .blank });
+            } else {
+                if (options.story_mode) {
+                    try blocks.append(allocator, .{ .kind = .blank });
+                }
+                if (lang.len > 0) {
+                    code_language = try allocator.dupe(u8, lang);
+                }
             }
             line_start = next_start;
             continue;
         }
 
         if (line.len == 0) {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             try blocks.append(allocator, .{ .kind = .blank });
             line_start = next_start;
             continue;
         }
 
-        if (std.mem.eql(u8, line, prompt_marker_line)) {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
-            try blocks.append(allocator, .{ .kind = .prompt_separator });
-            line_start = next_start;
-            continue;
-        }
+        if (!options.story_mode) {
+            if (std.mem.eql(u8, line, prompt_marker_line)) {
+                try flushParagraph(allocator, &blocks, &paragraph_lines, options);
+                try blocks.append(allocator, .{ .kind = .prompt_separator });
+                line_start = next_start;
+                continue;
+            }
 
-        const has_recent_prompt_separator = blocks.items.len > 0 and
-            blocks.items[blocks.items.len - 1].kind == .prompt_separator;
-        if (isPromptHeuristicLine(line) and !has_recent_prompt_separator) {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
-            try blocks.append(allocator, .{ .kind = .prompt_separator });
+            const has_recent_prompt_separator = blocks.items.len > 0 and
+                blocks.items[blocks.items.len - 1].kind == .prompt_separator;
+            if (isPromptHeuristicLine(line) and !has_recent_prompt_separator) {
+                try flushParagraph(allocator, &blocks, &paragraph_lines, options);
+                try blocks.append(allocator, .{ .kind = .prompt_separator });
+            }
         }
 
         if (isTableRowCandidate(line) and line_info.next_start != null) {
             const sep_info = readLine(input, line_info.next_start.?);
             if (isTableSeparatorLine(sep_info.line)) {
-                try flushParagraph(allocator, &blocks, &paragraph_lines);
+                try flushParagraph(allocator, &blocks, &paragraph_lines, options);
 
                 var table_lines = std.ArrayList([]const u8).empty;
                 errdefer table_lines.deinit(allocator);
@@ -134,7 +182,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         }
 
         if (parseHeading(line)) |heading| {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             var block = DisplayBlock{ .kind = .heading, .level = heading.level };
             block.spans = try parseInlineSpans(allocator, heading.text);
             try blocks.append(allocator, block);
@@ -143,7 +191,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         }
 
         if (parseListItem(line)) |item| {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             var block = DisplayBlock{
                 .kind = .list_item,
                 .level = item.indent,
@@ -157,7 +205,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         }
 
         if (parseBlockquote(line)) |quote| {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             var block = DisplayBlock{ .kind = .blockquote, .level = quote.depth };
             block.spans = try parseInlineSpans(allocator, quote.text);
             try blocks.append(allocator, block);
@@ -166,14 +214,16 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         }
 
         if (isHorizontalRule(line)) {
-            try flushParagraph(allocator, &blocks, &paragraph_lines);
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
             try blocks.append(allocator, .{ .kind = .horizontal_rule });
             line_start = next_start;
             continue;
         }
 
         try paragraph_lines.append(allocator, line);
-        try flushParagraph(allocator, &blocks, &paragraph_lines);
+        if (!options.story_mode) {
+            try flushParagraph(allocator, &blocks, &paragraph_lines, options);
+        }
         line_start = next_start;
     }
 
@@ -181,7 +231,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Dis
         allocator.free(code_language.?);
     }
 
-    try flushParagraph(allocator, &blocks, &paragraph_lines);
+    try flushParagraph(allocator, &blocks, &paragraph_lines, options);
     return blocks;
 }
 
@@ -543,22 +593,31 @@ fn flushParagraph(
     allocator: std.mem.Allocator,
     blocks: *std.ArrayList(DisplayBlock),
     paragraph_lines: *std.ArrayList([]const u8),
+    options: ParseOptions,
 ) !void {
     if (paragraph_lines.items.len == 0) return;
 
-    var joined = std.ArrayList(u8).empty;
-    defer joined.deinit(allocator);
-
-    for (paragraph_lines.items, 0..) |line, idx| {
-        if (idx > 0) {
-            try joined.append(allocator, ' ');
+    if (options.story_mode) {
+        for (paragraph_lines.items) |para_line| {
+            var block = DisplayBlock{ .kind = .paragraph };
+            block.spans = try parseStoryInlineSpans(allocator, para_line);
+            try blocks.append(allocator, block);
         }
-        try joined.appendSlice(allocator, line);
-    }
+    } else {
+        var joined = std.ArrayList(u8).empty;
+        defer joined.deinit(allocator);
 
-    var block = DisplayBlock{ .kind = .paragraph };
-    block.spans = try parseInlineSpans(allocator, joined.items);
-    try blocks.append(allocator, block);
+        for (paragraph_lines.items, 0..) |para_line, idx| {
+            if (idx > 0) {
+                try joined.append(allocator, ' ');
+            }
+            try joined.appendSlice(allocator, para_line);
+        }
+
+        var block = DisplayBlock{ .kind = .paragraph };
+        block.spans = try parseInlineSpans(allocator, joined.items);
+        try blocks.append(allocator, block);
+    }
     paragraph_lines.clearRetainingCapacity();
 }
 
@@ -695,6 +754,264 @@ fn parseMarkdownLinkAt(text: []const u8, start: usize) ?ParsedLink {
         .href = href,
         .next_index = close_href + 1,
     };
+}
+
+// === Story-specific parsing helpers ===
+
+fn parseStoryInlineSpans(allocator: std.mem.Allocator, text: []const u8) ![]StyledSpan {
+    var spans = std.ArrayList(StyledSpan).empty;
+    errdefer {
+        for (spans.items) |span| {
+            allocator.free(span.text);
+            if (span.href) |href| allocator.free(href);
+        }
+        spans.deinit(allocator);
+    }
+
+    var pos: usize = 0;
+    while (pos < text.len) {
+        const next_anchor = findNextProseAnchor(text, pos);
+        if (next_anchor) |anc| {
+            if (anc.start > pos) {
+                const segment_spans = try parseInlineSpans(allocator, text[pos..anc.start]);
+                defer allocator.free(segment_spans);
+                for (segment_spans) |span| try spans.append(allocator, span);
+            }
+            const anchor_text = try formatAnchorText(allocator, anc.number);
+            try spans.append(allocator, .{
+                .text = anchor_text,
+                .style = .bold,
+                .anchor_number = anc.number,
+            });
+            pos = anc.end;
+        } else {
+            if (pos < text.len) {
+                const rest_spans = try parseInlineSpans(allocator, text[pos..]);
+                defer allocator.free(rest_spans);
+                for (rest_spans) |span| try spans.append(allocator, span);
+            }
+            break;
+        }
+    }
+
+    return spans.toOwnedSlice(allocator);
+}
+
+const ProseAnchorMatch = struct {
+    start: usize,
+    end: usize,
+    number: u8,
+};
+
+fn findNextProseAnchor(text: []const u8, from: usize) ?ProseAnchorMatch {
+    var i = from;
+    while (i + 5 <= text.len) : (i += 1) {
+        if (std.mem.eql(u8, text[i..][0..3], "**[")) {
+            const num_start = i + 3;
+            var num_end = num_start;
+            while (num_end < text.len and text[num_end] >= '0' and text[num_end] <= '9') : (num_end += 1) {}
+            if (num_end > num_start and num_end + 3 <= text.len and std.mem.eql(u8, text[num_end..][0..3], "]**")) {
+                const number = std.fmt.parseInt(u8, text[num_start..num_end], 10) catch |err| {
+                    log.debug("skipping invalid anchor number: {}", .{err});
+                    continue;
+                };
+                return .{ .start = i, .end = num_end + 3, .number = number };
+            }
+        }
+    }
+    return null;
+}
+
+fn formatAnchorText(allocator: std.mem.Allocator, number: u8) ![]u8 {
+    var buf: [8]u8 = undefined;
+    var pos: usize = 0;
+    buf[pos] = ' ';
+    pos += 1;
+    if (number >= 100) {
+        buf[pos] = '0' + number / 100;
+        pos += 1;
+    }
+    if (number >= 10) {
+        buf[pos] = '0' + (number / 10) % 10;
+        pos += 1;
+    }
+    buf[pos] = '0' + number % 10;
+    pos += 1;
+    buf[pos] = ' ';
+    pos += 1;
+    return allocator.dupe(u8, buf[0..pos]);
+}
+
+fn appendStoryDiffLine(
+    allocator: std.mem.Allocator,
+    blocks: *std.ArrayList(DisplayBlock),
+    line: []const u8,
+    first_line: *bool,
+) !void {
+    if (first_line.*) {
+        first_line.* = false;
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "<!--") and std.mem.endsWith(u8, trimmed, "-->")) {
+            const json_start: usize = 4;
+            const json_end = trimmed.len - 3;
+            if (json_start < json_end) {
+                const json_str = std.mem.trim(u8, trimmed[json_start..json_end], " ");
+                const meta = parseMetaJson(json_str);
+                try appendDiffHeaderBlock(allocator, blocks, meta);
+            }
+            return;
+        }
+    }
+
+    const kind: CodeLineKind = if (line.len > 0 and line[0] == '+')
+        .add
+    else if (line.len > 0 and line[0] == '-')
+        .remove
+    else
+        .context;
+
+    const ref_result = stripCodeRef(line);
+    var block = DisplayBlock{ .kind = .story_diff_line, .code_line_kind = kind };
+    block.spans = try buildCodeSpansWithAnchor(allocator, ref_result.text, ref_result.ref_number);
+    try blocks.append(allocator, block);
+}
+
+fn appendStoryCodeLine(
+    allocator: std.mem.Allocator,
+    blocks: *std.ArrayList(DisplayBlock),
+    line: []const u8,
+) !void {
+    const ref_result = stripCodeRef(line);
+    var block = DisplayBlock{ .kind = .story_code_line };
+    block.spans = try buildCodeSpansWithAnchor(allocator, ref_result.text, ref_result.ref_number);
+    try blocks.append(allocator, block);
+}
+
+fn buildCodeSpansWithAnchor(allocator: std.mem.Allocator, text: []const u8, ref_number: ?u8) ![]StyledSpan {
+    var spans = std.ArrayList(StyledSpan).empty;
+    errdefer {
+        for (spans.items) |span| allocator.free(span.text);
+        spans.deinit(allocator);
+    }
+
+    try appendSpan(&spans, allocator, text, .code);
+
+    if (ref_number) |num| {
+        try appendSpan(&spans, allocator, " ", .code);
+        const anchor_text = try formatAnchorText(allocator, num);
+        try spans.append(allocator, .{
+            .text = anchor_text,
+            .style = .bold,
+            .anchor_number = num,
+        });
+    }
+
+    return spans.toOwnedSlice(allocator);
+}
+
+fn appendDiffHeaderBlock(
+    allocator: std.mem.Allocator,
+    blocks: *std.ArrayList(DisplayBlock),
+    meta: CodeBlockMeta,
+) !void {
+    if (meta.file == null and meta.description == null) return;
+
+    var buf: [512]u8 = undefined;
+    var buf_pos: usize = 0;
+
+    if (meta.file) |file| {
+        const copy_len = @min(file.len, buf.len - buf_pos);
+        @memcpy(buf[buf_pos..][0..copy_len], file[0..copy_len]);
+        buf_pos += copy_len;
+    }
+
+    if (meta.file != null and meta.description != null) {
+        const sep = " \xe2\x80\x94 "; // " — " UTF-8
+        const sep_len = @min(sep.len, buf.len - buf_pos);
+        @memcpy(buf[buf_pos..][0..sep_len], sep[0..sep_len]);
+        buf_pos += sep_len;
+    }
+
+    if (meta.description) |desc| {
+        const copy_len = @min(desc.len, buf.len - buf_pos);
+        @memcpy(buf[buf_pos..][0..copy_len], desc[0..copy_len]);
+        buf_pos += copy_len;
+    }
+
+    if (buf_pos == 0) return;
+
+    var block = DisplayBlock{ .kind = .story_diff_header };
+    block.spans = try buildSingleSpan(allocator, buf[0..buf_pos], .bold);
+    try blocks.append(allocator, block);
+}
+
+const CodeRefResult = struct {
+    text: []const u8,
+    ref_number: ?u8,
+};
+
+fn stripCodeRef(line: []const u8) CodeRefResult {
+    const trimmed = std.mem.trimRight(u8, line, " \t\r");
+
+    if (trimmed.len >= 13) { // minimum: <!--ref:N-->
+        if (std.mem.endsWith(u8, trimmed, "-->")) {
+            const marker = "<!--ref:";
+            const search_start = if (trimmed.len > 30) trimmed.len - 30 else 0;
+            if (std.mem.lastIndexOf(u8, trimmed[search_start..], marker)) |rel_pos| {
+                const abs_pos = search_start + rel_pos;
+                const num_start = abs_pos + marker.len;
+                const num_end = trimmed.len - 3; // before -->
+                if (num_end > num_start) {
+                    const num = std.fmt.parseInt(u8, trimmed[num_start..num_end], 10) catch {
+                        return .{ .text = line, .ref_number = null };
+                    };
+                    const stripped = std.mem.trimRight(u8, trimmed[0..abs_pos], " \t");
+                    return .{ .text = stripped, .ref_number = num };
+                }
+            }
+        }
+    }
+
+    return .{ .text = line, .ref_number = null };
+}
+
+fn parseMetaJson(json_str: []const u8) CodeBlockMeta {
+    var meta = CodeBlockMeta{};
+    meta.file = extractJsonString(json_str, "file");
+    meta.commit = extractJsonString(json_str, "commit");
+    meta.change_type = extractJsonString(json_str, "type");
+    meta.description = extractJsonString(json_str, "description");
+    return meta;
+}
+
+fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
+    var needle_buf: [128]u8 = undefined;
+    if (key.len + 3 > needle_buf.len) return null;
+    needle_buf[0] = '"';
+    @memcpy(needle_buf[1..][0..key.len], key);
+    needle_buf[1 + key.len] = '"';
+    const needle = needle_buf[0 .. key.len + 2];
+
+    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    var pos = key_pos + needle.len;
+
+    while (pos < json.len and (json[pos] == ' ' or json[pos] == ':')) : (pos += 1) {}
+
+    if (pos >= json.len or json[pos] != '"') return null;
+    pos += 1;
+
+    const value_start = pos;
+    while (pos < json.len) {
+        if (json[pos] == '\\' and pos + 1 < json.len) {
+            pos += 2;
+            continue;
+        }
+        if (json[pos] == '"') break;
+        pos += 1;
+    }
+
+    if (pos >= json.len) return null;
+    return json[value_start..pos];
 }
 
 test "parser handles headings and inline styles" {
@@ -865,4 +1182,145 @@ test "parser emits single prompt separator for OSC marker plus prompt line" {
     try std.testing.expectEqual(BlockKind.paragraph, blocks.items[0].kind);
     try std.testing.expectEqual(BlockKind.prompt_separator, blocks.items[1].kind);
     try std.testing.expectEqual(BlockKind.paragraph, blocks.items[2].kind);
+}
+
+test "story mode parses story-diff blocks with metadata" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "# Title\n\nSome prose.\n\n```story-diff\n<!-- {\"file\": \"main.zig\", \"description\": \"add feature\"} -->\n+new line\n-old line\n context\n```\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    try std.testing.expectEqual(BlockKind.heading, blocks.items[0].kind);
+    try std.testing.expectEqual(BlockKind.paragraph, blocks.items[2].kind);
+
+    var found_header = false;
+    var add_count: usize = 0;
+    var remove_count: usize = 0;
+    var context_count: usize = 0;
+    for (blocks.items) |block| {
+        switch (block.kind) {
+            .story_diff_header => {
+                found_header = true;
+                try std.testing.expect(std.mem.indexOf(u8, block.spans[0].text, "main.zig") != null);
+            },
+            .story_diff_line => {
+                switch (block.code_line_kind) {
+                    .add => add_count += 1,
+                    .remove => remove_count += 1,
+                    .context => context_count += 1,
+                }
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(found_header);
+    try std.testing.expectEqual(@as(usize, 1), add_count);
+    try std.testing.expectEqual(@as(usize, 1), remove_count);
+    try std.testing.expectEqual(@as(usize, 1), context_count);
+}
+
+test "story mode parses prose anchors as inline spans" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "The function **[1]** is important.\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    try std.testing.expectEqual(@as(usize, 1), blocks.items.len);
+    try std.testing.expectEqual(BlockKind.paragraph, blocks.items[0].kind);
+    var found_anchor = false;
+    for (blocks.items[0].spans) |span| {
+        if (span.anchor_number) |num| {
+            found_anchor = true;
+            try std.testing.expectEqual(@as(u8, 1), num);
+            try std.testing.expectEqualStrings(" 1 ", span.text);
+        }
+    }
+    try std.testing.expect(found_anchor);
+}
+
+test "story mode parses code ref annotations as inline spans" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "```story-diff\n+const x = 1; <!--ref:1-->\n```\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    var found_diff_line = false;
+    for (blocks.items) |block| {
+        if (block.kind == .story_diff_line) {
+            found_diff_line = true;
+            try std.testing.expect(std.mem.indexOf(u8, block.spans[0].text, "ref") == null);
+            var found_anchor = false;
+            for (block.spans) |span| {
+                if (span.anchor_number) |num| {
+                    found_anchor = true;
+                    try std.testing.expectEqual(@as(u8, 1), num);
+                    try std.testing.expectEqualStrings(" 1 ", span.text);
+                }
+            }
+            try std.testing.expect(found_anchor);
+        }
+    }
+    try std.testing.expect(found_diff_line);
+}
+
+test "story mode parses regular code blocks as story_code_line" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "```zig\nconst x = 1;\n```\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    var found_code = false;
+    for (blocks.items) |block| {
+        if (block.kind == .story_code_line) {
+            found_code = true;
+            try std.testing.expectEqualStrings("const x = 1;", block.spans[0].text);
+        }
+    }
+    try std.testing.expect(found_code);
+}
+
+test "story mode skips prompt separators" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "@@ARCH_PROMPT@@\nsome text\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    for (blocks.items) |block| {
+        try std.testing.expect(block.kind != .prompt_separator);
+    }
+}
+
+test "story mode handles inline markdown in prose" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parseStory(
+        allocator,
+        "Text with **bold** and [link](https://example.com).\n",
+    );
+    defer freeBlocks(allocator, &blocks);
+
+    try std.testing.expectEqual(@as(usize, 1), blocks.items.len);
+    var saw_bold = false;
+    var saw_link = false;
+    for (blocks.items[0].spans) |span| {
+        if (span.style == .bold) saw_bold = true;
+        if (span.style == .link) saw_link = true;
+    }
+    try std.testing.expect(saw_bold);
+    try std.testing.expect(saw_link);
 }

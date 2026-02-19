@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for any code agent working on the Architect repo. Keep this file instruction-oriented—refer to `README.md` for product details.
+Guidance for Junie working on the Architect repo. Keep this file instruction-oriented—refer to `README.md` for product details.
 
 ## Documentation
 
@@ -32,10 +32,10 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 
 ## Git Workflow
 When creating a new feature or fix branch:
-1. Always start from an up-to-date `main` branch
-2. Pull the latest changes: `git checkout main && git pull origin main`
-3. Create your branch from main: `git checkout -b <branch-name>`
-4. Never create branches from other feature branches unless explicitly intended
+1. Always start from an up-to-date `main` branch.
+2. Pull the latest changes: `git checkout main && git pull origin main`.
+3. Create your branch from main: `git checkout -b <branch-name>`.
+4. Never create branches from other feature branches unless explicitly intended.
 
 This ensures PRs are based on the latest code and avoids unrelated changes in your PR.
 
@@ -89,9 +89,9 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 ```
 
 **When to be careful:**
-- Using `@min`, `@max`, `@clamp` with comptime integer literals or constants
-- Subsequent arithmetic with comptime constants (they peer-resolve with narrow types)
-- Index calculations for grids or arrays
+- Using `@min`, `@max`, `@clamp` with comptime integer literals or constants.
+- Subsequent arithmetic with comptime constants (they peer-resolve with narrow types).
+- Index calculations for grids or arrays.
 
 **General rule:** When calculating indices or sizes, add explicit `: usize` type annotations to `@min`/`@max` results.
 
@@ -123,7 +123,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Update `README.md` for any user-facing changes: new features, configuration options, keyboard shortcuts, or behavior changes.
 - Update `docs/ARCHITECTURE.md` when adding new components, modules, or changing the system structure.
 - Update `docs/configuration.md` when adding, removing, or changing configuration options in `config.toml` or `persistence.toml`.
-- Keep this `CLAUDE.md` aligned when workflows or automation expectations change.
+- Keep this `AGENTS.md` aligned when workflows or automation expectations change.
 - Documentation updates should be part of the same PR as the code changes.
 
 ## Repo Notes
@@ -137,7 +137,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Cursor rendering: set the cursor’s background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
 - ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty’s app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn’t support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
 
-## Architecture Invariants (agent instructions)
+## Architecture Invariants
 - Route UI input/rendering through `UiRoot` only; do not add new UI event branches or rendering in `main.zig` or `renderer.zig`.
 - Keep scene rendering (`renderer.zig`) focused on terminals/scene overlays; UI components belong in `src/ui/components/` and render after `renderer.render(...)`.
 - Do not store UI state or UI textures in session structs or `app_state.zig`; UI state must live inside UI components or UI-managed assets.
@@ -159,11 +159,11 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
 - Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.
 
-## Claude Socket Hook
+## Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
 - Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}`. The helper `scripts/architect_notify.py` is available if needed.
 - Story notifications use the same socket: `{"session":N,"type":"story","path":"/absolute/path/to/story.md"}`. The `architect story <file>` subcommand sends this automatically.
 
-## Done? Share
+## Task Completion
 - Provide a concise summary of edits, test/build outcomes, and documentation updates.
 - Suggest logical next steps only when they add value.

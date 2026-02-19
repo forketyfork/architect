@@ -8,6 +8,9 @@ pub const LineKind = enum {
     prompt_separator,
     horizontal_rule,
     blank,
+    story_diff_header,
+    story_diff_line,
+    story_code_line,
 };
 
 pub const RenderRun = struct {
@@ -15,6 +18,7 @@ pub const RenderRun = struct {
     style: parser.InlineStyle,
     marker: bool = false,
     href: ?[]u8 = null,
+    anchor_number: ?u8 = null,
 };
 
 pub const TableCell = struct {
@@ -30,6 +34,7 @@ pub const RenderLine = struct {
     runs: []RenderRun = &.{},
     table_cells: []TableCell = &.{},
     plain_text: []u8,
+    code_line_kind: parser.CodeLineKind = .context,
 };
 
 pub fn buildLines(
@@ -98,6 +103,62 @@ pub fn buildLines(
                 }, run_inputs.items);
                 lines.items[line_idx].table_cells = try parseTableCells(allocator, lines.items[line_idx].plain_text);
             },
+            .story_diff_header => {
+                var run_inputs = std.ArrayList(RunInput).empty;
+                defer run_inputs.deinit(allocator);
+                for (block.spans) |span| {
+                    try run_inputs.append(allocator, .{
+                        .text = span.text,
+                        .style = span.style,
+                        .marker = false,
+                        .anchor_number = span.anchor_number,
+                    });
+                }
+                try appendLineFromInputs(allocator, &lines, .{
+                    .kind = .story_diff_header,
+                    .heading_level = 0,
+                    .quote_depth = 0,
+                    .indent_level = 0,
+                }, run_inputs.items);
+            },
+            .story_diff_line => {
+                var run_inputs = std.ArrayList(RunInput).empty;
+                defer run_inputs.deinit(allocator);
+                for (block.spans) |span| {
+                    try run_inputs.append(allocator, .{
+                        .text = span.text,
+                        .style = if (span.anchor_number != null) span.style else .code,
+                        .marker = false,
+                        .anchor_number = span.anchor_number,
+                    });
+                }
+                const line_idx = lines.items.len;
+                try appendLineFromInputs(allocator, &lines, .{
+                    .kind = .story_diff_line,
+                    .heading_level = 0,
+                    .quote_depth = 0,
+                    .indent_level = 0,
+                }, run_inputs.items);
+                lines.items[line_idx].code_line_kind = block.code_line_kind;
+            },
+            .story_code_line => {
+                var run_inputs = std.ArrayList(RunInput).empty;
+                defer run_inputs.deinit(allocator);
+                for (block.spans) |span| {
+                    try run_inputs.append(allocator, .{
+                        .text = span.text,
+                        .style = if (span.anchor_number != null) span.style else .code,
+                        .marker = false,
+                        .anchor_number = span.anchor_number,
+                    });
+                }
+                try appendLineFromInputs(allocator, &lines, .{
+                    .kind = .story_code_line,
+                    .heading_level = 0,
+                    .quote_depth = 0,
+                    .indent_level = 0,
+                }, run_inputs.items);
+            },
             .heading, .paragraph, .list_item, .blockquote => {
                 var run_inputs = std.ArrayList(RunInput).empty;
                 defer run_inputs.deinit(allocator);
@@ -143,6 +204,7 @@ pub fn buildLines(
                         .style = span.style,
                         .marker = false,
                         .href = span.href,
+                        .anchor_number = span.anchor_number,
                     });
                 }
 
@@ -193,6 +255,7 @@ const RunInput = struct {
     style: parser.InlineStyle,
     marker: bool,
     href: ?[]const u8 = null,
+    anchor_number: ?u8 = null,
 };
 
 const LineMeta = struct {
@@ -223,6 +286,20 @@ fn appendWrappedLines(
     var current_cols: usize = 0;
 
     for (runs) |run| {
+        // Anchor runs are atomic - never split them during word wrapping
+        if (run.anchor_number != null) {
+            const href = if (run.href) |run_href| try allocator.dupe(u8, run_href) else null;
+            try current.append(allocator, .{
+                .text = try allocator.dupe(u8, run.text),
+                .style = run.style,
+                .marker = run.marker,
+                .href = href,
+                .anchor_number = run.anchor_number,
+            });
+            current_cols += run.text.len;
+            continue;
+        }
+
         var token_start: usize = 0;
         while (token_start < run.text.len) {
             const is_space = run.text[token_start] == ' ';
@@ -250,6 +327,7 @@ fn appendWrappedLines(
                         .style = run.style,
                         .marker = run.marker,
                         .href = href,
+                        .anchor_number = run.anchor_number,
                     });
                     current_cols += chunk_len;
                     token = token[chunk_len..];
@@ -276,6 +354,7 @@ fn appendWrappedLines(
                     .style = run.style,
                     .marker = run.marker,
                     .href = href,
+                    .anchor_number = run.anchor_number,
                 });
                 current_cols += token.len;
                 token = "";
@@ -337,6 +416,7 @@ fn appendLineFromInputs(
             .style = run.style,
             .marker = run.marker,
             .href = href,
+            .anchor_number = run.anchor_number,
         });
     }
 
