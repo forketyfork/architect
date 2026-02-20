@@ -2025,12 +2025,18 @@ pub const DiffOverlayComponent = struct {
                         const max_width = rect.w - used - padding;
                         if (max_width <= 0) continue;
                         if (render_w > max_width) {
+                            // Convert max_width from destination space back to source texture space.
+                            // render_w may be smaller than segment.w when height scaling was applied,
+                            // so a plain pixel count would clip a tiny sliver of the original texture.
+                            const src_clip_w: c_int = @max(1, @as(c_int, @intFromFloat(
+                                @as(f32, @floatFromInt(max_width)) * @as(f32, @floatFromInt(segment.w)) / @as(f32, @floatFromInt(render_w)),
+                            )));
                             render_w = max_width;
                             clip_src = c.SDL_FRect{
                                 .x = 0,
                                 .y = 0,
-                                .w = @floatFromInt(render_w),
-                                .h = @floatFromInt(render_h),
+                                .w = @floatFromInt(src_clip_w),
+                                .h = @floatFromInt(segment.h),
                             };
                             src_ptr = &clip_src;
                         }
