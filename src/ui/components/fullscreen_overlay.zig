@@ -263,37 +263,6 @@ pub const FullscreenOverlay = struct {
         }
     }
 
-    pub fn renderScrollbar(self: *const FullscreenOverlay, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, title_h: c_int, content_height: f32, viewport_height: f32) void {
-        if (content_height <= viewport_height) return;
-
-        const scrollbar_width = dpi.scale(6, host.ui_scale);
-        const scrollbar_margin = dpi.scale(4, host.ui_scale);
-        const track_height = rect.h - title_h - scrollbar_margin * 2;
-        const thumb_ratio = viewport_height / content_height;
-        const thumb_height: c_int = @max(dpi.scale(20, host.ui_scale), @as(c_int, @intFromFloat(@as(f32, @floatFromInt(track_height)) * thumb_ratio)));
-        const scroll_ratio = if (self.max_scroll > 0) self.scroll_offset / self.max_scroll else 0;
-        const thumb_y: c_int = @intFromFloat(@as(f32, @floatFromInt(track_height - thumb_height)) * scroll_ratio);
-
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const bar_alpha = self.render_alpha;
-        _ = c.SDL_SetRenderDrawColor(renderer, 128, 128, 128, @intFromFloat(30.0 * bar_alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x + rect.w - scrollbar_width - scrollbar_margin),
-            .y = @floatFromInt(rect.y + title_h + scrollbar_margin),
-            .w = @floatFromInt(scrollbar_width),
-            .h = @floatFromInt(track_height),
-        });
-
-        const accent_col = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, accent_col.r, accent_col.g, accent_col.b, @intFromFloat(120.0 * bar_alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x + rect.w - scrollbar_width - scrollbar_margin),
-            .y = @floatFromInt(rect.y + title_h + scrollbar_margin + thumb_y),
-            .w = @floatFromInt(scrollbar_width),
-            .h = @floatFromInt(thumb_height),
-        });
-    }
-
     /// Render a title texture centered vertically in the title area.
     pub fn renderTitle(self: *const FullscreenOverlay, renderer: *c.SDL_Renderer, rect: geom.Rect, title_tex: *c.SDL_Texture, title_w: c_int, title_h: c_int, host: *const types.UiHost) void {
         const scaled_title_h = dpi.scale(title_height, host.ui_scale);

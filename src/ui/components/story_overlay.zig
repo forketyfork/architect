@@ -10,6 +10,7 @@ const font_cache_mod = @import("../../font_cache.zig");
 const open_url = @import("../../os/open.zig");
 const markdown_parser = @import("markdown_parser.zig");
 const markdown_renderer = @import("markdown_renderer.zig");
+const scrollbar = @import("scrollbar.zig");
 
 const log = std.log.scoped(.story_overlay);
 
@@ -50,6 +51,7 @@ const AnchorPosition = struct {
 pub const StoryOverlayComponent = struct {
     allocator: std.mem.Allocator,
     overlay: FullscreenOverlay = .{},
+    scrollbar_state: scrollbar.State = .{},
 
     raw_content: ?[]u8 = null,
     blocks: std.ArrayList(markdown_parser.DisplayBlock) = .{},
@@ -126,6 +128,7 @@ pub const StoryOverlayComponent = struct {
 
     pub fn hide(self: *StoryOverlayComponent, now_ms: i64) void {
         self.overlay.hide(now_ms);
+        self.scrollbar_state.hideNow();
         self.hovered_anchor = null;
         self.search_active = false;
         self.selected_match = null;
@@ -344,7 +347,10 @@ pub const StoryOverlayComponent = struct {
                     return true;
                 }
 
-                if (self.overlay.handleScrollKey(key, host)) return true;
+                if (self.overlay.handleScrollKey(key, host)) {
+                    self.scrollbar_state.noteActivity(host.now_ms);
+                    return true;
+                }
 
                 return true;
             },
@@ -360,6 +366,7 @@ pub const StoryOverlayComponent = struct {
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 self.overlay.handleMouseWheel(event.wheel.y);
+                self.scrollbar_state.noteActivity(host.now_ms);
                 return true;
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -379,6 +386,33 @@ pub const StoryOverlayComponent = struct {
                 }
 
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    const title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
+                    const content_rect = geom.Rect{
+                        .x = overlay_rect.x,
+                        .y = overlay_rect.y + title_h,
+                        .w = overlay_rect.w,
+                        .h = overlay_rect.h - title_h,
+                    };
+                    const scroll_metrics = scrollbar.Metrics.init(
+                        self.totalContentHeight(host),
+                        self.overlay.scroll_offset,
+                        @floatFromInt(@max(0, content_rect.h)),
+                    );
+                    if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
+                        switch (scrollbar.hitTest(layout, mouse_x, mouse_y)) {
+                            .thumb => {
+                                self.scrollbar_state.beginDrag(layout, mouse_y, host.now_ms);
+                                return true;
+                            },
+                            .track => {
+                                self.overlay.scroll_offset = scrollbar.offsetForTrackClick(layout, scroll_metrics, mouse_y);
+                                self.scrollbar_state.noteActivity(host.now_ms);
+                                return true;
+                            },
+                            .none => {},
+                        }
+                    }
+
                     if (self.linkHitIndexAt(mouse_x, mouse_y)) |hit_idx| {
                         const href = self.link_hits.items[hit_idx].href;
                         open_url.openUrl(self.allocator, href) catch |err| {
@@ -390,10 +424,44 @@ pub const StoryOverlayComponent = struct {
 
                 return true;
             },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.button == c.SDL_BUTTON_LEFT and self.scrollbar_state.dragging) {
+                    self.scrollbar_state.endDrag(host.now_ms);
+                }
+                return true;
+            },
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
                 self.overlay.updateCloseHover(mouse_x, mouse_y, host);
+
+                const overlay_rect = FullscreenOverlay.overlayRect(host);
+                const title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
+                const content_rect = geom.Rect{
+                    .x = overlay_rect.x,
+                    .y = overlay_rect.y + title_h,
+                    .w = overlay_rect.w,
+                    .h = overlay_rect.h - title_h,
+                };
+                const scroll_metrics = scrollbar.Metrics.init(
+                    self.totalContentHeight(host),
+                    self.overlay.scroll_offset,
+                    @floatFromInt(@max(0, content_rect.h)),
+                );
+                const scroll_layout = scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics);
+
+                if (self.scrollbar_state.dragging) {
+                    if (scroll_layout) |layout| {
+                        self.overlay.scroll_offset = scrollbar.offsetForDrag(&self.scrollbar_state, layout, scroll_metrics, mouse_y);
+                        self.scrollbar_state.noteActivity(host.now_ms);
+                    } else {
+                        self.scrollbar_state.endDrag(host.now_ms);
+                    }
+                }
+
+                const scroll_hit = if (scroll_layout) |layout| scrollbar.hitTest(layout, mouse_x, mouse_y) else .none;
+                const was_scrollbar = self.scrollbar_state.hovered or self.scrollbar_state.dragging;
+                self.scrollbar_state.setHovered(self.scrollbar_state.dragging or scroll_hit != .none, host.now_ms);
 
                 const prev_hovered_anchor = self.hovered_anchor;
                 self.updateAnchorHover(mouse_x, mouse_y, host);
@@ -401,8 +469,8 @@ pub const StoryOverlayComponent = struct {
                 const prev_link = self.hovered_link;
                 self.hovered_link = self.linkHitIndexAt(mouse_x, mouse_y);
 
-                const want_pointer = self.hovered_anchor != null or self.hovered_link != null;
-                const was_pointer = prev_hovered_anchor != null or prev_link != null;
+                const want_pointer = self.hovered_anchor != null or self.hovered_link != null or self.scrollbar_state.dragging or scroll_hit != .none;
+                const was_pointer = prev_hovered_anchor != null or prev_link != null or was_scrollbar;
                 if (want_pointer != was_pointer) {
                     const cursor = if (want_pointer) self.pointer_cursor else self.arrow_cursor;
                     if (cursor) |cur| _ = c.SDL_SetCursor(cur);
@@ -417,6 +485,7 @@ pub const StoryOverlayComponent = struct {
     fn updateFn(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
         const self: *StoryOverlayComponent = @ptrCast(@alignCast(self_ptr));
         _ = self.overlay.updateAnimation(host.now_ms);
+        self.scrollbar_state.update(host.now_ms);
         if (!self.overlay.visible) return;
 
         const new_wrap = self.computeWrapCols(host);
@@ -431,9 +500,12 @@ pub const StoryOverlayComponent = struct {
         return self.overlay.hitTest(host, x, y);
     }
 
-    fn wantsFrameFn(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+    fn wantsFrameFn(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *StoryOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.overlay.wantsFrame() or self.hovered_anchor != null or self.hovered_link != null;
+        return self.overlay.wantsFrame() or
+            self.scrollbar_state.wantsFrame(host.now_ms) or
+            self.hovered_anchor != null or
+            self.hovered_link != null;
     }
 
     // --- Anchor hover ---
@@ -466,8 +538,7 @@ pub const StoryOverlayComponent = struct {
         _ = self;
         const rect = FullscreenOverlay.overlayRect(host);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
-        const scrollbar_w = dpi.scale(10, host.ui_scale);
-        const text_area_w = rect.w - scaled_padding * 2 - scrollbar_w;
+        const text_area_w = rect.w - scaled_padding * 2 - scrollbar.reservedWidth(host.ui_scale);
         if (text_area_w <= 0) return 80;
 
         const estimated_char_w: c_int = dpi.scale(8, host.ui_scale);
@@ -572,7 +643,19 @@ pub const StoryOverlayComponent = struct {
 
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
-        self.overlay.renderScrollbar(renderer, host, overlay_rect, title_h, content_height, viewport_height);
+        const scroll_metrics = scrollbar.Metrics.init(content_height, self.overlay.scroll_offset, viewport_height);
+        const content_rect = geom.Rect{
+            .x = overlay_rect.x,
+            .y = overlay_rect.y + title_h,
+            .w = overlay_rect.w,
+            .h = overlay_rect.h - title_h,
+        };
+        if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
+            scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
+            self.scrollbar_state.markDrawn();
+        } else {
+            self.scrollbar_state.hideNow();
+        }
         self.overlay.first_frame.markDrawn();
     }
 
@@ -1236,6 +1319,7 @@ pub const StoryOverlayComponent = struct {
 
     fn destroy(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.scrollbar_state.deinit();
         self.clearContent();
         self.blocks.deinit(self.allocator);
         self.lines.deinit(self.allocator);
