@@ -128,6 +128,7 @@ pub const StoryOverlayComponent = struct {
 
     pub fn hide(self: *StoryOverlayComponent, now_ms: i64) void {
         self.overlay.hide(now_ms);
+        self.scrollbar_state.hideNow();
         self.hovered_anchor = null;
         self.search_active = false;
         self.selected_match = null;
@@ -346,7 +347,10 @@ pub const StoryOverlayComponent = struct {
                     return true;
                 }
 
-                if (self.overlay.handleScrollKey(key, host)) return true;
+                if (self.overlay.handleScrollKey(key, host)) {
+                    self.scrollbar_state.noteActivity(host.now_ms);
+                    return true;
+                }
 
                 return true;
             },
@@ -421,11 +425,10 @@ pub const StoryOverlayComponent = struct {
                 return true;
             },
             c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                if (self.scrollbar_state.dragging) {
+                if (event.button.button == c.SDL_BUTTON_LEFT and self.scrollbar_state.dragging) {
                     self.scrollbar_state.endDrag(host.now_ms);
-                    return true;
                 }
-                return false;
+                return true;
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
@@ -457,6 +460,7 @@ pub const StoryOverlayComponent = struct {
                 }
 
                 const scroll_hit = if (scroll_layout) |layout| scrollbar.hitTest(layout, mouse_x, mouse_y) else .none;
+                const was_scrollbar = self.scrollbar_state.hovered or self.scrollbar_state.dragging;
                 self.scrollbar_state.setHovered(self.scrollbar_state.dragging or scroll_hit != .none, host.now_ms);
 
                 const prev_hovered_anchor = self.hovered_anchor;
@@ -466,7 +470,7 @@ pub const StoryOverlayComponent = struct {
                 self.hovered_link = self.linkHitIndexAt(mouse_x, mouse_y);
 
                 const want_pointer = self.hovered_anchor != null or self.hovered_link != null or self.scrollbar_state.dragging or scroll_hit != .none;
-                const was_pointer = prev_hovered_anchor != null or prev_link != null;
+                const was_pointer = prev_hovered_anchor != null or prev_link != null or was_scrollbar;
                 if (want_pointer != was_pointer) {
                     const cursor = if (want_pointer) self.pointer_cursor else self.arrow_cursor;
                     if (cursor) |cur| _ = c.SDL_SetCursor(cur);
