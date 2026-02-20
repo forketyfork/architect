@@ -1398,7 +1398,7 @@ pub fn run() !void {
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
-                if (changed) {
+                if (changed and session.cwd_settled) {
                     persistence.appendRecentFolder(allocator, new_cwd) catch |err| {
                         log.warn("failed to update recent folders: {}", .{err});
                     };

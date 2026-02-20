@@ -344,6 +344,9 @@ pub const Persistence = struct {
                 try persistence.loadRecentFoldersFromMap(allocator, folders_map);
             }
 
+            // V4 migration: strip spurious "/" entries added by transient shell startup cwd
+            persistence.removeRecentFolder(allocator, "/");
+
             return persistence;
         } else |_| {}
 
@@ -370,6 +373,8 @@ pub const Persistence = struct {
                     if (initial_count > 1) initial_count -= 1;
                 }
             }
+
+            persistence.removeRecentFolder(allocator, "/");
 
             return persistence;
         } else |_| {}
@@ -536,6 +541,18 @@ pub const Persistence = struct {
             allocator.free(folder.path);
         }
         self.recent_folders.clearRetainingCapacity();
+    }
+
+    /// Remove a specific folder path from recent_folders, freeing its memory.
+    fn removeRecentFolder(self: *Persistence, allocator: std.mem.Allocator, path: []const u8) void {
+        for (self.recent_folders.items, 0..) |folder, idx| {
+            if (std.mem.eql(u8, folder.path, path)) {
+                allocator.free(folder.path);
+                _ = self.recent_folders.swapRemove(idx);
+                self.sortRecentFolders();
+                return;
+            }
+        }
     }
 
     /// Get the list of recent folder paths (read-only, sorted by frequency)
@@ -1053,5 +1070,55 @@ test "Persistence save/load round-trip preserves all fields" {
 
     for (original.terminal_paths.items, loaded.terminal_paths.items) |orig_path, load_path| {
         try std.testing.expectEqualStrings(orig_path, load_path);
+    }
+}
+
+test "Persistence.load strips spurious / entry (V4 migration)" {
+    const allocator = std.testing.allocator;
+
+    // Build a V3 TOML with "/" in recent_folders
+    const toml_content =
+        \\font_size = 14
+        \\
+        \\[recent_folders]
+        \\"/" = 5
+        \\"/home/user/project" = 3
+    ;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+
+    const result = try parser.parseString(toml_content);
+    defer result.deinit();
+
+    if (result.value.recent_folders) |folders_map| {
+        try persistence.loadRecentFoldersFromMap(allocator, folders_map);
+    }
+    persistence.removeRecentFolder(allocator, "/");
+
+    const folders = persistence.getRecentFolders();
+    try std.testing.expectEqual(@as(usize, 1), folders.len);
+    try std.testing.expectEqualStrings("/home/user/project", folders[0].path);
+}
+
+test "Persistence.appendRecentFolder skipping logic: removeRecentFolder leaves other entries intact" {
+    const allocator = std.testing.allocator;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    try persistence.appendRecentFolder(allocator, "/");
+    try persistence.appendRecentFolder(allocator, "/home/user");
+    try persistence.appendRecentFolder(allocator, "/tmp");
+
+    persistence.removeRecentFolder(allocator, "/");
+
+    const folders = persistence.getRecentFolders();
+    try std.testing.expectEqual(@as(usize, 2), folders.len);
+    for (folders) |f| {
+        try std.testing.expect(!std.mem.eql(u8, f.path, "/"));
     }
 }

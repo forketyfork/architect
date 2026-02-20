@@ -46,6 +46,9 @@ pub const SessionState = struct {
     /// When cwd_path is freed, this becomes invalid and must not be used.
     cwd_basename: ?[]const u8 = null,
     cwd_last_check: i64 = 0,
+    /// Set to true once updateCwd observes a non-root directory. Prevents the transient `/`
+    /// that the shell briefly reports during startup from polluting recent_folders.
+    cwd_settled: bool = false,
     pending_write: std.ArrayListUnmanaged(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
@@ -241,6 +244,7 @@ pub const SessionState = struct {
 
             self.spawned = false;
             self.dead = false;
+            self.cwd_settled = false;
         }
     }
 
@@ -363,6 +367,7 @@ pub const SessionState = struct {
 
         self.spawned = false;
         self.dead = false;
+        self.cwd_settled = false;
     }
 
     pub fn markDirty(self: *SessionState) void {
@@ -457,6 +462,9 @@ pub const SessionState = struct {
             self.allocator.free(old_path);
         }
 
+        if (!self.cwd_settled and !std.mem.eql(u8, new_path, "/")) {
+            self.cwd_settled = true;
+        }
         self.cwd_path = new_path;
         self.cwd_basename = basenameForDisplay(new_path);
         self.markDirty();

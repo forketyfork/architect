@@ -248,7 +248,7 @@ On launch, Architect restores terminals to their saved working directories. The 
 
 Note: Terminal cwd persistence is currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically.
+Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Any spurious `/` entry in `recent_folders` (caused by transient shell startup state in earlier versions) is removed on the first load after upgrading.
 
 ## Resetting Configuration
 
