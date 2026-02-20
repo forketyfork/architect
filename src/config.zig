@@ -344,9 +344,6 @@ pub const Persistence = struct {
                 try persistence.loadRecentFoldersFromMap(allocator, folders_map);
             }
 
-            // V4 migration: strip spurious "/" entries added by transient shell startup cwd
-            persistence.removeRecentFolder(allocator, "/");
-
             return persistence;
         } else |_| {}
 
@@ -373,8 +370,6 @@ pub const Persistence = struct {
                     if (initial_count > 1) initial_count -= 1;
                 }
             }
-
-            persistence.removeRecentFolder(allocator, "/");
 
             return persistence;
         } else |_| {}
@@ -1073,30 +1068,15 @@ test "Persistence save/load round-trip preserves all fields" {
     }
 }
 
-test "Persistence.load strips spurious / entry (V4 migration)" {
+test "Persistence.removeRecentFolder removes the named entry" {
     const allocator = std.testing.allocator;
-
-    // Build a V3 TOML with "/" in recent_folders
-    const toml_content =
-        \\font_size = 14
-        \\
-        \\[recent_folders]
-        \\"/" = 5
-        \\"/home/user/project" = 3
-    ;
 
     var persistence = Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
-    defer parser.deinit();
+    try persistence.appendRecentFolder(allocator, "/");
+    try persistence.appendRecentFolder(allocator, "/home/user/project");
 
-    const result = try parser.parseString(toml_content);
-    defer result.deinit();
-
-    if (result.value.recent_folders) |folders_map| {
-        try persistence.loadRecentFoldersFromMap(allocator, folders_map);
-    }
     persistence.removeRecentFolder(allocator, "/");
 
     const folders = persistence.getRecentFolders();
