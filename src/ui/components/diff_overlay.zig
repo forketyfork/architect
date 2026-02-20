@@ -2007,7 +2007,15 @@ pub const DiffOverlayComponent = struct {
                 }
 
                 var render_w: c_int = segment.w;
-                const render_h: c_int = segment.h;
+                var render_h: c_int = segment.h;
+
+                // Scale down oversized glyphs (e.g. emoji from system font) to fit row height
+                if (render_h > row_height and row_height > 0) {
+                    const scale = @as(f32, @floatFromInt(row_height)) / @as(f32, @floatFromInt(render_h));
+                    render_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(render_w)) * scale)));
+                    render_h = row_height;
+                }
+
                 var clip_src: c.SDL_FRect = undefined;
                 var src_ptr: ?*const c.SDL_FRect = null;
 
@@ -2016,7 +2024,7 @@ pub const DiffOverlayComponent = struct {
                         const used = dest_x - rect.x;
                         const max_width = rect.w - used - padding;
                         if (max_width <= 0) continue;
-                        if (segment.w > max_width) {
+                        if (render_w > max_width) {
                             render_w = max_width;
                             clip_src = c.SDL_FRect{
                                 .x = 0,
