@@ -538,6 +538,18 @@ pub const Persistence = struct {
         self.recent_folders.clearRetainingCapacity();
     }
 
+    /// Remove a specific folder path from recent_folders, freeing its memory.
+    fn removeRecentFolder(self: *Persistence, allocator: std.mem.Allocator, path: []const u8) void {
+        for (self.recent_folders.items, 0..) |folder, idx| {
+            if (std.mem.eql(u8, folder.path, path)) {
+                allocator.free(folder.path);
+                _ = self.recent_folders.swapRemove(idx);
+                self.sortRecentFolders();
+                return;
+            }
+        }
+    }
+
     /// Get the list of recent folder paths (read-only, sorted by frequency)
     pub fn getRecentFolderPaths(self: *const Persistence, allocator: std.mem.Allocator) ![]const []const u8 {
         const result = try allocator.alloc([]const u8, self.recent_folders.items.len);
@@ -1053,5 +1065,40 @@ test "Persistence save/load round-trip preserves all fields" {
 
     for (original.terminal_paths.items, loaded.terminal_paths.items) |orig_path, load_path| {
         try std.testing.expectEqualStrings(orig_path, load_path);
+    }
+}
+
+test "Persistence.removeRecentFolder removes the named entry" {
+    const allocator = std.testing.allocator;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    try persistence.appendRecentFolder(allocator, "/");
+    try persistence.appendRecentFolder(allocator, "/home/user/project");
+
+    persistence.removeRecentFolder(allocator, "/");
+
+    const folders = persistence.getRecentFolders();
+    try std.testing.expectEqual(@as(usize, 1), folders.len);
+    try std.testing.expectEqualStrings("/home/user/project", folders[0].path);
+}
+
+test "Persistence.appendRecentFolder skipping logic: removeRecentFolder leaves other entries intact" {
+    const allocator = std.testing.allocator;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    try persistence.appendRecentFolder(allocator, "/");
+    try persistence.appendRecentFolder(allocator, "/home/user");
+    try persistence.appendRecentFolder(allocator, "/tmp");
+
+    persistence.removeRecentFolder(allocator, "/");
+
+    const folders = persistence.getRecentFolders();
+    try std.testing.expectEqual(@as(usize, 2), folders.len);
+    for (folders) |f| {
+        try std.testing.expect(!std.mem.eql(u8, f.path, "/"));
     }
 }
