@@ -1,20 +1,97 @@
-# CLAUDE.md
+# CLAUDE.md (symlinked as AGENTS.md)
 
-Guidance for any code agent working on the Architect repo. Keep this file instruction-oriented—refer to `README.md` for product details.
+[Canonical file: `CLAUDE.md`. Keep `AGENTS.md` as a symlink to `CLAUDE.md`.]
 
-## Documentation
+## Project
 
-- Architecture overview lives in `docs/ARCHITECTURE.md`. Read it to understand the app architecture.
-- Configuration reference lives in `docs/configuration.md`. Consult it for config.toml and persistence.toml structure.
+**Name:** Architect
+**Description:** A terminal multiplexer and AI-assisted coding environment built on SDL3 and Zig. Architect lets developers run multiple terminal sessions in a tiled layout, annotate diffs, and integrate Claude agents directly into their workflow.
+**Stack:** Zig 0.15, SDL3, ghostty-vt (terminal emulation), Nix dev shell, `just` task runner
+**Status:** Active development
 
-## Quick Workflow
-1. Read the task and skim `README.md` for expected behavior; avoid duplicating that content here.
-2. Ghostty is fetched via Zig package manager; run `just setup` only if you want to pre-cache the tarball before building.
-3. Work inside the dev shell: `nix develop` (or `direnv allow`).
-4. Prefer repo-friendly tools: `rg`/`fd` for search, `fastmod` or `sg` for refactors, `tree` for structure, `date` for timestamps, `gh` for PR/comment context.
-5. For Zig changes, use the `zig-best-practices` skill; if it is not installed, install it via the skill installer before editing.
+## Build & Run
+
+```bash
+# Worktree bootstrap (run in a fresh worktree)
+just setup   # pre-caches the ghostty-vt tarball; skip if already cached
+
+# Environment activation
+nix develop  # or: direnv allow
+#
+# Minimal host prerequisites:
+# - Nix with flakes enabled (or direnv + nix-direnv)
+# - macOS (primary platform; Linux support is partial)
+
+# Build
+zig build
+
+# Run
+zig build run
+
+# Test
+zig build test
+
+# Type check
+N/A  # Zig build covers type checking
+
+# Lint
+just lint
+
+# Format check
+zig fmt --check src/
+```
+
+## Infrastructure
+
+- **Source code hosting:** GitHub — URL: `https://github.com/forketyfork/architect` — CLI: `gh` — Skill: `managing-github`
+- **Issue tracker:** GitHub Issues — URL: `https://github.com/forketyfork/architect/issues` — CLI: `gh issue` — Skill: `managing-github`
+- **CI/CD:** GitHub Actions — config: `.github/workflows/`
+- **Issue/PR linkage convention:** Reference issues in commit messages and PR descriptions using `#<issue-number>`. Use `Closes #N` or `Fixes #N` in the PR body to auto-close issues on merge.
+
+Use the `managing-github` skill for all GitHub operations: creating issues, pull requests, fetching review threads, posting comments, and searching.
+
+## Project Documentation
+
+Read these before making any changes:
+
+- `README.md` — User-facing product overview; skim for expected behavior, do not duplicate here
+- `docs/ARCHITECTURE.md` — How it's built (layers, modules, dependencies)
+- `docs/configuration.md` — Config shape for `config.toml` and `persistence.toml`
+- `docs/development.md` — Developer setup and workflow notes
+
+## Agent Rules
+
+1. Read the project documentation listed above before writing any code.
+2. For Zig changes, use the `zig-best-practices` skill; install it via the skill installer if not available.
+3. Every new feature must have corresponding tests.
+4. Do not introduce new dependencies without asking first.
+5. If you change the architecture (new modules, new data flows), update `docs/ARCHITECTURE.md`.
+6. Use conventional commit messages.
+7. After making changes, verify the build, tests, and linting all pass (`zig build`, `zig build test`, `just lint`) before considering the task done.
+8. Always update documentation alongside code changes (see Documentation Hygiene below).
+9. Use `managing-github` skill for all GitHub interactions (issues, PRs, comments).
+
+## Observability
+
+### What the agent can do independently
+
+- Run tests and see output: `zig build test`
+- Build and check for compiler errors: `zig build`
+- Run linting: `just lint`
+- Search repo: `rg`/`fd`
+
+### What requires developer assistance
+
+- SDL3 window/rendering — developer must describe visual state or provide a screenshot
+- Terminal emulation behavior — developer provides screen recordings or descriptions
+
+### Debug mode
+
+- `zig build -Doptimize=Debug` for debug builds (default)
+- Add `std.log` calls at the relevant site; logs appear on stderr during `zig build run`
 
 ## Coding Conventions
+
 - Favor self-documenting code; keep comments minimal and meaningful.
 - Default to ASCII unless the file already uses non-ASCII.
 - **Error handling**: Always handle errors explicitly—propagate, recover, or log. Never use bare `catch {}` or `catch unreachable`. Even for "impossible" failures like action queue appends, log them:
@@ -31,6 +108,7 @@ Guidance for any code agent working on the Architect repo. Keep this file instru
 - Avoid destructive git commands and do not revert user changes.
 
 ## Git Workflow
+
 When creating a new feature or fix branch:
 1. Always start from an up-to-date `main` branch
 2. Pull the latest changes: `git checkout main && git pull origin main`
@@ -96,7 +174,7 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 **General rule:** When calculating indices or sizes, add explicit `: usize` type annotations to `@min`/`@max` results.
 
 ### Naming collisions in large render functions
-- When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent “local constant shadows” errors.
+- When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent "local constant shadows" errors.
 
 ### Zig 0.15 collection API differences
 - `std.ArrayList(T)`: Zig 0.15 only provides `initCapacity(allocator, n)`, not `init()`. When initializing, use a reasonable capacity estimate (e.g., 8 or 16) rather than 0—`initCapacity(allocator, 0)` still allocates and is wasteful. For truly lazy allocation, use `.empty` and pass the allocator on each operation. Methods like `append` require the allocator argument (`list.append(allocator, item)`).
@@ -114,10 +192,6 @@ while (pos < slice.len) { ... }
 ```
 The `<= len` pattern is only correct when `pos` represents a position *after* processing (e.g., `slice[0..pos]` as a "processed so far" marker).
 
-## Build and Test (required after every task)
-- Run `zig build`, `zig build test`, and `just lint` (or `just ci` when appropriate) once the task is complete.
-- Report the results in your summary; if you must skip tests, state the reason explicitly.
-
 ## Documentation Hygiene (REQUIRED)
 - **ALWAYS** update documentation when making changes. This is not optional.
 - Update `README.md` for any user-facing changes: new features, configuration options, keyboard shortcuts, or behavior changes.
@@ -132,10 +206,10 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
 - Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.
-- The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`’s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
+- The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`'s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
-- Cursor rendering: set the cursor’s background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
-- ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty’s app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn’t support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
+- Cursor rendering: set the cursor's background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
+- ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty's app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn't support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
 
 ## Architecture Invariants (agent instructions)
 - Route UI input/rendering through `UiRoot` only; do not add new UI event branches or rendering in `main.zig` or `renderer.zig`.
@@ -154,7 +228,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Running `rg` over the whole $HOME on macOS hits protected directories and can hang/time out; narrow searches to the repo, `/etc`, or specific config paths to avoid permission noise and delays.
 - Do not keep TOML parser-owned maps after `result.deinit()`: duplicate keys and values into your own storage before freeing the parser arena, or later iteration will segfault.
 - `std.mem.span` rejects `[:0]const u8` slices; use `std.mem.sliceTo(ptr, 0)` for `[:0]const u8`, and use `std.mem.span` for `[*c]const u8`/`[*:0]const u8` C pointers.
-- When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser’s backing memory causes use-after-free crashes.
+- When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser's backing memory causes use-after-free crashes.
 - Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 - xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
 - Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.
