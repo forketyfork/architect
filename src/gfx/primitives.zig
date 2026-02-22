@@ -44,20 +44,73 @@ pub fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) v
     }
 }
 
-pub fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, color: c.SDL_Color) void {
+/// Draw a filled border of the given thickness and corner radius by scanline-filling the
+/// donut region between the outer rounded rect and the inner rounded rect (inset by
+/// `thickness`). This produces smooth, uniformly-thick corners without concentric-arc
+/// artefacts.
+pub fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, radius: c_int, color: c.SDL_Color) void {
+    if (rect.w <= 0 or rect.h <= 0 or thickness <= 0) return;
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
     _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    const radius: c_int = 12;
-    var i: c_int = 0;
-    while (i < thickness) : (i += 1) {
-        const r = Rect{
-            .x = rect.x + i,
-            .y = rect.y + i,
-            .w = rect.w - i * 2,
-            .h = rect.h - i * 2,
-        };
-        drawRoundedBorder(renderer, r, radius);
+
+    const clamped_r = @min(radius, @divFloor(@min(rect.w, rect.h), 2));
+    const inner = Rect{
+        .x = rect.x + thickness,
+        .y = rect.y + thickness,
+        .w = rect.w - thickness * 2,
+        .h = rect.h - thickness * 2,
+    };
+    const inner_r: c_int = if (inner.w > 0 and inner.h > 0)
+        @min(@max(0, clamped_r - thickness), @divFloor(@min(inner.w, inner.h), 2))
+    else
+        0;
+
+    var y: c_int = rect.y;
+    while (y < rect.y + rect.h) : (y += 1) {
+        const outer_span = roundedRectXSpan(rect, clamped_r, y) orelse continue;
+        const fy = @as(f32, @floatFromInt(y));
+
+        const in_inner_rows = inner.w > 0 and inner.h > 0 and y >= inner.y and y < inner.y + inner.h;
+        if (in_inner_rows) {
+            if (roundedRectXSpan(inner, inner_r, y)) |inner_span| {
+                if (inner_span.left > outer_span.left) {
+                    _ = c.SDL_RenderLine(renderer, outer_span.left, fy, inner_span.left - 1.0, fy);
+                }
+                if (outer_span.right > inner_span.right) {
+                    _ = c.SDL_RenderLine(renderer, inner_span.right + 1.0, fy, outer_span.right, fy);
+                }
+                continue;
+            }
+        }
+        _ = c.SDL_RenderLine(renderer, outer_span.left, fy, outer_span.right, fy);
     }
+}
+
+const XSpan = struct { left: f32, right: f32 };
+
+fn roundedRectXSpan(rect: Rect, radius: c_int, y: c_int) ?XSpan {
+    if (y < rect.y or y >= rect.y + rect.h) return null;
+    if (rect.w <= 0 or rect.h <= 0) return null;
+
+    const fx = @as(f32, @floatFromInt(rect.x));
+    const fw = @as(f32, @floatFromInt(rect.w));
+    const rel_y = y - rect.y;
+
+    if (radius <= 0 or (rel_y >= radius and rel_y < rect.h - radius)) {
+        return .{ .left = fx, .right = fx + fw - 1.0 };
+    }
+
+    const frad = @as(f32, @floatFromInt(radius));
+    const frel = @as(f32, @floatFromInt(rel_y));
+    const dy: f32 = if (rel_y < radius)
+        frad - frel - 0.5
+    else
+        frel - (@as(f32, @floatFromInt(rect.h)) - frad) + 0.5;
+
+    const dx_sq = frad * frad - dy * dy;
+    if (dx_sq <= 0) return null;
+    const dx = @sqrt(dx_sq);
+    return .{ .left = fx + frad - dx, .right = fx + fw - frad + dx - 1.0 };
 }
 
 pub fn fillRoundedRect(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {

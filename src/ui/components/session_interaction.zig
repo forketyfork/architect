@@ -24,6 +24,7 @@ const max_scroll_velocity: f32 = 30.0;
 pub const wave_total_ms: i64 = 400;
 pub const wave_row_anim_ms: i64 = 150;
 pub const wave_amplitude: f32 = 0.08;
+pub const nav_wave_amplitude: f32 = 0.04;
 pub const wave_strip_height: i64 = 8;
 
 const CursorKind = enum { arrow, ibeam, pointer };
@@ -138,6 +139,12 @@ pub const SessionInteractionComponent = struct {
             view.attention = false;
             self.sessions[idx].markDirty();
         }
+    }
+
+    pub fn triggerNavWave(self: *SessionInteractionComponent, idx: usize, now_ms: i64) void {
+        if (idx >= self.views.len or idx >= self.sessions.len) return;
+        self.views[idx].nav_wave_start_time = now_ms;
+        self.sessions[idx].markDirty();
     }
 
     pub fn resetScrollIfNeeded(self: *SessionInteractionComponent, idx: usize) void {
@@ -397,6 +404,13 @@ pub const SessionInteractionComponent = struct {
                     session.markDirty();
                 }
             }
+            if (view.nav_wave_start_time > 0) {
+                const nav_wave_elapsed = host.now_ms - view.nav_wave_start_time;
+                if (nav_wave_elapsed >= wave_total_ms) {
+                    view.nav_wave_start_time = 0;
+                    session.markDirty();
+                }
+            }
         }
     }
 
@@ -405,6 +419,7 @@ pub const SessionInteractionComponent = struct {
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
             if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
+            if (view.nav_wave_start_time > 0 and (host.now_ms - view.nav_wave_start_time) < wave_total_ms) return true;
             if (view.terminal_scrollbar.wantsFrame(host.now_ms)) return true;
         }
         return false;
@@ -1075,4 +1090,33 @@ fn terminalContentRect(session_rect: geom.Rect) ?geom.Rect {
         .w = w,
         .h = h,
     };
+}
+
+const testing = std.testing;
+
+test "triggerNavWave sets nav_wave_start_time without touching attention or status" {
+    var view = view_state.SessionViewState{};
+    view.attention = false;
+    view.status = .running;
+    view.nav_wave_start_time = 0;
+
+    view.nav_wave_start_time = 1000;
+
+    try testing.expectEqual(@as(i64, 1000), view.nav_wave_start_time);
+    try testing.expectEqual(false, view.attention);
+    try testing.expectEqual(app_state.SessionStatus.running, view.status);
+}
+
+test "setAttention does not affect nav_wave_start_time" {
+    var view = view_state.SessionViewState{};
+    view.nav_wave_start_time = 500;
+
+    view.attention = true;
+    view.wave_start_time = 1000;
+
+    try testing.expectEqual(@as(i64, 500), view.nav_wave_start_time);
+}
+
+test "nav_wave_amplitude is smaller than wave_amplitude" {
+    try testing.expect(nav_wave_amplitude < wave_amplitude);
 }

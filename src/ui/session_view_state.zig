@@ -16,6 +16,7 @@ pub const SessionViewState = struct {
     hovered_link_start: ?ghostty_vt.Pin = null,
     hovered_link_end: ?ghostty_vt.Pin = null,
     wave_start_time: i64 = 0,
+    nav_wave_start_time: i64 = 0,
     terminal_scrollbar: scrollbar.State = .{},
 
     pub fn reset(self: *SessionViewState) void {

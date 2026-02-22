@@ -1,7 +1,7 @@
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 
 pub const ButtonVariant = enum {
     default,
