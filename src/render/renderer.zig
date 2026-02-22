@@ -617,7 +617,7 @@ fn renderSessionOverlays(
     ui_scale: f32,
 ) void {
     const has_attention = is_grid_view and view.attention;
-    const border_thickness: c_int = attention_thickness;
+    const border_thickness: c_int = dpi.scale(attention_thickness, ui_scale);
 
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused, theme);
@@ -676,7 +676,7 @@ fn renderSessionOverlays(
             },
             else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 230 },
         };
-        primitives.drawThickBorder(renderer, rect, attention_thickness, border_radius, color);
+        primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, color);
 
         const tint_color = switch (view.status) {
             .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 55 },

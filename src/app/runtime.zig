@@ -1284,7 +1284,6 @@ pub fn run() !void {
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
                             const new_session = anim_state.focused_session;
                             session_interaction_component.triggerNavWave(new_session, now);
-                            sessions[new_session].markDirty();
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
                             if (config.ui.show_hotkey_feedback) {
