@@ -2,7 +2,7 @@ const std = @import("std");
 const c = @import("../../c.zig");
 const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 
 /// Render an animated flowing line with multi-layer diffusion effect.
 /// Used to highlight the currently selected item in overlays.

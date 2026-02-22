@@ -3,7 +3,7 @@ const c = @import("../../c.zig");
 const font_mod = @import("../../font.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 const log = std.log.scoped(.hotkey_indicator);

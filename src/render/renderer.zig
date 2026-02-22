@@ -11,6 +11,7 @@ const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
+const dpi = @import("../dpi.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
 const scrollbar = @import("../ui/components/scrollbar.zig");
@@ -23,7 +24,7 @@ const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
 const GridLayout = grid_layout.GridLayout;
 
-const attention_thickness: c_int = 3;
+const attention_thickness: c_int = 6;
 pub const terminal_padding: c_int = 8;
 pub const grid_border_thickness: c_int = attention_thickness;
 const faint_factor: f32 = 0.6;
@@ -110,22 +111,40 @@ pub fn render(
 
     switch (anim_state.mode) {
         .Grid => {
-            var i: usize = 0;
-            while (i < grid_slots_to_render) : (i += 1) {
-                const session = sessions[i];
-                if (!session.spawned) continue;
-                const grid_row: c_int = @intCast(i / grid_cols);
-                const grid_col: c_int = @intCast(i % grid_cols);
+            // Two-pass rendering: non-waving sessions first, waving on top.
+            // This prevents the horizontally-expanded strips from being occluded
+            // by neighbours that render after the waving terminal in the Z order.
+            var pass: u8 = 0;
+            while (pass < 2) : (pass += 1) {
+                var i: usize = 0;
+                while (i < grid_slots_to_render) : (i += 1) {
+                    const session = sessions[i];
+                    if (!session.spawned) continue;
 
-                const cell_rect = Rect{
-                    .x = grid_col * cell_width_pixels,
-                    .y = grid_row * cell_height_pixels,
-                    .w = cell_width_pixels,
-                    .h = cell_height_pixels,
-                };
+                    const view = &views[i];
+                    const attn_waving = view.wave_start_time > 0 and
+                        current_time >= view.wave_start_time and
+                        (current_time - view.wave_start_time) < session_interaction.wave_total_ms;
+                    const nav_waving = view.nav_wave_start_time > 0 and
+                        current_time >= view.nav_wave_start_time and
+                        (current_time - view.nav_wave_start_time) < session_interaction.nav_wave_total_ms;
+                    const is_waving = attn_waving or nav_waving;
 
-                const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
+                    if (is_waving != (pass == 1)) continue;
+
+                    const grid_row: c_int = @intCast(i / grid_cols);
+                    const grid_col: c_int = @intCast(i % grid_cols);
+
+                    const cell_rect = Rect{
+                        .x = grid_col * cell_width_pixels,
+                        .y = grid_row * cell_height_pixels,
+                        .w = cell_width_pixels,
+                        .h = cell_height_pixels,
+                    };
+
+                    const entry = render_cache.entry(i);
+                    try renderGridSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
+                }
             }
         },
         .Full => {
@@ -598,16 +617,18 @@ fn renderSessionOverlays(
     ui_scale: f32,
 ) void {
     const has_attention = is_grid_view and view.attention;
-    const border_thickness: c_int = attention_thickness;
+    const border_thickness: c_int = dpi.scale(attention_thickness, ui_scale);
 
     if (apply_effects) {
         applyTvOverlay(renderer, rect, is_focused, theme);
     }
 
+    const border_radius = dpi.scale(6, ui_scale);
+
     if (is_grid_view) {
         if (!is_focused) {
             const base_border = theme.selection;
-            primitives.drawThickBorder(renderer, rect, border_thickness, base_border);
+            primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, base_border);
         }
 
         if (is_focused) {
@@ -629,7 +650,7 @@ fn renderSessionOverlays(
                         .h = @floatFromInt(focus_rect.h),
                     });
                 }
-                primitives.drawThickBorder(renderer, focus_rect, border_thickness, focus_blue);
+                primitives.drawThickBorder(renderer, focus_rect, border_thickness, border_radius, focus_blue);
             }
         }
     }
@@ -655,7 +676,7 @@ fn renderSessionOverlays(
             },
             else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 230 },
         };
-        primitives.drawThickBorder(renderer, rect, attention_thickness, color);
+        primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, color);
 
         const tint_color = switch (view.status) {
             .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 55 },
@@ -773,10 +794,22 @@ fn renderGridSessionCached(
     }
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
 
+    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const nav_wave_total: f32 = @floatFromInt(session_interaction.nav_wave_total_ms);
+
     const wave_active = view.wave_start_time > 0 and current_time_ms >= view.wave_start_time;
     const wave_elapsed_ms: f32 = if (wave_active) @as(f32, @floatFromInt(current_time_ms - view.wave_start_time)) else 0;
-    const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
     const is_waving = wave_active and wave_elapsed_ms < wave_total;
+
+    const nav_wave_active = view.nav_wave_start_time > 0 and current_time_ms >= view.nav_wave_start_time;
+    const nav_wave_elapsed_ms: f32 = if (nav_wave_active) @as(f32, @floatFromInt(current_time_ms - view.nav_wave_start_time)) else 0;
+    const is_nav_waving = nav_wave_active and nav_wave_elapsed_ms < nav_wave_total;
+
+    // Attention wave takes priority; nav wave is used only when no attention wave is active.
+    const any_waving = is_waving or is_nav_waving;
+    const effective_elapsed_ms = if (is_waving) wave_elapsed_ms else nav_wave_elapsed_ms;
+    const effective_amplitude = if (is_waving) session_interaction.wave_amplitude else session_interaction.nav_wave_amplitude;
+    const effective_total_ms = if (is_waving) wave_total else nav_wave_total;
 
     if (can_cache) {
         if (cache_entry.texture) |tex| {
@@ -788,15 +821,15 @@ fn renderGridSessionCached(
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
-                if (is_waving and render_overlays) {
+                if (any_waving and render_overlays) {
                     renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
                 }
                 cache_entry.cache_epoch = session.render_epoch;
                 _ = c.SDL_SetRenderTarget(renderer, null);
             }
 
-            if (is_waving) {
-                renderWaveStrips(renderer, tex, rect, wave_elapsed_ms);
+            if (any_waving) {
+                renderWaveStrips(renderer, tex, rect, effective_elapsed_ms, effective_amplitude, effective_total_ms);
             } else {
                 const dest_rect = c.SDL_FRect{
                     .x = @floatFromInt(rect.x),
@@ -831,10 +864,11 @@ fn renderWaveStrips(
     tex: *c.SDL_Texture,
     rect: Rect,
     wave_elapsed_ms: f32,
+    amplitude: f32,
+    total_ms: f32,
 ) void {
-    const total: f32 = @floatFromInt(session_interaction.wave_total_ms);
+    const total: f32 = total_ms;
     const row_anim: f32 = @floatFromInt(session_interaction.wave_row_anim_ms);
-    const amplitude: f32 = session_interaction.wave_amplitude;
     const strip_h: c_int = @intCast(session_interaction.wave_strip_height);
     const tile_h = rect.h;
     const tile_w = rect.w;

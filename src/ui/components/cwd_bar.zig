@@ -5,7 +5,7 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const font_cache = @import("../../font_cache.zig");
 const renderer_mod = @import("../../render/renderer.zig");
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 const input = @import("../../input/mapper.zig");
 const colors = @import("../../colors.zig");
 

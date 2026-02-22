@@ -2,7 +2,7 @@ const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const easing = @import("../../anim/easing.zig");
 

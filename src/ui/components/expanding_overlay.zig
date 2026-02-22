@@ -1,6 +1,6 @@
 const geom = @import("../../geom.zig");
 const easing = @import("../../anim/easing.zig");
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 
 pub const ExpandingOverlay = struct {
     state: State = .Closed,

@@ -5,7 +5,7 @@ const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
-const dpi = @import("../scale.zig");
+const dpi = @import("../../dpi.zig");
 const button = @import("button.zig");
 const font_cache = @import("../../font_cache.zig");
 

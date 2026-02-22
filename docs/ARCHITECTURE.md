@@ -42,7 +42,7 @@ graph TD
     end
 
     subgraph Shared Utilities
-        SHARED["geom, colors, config,<br/>url_matcher, metrics, os/open"]
+        SHARED["geom, colors, dpi, config,<br/>url_matcher, metrics, os/open"]
     end
 
     MAIN --> RT
@@ -85,7 +85,7 @@ Platform    Session    Rendering    UI Overlay
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
 - The only background thread is the notification socket listener (`session/notify.zig`); it communicates with the main thread via a thread-safe queue drained once per frame.
-- Shared Utilities (`geom`, `colors`, `config`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
+- Shared Utilities (`geom`, `colors`, `dpi`, `config`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
 - **Exception:** `app/*` modules may import `c.zig` directly for SDL type definitions used in input handling. This is a pragmatic shortcut for FFI constants, not a general license to depend on the Platform layer.
 
 ## Rules for New Code
@@ -345,7 +345,7 @@ Renderer draws attention border / story overlay
 | `ui/components/markdown_renderer.zig` | Line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator and story-specific line kinds (diff headers, diff lines, code lines with anchor/kind metadata) | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |
 | `ui/components/reader_overlay.zig` | Fullscreen reader overlay for the selected terminal history (full view or grid selection) with live markdown updates, centered reading-width layout, bottom pinning, jump-to-bottom, incremental search, clickable links, shared scrollbar interactions, styled inline markdown in table cells, and left-to-right gradient prompt separators | `ReaderOverlayComponent`, `toggle()` | `ui/components/fullscreen_overlay`, `ui/components/scrollbar`, `app/terminal_history`, `ui/components/markdown_parser`, `ui/components/markdown_renderer`, `os/open`, `font_cache`, `geom`, `c` |
 | `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline), reader mode overlay, fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
-| Shared Utilities (`geom`, `colors`, `config`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, TOML config loading/persistence, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `Metrics`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
+| Shared Utilities (`geom`, `colors`, `dpi`, `config`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, DPI scaling helpers, TOML config loading/persistence, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `Metrics`, `dpi.scale()`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
 ## Key Architectural Decisions
 
