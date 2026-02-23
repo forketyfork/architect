@@ -40,6 +40,16 @@ pub const AgentKind = enum {
             .gemini => "gemini",
         };
     }
+
+    /// The PTY input sequence that triggers a graceful exit with session UUID output.
+    /// Prefixed with Ctrl+C (0x03) to interrupt any in-progress operation before exiting.
+    pub fn exitCommand(self: AgentKind) []const u8 {
+        return switch (self) {
+            .claude => "\x03/exit\n",
+            .codex => "\x03q\n",
+            .gemini => "\x03/exit\n",
+        };
+    }
 };
 
 const log = std.log.scoped(.session_state);
@@ -607,9 +617,22 @@ pub const SessionState = struct {
         log.debug("sent SIGTERM to foreground pgrp {d}", .{fg_pgrp});
     }
 
+    /// Writes the agent's exit command to the PTY master fd.
+    /// The command is prefixed with Ctrl+C to interrupt any in-progress operation.
+    /// Falls through silently on error; the caller should follow up with sendTermToForegroundPgrp
+    /// if the agent does not exit within the drain window.
+    pub fn sendExitCommand(self: *SessionState, agent_kind: AgentKind) void {
+        if (!self.spawned or self.dead) return;
+        const shell = self.shell orelse return;
+        const cmd = agent_kind.exitCommand();
+        _ = posix.write(shell.pty.master, cmd) catch |err| {
+            log.warn("sendExitCommand: write failed: {}", .{err});
+        };
+        log.debug("sendExitCommand: wrote exit command for agent {s}", .{agent_kind.name()});
+    }
+
     /// Drains PTY output into the terminal buffer for up to `timeout_ms` milliseconds,
-    /// stopping early if the foreground process group reverts to the shell (agent exited)
-    /// or the shell process itself exits. Called synchronously at quit time only.
+    /// stopping early if the shell process exits. Called synchronously at quit time only.
     pub fn drainOutputForMs(self: *SessionState, timeout_ms: u64) void {
         if (!self.spawned or self.dead) return;
         const shell = &(self.shell orelse return);
@@ -893,6 +916,7 @@ test "parseArgv matches agent name in exec_path (bundled runtime)" {
 fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
     if (size < 4) return null;
     const argc = std.mem.readInt(i32, buf[0..4], .little);
+    log.debug("parseArgv: argc={d} size={d} buf[4..12]={any}", .{ argc, size, buf[4..@min(12, size)] });
 
     var pos: usize = 4;
 

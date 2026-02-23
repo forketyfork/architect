@@ -2107,9 +2107,10 @@ pub fn run() !void {
             session.updateCwd(now);
         }
 
-        // Graceful agent teardown: detect running agents, send SIGTERM to their
-        // foreground process group, drain PTY output, and extract the session UUID
-        // printed in the agent's exit message. Runs synchronously at quit time only.
+        // Graceful agent teardown: detect running agents, send an exit command so the
+        // agent exits with its session UUID visible in PTY output, then extract the UUID.
+        // Falls back to SIGTERM if the agent doesn't exit within the drain window.
+        // Runs synchronously at quit time only.
         for (sessions, 0..) |session, idx| {
             const agent_kind = session.detectForegroundAgent() orelse {
                 log.debug("quit teardown: session {d} has no foreground agent", .{idx});
@@ -2117,8 +2118,14 @@ pub fn run() !void {
             };
             log.info("quit teardown: session {d} has foreground agent {s}", .{ idx, agent_kind.name() });
             session.agent_kind = agent_kind;
-            session.sendTermToForegroundPgrp();
-            session.drainOutputForMs(1500);
+            // Ask the agent to exit gracefully so it prints its session UUID.
+            session.sendExitCommand(agent_kind);
+            session.drainOutputForMs(2000);
+            // If the agent did not exit voluntarily, terminate the process group.
+            if (!session.dead) {
+                session.sendTermToForegroundPgrp();
+                session.drainOutputForMs(500);
+            }
             const text = terminal_history.extractSessionText(allocator, session) catch |err| {
                 log.warn("quit teardown: session {d} text extraction failed: {}", .{ idx, err });
                 continue;
