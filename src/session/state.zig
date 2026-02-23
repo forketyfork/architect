@@ -17,6 +17,39 @@ const mac = if (builtin.os.tag == .macos)
 else
     struct {};
 
+pub const AgentKind = enum {
+    claude,
+    codex,
+    gemini,
+
+    pub fn fromComm(comm: []const u8) ?AgentKind {
+        if (std.mem.eql(u8, comm, "claude")) return .claude;
+        if (std.mem.eql(u8, comm, "codex")) return .codex;
+        if (std.mem.eql(u8, comm, "gemini")) return .gemini;
+        return null;
+    }
+
+    pub fn fromString(s: []const u8) ?AgentKind {
+        return fromComm(s);
+    }
+
+    pub fn name(self: AgentKind) []const u8 {
+        return switch (self) {
+            .claude => "claude",
+            .codex => "codex",
+            .gemini => "gemini",
+        };
+    }
+
+    pub fn resumeCommandPrefix(self: AgentKind) []const u8 {
+        return switch (self) {
+            .claude => "claude --resume ",
+            .codex => "codex resume ",
+            .gemini => "gemini --resume ",
+        };
+    }
+};
+
 const log = std.log.scoped(.session_state);
 
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
@@ -57,6 +90,10 @@ pub const SessionState = struct {
     process_wait_ctx: ?*WaitContext = null,
     /// Incremented whenever a new watcher is armed to ignore stale completions.
     process_generation: usize = 0,
+    /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
+    agent_kind: ?AgentKind = null,
+    /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
+    agent_session_id: ?[]const u8 = null,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -205,6 +242,12 @@ pub const SessionState = struct {
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
+
+        if (self.agent_session_id) |sid| {
+            allocator.free(sid);
+            self.agent_session_id = null;
+        }
+        self.agent_kind = null;
 
         if (self.cwd_path) |path| {
             allocator.free(path);
@@ -514,7 +557,161 @@ pub const SessionState = struct {
         if (fg_pgrp < 0) return false;
         return fg_pgrp != shell.child_pid;
     }
+
+    /// Returns the AgentKind of the foreground process if it is a known AI agent.
+    /// macOS only; always returns null on other platforms.
+    pub fn detectForegroundAgent(self: *const SessionState) ?AgentKind {
+        if (builtin.os.tag != .macos) return null;
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+
+        const fg_pgrp = blk: {
+            if (getForegroundPgrp(shell.child_pid)) |fg| {
+                if (fg == shell.child_pid) return null;
+                break :blk fg;
+            }
+            const slave_path_z = ptsname(shell.pty.master) orelse return null;
+            const slave_path = std.mem.sliceTo(slave_path_z, 0);
+            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
+            defer posix.close(fd);
+            const fg = tcgetpgrp(fd);
+            if (fg <= 0 or fg == shell.child_pid) return null;
+            break :blk @as(posix.pid_t, @intCast(fg));
+        };
+
+        return detectAgentByPid(fg_pgrp);
+    }
+
+    /// Sends SIGTERM to the foreground process group of this session's PTY.
+    /// No-op if no foreground agent is detected or on non-macOS platforms.
+    pub fn sendTermToForegroundPgrp(self: *SessionState) void {
+        if (builtin.os.tag != .macos) return;
+        if (!self.spawned or self.dead) return;
+        const shell = self.shell orelse return;
+
+        const fg_pgrp = blk: {
+            if (getForegroundPgrp(shell.child_pid)) |fg| {
+                if (fg == shell.child_pid) return;
+                break :blk fg;
+            }
+            const slave_path_z = ptsname(shell.pty.master) orelse return;
+            const slave_path = std.mem.sliceTo(slave_path_z, 0);
+            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return;
+            defer posix.close(fd);
+            const fg = tcgetpgrp(fd);
+            if (fg <= 0 or fg == shell.child_pid) return;
+            break :blk @as(posix.pid_t, @intCast(fg));
+        };
+
+        _ = std.c.kill(-fg_pgrp, std.c.SIG.TERM);
+        log.debug("sent SIGTERM to foreground pgrp {d}", .{fg_pgrp});
+    }
+
+    /// Drains PTY output into the terminal buffer for up to `timeout_ms` milliseconds,
+    /// stopping early if the foreground process group reverts to the shell (agent exited)
+    /// or the shell process itself exits. Called synchronously at quit time only.
+    pub fn drainOutputForMs(self: *SessionState, timeout_ms: u64) void {
+        if (!self.spawned or self.dead) return;
+        const shell = &(self.shell orelse return);
+        const stream = &(self.stream orelse return);
+
+        const master_fd = shell.pty.master;
+
+        const orig_flags = posix.fcntl(master_fd, posix.F.GETFL, 0) catch return;
+        var blocking_flags: posix.O = @bitCast(@as(u32, @intCast(orig_flags)));
+        blocking_flags.NONBLOCK = false;
+        _ = posix.fcntl(master_fd, posix.F.SETFL, @as(u32, @bitCast(blocking_flags))) catch |err| {
+            log.warn("failed to set PTY master to blocking mode: {}", .{err});
+            return;
+        };
+        defer {
+            var restore_flags: posix.O = @bitCast(@as(u32, @intCast(orig_flags)));
+            restore_flags.NONBLOCK = true;
+            _ = posix.fcntl(master_fd, posix.F.SETFL, @as(u32, @bitCast(restore_flags))) catch |err| {
+                log.warn("failed to restore PTY master flags: {}", .{err});
+            };
+        }
+
+        const deadline_ms = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+        var buf: [4096]u8 = undefined;
+
+        while (true) {
+            const now_ms = std.time.milliTimestamp();
+            if (now_ms >= deadline_ms) break;
+
+            var status: c_int = 0;
+            if (std.c.waitpid(shell.child_pid, &status, std.c.W.NOHANG) > 0) {
+                self.dead = true;
+                self.markDirty();
+                break;
+            }
+
+            if (builtin.os.tag == .macos) {
+                if (getForegroundPgrp(shell.child_pid)) |fg| {
+                    if (fg == shell.child_pid) break;
+                }
+            }
+
+            const remaining: i64 = deadline_ms - std.time.milliTimestamp();
+            if (remaining <= 0) break;
+            const poll_ms: i32 = @intCast(@min(remaining, @as(i64, 100)));
+
+            var pfd = [_]posix.pollfd{.{
+                .fd = master_fd,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            }};
+            const n_ready = posix.poll(&pfd, poll_ms) catch |err| {
+                log.debug("poll error during agent drain: {}", .{err});
+                break;
+            };
+            if (n_ready == 0) continue;
+            if (pfd[0].revents & posix.POLL.HUP != 0) break;
+            if (pfd[0].revents & posix.POLL.IN == 0) continue;
+
+            const n = posix.read(master_fd, &buf) catch |err| {
+                log.debug("read error during agent drain: {}", .{err});
+                break;
+            };
+            if (n == 0) break;
+
+            stream.nextSlice(buf[0..n]) catch |err| {
+                log.warn("drain output parse error: {}", .{err});
+            };
+            self.markDirty();
+        }
+    }
 };
+
+/// Returns the AgentKind for a given PID by inspecting its process name via sysctl.
+/// Falls back to KERN_PROCARGS2 for Node.js wrappers.
+fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, pid };
+    var info: mac.kinfo_proc = undefined;
+    var size: usize = @sizeOf(mac.kinfo_proc);
+    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) return null;
+    if (size < @sizeOf(mac.kinfo_proc)) return null;
+
+    const comm = std.mem.sliceTo(&info.kp_proc.p_comm, 0);
+    if (AgentKind.fromComm(comm)) |kind| return kind;
+
+    if (std.mem.eql(u8, comm, "node")) {
+        return detectAgentFromNodeArgv(pid);
+    }
+
+    return null;
+}
+
+/// Reads KERN_PROCARGS2 for a Node.js process and delegates to parseNodeArgv.
+fn detectAgentFromNodeArgv(pid: posix.pid_t) ?AgentKind {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROCARGS2, pid };
+    var buf: [4096]u8 = undefined;
+    var size: usize = buf.len;
+    if (mac.sysctl(@constCast(&mib), mib.len, &buf, &size, null, 0) != 0) return null;
+    return parseNodeArgv(buf[0..size], size);
+}
 
 fn basenameForDisplay(path: []const u8) []const u8 {
     if (builtin.os.tag == .macos) {
@@ -591,4 +788,81 @@ test "pending write shrinks when empty and over threshold" {
 
     maybeShrinkPendingWrite(&buf, allocator);
     try std.testing.expect(buf.capacity <= pending_write_shrink_threshold);
+}
+
+test "AgentKind.fromComm recognises known agent names" {
+    try std.testing.expectEqual(AgentKind.claude, AgentKind.fromComm("claude").?);
+    try std.testing.expectEqual(AgentKind.codex, AgentKind.fromComm("codex").?);
+    try std.testing.expectEqual(AgentKind.gemini, AgentKind.fromComm("gemini").?);
+    try std.testing.expect(AgentKind.fromComm("node") == null);
+    try std.testing.expect(AgentKind.fromComm("") == null);
+    try std.testing.expect(AgentKind.fromComm("python") == null);
+}
+
+test "AgentKind.fromString round-trips through name()" {
+    inline for (.{ AgentKind.claude, AgentKind.codex, AgentKind.gemini }) |kind| {
+        const s = kind.name();
+        try std.testing.expectEqual(kind, AgentKind.fromString(s).?);
+    }
+}
+
+test "detectAgentFromNodeArgv parses synthetic KERN_PROCARGS2 blob" {
+    // Helper that invokes the parsing logic directly with a synthetic buffer.
+    // Layout: [argc i32][exec_path\0][padding\0...][argv0\0][argv1\0]
+    const build = struct {
+        fn blob(argc: i32, exec: []const u8, argv0: []const u8, argv1: []const u8) [512]u8 {
+            var buf = [_]u8{0} ** 512;
+            std.mem.writeInt(i32, buf[0..4], argc, .little);
+            var pos: usize = 4;
+            @memcpy(buf[pos..][0..exec.len], exec);
+            pos += exec.len;
+            pos += 1; // null after exec
+            // No padding needed when pos is already past exec
+            @memcpy(buf[pos..][0..argv0.len], argv0);
+            pos += argv0.len;
+            pos += 1; // null after argv0
+            @memcpy(buf[pos..][0..argv1.len], argv1);
+            return buf;
+        }
+    };
+
+    const claude_blob = build.blob(3, "/usr/local/bin/node", "node", "/usr/local/lib/node_modules/@anthropic/claude/bin/claude");
+    try std.testing.expectEqual(AgentKind.claude, parseNodeArgv(&claude_blob, claude_blob.len).?);
+
+    const codex_blob = build.blob(2, "/usr/local/bin/node", "node", "/home/user/.npm/bin/codex");
+    try std.testing.expectEqual(AgentKind.codex, parseNodeArgv(&codex_blob, codex_blob.len).?);
+
+    const gemini_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/gemini-cli");
+    try std.testing.expectEqual(AgentKind.gemini, parseNodeArgv(&gemini_blob, gemini_blob.len).?);
+
+    const unknown_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/some-other-tool");
+    try std.testing.expect(parseNodeArgv(&unknown_blob, unknown_blob.len) == null);
+
+    const no_argv1_blob = build.blob(1, "/usr/local/bin/node", "node", "");
+    try std.testing.expect(parseNodeArgv(&no_argv1_blob, no_argv1_blob.len) == null);
+}
+
+/// Pure parsing logic for KERN_PROCARGS2 blobs, extracted for testability.
+fn parseNodeArgv(buf: []const u8, size: usize) ?AgentKind {
+    if (size < 4) return null;
+    const argc = std.mem.readInt(i32, buf[0..4], .little);
+    if (argc < 2) return null;
+
+    var pos: usize = 4;
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    if (pos >= size) return null;
+    pos += 1;
+    while (pos < size and buf[pos] == 0) : (pos += 1) {}
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    if (pos >= size) return null;
+    pos += 1;
+    if (pos >= size) return null;
+    const argv1_start = pos;
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    const argv1 = buf[argv1_start..pos];
+
+    if (std.mem.indexOf(u8, argv1, "claude") != null) return .claude;
+    if (std.mem.indexOf(u8, argv1, "codex") != null) return .codex;
+    if (std.mem.indexOf(u8, argv1, "gemini") != null) return .gemini;
+    return null;
 }

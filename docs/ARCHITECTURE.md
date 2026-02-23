@@ -307,7 +307,7 @@ Renderer draws attention border / story overlay
 | Glyph cache | GPU textures + in-memory LRU | Up to 4096 shaped glyph textures |
 | Render cache | GPU textures per session | Cached terminal renders, epoch-invalidated |
 | config.toml | `~/.config/architect/config.toml` | User preferences (font, theme, UI flags, worktree location) |
-| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds) |
+| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
 
 ### Exit Points
@@ -325,12 +325,12 @@ Renderer draws attention border / story overlay
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint | `main()` | `app/runtime` |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, all `app/*` modules |
-| `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, and convert OSC 133 prompt markers into reader-friendly prompt marker lines | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()` | `session/state`, `ghostty-vt`, std |
+| `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
-| `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher | `SessionState`, `init()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
+| `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit | `SessionState`, `AgentKind`, `init()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()`, `drainOutputForMs()` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
@@ -468,3 +468,16 @@ Renderer draws attention border / story overlay
   - *Background thread + queue for all git commands* -- deferred; would require deferred rendering with loading states in the overlay, adding complexity disproportionate to the latency risk. May be revisited if git operations become noticeably slow on large repositories.
   - *Lazy/cached persistence* -- partially adopted; comments are only saved on overlay close and on comment submit, not on every keystroke.
 - **Date:** 2025 (diff overlay inline comments)
+
+### ADR-014: Agent Session Detection, Persistence, and Resumption
+
+- **Decision:** Architect detects running AI agents at quit time, captures their session UUIDs, persists them in `persistence.toml`, and automatically resumes them on next launch. The quit-time teardown runs synchronously on the main thread — a deliberate exception to the ADR-009 rule that blocking I/O must not occur on the main thread.
+- **Context:** To persist an agent's session ID for resumption on next launch, Architect must capture the session UUID that the agent prints to the PTY just before it exits. This data is only available in the PTY output after the agent has received SIGTERM and had time to emit its exit message. The sequence is: detect running agent via macOS `sysctl` → send SIGTERM to the foreground process group → block-read PTY until the agent exits or 1.5 s elapses → extract the UUID via `terminal_history.extractAgentSessionId()` → persist it in `persistence.toml`. This flow runs entirely after the last rendered frame, outside the frame loop.
+- **Agent detection strategy:** `session/state.detectForegroundAgent()` reads the foreground process-group leader's process image name (`kp_proc.p_comm`) via `sysctl KERN_PROC_PID`. If `p_comm` is `"claude"`, `"codex"`, or `"gemini"`, the agent is identified directly. If `p_comm` is `"node"`, `KERN_PROCARGS2` is read to inspect `argv[1]`; if the script path contains `"claude"`, `"codex"`, or `"gemini"`, the corresponding agent is matched. This uniform approach covers both direct binaries and Node.js-wrapped agents.
+- **Resume-command injection:** On next launch, `app/runtime.zig` reads the persisted `agent_type` and `agent_session_id` from `persistence.toml`. If both are present, it appends the resume command (e.g., `claude --resume <uuid>`) to `session.pending_write` immediately after spawning the shell. The shell reads this input once it is ready, so no timing synchronization is needed.
+- **Layer boundary:** `session/state.zig` owns all PTY I/O (SIGTERM delivery + drain). `app/terminal_history.zig` owns text analysis (UUID extraction). `app/runtime.zig` orchestrates the two and owns persistence. This preserves the session-layer / app-layer boundary: session code never calls into app code.
+- **Alternatives considered:**
+  - *Background thread for agent teardown* -- rejected because it would require synchronizing with the main thread to collect results before persistence can be written; the complexity outweighs the benefit of a 1.5 s blocking window that only occurs at quit time.
+  - *OSC/socket notification from agents* -- rejected because it requires agents to support a custom protocol; the PTY output approach works with unmodified agent binaries.
+  - *Skip UUID persistence, always start fresh* -- rejected because it loses long-running agent context; resumption is a core user value.
+- **Date:** 2026-02-23 (agent session persistence)

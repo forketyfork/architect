@@ -271,15 +271,23 @@ pub const Persistence = struct {
         count: u32,
     };
 
+    pub const TerminalEntry = struct {
+        path: []const u8,
+        agent_type: ?[]const u8 = null,
+        agent_session_id: ?[]const u8 = null,
+    };
+
     window: WindowConfig = .{},
     font_size: c_int = 14,
-    terminal_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    terminal_entries: std.ArrayListUnmanaged(TerminalEntry) = .{},
     recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?[]const []const u8 = null,
+        terminal_agent_types: ?[]const []const u8 = null,
+        terminal_session_ids: ?[]const []const u8 = null,
         recent_folders: ?toml.HashMap(u32) = null,
     };
 
@@ -302,8 +310,8 @@ pub const Persistence = struct {
     }
 
     pub fn deinit(self: *Persistence, allocator: std.mem.Allocator) void {
-        self.clearTerminalPaths(allocator);
-        self.terminal_paths.deinit(allocator);
+        self.clearTerminalEntries(allocator);
+        self.terminal_entries.deinit(allocator);
         self.clearRecentFolders(allocator);
         self.recent_folders.deinit(allocator);
     }
@@ -335,8 +343,16 @@ pub const Persistence = struct {
             persistence.font_size = result.value.font_size;
 
             if (result.value.terminals) |paths| {
-                for (paths) |path| {
-                    try persistence.appendTerminalPath(allocator, path);
+                for (paths, 0..) |path, idx| {
+                    const agent_type = if (result.value.terminal_agent_types) |types|
+                        if (idx < types.len and types[idx].len > 0) types[idx] else null
+                    else
+                        null;
+                    const agent_session_id = if (result.value.terminal_session_ids) |ids|
+                        if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
+                    else
+                        null;
+                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
                 }
             }
 
@@ -358,7 +374,7 @@ pub const Persistence = struct {
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
-                    try persistence.appendTerminalPath(allocator, path);
+                    try persistence.appendTerminalEntry(allocator, path, null, null);
                 }
             }
 
@@ -387,7 +403,7 @@ pub const Persistence = struct {
         persistence.font_size = result_v1.value.font_size;
 
         if (result_v1.value.terminals) |stored| {
-            try persistence.appendLegacyTerminals(allocator, stored);
+            try persistence.appendLegacyTerminalEntries(allocator, stored);
         }
 
         return persistence;
@@ -421,14 +437,34 @@ pub const Persistence = struct {
         // Write font_size first (top-level scalar)
         try writer.print("font_size = {d}\n", .{self.font_size});
 
-        // Write terminals array before any sections
-        if (self.terminal_paths.items.len > 0) {
+        // Write terminal path and agent arrays before any sections
+        if (self.terminal_entries.items.len > 0) {
             try writer.writeAll("terminals = [");
-            for (self.terminal_paths.items, 0..) |path, idx| {
+            for (self.terminal_entries.items, 0..) |entry, idx| {
                 if (idx != 0) try writer.writeAll(", ");
-                try writeTomlStringToWriter(writer, path);
+                try writeTomlStringToWriter(writer, entry.path);
             }
             try writer.writeAll("]\n");
+
+            const has_agents = for (self.terminal_entries.items) |entry| {
+                if (entry.agent_type != null) break true;
+            } else false;
+
+            if (has_agents) {
+                try writer.writeAll("terminal_agent_types = [");
+                for (self.terminal_entries.items, 0..) |entry, idx| {
+                    if (idx != 0) try writer.writeAll(", ");
+                    try writeTomlStringToWriter(writer, entry.agent_type orelse "");
+                }
+                try writer.writeAll("]\n");
+
+                try writer.writeAll("terminal_session_ids = [");
+                for (self.terminal_entries.items, 0..) |entry, idx| {
+                    if (idx != 0) try writer.writeAll(", ");
+                    try writeTomlStringToWriter(writer, entry.agent_session_id orelse "");
+                }
+                try writer.writeAll("]\n");
+            }
         }
 
         // Write [window] section
@@ -453,17 +489,42 @@ pub const Persistence = struct {
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
     }
 
-    pub fn appendTerminalPath(self: *Persistence, allocator: std.mem.Allocator, path: []const u8) !void {
-        const value = try allocator.dupe(u8, path);
-        errdefer allocator.free(value);
-        try self.terminal_paths.append(allocator, value);
+    pub fn appendTerminalEntry(
+        self: *Persistence,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        agent_type: ?[]const u8,
+        agent_session_id: ?[]const u8,
+    ) !void {
+        const path_copy = try allocator.dupe(u8, path);
+        errdefer allocator.free(path_copy);
+
+        const agent_type_copy: ?[]const u8 = if (agent_type) |t| blk: {
+            const copy = try allocator.dupe(u8, t);
+            break :blk copy;
+        } else null;
+        errdefer if (agent_type_copy) |t| allocator.free(t);
+
+        const agent_session_id_copy: ?[]const u8 = if (agent_session_id) |s| blk: {
+            const copy = try allocator.dupe(u8, s);
+            break :blk copy;
+        } else null;
+        errdefer if (agent_session_id_copy) |s| allocator.free(s);
+
+        try self.terminal_entries.append(allocator, .{
+            .path = path_copy,
+            .agent_type = agent_type_copy,
+            .agent_session_id = agent_session_id_copy,
+        });
     }
 
-    pub fn clearTerminalPaths(self: *Persistence, allocator: std.mem.Allocator) void {
-        for (self.terminal_paths.items) |path| {
-            allocator.free(path);
+    pub fn clearTerminalEntries(self: *Persistence, allocator: std.mem.Allocator) void {
+        for (self.terminal_entries.items) |entry| {
+            allocator.free(entry.path);
+            if (entry.agent_type) |t| allocator.free(t);
+            if (entry.agent_session_id) |s| allocator.free(s);
         }
-        self.terminal_paths.clearRetainingCapacity();
+        self.terminal_entries.clearRetainingCapacity();
     }
 
     /// Increment visit count for a folder. Adds it if not present.
@@ -564,7 +625,7 @@ pub const Persistence = struct {
         return self.recent_folders.items;
     }
 
-    fn appendLegacyTerminals(self: *Persistence, allocator: std.mem.Allocator, stored: toml.HashMap([]const u8)) !void {
+    fn appendLegacyTerminalEntries(self: *Persistence, allocator: std.mem.Allocator, stored: toml.HashMap([]const u8)) !void {
         const LegacyTerminalEntry = struct {
             row: usize,
             col: usize,
@@ -592,7 +653,7 @@ pub const Persistence = struct {
         std.mem.sort(LegacyTerminalEntry, entries.items, {}, LegacyTerminalEntry.lessThan);
 
         for (entries.items) |entry| {
-            try self.appendTerminalPath(allocator, entry.path);
+            try self.appendTerminalEntry(allocator, entry.path, null, null);
         }
     }
 
@@ -960,20 +1021,23 @@ test "parseTerminalKey decodes 1-based coordinates" {
     try std.testing.expect(parseTerminalKey("something_else") == null);
 }
 
-test "Persistence.appendTerminalPath preserves order" {
+test "Persistence.appendTerminalEntry preserves order and fields" {
     const allocator = std.testing.allocator;
     var persistence = Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalPath(allocator, "/one");
-    try persistence.appendTerminalPath(allocator, "/two");
+    try persistence.appendTerminalEntry(allocator, "/one", null, null);
+    try persistence.appendTerminalEntry(allocator, "/two", "claude", "abc-123");
 
-    try std.testing.expectEqual(@as(usize, 2), persistence.terminal_paths.items.len);
-    try std.testing.expectEqualStrings("/one", persistence.terminal_paths.items[0]);
-    try std.testing.expectEqualStrings("/two", persistence.terminal_paths.items[1]);
+    try std.testing.expectEqual(@as(usize, 2), persistence.terminal_entries.items.len);
+    try std.testing.expectEqualStrings("/one", persistence.terminal_entries.items[0].path);
+    try std.testing.expect(persistence.terminal_entries.items[0].agent_type == null);
+    try std.testing.expectEqualStrings("/two", persistence.terminal_entries.items[1].path);
+    try std.testing.expectEqualStrings("claude", persistence.terminal_entries.items[1].agent_type.?);
+    try std.testing.expectEqualStrings("abc-123", persistence.terminal_entries.items[1].agent_session_id.?);
 }
 
-test "Persistence.appendLegacyTerminals migrates row-major order" {
+test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
     const allocator = std.testing.allocator;
     var persistence = Persistence.init(allocator);
     defer persistence.deinit(allocator);
@@ -1000,11 +1064,11 @@ test "Persistence.appendLegacyTerminals migrates row-major order" {
     errdefer allocator.free(val_a);
     try legacy.map.put(key_a, val_a);
 
-    try persistence.appendLegacyTerminals(allocator, legacy);
+    try persistence.appendLegacyTerminalEntries(allocator, legacy);
 
-    try std.testing.expectEqual(@as(usize, 2), persistence.terminal_paths.items.len);
-    try std.testing.expectEqualStrings("/a", persistence.terminal_paths.items[0]);
-    try std.testing.expectEqualStrings("/b", persistence.terminal_paths.items[1]);
+    try std.testing.expectEqual(@as(usize, 2), persistence.terminal_entries.items.len);
+    try std.testing.expectEqualStrings("/a", persistence.terminal_entries.items[0].path);
+    try std.testing.expectEqualStrings("/b", persistence.terminal_entries.items[1].path);
 }
 
 test "Persistence save/load round-trip preserves all fields" {
@@ -1027,21 +1091,21 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.x = 100;
     original.window.y = 200;
     original.font_size = 16;
-    try original.appendTerminalPath(allocator, "/home/user/project1");
-    try original.appendTerminalPath(allocator, "/home/user/project2");
-    try original.appendTerminalPath(allocator, "/tmp/test");
+    try original.appendTerminalEntry(allocator, "/home/user/project1", null, null);
+    try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def");
+    try original.appendTerminalEntry(allocator, "/tmp/test", null, null);
 
     try original.saveToPath(allocator, test_file);
+
+    var loaded = Persistence.init(allocator);
+    defer loaded.deinit(allocator);
 
     const file = try fs.openFileAbsolute(test_file, .{});
     defer file.close();
     const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(contents);
 
-    var loaded = Persistence.init(allocator);
-    defer loaded.deinit(allocator);
-
-    var parser = toml.Parser(Persistence.TomlPersistenceV2).init(allocator);
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
     defer parser.deinit();
 
     var result = try parser.parseString(contents);
@@ -1051,8 +1115,16 @@ test "Persistence save/load round-trip preserves all fields" {
     loaded.font_size = result.value.font_size;
 
     if (result.value.terminals) |paths| {
-        for (paths) |path| {
-            try loaded.appendTerminalPath(allocator, path);
+        for (paths, 0..) |path, idx| {
+            const agent_type = if (result.value.terminal_agent_types) |types|
+                if (idx < types.len and types[idx].len > 0) types[idx] else null
+            else
+                null;
+            const agent_session_id = if (result.value.terminal_session_ids) |ids|
+                if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
+            else
+                null;
+            try loaded.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
         }
     }
 
@@ -1061,10 +1133,20 @@ test "Persistence save/load round-trip preserves all fields" {
     try std.testing.expectEqual(original.window.x, loaded.window.x);
     try std.testing.expectEqual(original.window.y, loaded.window.y);
     try std.testing.expectEqual(original.font_size, loaded.font_size);
-    try std.testing.expectEqual(original.terminal_paths.items.len, loaded.terminal_paths.items.len);
+    try std.testing.expectEqual(original.terminal_entries.items.len, loaded.terminal_entries.items.len);
 
-    for (original.terminal_paths.items, loaded.terminal_paths.items) |orig_path, load_path| {
-        try std.testing.expectEqualStrings(orig_path, load_path);
+    for (original.terminal_entries.items, loaded.terminal_entries.items) |orig, loaded_entry| {
+        try std.testing.expectEqualStrings(orig.path, loaded_entry.path);
+        if (orig.agent_type) |orig_at| {
+            try std.testing.expectEqualStrings(orig_at, loaded_entry.agent_type.?);
+        } else {
+            try std.testing.expect(loaded_entry.agent_type == null);
+        }
+        if (orig.agent_session_id) |orig_sid| {
+            try std.testing.expectEqualStrings(orig_sid, loaded_entry.agent_session_id.?);
+        } else {
+            try std.testing.expect(loaded_entry.agent_session_id == null);
+        }
     }
 }
 

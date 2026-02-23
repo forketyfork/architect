@@ -29,6 +29,7 @@ const font_cache_mod = @import("../font_cache.zig");
 const c = @import("../c.zig");
 const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
+const terminal_history = @import("terminal_history.zig");
 
 const log = std.log.scoped(.runtime);
 
@@ -395,9 +396,9 @@ pub fn run() !void {
     defer grid.deinit();
 
     // Load persisted terminals to determine initial grid size
-    const restored_paths = if (builtin.os.tag == .macos) persistence.terminal_paths.items else &[_][]const u8{};
-    const restored_limit = @min(restored_paths.len, grid_layout.max_terminals);
-    const restored_slice = restored_paths[0..restored_limit];
+    const restored_entries = if (builtin.os.tag == .macos) persistence.terminal_entries.items else &[_]config_mod.Persistence.TerminalEntry{};
+    const restored_limit = @min(restored_entries.len, grid_layout.max_terminals);
+    const restored_slice = restored_entries[0..restored_limit];
 
     // Calculate initial grid size based on restored terminals
     const initial_terminal_count: usize = if (restored_slice.len > 0) restored_slice.len else 1;
@@ -539,18 +540,35 @@ pub fn run() !void {
     }
 
     // Restore persisted terminals
-    for (restored_slice, 0..) |path, new_idx| {
-        if (new_idx >= sessions.len or path.len == 0) continue;
-        const dir_buf = allocZ(allocator, path) catch |err| blk: {
+    for (restored_slice, 0..) |entry, new_idx| {
+        if (new_idx >= sessions.len or entry.path.len == 0) continue;
+        const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
             std.debug.print("Failed to restore terminal {d}: {}\n", .{ new_idx, err });
             break :blk null;
         };
         defer if (dir_buf) |buf| allocator.free(buf);
         if (dir_buf) |buf| {
-            const dir: [:0]const u8 = buf[0..path.len :0];
+            const dir: [:0]const u8 = buf[0..entry.path.len :0];
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
+
+            queueResumeCommand: {
+                if (!sessions[new_idx].spawned) break :queueResumeCommand;
+                const agent_type_str = entry.agent_type orelse break :queueResumeCommand;
+                const session_id = entry.agent_session_id orelse break :queueResumeCommand;
+                if (session_id.len == 0) break :queueResumeCommand;
+                const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse break :queueResumeCommand;
+                const resume_cmd = terminal_history.buildResumeCommand(allocator, agent_kind, session_id) catch |err| {
+                    log.warn("failed to build resume command for session {d}: {}", .{ new_idx, err });
+                    break :queueResumeCommand;
+                };
+                defer allocator.free(resume_cmd);
+                // Write to pending_write; PTY input queues until the shell reads it after startup.
+                sessions[new_idx].pending_write.appendSlice(allocator, resume_cmd) catch |err| {
+                    log.warn("failed to queue resume command for session {d}: {}", .{ new_idx, err });
+                };
+            }
         }
     }
 
@@ -2089,12 +2107,38 @@ pub fn run() !void {
             session.updateCwd(now);
         }
 
-        persistence.clearTerminalPaths(allocator);
+        // Graceful agent teardown: detect running agents, send SIGTERM to their
+        // foreground process group, drain PTY output, and extract the session UUID
+        // printed in the agent's exit message. Runs synchronously at quit time only.
+        for (sessions) |session| {
+            const agent_kind = session.detectForegroundAgent() orelse continue;
+            session.agent_kind = agent_kind;
+            session.sendTermToForegroundPgrp();
+            session.drainOutputForMs(1500);
+            const text = terminal_history.extractSessionText(allocator, session) catch |err| {
+                log.warn("failed to extract terminal text for agent UUID: {}", .{err});
+                continue;
+            };
+            defer allocator.free(text);
+            if (terminal_history.extractAgentSessionId(text, agent_kind)) |uuid| {
+                session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
+                    log.warn("failed to allocate agent session ID: {}", .{err});
+                    break :blk null;
+                };
+            }
+        }
+
+        persistence.clearTerminalEntries(allocator);
         for (sessions, 0..) |session, idx| {
             if (!session.spawned or session.dead) continue;
             if (session.cwd_path) |path| {
                 if (path.len == 0) continue;
-                persistence.appendTerminalPath(allocator, path) catch |err| {
+                persistence.appendTerminalEntry(
+                    allocator,
+                    path,
+                    if (session.agent_kind) |kind| kind.name() else null,
+                    session.agent_session_id,
+                ) catch |err| {
                     std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
                 };
             }

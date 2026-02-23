@@ -223,6 +223,9 @@ terminals = [
   "/Users/me",
 ]
 
+terminal_agent_types = ["claude", null, null]
+terminal_session_ids = ["550e8400-e29b-41d4-a716-446655440000", null, null]
+
 [window]
 width = 1440
 height = 900
@@ -241,14 +244,16 @@ y = 50
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
 | `terminals` | Working directories for each terminal (ordered by session index) |
+| `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`, or `null`). Present only when at least one terminal had a running agent at quit time. |
+| `terminal_session_ids` | Session UUID for each terminal slot, or `null`. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
 | `[window]` | Last window position and dimensions |
 | `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
 
-On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals.
+On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Architect was last closed, the agent is automatically resumed.
 
-Note: Terminal cwd persistence is currently macOS-only.
+Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically.
+Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` are loaded normally (no agent resumption for those terminals).
 
 ## Resetting Configuration
 

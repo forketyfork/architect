@@ -3,6 +3,7 @@ const ghostty_vt = @import("ghostty-vt");
 const session_state = @import("../session/state.zig");
 
 const SessionState = session_state.SessionState;
+pub const AgentKind = session_state.AgentKind;
 pub const prompt_marker_line = "@@ARCH_PROMPT@@";
 
 pub fn extractSessionText(allocator: std.mem.Allocator, session: *const SessionState) ![]u8 {
@@ -108,6 +109,42 @@ fn appendPromptMarkerLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8))
     try out.append(allocator, '\n');
 }
 
+/// Scans terminal text for the last occurrence of an agent's exit-message resume prefix
+/// and returns the session ID that follows it (up to the next whitespace).
+/// Returns a slice into `text`; caller must not free it (or dupe if lifetime matters).
+pub fn extractAgentSessionId(text: []const u8, agent_kind: AgentKind) ?[]const u8 {
+    const prefix = agent_kind.resumeCommandPrefix();
+
+    var last_id_start: ?usize = null;
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, search_pos, prefix)) |pos| {
+        last_id_start = pos + prefix.len;
+        search_pos = pos + 1;
+    }
+
+    const id_start = last_id_start orelse return null;
+    if (id_start >= text.len) return null;
+
+    var end = id_start;
+    while (end < text.len) : (end += 1) {
+        const c = text[end];
+        if (c == '\n' or c == '\r' or c == ' ' or c == '\t') break;
+    }
+
+    if (end <= id_start) return null;
+    return text[id_start..end];
+}
+
+/// Builds the shell command to resume an agent session, including a trailing newline.
+/// Caller owns the returned slice and must free it.
+pub fn buildResumeCommand(allocator: std.mem.Allocator, agent_kind: AgentKind, session_id: []const u8) ![]u8 {
+    return switch (agent_kind) {
+        .claude => std.fmt.allocPrint(allocator, "claude --resume {s}\n", .{session_id}),
+        .codex => std.fmt.allocPrint(allocator, "codex resume {s}\n", .{session_id}),
+        .gemini => std.fmt.allocPrint(allocator, "gemini --resume {s}\n", .{session_id}),
+    };
+}
+
 test "stripAnsiAlloc removes CSI and OSC sequences" {
     const allocator = std.testing.allocator;
     const input = "hello\x1b[31m red\x1b[0m world\x1b]0;title\x07!";
@@ -141,4 +178,52 @@ test "extractTerminalText roundtrip includes scrollback and viewport text" {
 
     try std.testing.expect(std.mem.indexOf(u8, text, "three") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "five") != null);
+}
+
+test "extractAgentSessionId finds UUID after claude --resume prefix" {
+    const text = "some output\nclaude --resume abc-123-def\nmore output";
+    const id = extractAgentSessionId(text, .claude);
+    try std.testing.expectEqualStrings("abc-123-def", id.?);
+}
+
+test "extractAgentSessionId finds UUID after codex resume prefix" {
+    const text = "Saving session...\ncodex resume 550e8400-e29b-41d4-a716-446655440000\n";
+    const id = extractAgentSessionId(text, .codex);
+    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", id.?);
+}
+
+test "extractAgentSessionId finds UUID after gemini --resume prefix" {
+    const text = "gemini --resume f47ac10b-58cc-4372-a567-0e02b2c3d479 exiting";
+    const id = extractAgentSessionId(text, .gemini);
+    try std.testing.expectEqualStrings("f47ac10b-58cc-4372-a567-0e02b2c3d479", id.?);
+}
+
+test "extractAgentSessionId returns last occurrence on multiple matches" {
+    const text = "claude --resume old-id\nsome more stuff\nclaude --resume new-id\n";
+    const id = extractAgentSessionId(text, .claude);
+    try std.testing.expectEqualStrings("new-id", id.?);
+}
+
+test "extractAgentSessionId returns null when prefix not present" {
+    const text = "normal terminal output without any resume command";
+    try std.testing.expect(extractAgentSessionId(text, .claude) == null);
+    try std.testing.expect(extractAgentSessionId(text, .codex) == null);
+    try std.testing.expect(extractAgentSessionId(text, .gemini) == null);
+}
+
+test "buildResumeCommand produces correct commands for each agent" {
+    const allocator = std.testing.allocator;
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    const claude_cmd = try buildResumeCommand(allocator, .claude, uuid);
+    defer allocator.free(claude_cmd);
+    try std.testing.expectEqualStrings("claude --resume 550e8400-e29b-41d4-a716-446655440000\n", claude_cmd);
+
+    const codex_cmd = try buildResumeCommand(allocator, .codex, uuid);
+    defer allocator.free(codex_cmd);
+    try std.testing.expectEqualStrings("codex resume 550e8400-e29b-41d4-a716-446655440000\n", codex_cmd);
+
+    const gemini_cmd = try buildResumeCommand(allocator, .gemini, uuid);
+    defer allocator.free(gemini_cmd);
+    try std.testing.expectEqualStrings("gemini --resume 550e8400-e29b-41d4-a716-446655440000\n", gemini_cmd);
 }
