@@ -321,6 +321,181 @@ fn initSharedFont(
     });
 }
 
+fn markTeardownComplete(flag: *bool) bool {
+    if (flag.*) return false;
+    flag.* = true;
+    return true;
+}
+
+fn swapTwoResources(
+    comptime Resource: type,
+    comptime Context: type,
+    comptime InitError: type,
+    first: *Resource,
+    second: *Resource,
+    ctx: *Context,
+    init_first: *const fn (ctx: *Context) InitError!Resource,
+    init_second: *const fn (ctx: *Context) InitError!Resource,
+    deinit_resource: *const fn (resource: *Resource) void,
+) InitError!void {
+    var next_first = try init_first(ctx);
+    errdefer deinit_resource(&next_first);
+
+    var next_second = try init_second(ctx);
+    errdefer deinit_resource(&next_second);
+
+    deinit_resource(first);
+    deinit_resource(second);
+    first.* = next_first;
+    second.* = next_second;
+}
+
+const FontReloadContext = struct {
+    allocator: std.mem.Allocator,
+    renderer: *c.SDL_Renderer,
+    shared_cache: *font_cache_mod.FontCache,
+    ui_cache: *font_cache_mod.FontCache,
+    font_size: c_int,
+    ui_scale: f32,
+};
+
+fn initTerminalFontForReload(ctx: *FontReloadContext) font_mod.Font.InitError!font_mod.Font {
+    return initSharedFont(
+        ctx.allocator,
+        ctx.renderer,
+        ctx.shared_cache,
+        layout.scaledFontSize(ctx.font_size, ctx.ui_scale),
+    );
+}
+
+fn initUiFontForReload(ctx: *FontReloadContext) font_mod.Font.InitError!font_mod.Font {
+    return initSharedFont(
+        ctx.allocator,
+        ctx.renderer,
+        ctx.ui_cache,
+        layout.scaledFontSize(ui_font_size, ctx.ui_scale),
+    );
+}
+
+fn deinitFontResource(font: *font_mod.Font) void {
+    font.deinit();
+}
+
+fn reloadFontsForScale(
+    allocator: std.mem.Allocator,
+    renderer: *c.SDL_Renderer,
+    shared_cache: *font_cache_mod.FontCache,
+    ui_cache: *font_cache_mod.FontCache,
+    font_size: c_int,
+    ui_scale: f32,
+    metrics_ptr: ?*metrics_mod.Metrics,
+    font: *font_mod.Font,
+    ui_font: *font_mod.Font,
+) font_mod.Font.InitError!void {
+    var ctx = FontReloadContext{
+        .allocator = allocator,
+        .renderer = renderer,
+        .shared_cache = shared_cache,
+        .ui_cache = ui_cache,
+        .font_size = font_size,
+        .ui_scale = ui_scale,
+    };
+    try swapTwoResources(
+        font_mod.Font,
+        FontReloadContext,
+        font_mod.Font.InitError,
+        font,
+        ui_font,
+        &ctx,
+        initTerminalFontForReload,
+        initUiFontForReload,
+        deinitFontResource,
+    );
+    font.metrics = metrics_ptr;
+}
+
+fn applyScaleChangeAndResize(
+    comptime Context: type,
+    comptime ReloadError: type,
+    ctx: *Context,
+    prev_scale: f32,
+    next_scale: f32,
+    reload_fn: *const fn (ctx: *Context) ReloadError!void,
+    resize_fn: *const fn (ctx: *Context) void,
+) ReloadError!void {
+    if (next_scale != prev_scale) {
+        try reload_fn(ctx);
+    }
+    resize_fn(ctx);
+}
+
+const RuntimeScaleChangeContext = struct {
+    allocator: std.mem.Allocator,
+    renderer: *c.SDL_Renderer,
+    shared_font_cache: *font_cache_mod.FontCache,
+    ui_font_cache: *font_cache_mod.FontCache,
+    font_size: c_int,
+    ui_scale: f32,
+    metrics_ptr: ?*metrics_mod.Metrics,
+    font: *font_mod.Font,
+    ui_font: *font_mod.Font,
+    ui: *ui_mod.UiRoot,
+    sessions: []const *SessionState,
+    render_width: c_int,
+    render_height: c_int,
+    mode: app_state.ViewMode,
+    grid_cols: usize,
+    grid_rows: usize,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+};
+
+fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Font.InitError!void {
+    try reloadFontsForScale(
+        ctx.allocator,
+        ctx.renderer,
+        ctx.shared_font_cache,
+        ctx.ui_font_cache,
+        ctx.font_size,
+        ctx.ui_scale,
+        ctx.metrics_ptr,
+        ctx.font,
+        ctx.ui_font,
+    );
+    ctx.ui.assets.ui_font = ctx.ui_font;
+}
+
+fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
+    const term_render_height = adjustedRenderHeightForMode(
+        ctx.mode,
+        ctx.render_height,
+        ctx.ui_scale,
+        ctx.grid_rows,
+    );
+    const new_term_size = layout.calculateTerminalSizeForMode(
+        ctx.font,
+        ctx.render_width,
+        term_render_height,
+        ctx.mode,
+        ctx.grid_font_scale,
+        ctx.grid_cols,
+        ctx.grid_rows,
+        ctx.ui_scale,
+    );
+    ctx.full_cols.* = new_term_size.cols;
+    ctx.full_rows.* = new_term_size.rows;
+    layout.applyTerminalResize(
+        ctx.sessions,
+        ctx.allocator,
+        ctx.full_cols.*,
+        ctx.full_rows.*,
+        ctx.render_width,
+        term_render_height,
+        ctx.ui_scale,
+    );
+}
+
 fn handleQuitRequest(
     sessions: []const *SessionState,
     confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
@@ -540,7 +715,7 @@ pub fn run() !void {
         fallback.window = config.window;
         break :blk fallback;
     };
-    defer persistence.deinit(allocator);
+    errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
     // Initialize recent folders with home directory if empty
@@ -646,7 +821,8 @@ pub fn run() !void {
     defer ui_font.deinit();
 
     var ui = ui_mod.UiRoot.init(allocator);
-    defer ui.deinit(renderer);
+    var ui_deinitialized = false;
+    errdefer if (markTeardownComplete(&ui_deinitialized)) ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
     ui.assets.font_cache = &ui_font_cache;
 
@@ -691,6 +867,7 @@ pub fn run() !void {
         allocator.free(sessions_storage);
         allocator.free(sessions);
     }
+    defer if (markTeardownComplete(&ui_deinitialized)) ui.deinit(renderer);
 
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
@@ -938,25 +1115,36 @@ pub fn run() !void {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
                     const prev_scale = ui_scale;
                     ui_scale = @max(scale_x, scale_y);
-                    if (ui_scale != prev_scale) {
-                        font.deinit();
-                        ui_font.deinit();
-                        font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(font_size, ui_scale));
-                        font.metrics = metrics_ptr;
-                        ui_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
-                        ui.assets.ui_font = &ui_font;
-                        const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-                        full_cols = new_term_size.cols;
-                        full_rows = new_term_size.rows;
-                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
-                    } else {
-                        const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
-                        const new_term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-                        full_cols = new_term_size.cols;
-                        full_rows = new_term_size.rows;
-                        layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
-                    }
+                    var scale_change_ctx = RuntimeScaleChangeContext{
+                        .allocator = allocator,
+                        .renderer = renderer,
+                        .shared_font_cache = &shared_font_cache,
+                        .ui_font_cache = &ui_font_cache,
+                        .font_size = font_size,
+                        .ui_scale = ui_scale,
+                        .metrics_ptr = metrics_ptr,
+                        .font = &font,
+                        .ui_font = &ui_font,
+                        .ui = &ui,
+                        .sessions = sessions,
+                        .render_width = render_width,
+                        .render_height = render_height,
+                        .mode = anim_state.mode,
+                        .grid_cols = grid.cols,
+                        .grid_rows = grid.rows,
+                        .grid_font_scale = config.grid.font_scale,
+                        .full_cols = &full_cols,
+                        .full_rows = &full_rows,
+                    };
+                    try applyScaleChangeAndResize(
+                        RuntimeScaleChangeContext,
+                        font_mod.Font.InitError,
+                        &scale_change_ctx,
+                        prev_scale,
+                        ui_scale,
+                        reloadRuntimeFontsForScaleChange,
+                        applyRuntimeResizeForScaleChange,
+                    );
                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
@@ -2346,6 +2534,7 @@ pub fn run() !void {
     persistence.save(allocator) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
     };
+    persistence.deinit(allocator);
 }
 
 fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
@@ -2353,4 +2542,183 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     @memcpy(buf[0..data.len], data);
     buf[data.len] = 0;
     return buf;
+}
+
+test "markTeardownComplete returns true only once" {
+    var done = false;
+    try std.testing.expect(markTeardownComplete(&done));
+    try std.testing.expect(!markTeardownComplete(&done));
+}
+
+const TestSwapError = error{InitFailed};
+
+const TestResource = struct {
+    id: u8,
+    deinit_count: *usize,
+
+    fn deinit(self: *TestResource) void {
+        self.deinit_count.* += 1;
+    }
+};
+
+const TestSwapContext = struct {
+    fail_on: enum {
+        none,
+        first,
+        second,
+    } = .none,
+    next_id: u8 = 10,
+    new_deinit_count: usize = 0,
+};
+
+fn initTestResourceFirst(ctx: *TestSwapContext) TestSwapError!TestResource {
+    if (ctx.fail_on == .first) return error.InitFailed;
+
+    const id = ctx.next_id;
+    ctx.next_id += 1;
+    return .{
+        .id = id,
+        .deinit_count = &ctx.new_deinit_count,
+    };
+}
+
+fn initTestResourceSecond(ctx: *TestSwapContext) TestSwapError!TestResource {
+    if (ctx.fail_on == .second) return error.InitFailed;
+
+    const id = ctx.next_id;
+    ctx.next_id += 1;
+    return .{
+        .id = id,
+        .deinit_count = &ctx.new_deinit_count,
+    };
+}
+
+fn deinitTestResource(resource: *TestResource) void {
+    resource.deinit();
+}
+
+test "swapTwoResources replaces both resources after successful initialization" {
+    var first_deinit_count: usize = 0;
+    var second_deinit_count: usize = 0;
+    var first = TestResource{ .id = 1, .deinit_count = &first_deinit_count };
+    var second = TestResource{ .id = 2, .deinit_count = &second_deinit_count };
+    var ctx = TestSwapContext{};
+
+    try swapTwoResources(
+        TestResource,
+        TestSwapContext,
+        TestSwapError,
+        &first,
+        &second,
+        &ctx,
+        initTestResourceFirst,
+        initTestResourceSecond,
+        deinitTestResource,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), first_deinit_count);
+    try std.testing.expectEqual(@as(usize, 1), second_deinit_count);
+    try std.testing.expectEqual(@as(usize, 0), ctx.new_deinit_count);
+    try std.testing.expectEqual(@as(u8, 10), first.id);
+    try std.testing.expectEqual(@as(u8, 11), second.id);
+}
+
+test "swapTwoResources keeps old resources when second initialization fails" {
+    var first_deinit_count: usize = 0;
+    var second_deinit_count: usize = 0;
+    var first = TestResource{ .id = 1, .deinit_count = &first_deinit_count };
+    var second = TestResource{ .id = 2, .deinit_count = &second_deinit_count };
+    var ctx = TestSwapContext{ .fail_on = .second };
+
+    try std.testing.expectError(
+        error.InitFailed,
+        swapTwoResources(
+            TestResource,
+            TestSwapContext,
+            TestSwapError,
+            &first,
+            &second,
+            &ctx,
+            initTestResourceFirst,
+            initTestResourceSecond,
+            deinitTestResource,
+        ),
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), first_deinit_count);
+    try std.testing.expectEqual(@as(usize, 0), second_deinit_count);
+    try std.testing.expectEqual(@as(usize, 1), ctx.new_deinit_count);
+    try std.testing.expectEqual(@as(u8, 1), first.id);
+    try std.testing.expectEqual(@as(u8, 2), second.id);
+}
+
+const TestScaleChangeError = error{ReloadFailed};
+
+const TestScaleChangeContext = struct {
+    reload_calls: usize = 0,
+    resize_calls: usize = 0,
+    fail_reload: bool = false,
+};
+
+fn reloadTestScaleChange(ctx: *TestScaleChangeContext) TestScaleChangeError!void {
+    ctx.reload_calls += 1;
+    if (ctx.fail_reload) return error.ReloadFailed;
+}
+
+fn resizeTestScaleChange(ctx: *TestScaleChangeContext) void {
+    ctx.resize_calls += 1;
+}
+
+test "applyScaleChangeAndResize reloads then resizes when scale changes" {
+    var ctx = TestScaleChangeContext{};
+
+    try applyScaleChangeAndResize(
+        TestScaleChangeContext,
+        TestScaleChangeError,
+        &ctx,
+        1.0,
+        2.0,
+        reloadTestScaleChange,
+        resizeTestScaleChange,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), ctx.reload_calls);
+    try std.testing.expectEqual(@as(usize, 1), ctx.resize_calls);
+}
+
+test "applyScaleChangeAndResize only resizes when scale stays unchanged" {
+    var ctx = TestScaleChangeContext{};
+
+    try applyScaleChangeAndResize(
+        TestScaleChangeContext,
+        TestScaleChangeError,
+        &ctx,
+        1.0,
+        1.0,
+        reloadTestScaleChange,
+        resizeTestScaleChange,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), ctx.reload_calls);
+    try std.testing.expectEqual(@as(usize, 1), ctx.resize_calls);
+}
+
+test "applyScaleChangeAndResize skips resize when reload fails" {
+    var ctx = TestScaleChangeContext{ .fail_reload = true };
+
+    try std.testing.expectError(
+        error.ReloadFailed,
+        applyScaleChangeAndResize(
+            TestScaleChangeContext,
+            TestScaleChangeError,
+            &ctx,
+            1.0,
+            2.0,
+            reloadTestScaleChange,
+            resizeTestScaleChange,
+        ),
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), ctx.reload_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.resize_calls);
 }
