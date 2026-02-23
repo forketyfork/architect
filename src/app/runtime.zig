@@ -2125,6 +2125,7 @@ pub fn run() !void {
             };
             defer allocator.free(text);
             log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ idx, text.len });
+            log.debug("quit teardown: session {d} terminal text tail: {s}", .{ idx, text[@max(0, text.len -| 300)..] });
             if (terminal_history.extractLastUuid(text)) |uuid| {
                 log.info("quit teardown: session {d} captured session id: {s}", .{ idx, uuid });
                 session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {

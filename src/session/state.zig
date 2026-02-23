@@ -252,9 +252,9 @@ pub const SessionState = struct {
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            if (ctx.completion.state() == .dead) {
-                allocator.destroy(ctx);
-            }
+            // Free unconditionally: deinit runs after the event loop stops, so
+            // processExitCallback will never fire for pending completions.
+            allocator.destroy(ctx);
         }
         self.process_wait_ctx = null;
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
@@ -903,6 +903,8 @@ fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
     if (pos >= size) return null;
     pos += 1;
 
+    log.debug("parseArgv: exec_path={s}", .{exec_path});
+
     if (std.mem.indexOf(u8, exec_path, "claude") != null) return .claude;
     if (std.mem.indexOf(u8, exec_path, "codex") != null) return .codex;
     if (std.mem.indexOf(u8, exec_path, "gemini") != null) return .gemini;
@@ -921,6 +923,8 @@ fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
     const argv1_start = pos;
     while (pos < size and buf[pos] != 0) : (pos += 1) {}
     const argv1 = buf[argv1_start..pos];
+
+    log.debug("parseArgv: argv[1]={s}", .{argv1});
 
     if (std.mem.indexOf(u8, argv1, "claude") != null) return .claude;
     if (std.mem.indexOf(u8, argv1, "codex") != null) return .codex;
