@@ -5,6 +5,7 @@ const input = @import("../../input/mapper.zig");
 const open_url = @import("../../os/open.zig");
 const geom = @import("../../geom.zig");
 const renderer_mod = @import("../../render/renderer.zig");
+const dpi = @import("../../dpi.zig");
 const session_state = @import("../../session/state.zig");
 const url_matcher = @import("../../url_matcher.zig");
 const font_mod = @import("../../font.zig");
@@ -513,7 +514,7 @@ pub const SessionInteractionComponent = struct {
         if (!session.spawned) return null;
         const terminal = session.terminal orelse return null;
         const session_rect = sessionRectForIndex(host, session_idx) orelse return null;
-        const content_rect = terminalContentRect(session_rect) orelse return null;
+        const content_rect = terminalContentRect(session_rect, host.ui_scale) orelse return null;
         const bar = terminal.screens.active.pages.scrollbar();
         const metrics = scrollbar.Metrics.init(
             @as(f32, @floatFromInt(bar.total)),
@@ -1080,8 +1081,8 @@ fn sessionRectForIndex(host: *const types.UiHost, idx: usize) ?geom.Rect {
     };
 }
 
-fn terminalContentRect(session_rect: geom.Rect) ?geom.Rect {
-    const padding = renderer_mod.terminal_padding;
+fn terminalContentRect(session_rect: geom.Rect, ui_scale: f32) ?geom.Rect {
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale);
     const w = session_rect.w - padding * 2;
     const h = session_rect.h - padding * 2;
     if (w <= 0 or h <= 0) return null;

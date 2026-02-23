@@ -309,7 +309,7 @@ fn renderSession(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -326,6 +326,7 @@ fn renderSessionContent(
     term_rows: u16,
     _: i64,
     theme: *const colors.Theme,
+    ui_scale: f32,
 ) RenderError!void {
     if (!session.spawned) return;
 
@@ -362,7 +363,7 @@ fn renderSessionContent(
     const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
     const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
 
-    const padding: c_int = terminal_padding;
+    const padding: c_int = dpi.scale(terminal_padding, ui_scale);
     const drawable_w: c_int = rect.w - padding * 2;
     const drawable_h: c_int = rect.h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return;
@@ -715,7 +716,7 @@ fn renderTerminalScrollbar(
         view.terminal_scrollbar.hideNow();
         return;
     };
-    const content_rect = terminalContentRect(rect) orelse {
+    const content_rect = terminalContentRect(rect, ui_scale) orelse {
         view.terminal_scrollbar.hideNow();
         return;
     };
@@ -733,13 +734,14 @@ fn renderTerminalScrollbar(
     view.terminal_scrollbar.markDrawn();
 }
 
-fn terminalContentRect(rect: Rect) ?Rect {
-    const padded_w = rect.w - terminal_padding * 2;
-    const padded_h = rect.h - terminal_padding * 2;
+fn terminalContentRect(rect: Rect, ui_scale: f32) ?Rect {
+    const padding = dpi.scale(terminal_padding, ui_scale);
+    const padded_w = rect.w - padding * 2;
+    const padded_h = rect.h - padding * 2;
     if (padded_w <= 0 or padded_h <= 0) return null;
     return .{
-        .x = rect.x + terminal_padding,
-        .y = rect.y + terminal_padding,
+        .x = rect.x + padding,
+        .y = rect.y + padding,
         .w = padded_w,
         .h = padded_h,
     };
@@ -820,7 +822,7 @@ fn renderGridSessionCached(
                 _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
                 _ = c.SDL_RenderClear(renderer);
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-                try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
+                try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
                 if (any_waving and render_overlays) {
                     renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
                 }
@@ -852,7 +854,7 @@ fn renderGridSessionCached(
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
