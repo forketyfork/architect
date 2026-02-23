@@ -29,6 +29,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Agent-Focused
 - **Status highlights** — agents glow when awaiting approval or done, so you never miss a prompt
+- **Agent session persistence** — when you quit Architect, any running Claude, Codex, or Gemini agents are gracefully terminated and their session IDs saved; on next launch the agents resume automatically where they left off
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repo tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization

@@ -17,10 +17,59 @@ const mac = if (builtin.os.tag == .macos)
 else
     struct {};
 
+pub const AgentKind = enum {
+    claude,
+    codex,
+    gemini,
+
+    pub fn fromComm(comm: []const u8) ?AgentKind {
+        if (std.mem.eql(u8, comm, "claude")) return .claude;
+        if (std.mem.eql(u8, comm, "codex")) return .codex;
+        if (std.mem.eql(u8, comm, "gemini")) return .gemini;
+        return null;
+    }
+
+    pub fn fromString(s: []const u8) ?AgentKind {
+        return fromComm(s);
+    }
+
+    /// Returns the agent kind if any known agent name appears as a complete
+    /// path component in path.
+    pub fn fromPath(path: []const u8) ?AgentKind {
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i <= path.len) : (i += 1) {
+            if (i == path.len or path[i] == '/') {
+                const component = path[start..i];
+                if (fromComm(component)) |kind| return kind;
+                start = i + 1;
+            }
+        }
+        return null;
+    }
+
+    pub fn name(self: AgentKind) []const u8 {
+        return switch (self) {
+            .claude => "claude",
+            .codex => "codex",
+            .gemini => "gemini",
+        };
+    }
+
+    /// Control-byte sequence that triggers graceful exit.
+    pub fn exitControlSequence(self: AgentKind) []const u8 {
+        return switch (self) {
+            .claude, .codex, .gemini => "\x03\x03",
+        };
+    }
+};
+
 const log = std.log.scoped(.session_state);
 
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
+/// Returns the full executable path for the given pid; available on macOS via libproc.
+extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
@@ -57,6 +106,18 @@ pub const SessionState = struct {
     process_wait_ctx: ?*WaitContext = null,
     /// Incremented whenever a new watcher is armed to ignore stale completions.
     process_generation: usize = 0,
+    /// Last AI agent that set the terminal icon (OSC 1) during this session.
+    /// Updated continuously by processOutput; used as a reliable fallback for agent detection
+    /// when KERN_PROCARGS2 is restricted by the OS (macOS Sequoia and later).
+    agent_icon: ?AgentKind = null,
+    /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
+    agent_kind: ?AgentKind = null,
+    /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
+    agent_session_id: ?[]const u8 = null,
+    /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
+    /// stale UUIDs from earlier scrollback.
+    quit_capture: std.ArrayListUnmanaged(u8) = .empty,
+    quit_capture_active: bool = false,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -205,6 +266,15 @@ pub const SessionState = struct {
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
+        self.quit_capture.deinit(allocator);
+        self.quit_capture = .empty;
+        self.quit_capture_active = false;
+
+        if (self.agent_session_id) |sid| {
+            allocator.free(sid);
+            self.agent_session_id = null;
+        }
+        self.agent_kind = null;
 
         if (self.cwd_path) |path| {
             allocator.free(path);
@@ -217,9 +287,9 @@ pub const SessionState = struct {
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            if (ctx.completion.state() == .dead) {
-                allocator.destroy(ctx);
-            }
+            // Free unconditionally: deinit runs after the event loop stops, so
+            // processExitCallback will never fire for pending completions.
+            allocator.destroy(ctx);
         }
         self.process_wait_ctx = null;
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
@@ -338,6 +408,8 @@ pub const SessionState = struct {
     fn resetForRespawn(self: *SessionState) void {
         self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);
+        self.quit_capture.clearAndFree(self.allocator);
+        self.quit_capture_active = false;
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
@@ -396,6 +468,14 @@ pub const SessionState = struct {
 
             if (n == 0) return;
 
+            if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
+                self.agent_icon = kind;
+            }
+            if (self.quit_capture_active) {
+                self.quit_capture.appendSlice(self.allocator, self.output_buf[0..n]) catch |err| {
+                    log.warn("session {d}: quit capture append failed: {}", .{ self.id, err });
+                };
+            }
             try stream.nextSlice(self.output_buf[0..n]);
             self.markDirty();
 
@@ -514,7 +594,176 @@ pub const SessionState = struct {
         if (fg_pgrp < 0) return false;
         return fg_pgrp != shell.child_pid;
     }
+
+    pub fn shellPid(self: *const SessionState) ?posix.pid_t {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        return shell.child_pid;
+    }
+
+    pub fn ptyMasterFd(self: *const SessionState) ?posix.fd_t {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        return shell.pty.master;
+    }
+
+    pub fn startQuitCapture(self: *SessionState) void {
+        self.quit_capture_active = true;
+        self.quit_capture.clearRetainingCapacity();
+    }
+
+    pub fn stopQuitCapture(self: *SessionState) void {
+        self.quit_capture_active = false;
+    }
+
+    pub fn quitCaptureBytes(self: *const SessionState) []const u8 {
+        return self.quit_capture.items;
+    }
+
+    /// Copies the PTY slave path into `dest` and returns a sentinel-terminated slice.
+    /// Returns null when no shell is available or when `dest` is too small.
+    pub fn copyPtySlavePath(self: *const SessionState, dest: []u8) ?[:0]const u8 {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        const slave_path_z = ptsname(shell.pty.master) orelse return null;
+        const slave_path = std.mem.sliceTo(slave_path_z, 0);
+        if (slave_path.len + 1 > dest.len) return null;
+        @memcpy(dest[0..slave_path.len], slave_path);
+        dest[slave_path.len] = 0;
+        return dest[0..slave_path.len :0];
+    }
+
+    /// Returns the AgentKind of the foreground process if it is a known AI agent.
+    /// macOS only; always returns null on other platforms.
+    pub fn detectForegroundAgent(self: *const SessionState) ?AgentKind {
+        if (builtin.os.tag != .macos) return null;
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+
+        const fg_pgrp = blk: {
+            if (getForegroundPgrp(shell.child_pid)) |fg| {
+                log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_sysctl={d}", .{ shell.child_pid, fg });
+                if (fg == shell.child_pid) {
+                    log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
+                    return null;
+                }
+                break :blk fg;
+            }
+            log.debug("detectForegroundAgent: sysctl fg pgrp unavailable, falling back to tcgetpgrp", .{});
+            const slave_path_z = ptsname(shell.pty.master) orelse return null;
+            const slave_path = std.mem.sliceTo(slave_path_z, 0);
+            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
+            defer posix.close(fd);
+            const fg = tcgetpgrp(fd);
+            log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_tcgetpgrp={d}", .{ shell.child_pid, fg });
+            if (fg <= 0 or fg == shell.child_pid) return null;
+            break :blk @as(posix.pid_t, @intCast(fg));
+        };
+
+        if (detectAgentByPid(fg_pgrp)) |kind| {
+            log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (process inspection)", .{ fg_pgrp, kind.name() });
+            return kind;
+        }
+
+        // KERN_PROCARGS2 may be restricted on macOS Sequoia (returns zeroed data without
+        // a special entitlement). Fall back to the icon set by the agent via OSC 1, but
+        // only for foreground processes that still look like Node.js wrappers. This avoids
+        // stale icon state classifying unrelated tools as AI agents.
+        if (self.agent_icon) |kind| {
+            if (oscFallbackEligible(fg_pgrp)) {
+                log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (OSC 1 icon fallback)", .{ fg_pgrp, kind.name() });
+                return kind;
+            }
+            log.debug("detectForegroundAgent: fg_pgrp={d} ignored OSC 1 fallback for non-wrapper process", .{fg_pgrp});
+        }
+
+        log.debug("detectForegroundAgent: fg_pgrp={d} result=null", .{fg_pgrp});
+        return null;
+    }
 };
+
+/// Returns the AgentKind for a given PID by inspecting its process name via sysctl.
+/// Falls back to KERN_PROCARGS2 for Node.js wrappers.
+fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
+    if (builtin.os.tag != .macos) return null;
+    var comm_buf: [32]u8 = undefined;
+    const comm = readProcessComm(pid, &comm_buf) orelse {
+        log.debug("detectAgentByPid: failed to read p_comm for pid={d}", .{pid});
+        return null;
+    };
+    log.debug("detectAgentByPid: pid={d} p_comm={s}", .{ pid, comm });
+
+    if (AgentKind.fromComm(comm)) |kind| return kind;
+
+    // Try proc_pidpath for the full executable path. More reliable than KERN_PROCARGS2 on
+    // macOS Sequoia, where KERN_PROCARGS2 may return zeroed data without a special entitlement.
+    // This covers bundled runtimes like claude, whose p_comm is a version string ("2.1.50")
+    // but whose exec path contains "claude".
+    var path_buf: [posix.PATH_MAX]u8 = undefined;
+    const path_len = proc_pidpath(@intCast(pid), &path_buf, path_buf.len);
+    if (path_len > 0) {
+        const exec_path = path_buf[0..@intCast(path_len)];
+        log.debug("detectAgentByPid: proc_pidpath={s}", .{exec_path});
+        if (AgentKind.fromPath(exec_path)) |kind| return kind;
+    }
+
+    // Fall back to KERN_PROCARGS2 for argv[1] (Node.js wrappers where the exec path is
+    // just "node" but argv[1] names the agent script). This may return zeroed data on
+    // Sequoia; if so, the OSC 1 icon set by the agent is used as a fallback at the call site.
+    const result = detectAgentFromArgv(pid);
+    log.debug("detectAgentByPid: argv scan for p_comm={s} result={?}", .{ comm, result });
+    return result;
+}
+
+fn oscFallbackEligible(pid: posix.pid_t) bool {
+    if (builtin.os.tag != .macos) return false;
+    var comm_buf: [32]u8 = undefined;
+    const comm = readProcessComm(pid, &comm_buf) orelse return false;
+    return std.mem.eql(u8, comm, "node");
+}
+
+fn readProcessComm(pid: posix.pid_t, dest: []u8) ?[]const u8 {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, pid };
+    var info: mac.kinfo_proc = undefined;
+    var size: usize = @sizeOf(mac.kinfo_proc);
+    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) return null;
+    if (size < @sizeOf(mac.kinfo_proc)) return null;
+
+    const comm = std.mem.sliceTo(&info.kp_proc.p_comm, 0);
+    if (comm.len > dest.len) return null;
+    @memcpy(dest[0..comm.len], comm);
+    return dest[0..comm.len];
+}
+
+/// Reads KERN_PROCARGS2 for a process and delegates to parseArgv.
+fn detectAgentFromArgv(pid: posix.pid_t) ?AgentKind {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROCARGS2, pid };
+    var buf: [4096]u8 = undefined;
+    var size: usize = buf.len;
+    if (mac.sysctl(@constCast(&mib), mib.len, &buf, &size, null, 0) != 0) return null;
+    return parseArgv(buf[0..size], size);
+}
+
+/// Scans raw PTY output bytes for an OSC 1 sequence naming a known AI agent.
+/// Pattern: ESC ] 1 ; <name> BEL  or  ESC ] 1 ; <name> ST (ESC \)
+/// Returns the first matching AgentKind found, or null if none.
+fn scanOsc1Agent(data: []const u8) ?AgentKind {
+    var i: usize = 0;
+    while (i + 3 < data.len) : (i += 1) {
+        if (data[i] != 0x1b or data[i + 1] != ']' or data[i + 2] != '1' or data[i + 3] != ';') continue;
+        i += 4;
+        const name_start = i;
+        while (i < data.len and data[i] != 0x07) : (i += 1) {
+            // Also stop at ST (ESC \)
+            if (data[i] == 0x1b and i + 1 < data.len and data[i + 1] == '\\') break;
+        }
+        const icon = data[name_start..i];
+        if (AgentKind.fromComm(icon)) |kind| return kind;
+    }
+    return null;
+}
 
 fn basenameForDisplay(path: []const u8) []const u8 {
     if (builtin.os.tag == .macos) {
@@ -591,4 +840,189 @@ test "pending write shrinks when empty and over threshold" {
 
     maybeShrinkPendingWrite(&buf, allocator);
     try std.testing.expect(buf.capacity <= pending_write_shrink_threshold);
+}
+
+test "AgentKind.fromComm recognises known agent names" {
+    try std.testing.expectEqual(AgentKind.claude, AgentKind.fromComm("claude").?);
+    try std.testing.expectEqual(AgentKind.codex, AgentKind.fromComm("codex").?);
+    try std.testing.expectEqual(AgentKind.gemini, AgentKind.fromComm("gemini").?);
+    try std.testing.expect(AgentKind.fromComm("node") == null);
+    try std.testing.expect(AgentKind.fromComm("") == null);
+    try std.testing.expect(AgentKind.fromComm("python") == null);
+}
+
+test "AgentKind.fromString round-trips through name()" {
+    inline for (.{ AgentKind.claude, AgentKind.codex, AgentKind.gemini }) |kind| {
+        const s = kind.name();
+        try std.testing.expectEqual(kind, AgentKind.fromString(s).?);
+    }
+}
+
+test "AgentKind.fromPath matches complete components only" {
+    try std.testing.expectEqual(AgentKind.claude, AgentKind.fromPath("/Users/me/.local/share/claude/versions/2.1.50").?);
+    try std.testing.expectEqual(AgentKind.codex, AgentKind.fromPath("/opt/tools/codex/bin/cli").?);
+    try std.testing.expectEqual(AgentKind.gemini, AgentKind.fromPath("/usr/local/gemini/run").?);
+    try std.testing.expect(AgentKind.fromPath("/Users/claudette/bin/python") == null);
+    try std.testing.expect(AgentKind.fromPath("/opt/codex-unrelated/node") == null);
+    try std.testing.expect(AgentKind.fromPath("/usr/local/gemini-proxy/server") == null);
+}
+
+test "AgentKind.exitControlSequence uses double ctrl-c for all agents" {
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.claude.exitControlSequence());
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.codex.exitControlSequence());
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.gemini.exitControlSequence());
+}
+
+test "parseArgv matches agent name in argv[1] (Node.js wrapper)" {
+    // Layout: [argc i32][exec_path\0][argv0\0][argv1\0]
+    const build = struct {
+        fn blob(argc: i32, exec: []const u8, argv0: []const u8, argv1: []const u8) [512]u8 {
+            var buf = [_]u8{0} ** 512;
+            std.mem.writeInt(i32, buf[0..4], argc, .little);
+            var pos: usize = 4;
+            @memcpy(buf[pos..][0..exec.len], exec);
+            pos += exec.len;
+            pos += 1; // null after exec_path
+            @memcpy(buf[pos..][0..argv0.len], argv0);
+            pos += argv0.len;
+            pos += 1; // null after argv0
+            @memcpy(buf[pos..][0..argv1.len], argv1);
+            return buf;
+        }
+    };
+
+    const claude_blob = build.blob(3, "/usr/local/bin/node", "node", "/usr/local/lib/node_modules/@anthropic/claude/bin/claude");
+    try std.testing.expectEqual(AgentKind.claude, parseArgv(&claude_blob, claude_blob.len).?);
+
+    const codex_blob = build.blob(2, "/usr/local/bin/node", "node", "/home/user/.npm/bin/codex");
+    try std.testing.expectEqual(AgentKind.codex, parseArgv(&codex_blob, codex_blob.len).?);
+
+    const gemini_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/gemini-cli");
+    try std.testing.expectEqual(AgentKind.gemini, parseArgv(&gemini_blob, gemini_blob.len).?);
+
+    const unknown_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/some-other-tool");
+    try std.testing.expect(parseArgv(&unknown_blob, unknown_blob.len) == null);
+
+    const no_argv1_blob = build.blob(1, "/usr/local/bin/node", "node", "");
+    try std.testing.expect(parseArgv(&no_argv1_blob, no_argv1_blob.len) == null);
+}
+
+test "parseArgv matches agent name in exec_path (bundled runtime)" {
+    // Covers bundled CLIs whose p_comm is a version string (e.g. "2.1.50") and the
+    // agent name only appears in the full executable path, not in argv[1].
+    const build = struct {
+        fn blob(argc: i32, exec: []const u8, argv0: []const u8) [512]u8 {
+            var buf = [_]u8{0} ** 512;
+            std.mem.writeInt(i32, buf[0..4], argc, .little);
+            var pos: usize = 4;
+            @memcpy(buf[pos..][0..exec.len], exec);
+            pos += exec.len;
+            pos += 1;
+            @memcpy(buf[pos..][0..argv0.len], argv0);
+            return buf;
+        }
+    };
+
+    const claude_bundled = build.blob(1, "/Users/me/.local/share/claude/2.1.50", "2.1.50");
+    try std.testing.expectEqual(AgentKind.claude, parseArgv(&claude_bundled, claude_bundled.len).?);
+
+    const codex_bundled = build.blob(1, "/Users/me/.npm-global/lib/node_modules/codex/dist/cli", "cli");
+    try std.testing.expectEqual(AgentKind.codex, parseArgv(&codex_bundled, codex_bundled.len).?);
+
+    const gemini_bundled = build.blob(1, "/Users/me/.local/bin/gemini", "gemini");
+    try std.testing.expectEqual(AgentKind.gemini, parseArgv(&gemini_bundled, gemini_bundled.len).?);
+
+    const unknown_bundled = build.blob(1, "/usr/local/bin/python3", "python3");
+    try std.testing.expect(parseArgv(&unknown_bundled, unknown_bundled.len) == null);
+}
+
+/// Pure parsing logic for KERN_PROCARGS2 blobs, extracted for testability.
+/// Checks exec_path first (covers bundled runtimes whose binary path names the agent),
+/// then argv[1] (covers Node.js wrappers where the script path names the agent).
+fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
+    if (size < 4) return null;
+    const argc = std.mem.readInt(i32, buf[0..4], .little);
+    log.debug("parseArgv: argc={d} size={d} buf[4..12]={any}", .{ argc, size, buf[4..@min(12, size)] });
+
+    var pos: usize = 4;
+
+    // exec_path: full path to the executable
+    const exec_start = pos;
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    const exec_path = buf[exec_start..pos];
+    if (pos >= size) return null;
+    pos += 1;
+
+    log.debug("parseArgv: exec_path={s}", .{exec_path});
+
+    if (std.mem.indexOf(u8, exec_path, "claude") != null) return .claude;
+    if (std.mem.indexOf(u8, exec_path, "codex") != null) return .codex;
+    if (std.mem.indexOf(u8, exec_path, "gemini") != null) return .gemini;
+
+    if (argc < 2) return null;
+
+    // skip padding nulls after exec_path
+    while (pos < size and buf[pos] == 0) : (pos += 1) {}
+    // skip argv[0] (process name)
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    if (pos >= size) return null;
+    pos += 1;
+    if (pos >= size) return null;
+
+    // argv[1]: script path for Node.js wrappers
+    const argv1_start = pos;
+    while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    const argv1 = buf[argv1_start..pos];
+
+    log.debug("parseArgv: argv[1]={s}", .{argv1});
+
+    if (std.mem.indexOf(u8, argv1, "claude") != null) return .claude;
+    if (std.mem.indexOf(u8, argv1, "codex") != null) return .codex;
+    if (std.mem.indexOf(u8, argv1, "gemini") != null) return .gemini;
+    return null;
+}
+
+test "scanOsc1Agent finds known icon with BEL terminator" {
+    const data = [_]u8{
+        'x',  'x',
+        0x1b, ']',
+        '1',  ';',
+        'c',  'o',
+        'd',  'e',
+        'x',  0x07,
+        'y',
+    };
+    try std.testing.expectEqual(AgentKind.codex, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent finds known icon with ST terminator" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'g', 'e', 'm', 'i', 'n', 'i', 0x1b, '\\',
+    };
+    try std.testing.expectEqual(AgentKind.gemini, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent returns first matching known icon" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'u', 'n', 'k', 'n', 'o',  'w', 'n',  0x07,
+        0x1b, ']', '1', ';', 'c', 'l', 'a', 'u', 'd',  'e', 0x07, 0x1b,
+        ']',  '1', ';', 'c', 'o', 'd', 'e', 'x', 0x07,
+    };
+    try std.testing.expectEqual(AgentKind.claude, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent returns null for unknown icon name" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'r', 'a', 'n', 'd', 'o', 'm', 0x07,
+    };
+    try std.testing.expect(scanOsc1Agent(&data) == null);
+}
+
+test "scanOsc1Agent handles malformed and incomplete sequences" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'n', 'o', 't', // incomplete
+        0x1b, ']', '2', ';', 'c', 'o', 'd', 'e', 'x', 0x07, // wrong OSC selector
+        0x1b, ']', '1', ';', 'x', 0x1b, '\\', // unknown icon with ST
+    };
+    try std.testing.expect(scanOsc1Agent(&data) == null);
 }
