@@ -4,6 +4,7 @@ const c = @import("../c.zig");
 const font_mod = @import("../font.zig");
 const pty_mod = @import("../pty.zig");
 const renderer_mod = @import("../render/renderer.zig");
+const dpi = @import("../dpi.zig");
 const session_state = @import("../session/state.zig");
 const vt_stream = @import("../vt_stream.zig");
 
@@ -91,8 +92,8 @@ pub fn calculateHoveredSession(
     };
 }
 
-pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32) TerminalSize {
-    const padding = renderer_mod.terminal_padding * 2;
+pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32, ui_scale: f32) TerminalSize {
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2;
     const usable_w = @max(0, window_width - padding);
     const usable_h = @max(0, window_height - padding);
     const scaled_cell_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * grid_font_scale)));
@@ -105,21 +106,21 @@ pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, wi
     };
 }
 
-pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32, grid_cols: usize, grid_rows: usize) TerminalSize {
+pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
     const cell_width = @divFloor(window_width, @as(c_int, @intCast(grid_cols)));
     const cell_height = @divFloor(window_height, @as(c_int, @intCast(grid_rows)));
-    return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale);
+    return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale, ui_scale);
 }
 
-pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize) TerminalSize {
+pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
     return switch (mode) {
         .Grid, .Expanding, .Collapsing, .GridResizing => {
             const grid_dim = @max(grid_cols, grid_rows);
             const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
             const effective_scale: f32 = base_grid_scale * grid_font_scale;
-            return calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows);
+            return calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale);
         },
-        else => calculateTerminalSize(font, window_width, window_height, 1.0),
+        else => calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
     };
 }
 
@@ -142,9 +143,10 @@ pub fn applyTerminalResize(
     rows: u16,
     render_width: c_int,
     render_height: c_int,
+    ui_scale: f32,
 ) void {
-    const usable_width = @max(0, render_width - renderer_mod.terminal_padding * 2);
-    const usable_height = @max(0, render_height - renderer_mod.terminal_padding * 2);
+    const usable_width = @max(0, render_width - dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2);
+    const usable_height = @max(0, render_height - dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2);
 
     const new_size = pty_mod.winsize{
         .ws_row = rows,

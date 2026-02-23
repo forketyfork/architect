@@ -193,7 +193,7 @@ pub const SessionInteractionComponent = struct {
                     const view = &self.views[focused_idx];
 
                     if (focused.spawned and focused.terminal != null) {
-                        if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |pin| {
+                        if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |pin| {
                             const clicks = event.button.clicks;
                             if (clicks >= 3) {
                                 selectLine(focused, view, pin);
@@ -244,7 +244,7 @@ pub const SessionInteractionComponent = struct {
                     if (focused_idx < self.sessions.len) {
                         var focused = self.sessions[focused_idx];
                         const view = &self.views[focused_idx];
-                        const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows);
+                        const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
 
                         if (view.selection_dragging) {
                             if (pin) |p| {
@@ -345,7 +345,7 @@ pub const SessionInteractionComponent = struct {
                         var forwarded = false;
                         if (should_forward) {
                             if (terminal_opt) |terminal| {
-                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows)) |cell| {
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     forwarded = true;
                                     const sgr_format = terminal.modes.get(.mouse_format_sgr);
                                     const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
@@ -584,8 +584,9 @@ fn fullViewCellFromMouse(
     font: *const font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    ui_scale: f32,
 ) ?CellPosition {
-    const padding = renderer_mod.terminal_padding;
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale);
     const origin_x: c_int = padding;
     const origin_y: c_int = padding;
     const drawable_w: c_int = render_width - padding * 2;
@@ -616,10 +617,11 @@ fn fullViewPinFromMouse(
     font: *const font_mod.Font,
     term_cols: u16,
     term_rows: u16,
+    ui_scale: f32,
 ) ?ghostty_vt.Pin {
     if (!session.spawned or session.terminal == null) return null;
 
-    const padding = renderer_mod.terminal_padding;
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale);
     const origin_x: c_int = padding;
     const origin_y: c_int = padding;
     const drawable_w: c_int = render_width - padding * 2;
