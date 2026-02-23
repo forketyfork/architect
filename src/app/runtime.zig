@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
+const posix = std.posix;
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
@@ -32,6 +33,7 @@ const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
 
 const log = std.log.scoped(.runtime);
+extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 
 const initial_window_width = 1200;
 const initial_window_height = 900;
@@ -331,6 +333,167 @@ fn handleQuitRequest(
     return true;
 }
 
+const quit_primary_wait_ms: u64 = 2500;
+const quit_retry_wait_ms: u64 = 2500;
+const quit_term_wait_ms: u64 = 500;
+
+const QuitTeardownTask = struct {
+    session_idx: usize,
+    shell_pid: posix.pid_t,
+    pty_master: posix.fd_t,
+    agent_kind: session_state.AgentKind,
+    slave_path_len: usize = 0,
+    slave_path: [posix.PATH_MAX + 1]u8 = [_]u8{0} ** (posix.PATH_MAX + 1),
+
+    fn slavePathZ(self: *const QuitTeardownTask) [:0]const u8 {
+        return self.slave_path[0..self.slave_path_len :0];
+    }
+};
+
+const QuitTeardownWorker = struct {
+    tasks: []QuitTeardownTask,
+    done: *std.atomic.Value(bool),
+
+    fn run(self: *QuitTeardownWorker) void {
+        defer self.done.store(true, .seq_cst);
+        var threads: [grid_layout.max_terminals]?std.Thread = [_]?std.Thread{null} ** grid_layout.max_terminals;
+        for (self.tasks, 0..) |*task, idx| {
+            threads[idx] = std.Thread.spawn(.{}, runTask, .{task}) catch |err| blk: {
+                log.warn("quit teardown: failed to spawn parallel task for session {d}: {}", .{ task.session_idx, err });
+                runTask(task);
+                break :blk null;
+            };
+        }
+        for (threads[0..self.tasks.len]) |thread_opt| {
+            if (thread_opt) |thread| {
+                thread.join();
+            }
+        }
+    }
+
+    fn runTask(task: *QuitTeardownTask) void {
+        log.info("quit teardown: session {d} has foreground agent {s}", .{ task.session_idx, task.agent_kind.name() });
+        sendExitSequence(task.pty_master, task.agent_kind);
+        std.Thread.sleep(quit_primary_wait_ms * std.time.ns_per_ms);
+
+        var fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
+        if (fg_pgrp != null) {
+            log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ task.session_idx, task.agent_kind.name() });
+            sendExitSequence(task.pty_master, task.agent_kind);
+            std.Thread.sleep(quit_retry_wait_ms * std.time.ns_per_ms);
+            fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
+        }
+
+        if (fg_pgrp) |pgrp| {
+            log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ task.session_idx, task.agent_kind.name() });
+            _ = std.c.kill(-pgrp, std.c.SIG.TERM);
+            std.Thread.sleep(quit_term_wait_ms * std.time.ns_per_ms);
+        } else {
+            log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ task.session_idx, task.agent_kind.name() });
+        }
+    }
+};
+
+const QuitTeardownState = struct {
+    active: bool = false,
+    task_count: usize = 0,
+    tasks: [grid_layout.max_terminals]QuitTeardownTask = undefined,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    worker: QuitTeardownWorker = undefined,
+    thread: ?std.Thread = null,
+
+    fn start(self: *QuitTeardownState, sessions: []const *SessionState) !bool {
+        if (self.active) return true;
+
+        self.task_count = 0;
+        for (sessions, 0..) |session, idx| {
+            const agent_kind = session.detectForegroundAgent() orelse continue;
+            const shell_pid = session.shellPid() orelse continue;
+            const pty_master = session.ptyMasterFd() orelse continue;
+
+            var task = QuitTeardownTask{
+                .session_idx = idx,
+                .shell_pid = shell_pid,
+                .pty_master = pty_master,
+                .agent_kind = agent_kind,
+            };
+            const copied_path = session.copyPtySlavePath(task.slave_path[0..]) orelse continue;
+            task.slave_path_len = copied_path.len;
+
+            session.agent_kind = agent_kind;
+            self.tasks[self.task_count] = task;
+            self.task_count += 1;
+        }
+
+        if (self.task_count == 0) return false;
+
+        self.done.store(false, .seq_cst);
+        self.worker = .{
+            .tasks = self.tasks[0..self.task_count],
+            .done = &self.done,
+        };
+        self.thread = try std.Thread.spawn(.{}, workerMain, .{&self.worker});
+        self.active = true;
+        return true;
+    }
+
+    fn isFinished(self: *const QuitTeardownState) bool {
+        return self.active and self.done.load(.seq_cst);
+    }
+
+    fn join(self: *QuitTeardownState) void {
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+    }
+
+    fn workerMain(worker: *QuitTeardownWorker) void {
+        worker.run();
+    }
+};
+
+fn sendExitSequence(master_fd: posix.fd_t, agent_kind: session_state.AgentKind) void {
+    const sequence = agent_kind.exitControlSequence();
+    for (sequence, 0..) |byte, idx| {
+        const buf = [1]u8{byte};
+        _ = posix.write(master_fd, &buf) catch |err| {
+            log.warn("quit teardown: failed to send exit key sequence (step {d}) for {s}: {}", .{ idx + 1, agent_kind.name(), err });
+            return;
+        };
+        if (idx + 1 < sequence.len) {
+            std.Thread.sleep(220 * std.time.ns_per_ms);
+        }
+    }
+    log.debug("quit teardown: wrote exit command for agent {s}", .{agent_kind.name()});
+}
+
+fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid_t {
+    const fd = posix.openZ(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
+    defer posix.close(fd);
+    const fg = tcgetpgrp(fd);
+    if (fg <= 0) return null;
+    const fg_pgrp: posix.pid_t = @intCast(fg);
+    if (fg_pgrp == shell_pid) return null;
+    return fg_pgrp;
+}
+
+fn startQuitFlow(
+    quit_state: *QuitTeardownState,
+    sessions: []const *SessionState,
+    overlay: *ui_mod.quit_blocking_overlay.QuitBlockingOverlayComponent,
+) bool {
+    if (builtin.os.tag != .macos) return true;
+    if (quit_state.active) return false;
+    const started = quit_state.start(sessions) catch |err| {
+        log.warn("quit teardown: failed to start worker thread: {}", .{err});
+        return true;
+    };
+    if (!started) return true;
+    overlay.setActive(true);
+    return false;
+}
+
 pub fn run() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -586,6 +749,8 @@ pub fn run() !void {
     var foreground_cache = ForegroundProcessCache{};
 
     var running = true;
+    var quit_teardown = QuitTeardownState{};
+    defer quit_teardown.join();
 
     const initial_mode: app_state.ViewMode = if (countSpawnedSessions(sessions) == 1) .Full else .Grid;
     var anim_state = AnimationState{
@@ -653,6 +818,8 @@ pub fn run() !void {
     try ui.register(restart_component.asComponent());
     const quit_confirm_component = try ui_mod.quit_confirm.QuitConfirmComponent.init(allocator);
     try ui.register(quit_confirm_component.asComponent());
+    const quit_blocking_overlay_component = try ui_mod.quit_blocking_overlay.QuitBlockingOverlayComponent.init(allocator);
+    try ui.register(quit_blocking_overlay_component.asComponent());
     const confirm_dialog_component = try ui_mod.confirm_dialog.ConfirmDialogComponent.init(allocator);
     try ui.register(confirm_dialog_component.asComponent());
     const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
@@ -734,18 +901,24 @@ pub fn run() !void {
 
             switch (scaled_event.type) {
                 c.SDL_EVENT_QUIT => {
+                    if (quit_teardown.active) continue;
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        running = false;
+                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                            running = false;
+                        }
                     }
                 },
                 c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                    if (quit_teardown.active) continue;
                     if (builtin.os.tag == .macos and window_close_suppress_countdown > 0) {
                         // Reset immediately so we only suppress this close request.
                         window_close_suppress_countdown = 0;
                         continue;
                     }
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        running = false;
+                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                            running = false;
+                        }
                     }
                 },
                 c.SDL_EVENT_WINDOW_DESTROYED => {
@@ -897,9 +1070,12 @@ pub fn run() !void {
                         null;
 
                     if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
+                        if (quit_teardown.active) continue;
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                            running = false;
+                            if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                                running = false;
+                            }
                         }
                         continue;
                     }
@@ -1427,6 +1603,10 @@ pub fn run() !void {
                 log.info("frame trace after process session idx={d} id={d}", .{ session.slot_index, session.id });
             }
         }
+
+        if (quit_teardown.isFinished()) {
+            running = false;
+        }
         const any_session_dirty = render_cache.anyDirty(sessions);
 
         var notifications = notify_queue.drainAll();
@@ -1702,7 +1882,11 @@ pub fn run() !void {
                 }
             },
             .ConfirmQuit => {
-                running = false;
+                if (!quit_teardown.active) {
+                    if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                        running = false;
+                    }
+                }
             },
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
@@ -2107,52 +2291,31 @@ pub fn run() !void {
             session.updateCwd(now);
         }
 
-        // Graceful agent teardown: detect running agents, send an exit command so the
-        // agent exits with its session UUID visible in PTY output, then extract the UUID.
-        // Falls back to SIGTERM if the agent doesn't exit within the drain window.
-        // Runs synchronously at quit time only.
-        for (sessions, 0..) |session, idx| {
-            const agent_kind = session.detectForegroundAgent() orelse {
-                log.debug("quit teardown: session {d} has no foreground agent", .{idx});
-                continue;
-            };
-            log.info("quit teardown: session {d} has foreground agent {s}", .{ idx, agent_kind.name() });
-            session.agent_kind = agent_kind;
-            // Ask the agent to exit gracefully so it prints its session UUID.
-            session.sendExitCommand(agent_kind);
-            session.drainOutputForMs(2500);
-
-            var has_foreground_process = session.hasForegroundProcess();
-            if (has_foreground_process) {
-                log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ idx, agent_kind.name() });
-                session.sendExitCommandWithInterrupt(agent_kind);
-                session.drainOutputForMs(2500);
-                has_foreground_process = session.hasForegroundProcess();
-            }
-
-            // If the agent is still foreground after all graceful retries, terminate it.
-            if (has_foreground_process) {
-                log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ idx, agent_kind.name() });
-                session.sendTermToForegroundPgrp();
-                session.drainOutputForMs(500);
-            } else {
-                log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ idx, agent_kind.name() });
-            }
-            const text = terminal_history.extractSessionText(allocator, session) catch |err| {
-                log.warn("quit teardown: session {d} text extraction failed: {}", .{ idx, err });
-                continue;
-            };
-            defer allocator.free(text);
-            log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ idx, text.len });
-            log.debug("quit teardown: session {d} terminal text tail: {s}", .{ idx, text[@max(0, text.len -| 1000)..] });
-            if (terminal_history.extractLastUuid(text)) |uuid| {
-                log.info("quit teardown: session {d} captured session id: {s}", .{ idx, uuid });
-                session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
-                    log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ idx, err });
-                    break :blk null;
+        if (quit_teardown.active) {
+            quit_blocking_overlay_component.setActive(false);
+            quit_teardown.join();
+            for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
+                const session = sessions[task.session_idx];
+                const text = terminal_history.extractSessionText(allocator, session) catch |err| {
+                    log.warn("quit teardown: session {d} text extraction failed: {}", .{ task.session_idx, err });
+                    continue;
                 };
-            } else {
-                log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ idx, agent_kind.name() });
+                defer allocator.free(text);
+                log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
+                log.debug("quit teardown: session {d} terminal text tail: {s}", .{ task.session_idx, text[@max(0, text.len -| 1000)..] });
+                if (terminal_history.extractLastUuid(text)) |uuid| {
+                    log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
+                    if (session.agent_session_id) |sid| {
+                        allocator.free(sid);
+                        session.agent_session_id = null;
+                    }
+                    session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
+                        log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
+                        break :blk null;
+                    };
+                } else {
+                    log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ task.session_idx, task.agent_kind.name() });
+                }
             }
         }
 

@@ -575,6 +575,31 @@ pub const SessionState = struct {
         return fg_pgrp != shell.child_pid;
     }
 
+    pub fn shellPid(self: *const SessionState) ?posix.pid_t {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        return shell.child_pid;
+    }
+
+    pub fn ptyMasterFd(self: *const SessionState) ?posix.fd_t {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        return shell.pty.master;
+    }
+
+    /// Copies the PTY slave path into `dest` and returns a sentinel-terminated slice.
+    /// Returns null when no shell is available or when `dest` is too small.
+    pub fn copyPtySlavePath(self: *const SessionState, dest: []u8) ?[:0]const u8 {
+        if (!self.spawned or self.dead) return null;
+        const shell = self.shell orelse return null;
+        const slave_path_z = ptsname(shell.pty.master) orelse return null;
+        const slave_path = std.mem.sliceTo(slave_path_z, 0);
+        if (slave_path.len + 1 > dest.len) return null;
+        @memcpy(dest[0..slave_path.len], slave_path);
+        dest[slave_path.len] = 0;
+        return dest[0..slave_path.len :0];
+    }
+
     /// Returns the AgentKind of the foreground process if it is a known AI agent.
     /// macOS only; always returns null on other platforms.
     pub fn detectForegroundAgent(self: *const SessionState) ?AgentKind {
