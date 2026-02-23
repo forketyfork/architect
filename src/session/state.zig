@@ -567,19 +567,27 @@ pub const SessionState = struct {
 
         const fg_pgrp = blk: {
             if (getForegroundPgrp(shell.child_pid)) |fg| {
-                if (fg == shell.child_pid) return null;
+                log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_sysctl={d}", .{ shell.child_pid, fg });
+                if (fg == shell.child_pid) {
+                    log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
+                    return null;
+                }
                 break :blk fg;
             }
+            log.debug("detectForegroundAgent: sysctl fg pgrp unavailable, falling back to tcgetpgrp", .{});
             const slave_path_z = ptsname(shell.pty.master) orelse return null;
             const slave_path = std.mem.sliceTo(slave_path_z, 0);
             const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
             defer posix.close(fd);
             const fg = tcgetpgrp(fd);
+            log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_tcgetpgrp={d}", .{ shell.child_pid, fg });
             if (fg <= 0 or fg == shell.child_pid) return null;
             break :blk @as(posix.pid_t, @intCast(fg));
         };
 
-        return detectAgentByPid(fg_pgrp);
+        const result = detectAgentByPid(fg_pgrp);
+        log.debug("detectForegroundAgent: fg_pgrp={d} result={?}", .{ fg_pgrp, result });
+        return result;
     }
 
     /// Sends SIGTERM to the foreground process group of this session's PTY.
@@ -632,15 +640,23 @@ pub const SessionState = struct {
             };
         }
 
-        const deadline_ms = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+        const start_ms = std.time.milliTimestamp();
+        const deadline_ms = start_ms + @as(i64, @intCast(timeout_ms));
         var buf: [4096]u8 = undefined;
+        var total_bytes: usize = 0;
+
+        log.debug("drainOutputForMs: starting drain for up to {d}ms", .{timeout_ms});
 
         while (true) {
             const now_ms = std.time.milliTimestamp();
-            if (now_ms >= deadline_ms) break;
+            if (now_ms >= deadline_ms) {
+                log.debug("drainOutputForMs: deadline reached after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
+                break;
+            }
 
             var status: c_int = 0;
             if (std.c.waitpid(shell.child_pid, &status, std.c.W.NOHANG) > 0) {
+                log.debug("drainOutputForMs: shell exited after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
                 self.dead = true;
                 self.markDirty();
                 break;
@@ -648,7 +664,10 @@ pub const SessionState = struct {
 
             if (builtin.os.tag == .macos) {
                 if (getForegroundPgrp(shell.child_pid)) |fg| {
-                    if (fg == shell.child_pid) break;
+                    if (fg == shell.child_pid) {
+                        log.debug("drainOutputForMs: shell regained foreground after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
+                        break;
+                    }
                 }
             }
 
@@ -662,24 +681,30 @@ pub const SessionState = struct {
                 .revents = 0,
             }};
             const n_ready = posix.poll(&pfd, poll_ms) catch |err| {
-                log.debug("poll error during agent drain: {}", .{err});
+                log.debug("drainOutputForMs: poll error: {}", .{err});
                 break;
             };
             if (n_ready == 0) continue;
-            if (pfd[0].revents & posix.POLL.HUP != 0) break;
+            if (pfd[0].revents & posix.POLL.HUP != 0) {
+                log.debug("drainOutputForMs: PTY HUP after {d}ms, {d} bytes read", .{ std.time.milliTimestamp() - start_ms, total_bytes });
+                break;
+            }
             if (pfd[0].revents & posix.POLL.IN == 0) continue;
 
             const n = posix.read(master_fd, &buf) catch |err| {
-                log.debug("read error during agent drain: {}", .{err});
+                log.debug("drainOutputForMs: read error: {}", .{err});
                 break;
             };
             if (n == 0) break;
 
+            total_bytes += n;
             stream.nextSlice(buf[0..n]) catch |err| {
-                log.warn("drain output parse error: {}", .{err});
+                log.warn("drainOutputForMs: parse error: {}", .{err});
             };
             self.markDirty();
         }
+
+        log.debug("drainOutputForMs: done, {d} bytes total in {d}ms", .{ total_bytes, std.time.milliTimestamp() - start_ms });
     }
 };
 
@@ -690,14 +715,24 @@ fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
     const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, pid };
     var info: mac.kinfo_proc = undefined;
     var size: usize = @sizeOf(mac.kinfo_proc);
-    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) return null;
-    if (size < @sizeOf(mac.kinfo_proc)) return null;
+    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) {
+        log.debug("detectAgentByPid: sysctl failed for pid={d}", .{pid});
+        return null;
+    }
+    if (size < @sizeOf(mac.kinfo_proc)) {
+        log.debug("detectAgentByPid: sysctl returned incomplete struct for pid={d}", .{pid});
+        return null;
+    }
 
     const comm = std.mem.sliceTo(&info.kp_proc.p_comm, 0);
+    log.debug("detectAgentByPid: pid={d} p_comm={s}", .{ pid, comm });
+
     if (AgentKind.fromComm(comm)) |kind| return kind;
 
     if (std.mem.eql(u8, comm, "node")) {
-        return detectAgentFromNodeArgv(pid);
+        const result = detectAgentFromNodeArgv(pid);
+        log.debug("detectAgentByPid: node argv scan result={?}", .{result});
+        return result;
     }
 
     return null;

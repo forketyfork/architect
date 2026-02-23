@@ -2110,21 +2110,29 @@ pub fn run() !void {
         // Graceful agent teardown: detect running agents, send SIGTERM to their
         // foreground process group, drain PTY output, and extract the session UUID
         // printed in the agent's exit message. Runs synchronously at quit time only.
-        for (sessions) |session| {
-            const agent_kind = session.detectForegroundAgent() orelse continue;
+        for (sessions, 0..) |session, idx| {
+            const agent_kind = session.detectForegroundAgent() orelse {
+                log.debug("quit teardown: session {d} has no foreground agent", .{idx});
+                continue;
+            };
+            log.info("quit teardown: session {d} has foreground agent {s}", .{ idx, agent_kind.name() });
             session.agent_kind = agent_kind;
             session.sendTermToForegroundPgrp();
             session.drainOutputForMs(1500);
             const text = terminal_history.extractSessionText(allocator, session) catch |err| {
-                log.warn("failed to extract terminal text for agent UUID: {}", .{err});
+                log.warn("quit teardown: session {d} text extraction failed: {}", .{ idx, err });
                 continue;
             };
             defer allocator.free(text);
+            log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ idx, text.len });
             if (terminal_history.extractAgentSessionId(text, agent_kind)) |uuid| {
+                log.info("quit teardown: session {d} captured session id: {s}", .{ idx, uuid });
                 session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
-                    log.warn("failed to allocate agent session ID: {}", .{err});
+                    log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ idx, err });
                     break :blk null;
                 };
+            } else {
+                log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ idx, agent_kind.name() });
             }
         }
 
