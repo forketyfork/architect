@@ -20,7 +20,7 @@ const marquee_speed: f32 = 30.0;
 const fade_fade_width: c_int = 20;
 
 pub fn reservedHeight(ui_scale: f32) c_int {
-    return dpi.scale(cwd_bar_height, ui_scale) + renderer_mod.grid_border_thickness;
+    return dpi.scale(cwd_bar_height, ui_scale) + dpi.scale(renderer_mod.grid_border_thickness, ui_scale);
 }
 
 pub fn minCellHeight(ui_scale: f32) c_int {
@@ -173,7 +173,7 @@ pub const CwdBarComponent = struct {
         const cwd_basename = info.cwd_basename orelse return;
 
         const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
-        const border_thickness = renderer_mod.grid_border_thickness;
+        const border_thickness = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
         const padding = dpi.scale(cwd_padding, host.ui_scale);
         const fade_width = dpi.scale(fade_fade_width, host.ui_scale);
 
