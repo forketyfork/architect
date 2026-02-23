@@ -40,14 +40,6 @@ pub const AgentKind = enum {
             .gemini => "gemini",
         };
     }
-
-    pub fn resumeCommandPrefix(self: AgentKind) []const u8 {
-        return switch (self) {
-            .claude => "claude --resume ",
-            .codex => "codex resume ",
-            .gemini => "gemini --resume ",
-        };
-    }
 };
 
 const log = std.log.scoped(.session_state);

@@ -109,30 +109,48 @@ fn appendPromptMarkerLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8))
     try out.append(allocator, '\n');
 }
 
-/// Scans terminal text for the last occurrence of an agent's exit-message resume prefix
-/// and returns the session ID that follows it (up to the next whitespace).
+/// Scans terminal text for the last UUID (RFC 4122 format: 8-4-4-4-12 hex chars)
+/// and returns a slice into `text`. Takes the last match so that earlier UUIDs in
+/// scrollback don't shadow the session ID printed by the agent just before exit.
 /// Returns a slice into `text`; caller must not free it (or dupe if lifetime matters).
-pub fn extractAgentSessionId(text: []const u8, agent_kind: AgentKind) ?[]const u8 {
-    const prefix = agent_kind.resumeCommandPrefix();
-
-    var last_id_start: ?usize = null;
-    var search_pos: usize = 0;
-    while (std.mem.indexOfPos(u8, text, search_pos, prefix)) |pos| {
-        last_id_start = pos + prefix.len;
-        search_pos = pos + 1;
+pub fn extractLastUuid(text: []const u8) ?[]const u8 {
+    var last: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (matchUuidAt(text, i)) |uuid| {
+            last = uuid;
+            i += uuid.len;
+        } else {
+            i += 1;
+        }
     }
+    return last;
+}
 
-    const id_start = last_id_start orelse return null;
-    if (id_start >= text.len) return null;
+fn isHexChar(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
 
-    var end = id_start;
-    while (end < text.len) : (end += 1) {
-        const c = text[end];
-        if (c == '\n' or c == '\r' or c == ' ' or c == '\t') break;
+fn matchUuidAt(text: []const u8, start: usize) ?[]const u8 {
+    // Reject matches that start mid-hex-sequence.
+    if (start > 0 and isHexChar(text[start - 1])) return null;
+
+    // UUID groups: 8-4-4-4-12 hex chars separated by dashes.
+    const groups = [_]usize{ 8, 4, 4, 4, 12 };
+    var pos = start;
+    for (groups, 0..) |len, g| {
+        if (g > 0) {
+            if (pos >= text.len or text[pos] != '-') return null;
+            pos += 1;
+        }
+        for (0..len) |_| {
+            if (pos >= text.len or !isHexChar(text[pos])) return null;
+            pos += 1;
+        }
     }
-
-    if (end <= id_start) return null;
-    return text[id_start..end];
+    // Reject matches followed immediately by more hex or a dash (partial UUID / longer ID).
+    if (pos < text.len and (isHexChar(text[pos]) or text[pos] == '-')) return null;
+    return text[start..pos];
 }
 
 /// Builds the shell command to resume an agent session, including a trailing newline.
@@ -180,35 +198,32 @@ test "extractTerminalText roundtrip includes scrollback and viewport text" {
     try std.testing.expect(std.mem.indexOf(u8, text, "five") != null);
 }
 
-test "extractAgentSessionId finds UUID after claude --resume prefix" {
-    const text = "some output\nclaude --resume abc-123-def\nmore output";
-    const id = extractAgentSessionId(text, .claude);
-    try std.testing.expectEqualStrings("abc-123-def", id.?);
+test "extractLastUuid finds a UUID in terminal output" {
+    const text = "Saving session...\nTo resume, run: claude --resume 550e8400-e29b-41d4-a716-446655440000\n";
+    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", extractLastUuid(text).?);
 }
 
-test "extractAgentSessionId finds UUID after codex resume prefix" {
-    const text = "Saving session...\ncodex resume 550e8400-e29b-41d4-a716-446655440000\n";
-    const id = extractAgentSessionId(text, .codex);
-    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", id.?);
+test "extractLastUuid returns the last UUID when multiple are present" {
+    const text = "old session f47ac10b-58cc-4372-a567-0e02b2c3d479\nnew session 550e8400-e29b-41d4-a716-446655440000\n";
+    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", extractLastUuid(text).?);
 }
 
-test "extractAgentSessionId finds UUID after gemini --resume prefix" {
-    const text = "gemini --resume f47ac10b-58cc-4372-a567-0e02b2c3d479 exiting";
-    const id = extractAgentSessionId(text, .gemini);
-    try std.testing.expectEqualStrings("f47ac10b-58cc-4372-a567-0e02b2c3d479", id.?);
+test "extractLastUuid returns null when no UUID present" {
+    try std.testing.expect(extractLastUuid("normal terminal output without any uuid") == null);
+    try std.testing.expect(extractLastUuid("") == null);
 }
 
-test "extractAgentSessionId returns last occurrence on multiple matches" {
-    const text = "claude --resume old-id\nsome more stuff\nclaude --resume new-id\n";
-    const id = extractAgentSessionId(text, .claude);
-    try std.testing.expectEqualStrings("new-id", id.?);
+test "extractLastUuid does not match partial or malformed UUIDs" {
+    // Too short in one group
+    try std.testing.expect(extractLastUuid("550e840-e29b-41d4-a716-446655440000") == null);
+    // Extra hex chars after the UUID should not match as UUID
+    const text = "550e8400-e29b-41d4-a716-446655440000ff extra";
+    try std.testing.expect(extractLastUuid(text) == null);
 }
 
-test "extractAgentSessionId returns null when prefix not present" {
-    const text = "normal terminal output without any resume command";
-    try std.testing.expect(extractAgentSessionId(text, .claude) == null);
-    try std.testing.expect(extractAgentSessionId(text, .codex) == null);
-    try std.testing.expect(extractAgentSessionId(text, .gemini) == null);
+test "extractLastUuid handles uppercase hex" {
+    const text = "session 550E8400-E29B-41D4-A716-446655440000 done";
+    try std.testing.expectEqualStrings("550E8400-E29B-41D4-A716-446655440000", extractLastUuid(text).?);
 }
 
 test "buildResumeCommand produces correct commands for each agent" {
