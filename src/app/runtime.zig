@@ -402,7 +402,7 @@ const QuitTeardownState = struct {
     worker: QuitTeardownWorker = undefined,
     thread: ?std.Thread = null,
 
-    fn start(self: *QuitTeardownState, sessions: []const *SessionState) !bool {
+    fn start(self: *QuitTeardownState, sessions: []*SessionState) !bool {
         if (self.active) return true;
 
         self.task_count = 0;
@@ -420,7 +420,7 @@ const QuitTeardownState = struct {
             const copied_path = session.copyPtySlavePath(task.slave_path[0..]) orelse continue;
             task.slave_path_len = copied_path.len;
 
-            session.agent_kind = agent_kind;
+            session.startQuitCapture();
             self.tasks[self.task_count] = task;
             self.task_count += 1;
         }
@@ -480,7 +480,7 @@ fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid
 
 fn startQuitFlow(
     quit_state: *QuitTeardownState,
-    sessions: []const *SessionState,
+    sessions: []*SessionState,
     overlay: *ui_mod.quit_blocking_overlay.QuitBlockingOverlayComponent,
 ) bool {
     if (builtin.os.tag != .macos) return true;
@@ -2296,19 +2296,18 @@ pub fn run() !void {
             quit_teardown.join();
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
                 const session = sessions[task.session_idx];
-                const text = terminal_history.extractSessionText(allocator, session) catch |err| {
-                    log.warn("quit teardown: session {d} text extraction failed: {}", .{ task.session_idx, err });
-                    continue;
-                };
-                defer allocator.free(text);
+                session.stopQuitCapture();
+                if (session.agent_session_id) |sid| {
+                    allocator.free(sid);
+                    session.agent_session_id = null;
+                }
+                session.agent_kind = null;
+                const text = session.quitCaptureBytes();
                 log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
                 log.debug("quit teardown: session {d} terminal text tail: {s}", .{ task.session_idx, text[@max(0, text.len -| 1000)..] });
                 if (terminal_history.extractLastUuid(text)) |uuid| {
                     log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
-                    if (session.agent_session_id) |sid| {
-                        allocator.free(sid);
-                        session.agent_session_id = null;
-                    }
+                    session.agent_kind = task.agent_kind;
                     session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
                         log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
                         break :blk null;
@@ -2324,11 +2323,19 @@ pub fn run() !void {
             if (!session.spawned or session.dead) continue;
             if (session.cwd_path) |path| {
                 if (path.len == 0) continue;
+                const persisted_agent_type: ?[]const u8 = if (session.agent_kind != null and session.agent_session_id != null)
+                    session.agent_kind.?.name()
+                else
+                    null;
+                const persisted_session_id: ?[]const u8 = if (persisted_agent_type != null)
+                    session.agent_session_id
+                else
+                    null;
                 persistence.appendTerminalEntry(
                     allocator,
                     path,
-                    if (session.agent_kind) |kind| kind.name() else null,
-                    session.agent_session_id,
+                    persisted_agent_type,
+                    persisted_session_id,
                 ) catch |err| {
                     std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
                 };

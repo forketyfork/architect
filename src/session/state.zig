@@ -33,12 +33,18 @@ pub const AgentKind = enum {
         return fromComm(s);
     }
 
-    /// Returns the agent kind if any known agent name appears as a substring of path.
-    /// Used with proc_pidpath results, which may contain the agent name in directory components.
+    /// Returns the agent kind if any known agent name appears as a complete
+    /// path component in path.
     pub fn fromPath(path: []const u8) ?AgentKind {
-        if (std.mem.indexOf(u8, path, "claude") != null) return .claude;
-        if (std.mem.indexOf(u8, path, "codex") != null) return .codex;
-        if (std.mem.indexOf(u8, path, "gemini") != null) return .gemini;
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i <= path.len) : (i += 1) {
+            if (i == path.len or path[i] == '/') {
+                const component = path[start..i];
+                if (fromComm(component)) |kind| return kind;
+                start = i + 1;
+            }
+        }
         return null;
     }
 
@@ -108,6 +114,10 @@ pub const SessionState = struct {
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
     agent_session_id: ?[]const u8 = null,
+    /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
+    /// stale UUIDs from earlier scrollback.
+    quit_capture: std.ArrayListUnmanaged(u8) = .empty,
+    quit_capture_active: bool = false,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -256,6 +266,9 @@ pub const SessionState = struct {
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
+        self.quit_capture.deinit(allocator);
+        self.quit_capture = .empty;
+        self.quit_capture_active = false;
 
         if (self.agent_session_id) |sid| {
             allocator.free(sid);
@@ -395,6 +408,8 @@ pub const SessionState = struct {
     fn resetForRespawn(self: *SessionState) void {
         self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);
+        self.quit_capture.clearAndFree(self.allocator);
+        self.quit_capture_active = false;
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
@@ -455,6 +470,11 @@ pub const SessionState = struct {
 
             if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
                 self.agent_icon = kind;
+            }
+            if (self.quit_capture_active) {
+                self.quit_capture.appendSlice(self.allocator, self.output_buf[0..n]) catch |err| {
+                    log.warn("session {d}: quit capture append failed: {}", .{ self.id, err });
+                };
             }
             try stream.nextSlice(self.output_buf[0..n]);
             self.markDirty();
@@ -587,6 +607,19 @@ pub const SessionState = struct {
         return shell.pty.master;
     }
 
+    pub fn startQuitCapture(self: *SessionState) void {
+        self.quit_capture_active = true;
+        self.quit_capture.clearRetainingCapacity();
+    }
+
+    pub fn stopQuitCapture(self: *SessionState) void {
+        self.quit_capture_active = false;
+    }
+
+    pub fn quitCaptureBytes(self: *const SessionState) []const u8 {
+        return self.quit_capture.items;
+    }
+
     /// Copies the PTY slave path into `dest` and returns a sentinel-terminated slice.
     /// Returns null when no shell is available or when `dest` is too small.
     pub fn copyPtySlavePath(self: *const SessionState, dest: []u8) ?[:0]const u8 {
@@ -633,159 +666,19 @@ pub const SessionState = struct {
         }
 
         // KERN_PROCARGS2 may be restricted on macOS Sequoia (returns zeroed data without
-        // a special entitlement). Fall back to the icon set by the agent via OSC 1: all
-        // three agents (claude, codex, gemini) emit  ESC]1;<name>BEL  when they start.
+        // a special entitlement). Fall back to the icon set by the agent via OSC 1, but
+        // only for foreground processes that still look like Node.js wrappers. This avoids
+        // stale icon state classifying unrelated tools as AI agents.
         if (self.agent_icon) |kind| {
-            log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (OSC 1 icon fallback)", .{ fg_pgrp, kind.name() });
-            return kind;
+            if (oscFallbackEligible(fg_pgrp)) {
+                log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (OSC 1 icon fallback)", .{ fg_pgrp, kind.name() });
+                return kind;
+            }
+            log.debug("detectForegroundAgent: fg_pgrp={d} ignored OSC 1 fallback for non-wrapper process", .{fg_pgrp});
         }
 
         log.debug("detectForegroundAgent: fg_pgrp={d} result=null", .{fg_pgrp});
         return null;
-    }
-
-    /// Sends SIGTERM to the foreground process group of this session's PTY.
-    /// No-op if no foreground agent is detected or on non-macOS platforms.
-    pub fn sendTermToForegroundPgrp(self: *SessionState) void {
-        if (builtin.os.tag != .macos) return;
-        if (!self.spawned or self.dead) return;
-        const shell = self.shell orelse return;
-
-        const fg_pgrp = blk: {
-            if (getForegroundPgrp(shell.child_pid)) |fg| {
-                if (fg == shell.child_pid) return;
-                break :blk fg;
-            }
-            const slave_path_z = ptsname(shell.pty.master) orelse return;
-            const slave_path = std.mem.sliceTo(slave_path_z, 0);
-            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return;
-            defer posix.close(fd);
-            const fg = tcgetpgrp(fd);
-            if (fg <= 0 or fg == shell.child_pid) return;
-            break :blk @as(posix.pid_t, @intCast(fg));
-        };
-
-        _ = std.c.kill(-fg_pgrp, std.c.SIG.TERM);
-        log.debug("sent SIGTERM to foreground pgrp {d}", .{fg_pgrp});
-    }
-
-    /// Writes the agent's graceful-exit key sequence to the PTY master fd.
-    /// For all agents we send Ctrl+C twice with a short pause in between.
-    /// Falls through silently on error; the caller should follow up with sendTermToForegroundPgrp
-    /// if the agent does not exit within the drain window.
-    pub fn sendExitCommand(self: *SessionState, agent_kind: AgentKind) void {
-        self.sendDoubleCtrlC(agent_kind);
-    }
-
-    /// Same as sendExitCommand; retained as a separate API for runtime retry stages.
-    pub fn sendExitCommandWithInterrupt(self: *SessionState, agent_kind: AgentKind) void {
-        self.sendDoubleCtrlC(agent_kind);
-    }
-
-    fn sendDoubleCtrlC(self: *SessionState, agent_kind: AgentKind) void {
-        if (!self.spawned or self.dead) return;
-        const shell = self.shell orelse return;
-
-        const sendByte = struct {
-            fn write(fd: posix.fd_t, byte: u8) !void {
-                const buf = [1]u8{byte};
-                _ = try posix.write(fd, &buf);
-            }
-        }.write;
-
-        const sequence = agent_kind.exitControlSequence();
-        for (sequence, 0..) |byte, idx| {
-            sendByte(shell.pty.master, byte) catch |err| {
-                log.warn("sendExitCommand: write failed (ctrl-c step {d}): {}", .{ idx + 1, err });
-                return;
-            };
-            if (idx + 1 < sequence.len) {
-                std.Thread.sleep(220 * std.time.ns_per_ms);
-            }
-        }
-        log.debug("sendExitCommand: wrote exit command for agent {s}", .{agent_kind.name()});
-    }
-
-    /// Drains PTY output into the terminal buffer for up to `timeout_ms` milliseconds,
-    /// stopping early if the shell process exits. Called synchronously at quit time only.
-    pub fn drainOutputForMs(self: *SessionState, timeout_ms: u64) void {
-        if (!self.spawned or self.dead) return;
-        const shell = &(self.shell orelse return);
-        const stream = &(self.stream orelse return);
-
-        const master_fd = shell.pty.master;
-
-        const orig_flags = posix.fcntl(master_fd, posix.F.GETFL, 0) catch return;
-        var blocking_flags: posix.O = @bitCast(@as(u32, @intCast(orig_flags)));
-        blocking_flags.NONBLOCK = false;
-        _ = posix.fcntl(master_fd, posix.F.SETFL, @as(u32, @bitCast(blocking_flags))) catch |err| {
-            log.warn("failed to set PTY master to blocking mode: {}", .{err});
-            return;
-        };
-        defer {
-            var restore_flags: posix.O = @bitCast(@as(u32, @intCast(orig_flags)));
-            restore_flags.NONBLOCK = true;
-            _ = posix.fcntl(master_fd, posix.F.SETFL, @as(u32, @bitCast(restore_flags))) catch |err| {
-                log.warn("failed to restore PTY master flags: {}", .{err});
-            };
-        }
-
-        const start_ms = std.time.milliTimestamp();
-        const deadline_ms = start_ms + @as(i64, @intCast(timeout_ms));
-        var buf: [4096]u8 = undefined;
-        var total_bytes: usize = 0;
-
-        log.debug("drainOutputForMs: starting drain for up to {d}ms", .{timeout_ms});
-
-        while (true) {
-            const now_ms = std.time.milliTimestamp();
-            if (now_ms >= deadline_ms) {
-                log.debug("drainOutputForMs: deadline reached after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
-                break;
-            }
-
-            var status: c_int = 0;
-            if (std.c.waitpid(shell.child_pid, &status, std.c.W.NOHANG) > 0) {
-                log.debug("drainOutputForMs: shell exited after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
-                self.dead = true;
-                self.markDirty();
-                break;
-            }
-
-            const remaining: i64 = deadline_ms - std.time.milliTimestamp();
-            if (remaining <= 0) break;
-            const poll_ms: i32 = @intCast(@min(remaining, @as(i64, 100)));
-
-            var pfd = [_]posix.pollfd{.{
-                .fd = master_fd,
-                .events = posix.POLL.IN,
-                .revents = 0,
-            }};
-            const n_ready = posix.poll(&pfd, poll_ms) catch |err| {
-                log.debug("drainOutputForMs: poll error: {}", .{err});
-                break;
-            };
-            if (n_ready == 0) continue;
-            if (pfd[0].revents & posix.POLL.HUP != 0) {
-                log.debug("drainOutputForMs: PTY HUP after {d}ms, {d} bytes read", .{ std.time.milliTimestamp() - start_ms, total_bytes });
-                break;
-            }
-            if (pfd[0].revents & posix.POLL.IN == 0) continue;
-
-            const n = posix.read(master_fd, &buf) catch |err| {
-                log.debug("drainOutputForMs: read error: {}", .{err});
-                break;
-            };
-            if (n == 0) break;
-
-            total_bytes += n;
-            stream.nextSlice(buf[0..n]) catch |err| {
-                log.warn("drainOutputForMs: parse error: {}", .{err});
-            };
-            self.markDirty();
-        }
-
-        log.debug("drainOutputForMs: done, {d} bytes total in {d}ms", .{ total_bytes, std.time.milliTimestamp() - start_ms });
     }
 };
 
@@ -793,19 +686,11 @@ pub const SessionState = struct {
 /// Falls back to KERN_PROCARGS2 for Node.js wrappers.
 fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
     if (builtin.os.tag != .macos) return null;
-    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, pid };
-    var info: mac.kinfo_proc = undefined;
-    var size: usize = @sizeOf(mac.kinfo_proc);
-    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) {
-        log.debug("detectAgentByPid: sysctl failed for pid={d}", .{pid});
+    var comm_buf: [32]u8 = undefined;
+    const comm = readProcessComm(pid, &comm_buf) orelse {
+        log.debug("detectAgentByPid: failed to read p_comm for pid={d}", .{pid});
         return null;
-    }
-    if (size < @sizeOf(mac.kinfo_proc)) {
-        log.debug("detectAgentByPid: sysctl returned incomplete struct for pid={d}", .{pid});
-        return null;
-    }
-
-    const comm = std.mem.sliceTo(&info.kp_proc.p_comm, 0);
+    };
     log.debug("detectAgentByPid: pid={d} p_comm={s}", .{ pid, comm });
 
     if (AgentKind.fromComm(comm)) |kind| return kind;
@@ -828,6 +713,27 @@ fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
     const result = detectAgentFromArgv(pid);
     log.debug("detectAgentByPid: argv scan for p_comm={s} result={?}", .{ comm, result });
     return result;
+}
+
+fn oscFallbackEligible(pid: posix.pid_t) bool {
+    if (builtin.os.tag != .macos) return false;
+    var comm_buf: [32]u8 = undefined;
+    const comm = readProcessComm(pid, &comm_buf) orelse return false;
+    return std.mem.eql(u8, comm, "node");
+}
+
+fn readProcessComm(pid: posix.pid_t, dest: []u8) ?[]const u8 {
+    if (builtin.os.tag != .macos) return null;
+    const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROC, mac.KERN_PROC_PID, pid };
+    var info: mac.kinfo_proc = undefined;
+    var size: usize = @sizeOf(mac.kinfo_proc);
+    if (mac.sysctl(@constCast(&mib), mib.len, &info, &size, null, 0) != 0) return null;
+    if (size < @sizeOf(mac.kinfo_proc)) return null;
+
+    const comm = std.mem.sliceTo(&info.kp_proc.p_comm, 0);
+    if (comm.len > dest.len) return null;
+    @memcpy(dest[0..comm.len], comm);
+    return dest[0..comm.len];
 }
 
 /// Reads KERN_PROCARGS2 for a process and delegates to parseArgv.
@@ -952,6 +858,15 @@ test "AgentKind.fromString round-trips through name()" {
     }
 }
 
+test "AgentKind.fromPath matches complete components only" {
+    try std.testing.expectEqual(AgentKind.claude, AgentKind.fromPath("/Users/me/.local/share/claude/versions/2.1.50").?);
+    try std.testing.expectEqual(AgentKind.codex, AgentKind.fromPath("/opt/tools/codex/bin/cli").?);
+    try std.testing.expectEqual(AgentKind.gemini, AgentKind.fromPath("/usr/local/gemini/run").?);
+    try std.testing.expect(AgentKind.fromPath("/Users/claudette/bin/python") == null);
+    try std.testing.expect(AgentKind.fromPath("/opt/codex-unrelated/node") == null);
+    try std.testing.expect(AgentKind.fromPath("/usr/local/gemini-proxy/server") == null);
+}
+
 test "AgentKind.exitControlSequence uses double ctrl-c for all agents" {
     try std.testing.expectEqualStrings("\x03\x03", AgentKind.claude.exitControlSequence());
     try std.testing.expectEqualStrings("\x03\x03", AgentKind.codex.exitControlSequence());
@@ -1065,4 +980,49 @@ fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
     if (std.mem.indexOf(u8, argv1, "codex") != null) return .codex;
     if (std.mem.indexOf(u8, argv1, "gemini") != null) return .gemini;
     return null;
+}
+
+test "scanOsc1Agent finds known icon with BEL terminator" {
+    const data = [_]u8{
+        'x',  'x',
+        0x1b, ']',
+        '1',  ';',
+        'c',  'o',
+        'd',  'e',
+        'x',  0x07,
+        'y',
+    };
+    try std.testing.expectEqual(AgentKind.codex, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent finds known icon with ST terminator" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'g', 'e', 'm', 'i', 'n', 'i', 0x1b, '\\',
+    };
+    try std.testing.expectEqual(AgentKind.gemini, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent returns first matching known icon" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'u', 'n', 'k', 'n', 'o',  'w', 'n',  0x07,
+        0x1b, ']', '1', ';', 'c', 'l', 'a', 'u', 'd',  'e', 0x07, 0x1b,
+        ']',  '1', ';', 'c', 'o', 'd', 'e', 'x', 0x07,
+    };
+    try std.testing.expectEqual(AgentKind.claude, scanOsc1Agent(&data).?);
+}
+
+test "scanOsc1Agent returns null for unknown icon name" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'r', 'a', 'n', 'd', 'o', 'm', 0x07,
+    };
+    try std.testing.expect(scanOsc1Agent(&data) == null);
+}
+
+test "scanOsc1Agent handles malformed and incomplete sequences" {
+    const data = [_]u8{
+        0x1b, ']', '1', ';', 'n', 'o', 't', // incomplete
+        0x1b, ']', '2', ';', 'c', 'o', 'd', 'e', 'x', 0x07, // wrong OSC selector
+        0x1b, ']', '1', ';', 'x', 0x1b, '\\', // unknown icon with ST
+    };
+    try std.testing.expect(scanOsc1Agent(&data) == null);
 }
