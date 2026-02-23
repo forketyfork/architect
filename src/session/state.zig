@@ -33,6 +33,15 @@ pub const AgentKind = enum {
         return fromComm(s);
     }
 
+    /// Returns the agent kind if any known agent name appears as a substring of path.
+    /// Used with proc_pidpath results, which may contain the agent name in directory components.
+    pub fn fromPath(path: []const u8) ?AgentKind {
+        if (std.mem.indexOf(u8, path, "claude") != null) return .claude;
+        if (std.mem.indexOf(u8, path, "codex") != null) return .codex;
+        if (std.mem.indexOf(u8, path, "gemini") != null) return .gemini;
+        return null;
+    }
+
     pub fn name(self: AgentKind) []const u8 {
         return switch (self) {
             .claude => "claude",
@@ -41,13 +50,10 @@ pub const AgentKind = enum {
         };
     }
 
-    /// The PTY input sequence that triggers a graceful exit with session UUID output.
-    /// Prefixed with Ctrl+C (0x03) to interrupt any in-progress operation before exiting.
-    pub fn exitCommand(self: AgentKind) []const u8 {
+    /// Control-byte sequence that triggers graceful exit.
+    pub fn exitControlSequence(self: AgentKind) []const u8 {
         return switch (self) {
-            .claude => "\x03/exit\n",
-            .codex => "\x03q\n",
-            .gemini => "\x03/exit\n",
+            .claude, .codex, .gemini => "\x03\x03",
         };
     }
 };
@@ -56,6 +62,8 @@ const log = std.log.scoped(.session_state);
 
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
 extern "c" fn ptsname(fd: posix.fd_t) ?[*:0]const u8;
+/// Returns the full executable path for the given pid; available on macOS via libproc.
+extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
@@ -92,6 +100,10 @@ pub const SessionState = struct {
     process_wait_ctx: ?*WaitContext = null,
     /// Incremented whenever a new watcher is armed to ignore stale completions.
     process_generation: usize = 0,
+    /// Last AI agent that set the terminal icon (OSC 1) during this session.
+    /// Updated continuously by processOutput; used as a reliable fallback for agent detection
+    /// when KERN_PROCARGS2 is restricted by the OS (macOS Sequoia and later).
+    agent_icon: ?AgentKind = null,
     /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
@@ -441,6 +453,9 @@ pub const SessionState = struct {
 
             if (n == 0) return;
 
+            if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
+                self.agent_icon = kind;
+            }
             try stream.nextSlice(self.output_buf[0..n]);
             self.markDirty();
 
@@ -587,9 +602,21 @@ pub const SessionState = struct {
             break :blk @as(posix.pid_t, @intCast(fg));
         };
 
-        const result = detectAgentByPid(fg_pgrp);
-        log.debug("detectForegroundAgent: fg_pgrp={d} result={?}", .{ fg_pgrp, result });
-        return result;
+        if (detectAgentByPid(fg_pgrp)) |kind| {
+            log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (process inspection)", .{ fg_pgrp, kind.name() });
+            return kind;
+        }
+
+        // KERN_PROCARGS2 may be restricted on macOS Sequoia (returns zeroed data without
+        // a special entitlement). Fall back to the icon set by the agent via OSC 1: all
+        // three agents (claude, codex, gemini) emit  ESC]1;<name>BEL  when they start.
+        if (self.agent_icon) |kind| {
+            log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (OSC 1 icon fallback)", .{ fg_pgrp, kind.name() });
+            return kind;
+        }
+
+        log.debug("detectForegroundAgent: fg_pgrp={d} result=null", .{fg_pgrp});
+        return null;
     }
 
     /// Sends SIGTERM to the foreground process group of this session's PTY.
@@ -617,17 +644,40 @@ pub const SessionState = struct {
         log.debug("sent SIGTERM to foreground pgrp {d}", .{fg_pgrp});
     }
 
-    /// Writes the agent's exit command to the PTY master fd.
-    /// The command is prefixed with Ctrl+C to interrupt any in-progress operation.
+    /// Writes the agent's graceful-exit key sequence to the PTY master fd.
+    /// For all agents we send Ctrl+C twice with a short pause in between.
     /// Falls through silently on error; the caller should follow up with sendTermToForegroundPgrp
     /// if the agent does not exit within the drain window.
     pub fn sendExitCommand(self: *SessionState, agent_kind: AgentKind) void {
+        self.sendDoubleCtrlC(agent_kind);
+    }
+
+    /// Same as sendExitCommand; retained as a separate API for runtime retry stages.
+    pub fn sendExitCommandWithInterrupt(self: *SessionState, agent_kind: AgentKind) void {
+        self.sendDoubleCtrlC(agent_kind);
+    }
+
+    fn sendDoubleCtrlC(self: *SessionState, agent_kind: AgentKind) void {
         if (!self.spawned or self.dead) return;
         const shell = self.shell orelse return;
-        const cmd = agent_kind.exitCommand();
-        _ = posix.write(shell.pty.master, cmd) catch |err| {
-            log.warn("sendExitCommand: write failed: {}", .{err});
-        };
+
+        const sendByte = struct {
+            fn write(fd: posix.fd_t, byte: u8) !void {
+                const buf = [1]u8{byte};
+                _ = try posix.write(fd, &buf);
+            }
+        }.write;
+
+        const sequence = agent_kind.exitControlSequence();
+        for (sequence, 0..) |byte, idx| {
+            sendByte(shell.pty.master, byte) catch |err| {
+                log.warn("sendExitCommand: write failed (ctrl-c step {d}): {}", .{ idx + 1, err });
+                return;
+            };
+            if (idx + 1 < sequence.len) {
+                std.Thread.sleep(220 * std.time.ns_per_ms);
+            }
+        }
         log.debug("sendExitCommand: wrote exit command for agent {s}", .{agent_kind.name()});
     }
 
@@ -735,10 +785,21 @@ fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
 
     if (AgentKind.fromComm(comm)) |kind| return kind;
 
-    // p_comm didn't match directly — check KERN_PROCARGS2. This covers:
-    // - Node.js wrappers (p_comm == "node"), where argv[1] names the agent script
-    // - Bundled runtimes (e.g. claude's p_comm is its version string like "2.1.50"),
-    //   where the exec_path contains the agent name
+    // Try proc_pidpath for the full executable path. More reliable than KERN_PROCARGS2 on
+    // macOS Sequoia, where KERN_PROCARGS2 may return zeroed data without a special entitlement.
+    // This covers bundled runtimes like claude, whose p_comm is a version string ("2.1.50")
+    // but whose exec path contains "claude".
+    var path_buf: [posix.PATH_MAX]u8 = undefined;
+    const path_len = proc_pidpath(@intCast(pid), &path_buf, path_buf.len);
+    if (path_len > 0) {
+        const exec_path = path_buf[0..@intCast(path_len)];
+        log.debug("detectAgentByPid: proc_pidpath={s}", .{exec_path});
+        if (AgentKind.fromPath(exec_path)) |kind| return kind;
+    }
+
+    // Fall back to KERN_PROCARGS2 for argv[1] (Node.js wrappers where the exec path is
+    // just "node" but argv[1] names the agent script). This may return zeroed data on
+    // Sequoia; if so, the OSC 1 icon set by the agent is used as a fallback at the call site.
     const result = detectAgentFromArgv(pid);
     log.debug("detectAgentByPid: argv scan for p_comm={s} result={?}", .{ comm, result });
     return result;
@@ -752,6 +813,25 @@ fn detectAgentFromArgv(pid: posix.pid_t) ?AgentKind {
     var size: usize = buf.len;
     if (mac.sysctl(@constCast(&mib), mib.len, &buf, &size, null, 0) != 0) return null;
     return parseArgv(buf[0..size], size);
+}
+
+/// Scans raw PTY output bytes for an OSC 1 sequence naming a known AI agent.
+/// Pattern: ESC ] 1 ; <name> BEL  or  ESC ] 1 ; <name> ST (ESC \)
+/// Returns the first matching AgentKind found, or null if none.
+fn scanOsc1Agent(data: []const u8) ?AgentKind {
+    var i: usize = 0;
+    while (i + 3 < data.len) : (i += 1) {
+        if (data[i] != 0x1b or data[i + 1] != ']' or data[i + 2] != '1' or data[i + 3] != ';') continue;
+        i += 4;
+        const name_start = i;
+        while (i < data.len and data[i] != 0x07) : (i += 1) {
+            // Also stop at ST (ESC \)
+            if (data[i] == 0x1b and i + 1 < data.len and data[i + 1] == '\\') break;
+        }
+        const icon = data[name_start..i];
+        if (AgentKind.fromComm(icon)) |kind| return kind;
+    }
+    return null;
 }
 
 fn basenameForDisplay(path: []const u8) []const u8 {
@@ -845,6 +925,12 @@ test "AgentKind.fromString round-trips through name()" {
         const s = kind.name();
         try std.testing.expectEqual(kind, AgentKind.fromString(s).?);
     }
+}
+
+test "AgentKind.exitControlSequence uses double ctrl-c for all agents" {
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.claude.exitControlSequence());
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.codex.exitControlSequence());
+    try std.testing.expectEqualStrings("\x03\x03", AgentKind.gemini.exitControlSequence());
 }
 
 test "parseArgv matches agent name in argv[1] (Node.js wrapper)" {

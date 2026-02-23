@@ -2120,11 +2120,23 @@ pub fn run() !void {
             session.agent_kind = agent_kind;
             // Ask the agent to exit gracefully so it prints its session UUID.
             session.sendExitCommand(agent_kind);
-            session.drainOutputForMs(2000);
-            // If the agent did not exit voluntarily, terminate the process group.
-            if (!session.dead) {
+            session.drainOutputForMs(2500);
+
+            var has_foreground_process = session.hasForegroundProcess();
+            if (has_foreground_process) {
+                log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ idx, agent_kind.name() });
+                session.sendExitCommandWithInterrupt(agent_kind);
+                session.drainOutputForMs(2500);
+                has_foreground_process = session.hasForegroundProcess();
+            }
+
+            // If the agent is still foreground after all graceful retries, terminate it.
+            if (has_foreground_process) {
+                log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ idx, agent_kind.name() });
                 session.sendTermToForegroundPgrp();
                 session.drainOutputForMs(500);
+            } else {
+                log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ idx, agent_kind.name() });
             }
             const text = terminal_history.extractSessionText(allocator, session) catch |err| {
                 log.warn("quit teardown: session {d} text extraction failed: {}", .{ idx, err });
@@ -2132,7 +2144,7 @@ pub fn run() !void {
             };
             defer allocator.free(text);
             log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ idx, text.len });
-            log.debug("quit teardown: session {d} terminal text tail: {s}", .{ idx, text[@max(0, text.len -| 300)..] });
+            log.debug("quit teardown: session {d} terminal text tail: {s}", .{ idx, text[@max(0, text.len -| 1000)..] });
             if (terminal_history.extractLastUuid(text)) |uuid| {
                 log.info("quit teardown: session {d} captured session id: {s}", .{ idx, uuid });
                 session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
