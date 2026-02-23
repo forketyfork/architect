@@ -662,15 +662,6 @@ pub const SessionState = struct {
                 break;
             }
 
-            if (builtin.os.tag == .macos) {
-                if (getForegroundPgrp(shell.child_pid)) |fg| {
-                    if (fg == shell.child_pid) {
-                        log.debug("drainOutputForMs: shell regained foreground after {d}ms, {d} bytes read", .{ now_ms - start_ms, total_bytes });
-                        break;
-                    }
-                }
-            }
-
             const remaining: i64 = deadline_ms - std.time.milliTimestamp();
             if (remaining <= 0) break;
             const poll_ms: i32 = @intCast(@min(remaining, @as(i64, 100)));
@@ -729,23 +720,23 @@ fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
 
     if (AgentKind.fromComm(comm)) |kind| return kind;
 
-    if (std.mem.eql(u8, comm, "node")) {
-        const result = detectAgentFromNodeArgv(pid);
-        log.debug("detectAgentByPid: node argv scan result={?}", .{result});
-        return result;
-    }
-
-    return null;
+    // p_comm didn't match directly — check KERN_PROCARGS2. This covers:
+    // - Node.js wrappers (p_comm == "node"), where argv[1] names the agent script
+    // - Bundled runtimes (e.g. claude's p_comm is its version string like "2.1.50"),
+    //   where the exec_path contains the agent name
+    const result = detectAgentFromArgv(pid);
+    log.debug("detectAgentByPid: argv scan for p_comm={s} result={?}", .{ comm, result });
+    return result;
 }
 
-/// Reads KERN_PROCARGS2 for a Node.js process and delegates to parseNodeArgv.
-fn detectAgentFromNodeArgv(pid: posix.pid_t) ?AgentKind {
+/// Reads KERN_PROCARGS2 for a process and delegates to parseArgv.
+fn detectAgentFromArgv(pid: posix.pid_t) ?AgentKind {
     if (builtin.os.tag != .macos) return null;
     const mib = [_]c_int{ mac.CTL_KERN, mac.KERN_PROCARGS2, pid };
     var buf: [4096]u8 = undefined;
     var size: usize = buf.len;
     if (mac.sysctl(@constCast(&mib), mib.len, &buf, &size, null, 0) != 0) return null;
-    return parseNodeArgv(buf[0..size], size);
+    return parseArgv(buf[0..size], size);
 }
 
 fn basenameForDisplay(path: []const u8) []const u8 {
@@ -841,9 +832,8 @@ test "AgentKind.fromString round-trips through name()" {
     }
 }
 
-test "detectAgentFromNodeArgv parses synthetic KERN_PROCARGS2 blob" {
-    // Helper that invokes the parsing logic directly with a synthetic buffer.
-    // Layout: [argc i32][exec_path\0][padding\0...][argv0\0][argv1\0]
+test "parseArgv matches agent name in argv[1] (Node.js wrapper)" {
+    // Layout: [argc i32][exec_path\0][argv0\0][argv1\0]
     const build = struct {
         fn blob(argc: i32, exec: []const u8, argv0: []const u8, argv1: []const u8) [512]u8 {
             var buf = [_]u8{0} ** 512;
@@ -851,8 +841,7 @@ test "detectAgentFromNodeArgv parses synthetic KERN_PROCARGS2 blob" {
             var pos: usize = 4;
             @memcpy(buf[pos..][0..exec.len], exec);
             pos += exec.len;
-            pos += 1; // null after exec
-            // No padding needed when pos is already past exec
+            pos += 1; // null after exec_path
             @memcpy(buf[pos..][0..argv0.len], argv0);
             pos += argv0.len;
             pos += 1; // null after argv0
@@ -862,36 +851,81 @@ test "detectAgentFromNodeArgv parses synthetic KERN_PROCARGS2 blob" {
     };
 
     const claude_blob = build.blob(3, "/usr/local/bin/node", "node", "/usr/local/lib/node_modules/@anthropic/claude/bin/claude");
-    try std.testing.expectEqual(AgentKind.claude, parseNodeArgv(&claude_blob, claude_blob.len).?);
+    try std.testing.expectEqual(AgentKind.claude, parseArgv(&claude_blob, claude_blob.len).?);
 
     const codex_blob = build.blob(2, "/usr/local/bin/node", "node", "/home/user/.npm/bin/codex");
-    try std.testing.expectEqual(AgentKind.codex, parseNodeArgv(&codex_blob, codex_blob.len).?);
+    try std.testing.expectEqual(AgentKind.codex, parseArgv(&codex_blob, codex_blob.len).?);
 
     const gemini_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/gemini-cli");
-    try std.testing.expectEqual(AgentKind.gemini, parseNodeArgv(&gemini_blob, gemini_blob.len).?);
+    try std.testing.expectEqual(AgentKind.gemini, parseArgv(&gemini_blob, gemini_blob.len).?);
 
     const unknown_blob = build.blob(2, "/usr/local/bin/node", "node", "/usr/local/bin/some-other-tool");
-    try std.testing.expect(parseNodeArgv(&unknown_blob, unknown_blob.len) == null);
+    try std.testing.expect(parseArgv(&unknown_blob, unknown_blob.len) == null);
 
     const no_argv1_blob = build.blob(1, "/usr/local/bin/node", "node", "");
-    try std.testing.expect(parseNodeArgv(&no_argv1_blob, no_argv1_blob.len) == null);
+    try std.testing.expect(parseArgv(&no_argv1_blob, no_argv1_blob.len) == null);
+}
+
+test "parseArgv matches agent name in exec_path (bundled runtime)" {
+    // Covers bundled CLIs whose p_comm is a version string (e.g. "2.1.50") and the
+    // agent name only appears in the full executable path, not in argv[1].
+    const build = struct {
+        fn blob(argc: i32, exec: []const u8, argv0: []const u8) [512]u8 {
+            var buf = [_]u8{0} ** 512;
+            std.mem.writeInt(i32, buf[0..4], argc, .little);
+            var pos: usize = 4;
+            @memcpy(buf[pos..][0..exec.len], exec);
+            pos += exec.len;
+            pos += 1;
+            @memcpy(buf[pos..][0..argv0.len], argv0);
+            return buf;
+        }
+    };
+
+    const claude_bundled = build.blob(1, "/Users/me/.local/share/claude/2.1.50", "2.1.50");
+    try std.testing.expectEqual(AgentKind.claude, parseArgv(&claude_bundled, claude_bundled.len).?);
+
+    const codex_bundled = build.blob(1, "/Users/me/.npm-global/lib/node_modules/codex/dist/cli", "cli");
+    try std.testing.expectEqual(AgentKind.codex, parseArgv(&codex_bundled, codex_bundled.len).?);
+
+    const gemini_bundled = build.blob(1, "/Users/me/.local/bin/gemini", "gemini");
+    try std.testing.expectEqual(AgentKind.gemini, parseArgv(&gemini_bundled, gemini_bundled.len).?);
+
+    const unknown_bundled = build.blob(1, "/usr/local/bin/python3", "python3");
+    try std.testing.expect(parseArgv(&unknown_bundled, unknown_bundled.len) == null);
 }
 
 /// Pure parsing logic for KERN_PROCARGS2 blobs, extracted for testability.
-fn parseNodeArgv(buf: []const u8, size: usize) ?AgentKind {
+/// Checks exec_path first (covers bundled runtimes whose binary path names the agent),
+/// then argv[1] (covers Node.js wrappers where the script path names the agent).
+fn parseArgv(buf: []const u8, size: usize) ?AgentKind {
     if (size < 4) return null;
     const argc = std.mem.readInt(i32, buf[0..4], .little);
-    if (argc < 2) return null;
 
     var pos: usize = 4;
+
+    // exec_path: full path to the executable
+    const exec_start = pos;
     while (pos < size and buf[pos] != 0) : (pos += 1) {}
+    const exec_path = buf[exec_start..pos];
     if (pos >= size) return null;
     pos += 1;
+
+    if (std.mem.indexOf(u8, exec_path, "claude") != null) return .claude;
+    if (std.mem.indexOf(u8, exec_path, "codex") != null) return .codex;
+    if (std.mem.indexOf(u8, exec_path, "gemini") != null) return .gemini;
+
+    if (argc < 2) return null;
+
+    // skip padding nulls after exec_path
     while (pos < size and buf[pos] == 0) : (pos += 1) {}
+    // skip argv[0] (process name)
     while (pos < size and buf[pos] != 0) : (pos += 1) {}
     if (pos >= size) return null;
     pos += 1;
     if (pos >= size) return null;
+
+    // argv[1]: script path for Node.js wrappers
     const argv1_start = pos;
     while (pos < size and buf[pos] != 0) : (pos += 1) {}
     const argv1 = buf[argv1_start..pos];
