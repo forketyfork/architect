@@ -455,15 +455,18 @@ pub const SessionState = struct {
     }
 
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
-        if (!self.spawned or self.dead) return;
+        if (!shouldProcessOutput(self.spawned, self.dead, self.quit_capture_active)) return;
 
         const shell = &(self.shell orelse return);
         const stream = &(self.stream orelse return);
 
         while (true) {
-            const n = shell.read(&self.output_buf) catch |err| {
-                if (err == error.WouldBlock) return;
-                return err;
+            const n = shell.read(&self.output_buf) catch |err| switch (err) {
+                error.WouldBlock => return,
+                // Linux PTYs can report EIO after the slave side closes.
+                // Treat it as terminal EOF so normal dead sessions don't fail the runtime loop.
+                error.InputOutput => return,
+                else => return err,
             };
 
             if (n == 0) return;
@@ -482,6 +485,12 @@ pub const SessionState = struct {
             // Keep draining until the PTY would block to avoid frame-bounded
             // throttling of bursty output (e.g. startup logos).
         }
+    }
+
+    fn shouldProcessOutput(spawned: bool, dead: bool, quit_capture_active: bool) bool {
+        if (!spawned) return false;
+        if (!dead) return true;
+        return quit_capture_active;
     }
 
     /// Try to flush any queued stdin data; preserves ordering relative to new input.
@@ -840,6 +849,14 @@ test "pending write shrinks when empty and over threshold" {
 
     maybeShrinkPendingWrite(&buf, allocator);
     try std.testing.expect(buf.capacity <= pending_write_shrink_threshold);
+}
+
+test "shouldProcessOutput drains dead sessions only during quit capture" {
+    try std.testing.expect(!SessionState.shouldProcessOutput(false, false, false));
+    try std.testing.expect(!SessionState.shouldProcessOutput(false, true, false));
+    try std.testing.expect(SessionState.shouldProcessOutput(true, false, false));
+    try std.testing.expect(!SessionState.shouldProcessOutput(true, true, false));
+    try std.testing.expect(SessionState.shouldProcessOutput(true, true, true));
 }
 
 test "AgentKind.fromComm recognises known agent names" {

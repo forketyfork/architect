@@ -511,6 +511,9 @@ fn handleQuitRequest(
 const quit_primary_wait_ms: u64 = 2500;
 const quit_retry_wait_ms: u64 = 2500;
 const quit_term_wait_ms: u64 = 500;
+const quit_capture_drain_poll_ns: u64 = 20 * std.time.ns_per_ms;
+const quit_capture_drain_quiet_ns: i128 = 250 * @as(i128, std.time.ns_per_ms);
+const quit_capture_drain_max_ns: i128 = 2500 * @as(i128, std.time.ns_per_ms);
 
 const QuitTeardownTask = struct {
     session_idx: usize,
@@ -651,6 +654,47 @@ fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid
     const fg_pgrp: posix.pid_t = @intCast(fg);
     if (fg_pgrp == shell_pid) return null;
     return fg_pgrp;
+}
+
+fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *SessionState) void {
+    if (tasks.len == 0) return;
+
+    var last_capture_lengths: [grid_layout.max_terminals]usize = [_]usize{0} ** grid_layout.max_terminals;
+    for (tasks, 0..) |task, idx| {
+        last_capture_lengths[idx] = sessions[task.session_idx].quitCaptureBytes().len;
+    }
+
+    const start_ns = std.time.nanoTimestamp();
+    var last_growth_ns = start_ns;
+
+    while (true) {
+        var saw_growth = false;
+        for (tasks, 0..) |task, idx| {
+            const session = sessions[task.session_idx];
+            session.processOutput() catch |err| {
+                log.warn("quit teardown: session {d} post-worker output drain failed: {}", .{ task.session_idx, err });
+            };
+            const new_len = session.quitCaptureBytes().len;
+            if (new_len > last_capture_lengths[idx]) {
+                saw_growth = true;
+            }
+            last_capture_lengths[idx] = new_len;
+        }
+
+        const now_ns = std.time.nanoTimestamp();
+        if (saw_growth) {
+            last_growth_ns = now_ns;
+        }
+
+        if (!shouldContinueQuitCaptureDrain(start_ns, last_growth_ns, now_ns)) break;
+        std.Thread.sleep(quit_capture_drain_poll_ns);
+    }
+}
+
+fn shouldContinueQuitCaptureDrain(start_ns: i128, last_growth_ns: i128, now_ns: i128) bool {
+    const quiet_elapsed = now_ns - last_growth_ns;
+    const total_elapsed = now_ns - start_ns;
+    return quiet_elapsed < quit_capture_drain_quiet_ns and total_elapsed < quit_capture_drain_max_ns;
 }
 
 fn startQuitFlow(
@@ -2482,6 +2526,7 @@ pub fn run() !void {
         if (quit_teardown.active) {
             quit_blocking_overlay_component.setActive(false);
             quit_teardown.join();
+            drainQuitCaptureOutput(quit_teardown.tasks[0..quit_teardown.task_count], sessions[0..]);
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
                 const session = sessions[task.session_idx];
                 session.stopQuitCapture();
@@ -2492,7 +2537,6 @@ pub fn run() !void {
                 session.agent_kind = null;
                 const text = session.quitCaptureBytes();
                 log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
-                log.debug("quit teardown: session {d} terminal text tail: {s}", .{ task.session_idx, text[@max(0, text.len -| 1000)..] });
                 if (terminal_history.extractLastUuid(text)) |uuid| {
                     log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
                     session.agent_kind = task.agent_kind;
@@ -2548,6 +2592,23 @@ test "markTeardownComplete returns true only once" {
     var done = false;
     try std.testing.expect(markTeardownComplete(&done));
     try std.testing.expect(!markTeardownComplete(&done));
+}
+
+test "shouldContinueQuitCaptureDrain stops after quiet window" {
+    const start_ns: i128 = 0;
+    const last_growth_ns: i128 = 0;
+    const at_quiet_boundary = quit_capture_drain_quiet_ns;
+    try std.testing.expect(!shouldContinueQuitCaptureDrain(start_ns, last_growth_ns, at_quiet_boundary));
+
+    const just_before_quiet = quit_capture_drain_quiet_ns - 1;
+    try std.testing.expect(shouldContinueQuitCaptureDrain(start_ns, last_growth_ns, just_before_quiet));
+}
+
+test "shouldContinueQuitCaptureDrain stops after max window" {
+    const start_ns: i128 = 0;
+    const recent_growth_ns = quit_capture_drain_max_ns - 1;
+    const at_max_boundary = quit_capture_drain_max_ns;
+    try std.testing.expect(!shouldContinueQuitCaptureDrain(start_ns, recent_growth_ns, at_max_boundary));
 }
 
 const TestSwapError = error{InitFailed};
