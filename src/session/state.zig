@@ -455,7 +455,7 @@ pub const SessionState = struct {
     }
 
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
-        if (!self.spawned or self.dead) return;
+        if (!shouldProcessOutput(self.spawned, self.dead)) return;
 
         const shell = &(self.shell orelse return);
         const stream = &(self.stream orelse return);
@@ -482,6 +482,11 @@ pub const SessionState = struct {
             // Keep draining until the PTY would block to avoid frame-bounded
             // throttling of bursty output (e.g. startup logos).
         }
+    }
+
+    fn shouldProcessOutput(spawned: bool, dead: bool) bool {
+        _ = dead;
+        return spawned;
     }
 
     /// Try to flush any queued stdin data; preserves ordering relative to new input.
@@ -840,6 +845,13 @@ test "pending write shrinks when empty and over threshold" {
 
     maybeShrinkPendingWrite(&buf, allocator);
     try std.testing.expect(buf.capacity <= pending_write_shrink_threshold);
+}
+
+test "shouldProcessOutput keeps draining after process exit" {
+    try std.testing.expect(!SessionState.shouldProcessOutput(false, false));
+    try std.testing.expect(!SessionState.shouldProcessOutput(false, true));
+    try std.testing.expect(SessionState.shouldProcessOutput(true, false));
+    try std.testing.expect(SessionState.shouldProcessOutput(true, true));
 }
 
 test "AgentKind.fromComm recognises known agent names" {
