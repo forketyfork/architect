@@ -295,27 +295,25 @@ pub const SessionState = struct {
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
         self.process_generation +%= 1;
 
-        if (self.spawned) {
-            if (self.shell) |*shell| {
-                if (!self.dead) {
-                    _ = std.c.kill(shell.child_pid, std.c.SIG.TERM);
-                }
-                shell.deinit();
-                self.shell = null;
+        if (self.shell) |*shell| {
+            if (self.spawned and !self.dead) {
+                _ = std.c.kill(shell.child_pid, std.c.SIG.TERM);
             }
-            if (self.stream) |*stream| {
-                stream.deinit();
-                self.stream = null;
-            }
-            if (self.terminal) |*terminal| {
-                terminal.deinit(allocator);
-                self.terminal = null;
-            }
-
-            self.spawned = false;
-            self.dead = false;
-            self.cwd_settled = false;
+            shell.deinit();
+            self.shell = null;
         }
+        if (self.stream) |*stream| {
+            stream.deinit();
+            self.stream = null;
+        }
+        if (self.terminal) |*terminal| {
+            terminal.deinit(allocator);
+            self.terminal = null;
+        }
+
+        self.spawned = false;
+        self.dead = false;
+        self.cwd_settled = false;
     }
 
     pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
@@ -422,19 +420,17 @@ pub const SessionState = struct {
         self.process_wait_ctx = null;
         // Wrap intentionally: generation just invalidates prior watchers.
         self.process_generation +%= 1;
-        if (self.spawned) {
-            if (self.stream) |*stream| {
-                stream.deinit();
-                self.stream = null;
-            }
-            if (self.terminal) |*terminal| {
-                terminal.deinit(self.allocator);
-                self.terminal = null;
-            }
-            if (self.shell) |*shell| {
-                shell.deinit();
-                self.shell = null;
-            }
+        if (self.stream) |*stream| {
+            stream.deinit();
+            self.stream = null;
+        }
+        if (self.terminal) |*terminal| {
+            terminal.deinit(self.allocator);
+            self.terminal = null;
+        }
+        if (self.shell) |*shell| {
+            shell.deinit();
+            self.shell = null;
         }
 
         self.spawned = false;
