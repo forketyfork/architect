@@ -144,6 +144,11 @@ pub const SessionState = struct {
         InvalidArgument,
     };
 
+    const WaitContextCleanup = enum {
+        destroy_immediately,
+        defer_if_active,
+    };
+
     pub fn init(
         allocator: std.mem.Allocator,
         slot_index: usize,
@@ -264,6 +269,16 @@ pub const SessionState = struct {
     }
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
+        self.teardown(allocator, .destroy_immediately);
+    }
+
+    /// Runtime close path used while the event loop is still active.
+    /// Keeps active process wait callbacks valid by deferring context destruction.
+    pub fn despawn(self: *SessionState, allocator: std.mem.Allocator) void {
+        self.teardown(allocator, .defer_if_active);
+    }
+
+    fn teardown(self: *SessionState, allocator: std.mem.Allocator, wait_ctx_cleanup: WaitContextCleanup) void {
         self.pending_write.deinit(allocator);
         self.pending_write = .empty;
         self.quit_capture.deinit(allocator);
@@ -287,9 +302,16 @@ pub const SessionState = struct {
             self.process_watcher = null;
         }
         if (self.process_wait_ctx) |ctx| {
-            // Free unconditionally: deinit runs after the event loop stops, so
-            // processExitCallback will never fire for pending completions.
-            allocator.destroy(ctx);
+            switch (wait_ctx_cleanup) {
+                .destroy_immediately => {
+                    allocator.destroy(ctx);
+                },
+                .defer_if_active => {
+                    if (ctx.completion.state() == .dead) {
+                        allocator.destroy(ctx);
+                    }
+                },
+            }
         }
         self.process_wait_ctx = null;
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
@@ -816,6 +838,39 @@ test "SessionState assigns incrementing ids" {
     second.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 1), second.id);
     try std.testing.expectEqualStrings("1", std.mem.sliceTo(second.session_id_z[0..], 0));
+}
+
+test "despawn keeps active wait context alive until callback reclaims it" {
+    const allocator = std.testing.allocator;
+    const size = pty_mod.winsize{
+        .ws_row = 24,
+        .ws_col = 80,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    defer session.deinit(allocator);
+
+    const wait_ctx = try allocator.create(SessionState.WaitContext);
+    wait_ctx.* = .{
+        .session = &session,
+        .generation = 0,
+        .pid = 1,
+        .completion = .{},
+    };
+    wait_ctx.completion.flags.state = @enumFromInt(1);
+
+    session.process_wait_ctx = wait_ctx;
+    session.despawn(allocator);
+    try std.testing.expect(session.process_wait_ctx == null);
+
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+    var completion: xev.Completion = .{};
+    const action = SessionState.processExitCallback(wait_ctx, &loop, &completion, 0);
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
 }
 
 fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {

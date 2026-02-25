@@ -1382,7 +1382,7 @@ pub fn run() !void {
                             }
 
                             // Close the terminal
-                            session.deinit(allocator);
+                            session.despawn(allocator);
                             session_interaction_component.resetView(session_idx);
                             session.markDirty();
 
@@ -1967,7 +1967,7 @@ pub fn run() !void {
                             break :blk null;
                         };
                     }
-                    sessions[idx].deinit(allocator);
+                    sessions[idx].despawn(allocator);
                     session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
                     compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
