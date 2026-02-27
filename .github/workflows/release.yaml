@@ -110,7 +110,7 @@ jobs:
         working-directory: architect
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: architect-macos-${{ matrix.arch }}
           path: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
