@@ -491,6 +491,14 @@ fn renderSessionContent(
                 }
             }
 
+            if (style.flags.underline != .none) {
+                _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
+                const underline_y: f32 = @floatFromInt(y + eff_ch - 1);
+                const x_start: f32 = @floatFromInt(x);
+                const x_end: f32 = @floatFromInt(x + eff_cw * glyph_width_cells - 1);
+                _ = c.SDL_RenderLine(renderer, x_start, underline_y, x_end, underline_y);
+            }
+
             const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, eff_cw, eff_ch, fg_color);
             if (is_box_drawing) {
                 try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
