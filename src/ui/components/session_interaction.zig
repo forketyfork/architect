@@ -186,36 +186,55 @@ pub const SessionInteractionComponent = struct {
                     return true;
                 }
 
-                if (host.view_mode == .Full and event.button.button == c.SDL_BUTTON_LEFT) {
+                if (host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
                     if (focused_idx >= self.sessions.len) return false;
                     const focused = self.sessions[focused_idx];
                     const view = &self.views[focused_idx];
 
                     if (focused.spawned and focused.terminal != null) {
-                        if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |pin| {
-                            const clicks = event.button.clicks;
-                            if (clicks >= 3) {
-                                selectLine(focused, view, pin);
-                            } else if (clicks == 2) {
-                                selectWord(focused, view, pin);
-                            } else {
-                                const mod = c.SDL_GetModState();
-                                const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-                                if (cmd_held) {
-                                    if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
-                                        defer self.allocator.free(uri);
-                                        open_url.openUrl(self.allocator, uri) catch |err| {
-                                            log.err("failed to open URL: {}", .{err});
+                        const terminal = &focused.terminal.?;
+                        if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
+                            if (sdlToMouseButton(event.button.button)) |btn| {
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
+                                    const sgr = terminal.modes.get(.mouse_format_sgr);
+                                    var buf: [32]u8 = undefined;
+                                    const n = input.encodeMouseButton(btn, cell.col, cell.row, true, sgr, &buf);
+                                    if (n > 0) {
+                                        focused.sendInput(buf[0..n]) catch |err| {
+                                            log.warn("failed to send mouse button: {}", .{err});
                                         };
+                                    }
+                                    return true;
+                                }
+                            }
+                        }
+
+                        if (event.button.button == c.SDL_BUTTON_LEFT) {
+                            if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |pin| {
+                                const clicks = event.button.clicks;
+                                if (clicks >= 3) {
+                                    selectLine(focused, view, pin);
+                                } else if (clicks == 2) {
+                                    selectWord(focused, view, pin);
+                                } else {
+                                    const mod = c.SDL_GetModState();
+                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
+                                    if (cmd_held) {
+                                        if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
+                                            defer self.allocator.free(uri);
+                                            open_url.openUrl(self.allocator, uri) catch |err| {
+                                                log.err("failed to open URL: {}", .{err});
+                                            };
+                                        } else {
+                                            beginSelection(focused, view, pin);
+                                        }
                                     } else {
                                         beginSelection(focused, view, pin);
                                     }
-                                } else {
-                                    beginSelection(focused, view, pin);
                                 }
+                                return true;
                             }
-                            return true;
                         }
                     }
                 }
@@ -224,11 +243,38 @@ pub const SessionInteractionComponent = struct {
                 if (event.button.button == c.SDL_BUTTON_LEFT and self.finishTerminalScrollbarDrag(host.now_ms)) {
                     return true;
                 }
-                if (host.view_mode == .Full and event.button.button == c.SDL_BUTTON_LEFT) {
+                if (host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
-                    if (focused_idx >= self.views.len) return false;
-                    endSelection(&self.views[focused_idx]);
-                    return true;
+                    if (focused_idx >= self.sessions.len) return false;
+                    const focused = self.sessions[focused_idx];
+                    const view = &self.views[focused_idx];
+
+                    if (focused.spawned and focused.terminal != null) {
+                        const terminal = &focused.terminal.?;
+                        if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
+                            if (sdlToMouseButton(event.button.button)) |btn| {
+                                const mouse_x: c_int = @intFromFloat(event.button.x);
+                                const mouse_y: c_int = @intFromFloat(event.button.y);
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
+                                    const sgr = terminal.modes.get(.mouse_format_sgr);
+                                    var buf: [32]u8 = undefined;
+                                    const n = input.encodeMouseButton(btn, cell.col, cell.row, false, sgr, &buf);
+                                    if (n > 0) {
+                                        focused.sendInput(buf[0..n]) catch |err| {
+                                            log.warn("failed to send mouse release: {}", .{err});
+                                        };
+                                    }
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (event.button.button == c.SDL_BUTTON_LEFT) {
+                        if (focused_idx >= self.views.len) return false;
+                        endSelection(&self.views[focused_idx]);
+                        return true;
+                    }
                 }
             },
             c.SDL_EVENT_MOUSE_MOTION => {
@@ -244,6 +290,38 @@ pub const SessionInteractionComponent = struct {
                     if (focused_idx < self.sessions.len) {
                         var focused = self.sessions[focused_idx];
                         const view = &self.views[focused_idx];
+
+                        if (focused.spawned and focused.terminal != null and !view.is_viewing_scrollback) {
+                            const terminal = &focused.terminal.?;
+                            const any_tracking = terminal.modes.get(.mouse_event_any);
+                            const btn_tracking = terminal.modes.get(.mouse_event_button);
+                            const btn_held = (event.motion.state & c.SDL_BUTTON_LMASK) != 0 or
+                                (event.motion.state & c.SDL_BUTTON_MMASK) != 0 or
+                                (event.motion.state & c.SDL_BUTTON_RMASK) != 0;
+                            if (any_tracking or (btn_tracking and btn_held)) {
+                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
+                                    const held_btn: ?input.MouseButton = if ((event.motion.state & c.SDL_BUTTON_LMASK) != 0)
+                                        .left
+                                    else if ((event.motion.state & c.SDL_BUTTON_MMASK) != 0)
+                                        .middle
+                                    else if ((event.motion.state & c.SDL_BUTTON_RMASK) != 0)
+                                        .right
+                                    else
+                                        null;
+                                    const sgr = terminal.modes.get(.mouse_format_sgr);
+                                    var buf: [32]u8 = undefined;
+                                    const n = input.encodeMouseMotion(held_btn, cell.col, cell.row, sgr, &buf);
+                                    if (n > 0) {
+                                        focused.sendInput(buf[0..n]) catch |err| {
+                                            log.warn("failed to send mouse motion: {}", .{err});
+                                        };
+                                    }
+                                    self.updateCursor(desired_cursor);
+                                    return true;
+                                }
+                            }
+                        }
+
                         const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
 
                         if (view.selection_dragging) {
@@ -573,6 +651,22 @@ pub const SessionInteractionComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+fn terminalHasMouseTracking(terminal: anytype) bool {
+    return terminal.modes.get(.mouse_event_normal) or
+        terminal.modes.get(.mouse_event_button) or
+        terminal.modes.get(.mouse_event_any) or
+        terminal.modes.get(.mouse_event_x10);
+}
+
+fn sdlToMouseButton(sdl_button: u8) ?input.MouseButton {
+    return switch (sdl_button) {
+        c.SDL_BUTTON_LEFT => .left,
+        c.SDL_BUTTON_MIDDLE => .middle,
+        c.SDL_BUTTON_RIGHT => .right,
+        else => null,
+    };
+}
 
 const CellPosition = struct { col: u16, row: u16 };
 

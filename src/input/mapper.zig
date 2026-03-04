@@ -578,6 +578,124 @@ test "encodeMouseScroll - scroll down X10 with position" {
     try std.testing.expectEqual(@as(u8, 5 + 33), buf[5]); // row + 33
 }
 
+pub const MouseButton = enum(u8) { left = 0, middle = 1, right = 2 };
+
+/// Encodes a mouse button press or release event for terminal mouse tracking.
+/// SGR format: CSI < button ; col ; row M (press) or m (release). 1-based coordinates.
+/// X10 format: CSI M <button+32> <col+33> <row+33>. Release uses button code 3.
+pub fn encodeMouseButton(
+    button: MouseButton,
+    col: u16,
+    row: u16,
+    press: bool,
+    sgr_format: bool,
+    buf: []u8,
+) usize {
+    const btn: u8 = @intFromEnum(button);
+
+    if (sgr_format) {
+        const suffix: u8 = if (press) 'M' else 'm';
+        const result = std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}{c}", .{ btn, col + 1, row + 1, suffix }) catch return 0;
+        return result.len;
+    } else {
+        const x10_btn: u8 = if (press) btn else 3; // 3 = release indicator in X10
+        const x10_offset: u16 = 33;
+        const x10_coord_max: u16 = 255 - x10_offset;
+        const x = @min(col, x10_coord_max) + x10_offset;
+        const y = @min(row, x10_coord_max) + x10_offset;
+        if (buf.len < 6) return 0;
+        buf[0] = '\x1b';
+        buf[1] = '[';
+        buf[2] = 'M';
+        buf[3] = x10_btn + 32;
+        buf[4] = @intCast(x);
+        buf[5] = @intCast(y);
+        return 6;
+    }
+}
+
+/// Encodes a mouse motion event for terminal mouse tracking.
+/// Motion uses button code + 32 (the motion flag). Button code 3 means no button held.
+/// SGR format: CSI < code ; col ; row M. X10 format: CSI M <code+32> <col+33> <row+33>.
+pub fn encodeMouseMotion(
+    button: ?MouseButton,
+    col: u16,
+    row: u16,
+    sgr_format: bool,
+    buf: []u8,
+) usize {
+    const base: u8 = if (button) |b| @intFromEnum(b) else 3; // 3 = no button
+    const code: u8 = base + 32; // motion flag
+
+    if (sgr_format) {
+        const result = std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}M", .{ code, col + 1, row + 1 }) catch return 0;
+        return result.len;
+    } else {
+        const x10_offset: u16 = 33;
+        const x10_coord_max: u16 = 255 - x10_offset;
+        const x = @min(col, x10_coord_max) + x10_offset;
+        const y = @min(row, x10_coord_max) + x10_offset;
+        if (buf.len < 6) return 0;
+        buf[0] = '\x1b';
+        buf[1] = '[';
+        buf[2] = 'M';
+        buf[3] = code + 32;
+        buf[4] = @intCast(x);
+        buf[5] = @intCast(y);
+        return 6;
+    }
+}
+
+test "encodeMouseButton - left press SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseButton(.left, 5, 3, true, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<0;6;4M", buf[0..n]);
+}
+
+test "encodeMouseButton - left release SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseButton(.left, 5, 3, false, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<0;6;4m", buf[0..n]);
+}
+
+test "encodeMouseButton - right press SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseButton(.right, 0, 0, true, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<2;1;1M", buf[0..n]);
+}
+
+test "encodeMouseButton - left press X10" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseButton(.left, 5, 3, true, false, &buf);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[M", buf[0..3]);
+    try std.testing.expectEqual(@as(u8, 0 + 32), buf[3]);
+    try std.testing.expectEqual(@as(u8, 5 + 33), buf[4]);
+    try std.testing.expectEqual(@as(u8, 3 + 33), buf[5]);
+}
+
+test "encodeMouseButton - release X10 sends button 3" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseButton(.left, 5, 3, false, false, &buf);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[M", buf[0..3]);
+    try std.testing.expectEqual(@as(u8, 3 + 32), buf[3]); // release = button 3
+    try std.testing.expectEqual(@as(u8, 5 + 33), buf[4]);
+    try std.testing.expectEqual(@as(u8, 3 + 33), buf[5]);
+}
+
+test "encodeMouseMotion - no button SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseMotion(null, 10, 5, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<35;11;6M", buf[0..n]);
+}
+
+test "encodeMouseMotion - left button held SGR" {
+    var buf: [32]u8 = undefined;
+    const n = encodeMouseMotion(.left, 2, 1, true, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[<32;3;2M", buf[0..n]);
+}
+
 test "terminalSwitchShortcut - cmd+1 returns 0" {
     try std.testing.expectEqual(@as(?usize, 0), terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI, 9));
 }
