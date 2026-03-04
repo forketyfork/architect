@@ -396,6 +396,9 @@ fn renderSessionContent(
         var run_width_cells: c_int = 0;
         var run_variant: FontVariant = .regular;
 
+        var underline_count: usize = 0;
+        var underline_segments: [256]struct { x_start: f32, x_end: f32, y_pos: f32, color: c.SDL_Color } = undefined;
+
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
             const list_cell = pages.getCell(if (view.is_viewing_scrollback)
@@ -491,12 +494,14 @@ fn renderSessionContent(
                 }
             }
 
-            if (style.flags.underline != .none) {
-                _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
-                const underline_y: f32 = @floatFromInt(y + eff_ch - 1);
-                const x_start: f32 = @floatFromInt(x);
-                const x_end: f32 = @floatFromInt(x + eff_cw * glyph_width_cells - 1);
-                _ = c.SDL_RenderLine(renderer, x_start, underline_y, x_end, underline_y);
+            if (style.flags.underline != .none and underline_count < underline_segments.len) {
+                underline_segments[underline_count] = .{
+                    .x_start = @floatFromInt(x),
+                    .x_end = @floatFromInt(x + eff_cw * glyph_width_cells - 1),
+                    .y_pos = @floatFromInt(y + eff_ch - 1),
+                    .color = fg_color,
+                };
+                underline_count += 1;
             }
 
             const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, eff_cw, eff_ch, fg_color);
@@ -593,6 +598,11 @@ fn renderSessionContent(
         }
 
         try flushRun(font, run_buf[0..], run_len, run_x, origin_y + @as(c_int, @intCast(row)) * cell_height_actual, run_cells, eff_cw, eff_ch, run_fg, run_variant);
+
+        for (underline_segments[0..underline_count]) |seg| {
+            _ = c.SDL_SetRenderDrawColor(renderer, seg.color.r, seg.color.g, seg.color.b, 255);
+            _ = c.SDL_RenderLine(renderer, seg.x_start, seg.y_pos, seg.x_end, seg.y_pos);
+        }
     }
 
     if (session.dead) {

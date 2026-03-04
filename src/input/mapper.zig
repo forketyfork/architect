@@ -582,7 +582,7 @@ pub const MouseButton = enum(u8) { left = 0, middle = 1, right = 2 };
 
 /// Encodes a mouse button press or release event for terminal mouse tracking.
 /// SGR format: CSI < button ; col ; row M (press) or m (release). 1-based coordinates.
-/// X10 format: CSI M <button+32> <col+33> <row+33>. X10 has no release encoding; returns 0 for release.
+/// X10 format: CSI M <button+32> <col+33> <row+33>. Release uses button code 3.
 pub fn encodeMouseButton(
     button: MouseButton,
     col: u16,
@@ -598,7 +598,7 @@ pub fn encodeMouseButton(
         const result = std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}{c}", .{ btn, col + 1, row + 1, suffix }) catch return 0;
         return result.len;
     } else {
-        if (!press) return 0; // X10 has no release event
+        const x10_btn: u8 = if (press) btn else 3; // 3 = release indicator in X10
         const x10_offset: u16 = 33;
         const x10_coord_max: u16 = 255 - x10_offset;
         const x = @min(col, x10_coord_max) + x10_offset;
@@ -607,7 +607,7 @@ pub fn encodeMouseButton(
         buf[0] = '\x1b';
         buf[1] = '[';
         buf[2] = 'M';
-        buf[3] = btn + 32;
+        buf[3] = x10_btn + 32;
         buf[4] = @intCast(x);
         buf[5] = @intCast(y);
         return 6;
@@ -615,7 +615,7 @@ pub fn encodeMouseButton(
 }
 
 /// Encodes a mouse motion event for terminal mouse tracking.
-/// Motion uses button code + 32 (the motion flag). Button 0xFF means no button held.
+/// Motion uses button code + 32 (the motion flag). Button code 3 means no button held.
 /// SGR format: CSI < code ; col ; row M. X10 format: CSI M <code+32> <col+33> <row+33>.
 pub fn encodeMouseMotion(
     button: ?MouseButton,
@@ -674,10 +674,14 @@ test "encodeMouseButton - left press X10" {
     try std.testing.expectEqual(@as(u8, 3 + 33), buf[5]);
 }
 
-test "encodeMouseButton - release X10 returns 0" {
+test "encodeMouseButton - release X10 sends button 3" {
     var buf: [32]u8 = undefined;
-    const n = encodeMouseButton(.left, 0, 0, false, false, &buf);
-    try std.testing.expectEqual(@as(usize, 0), n);
+    const n = encodeMouseButton(.left, 5, 3, false, false, &buf);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectEqualSlices(u8, "\x1b[M", buf[0..3]);
+    try std.testing.expectEqual(@as(u8, 3 + 32), buf[3]); // release = button 3
+    try std.testing.expectEqual(@as(u8, 5 + 33), buf[4]);
+    try std.testing.expectEqual(@as(u8, 3 + 33), buf[5]);
 }
 
 test "encodeMouseMotion - no button SGR" {
