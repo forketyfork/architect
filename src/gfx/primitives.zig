@@ -149,7 +149,7 @@ pub fn fillRoundedRect(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) voi
         const dx_sq = frad * frad - dy * dy;
         if (dx_sq > 0) {
             const dx = @sqrt(dx_sq);
-            _ = c.SDL_RenderLine(renderer, fx + frad - dx, fy + @as(f32, @floatFromInt(y)), fx + fw - frad + dx, fy + @as(f32, @floatFromInt(y)));
+            _ = c.SDL_RenderLine(renderer, fx + frad - dx, fy + @as(f32, @floatFromInt(y)), fx + fw - frad + dx - 1.0, fy + @as(f32, @floatFromInt(y)));
         }
     }
 
@@ -161,7 +161,7 @@ pub fn fillRoundedRect(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) voi
         const dx_sq = frad * frad - dy * dy;
         if (dx_sq > 0) {
             const dx = @sqrt(dx_sq);
-            _ = c.SDL_RenderLine(renderer, fx + frad - dx, fy + @as(f32, @floatFromInt(by)), fx + fw - frad + dx, fy + @as(f32, @floatFromInt(by)));
+            _ = c.SDL_RenderLine(renderer, fx + frad - dx, fy + @as(f32, @floatFromInt(by)), fx + fw - frad + dx - 1.0, fy + @as(f32, @floatFromInt(by)));
         }
     }
 }

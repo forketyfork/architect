@@ -206,17 +206,12 @@ pub const ConfirmDialogComponent = struct {
 
         const modal = self.modalRect(host);
         const sel = host.theme.selection;
+        const modal_r = dpi.scale(modal_radius, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
-        const modal_rect = c.SDL_FRect{
-            .x = @floatFromInt(modal.x),
-            .y = @floatFromInt(modal.y),
-            .w = @floatFromInt(modal.w),
-            .h = @floatFromInt(modal.h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &modal_rect);
+        primitives.fillRoundedRect(renderer, modal, modal_r);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, dpi.scale(modal_radius, host.ui_scale));
+        primitives.drawRoundedBorder(renderer, modal, modal_r);
 
         self.renderText(renderer, modal, host.ui_scale, title_tex, message_tex);
         self.renderButtons(renderer, modal, host.ui_scale, host.theme, cancel_tex, confirm_tex);
@@ -247,31 +242,20 @@ pub const ConfirmDialogComponent = struct {
     fn renderButtons(self: *ConfirmDialogComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme, cancel_tex: *c.SDL_Texture, confirm_tex: *c.SDL_Texture) void {
         const buttons = self.buttonRects(modal, ui_scale);
 
-        const cancel_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.cancel.x),
-            .y = @floatFromInt(buttons.cancel.y),
-            .w = @floatFromInt(buttons.cancel.w),
-            .h = @floatFromInt(buttons.cancel.h),
-        };
+        const btn_radius = dpi.scale(8, ui_scale);
         const bg = theme.background;
         _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
-        _ = c.SDL_RenderFillRect(renderer, &cancel_rect);
+        primitives.fillRoundedRect(renderer, buttons.cancel, btn_radius);
         const acc = theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, buttons.cancel, dpi.scale(8, ui_scale));
+        primitives.drawRoundedBorder(renderer, buttons.cancel, btn_radius);
 
-        const confirm_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.confirm.x),
-            .y = @floatFromInt(buttons.confirm.y),
-            .w = @floatFromInt(buttons.confirm.w),
-            .h = @floatFromInt(buttons.confirm.h),
-        };
         const red = theme.palette[1];
         _ = c.SDL_SetRenderDrawColor(renderer, red.r, red.g, red.b, 255);
-        _ = c.SDL_RenderFillRect(renderer, &confirm_rect);
+        primitives.fillRoundedRect(renderer, buttons.confirm, btn_radius);
         const bright_red = theme.palette[9];
         _ = c.SDL_SetRenderDrawColor(renderer, bright_red.r, bright_red.g, bright_red.b, 255);
-        primitives.drawRoundedBorder(renderer, buttons.confirm, dpi.scale(8, ui_scale));
+        primitives.drawRoundedBorder(renderer, buttons.confirm, btn_radius);
 
         const cancel_w = @as(f32, @floatFromInt(self.cancel_w));
         const cancel_h = @as(f32, @floatFromInt(self.cancel_h));
