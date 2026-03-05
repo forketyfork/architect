@@ -99,6 +99,7 @@ fn optionalStringEql(lhs: ?[]const u8, rhs: ?[]const u8) bool {
 }
 
 fn persistedAgentType(session: *const SessionState) ?[]const u8 {
+    if (!session.agent_metadata_captured) return null;
     if (session.agent_kind == null or session.agent_session_id == null) return null;
     return session.agent_kind.?.name();
 }
@@ -127,6 +128,7 @@ fn seedSessionAgentMetadataFromEntry(
         log.warn("failed to seed agent session id for restored session {d}: {}", .{ session.slot_index, err });
         return;
     };
+    session.agent_metadata_captured = false;
 }
 
 fn terminalEntriesMatchSessions(
@@ -2640,6 +2642,7 @@ pub fn run() !void {
                     session.agent_session_id = null;
                 }
                 session.agent_kind = null;
+                session.agent_metadata_captured = false;
                 const text = session.quitCaptureBytes();
                 log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
                 if (terminal_history.extractLastUuid(text)) |uuid| {
@@ -2649,6 +2652,9 @@ pub fn run() !void {
                         log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
                         break :blk null;
                     };
+                    if (session.agent_session_id != null) {
+                        session.agent_metadata_captured = true;
+                    }
                 } else {
                     log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ task.session_idx, task.agent_kind.name() });
                 }
@@ -2876,6 +2882,7 @@ test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
     session.slot_index = 3;
     session.agent_kind = null;
     session.agent_session_id = null;
+    session.agent_metadata_captured = true;
 
     const entry = config_mod.Persistence.TerminalEntry{
         .path = "/tmp/test",
@@ -2889,8 +2896,36 @@ test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
     try std.testing.expect(session.agent_session_id != null);
     try std.testing.expectEqualStrings("abc-123", session.agent_session_id.?);
     try std.testing.expect(session.agent_session_id.?.ptr != entry.agent_session_id.?.ptr);
+    try std.testing.expect(!session.agent_metadata_captured);
 
     if (session.agent_session_id) |sid| allocator.free(sid);
+}
+
+test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata until quit capture" {
+    const allocator = std.testing.allocator;
+
+    var persistence = config_mod.Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed");
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.cwd_path = "/one";
+    session.agent_kind = null;
+    session.agent_session_id = null;
+    session.agent_metadata_captured = false;
+
+    seedSessionAgentMetadataFromEntry(&session, persistence.terminal_entries.items[0], allocator);
+    defer if (session.agent_session_id) |sid| allocator.free(sid);
+
+    var sessions = [_]*SessionState{&session};
+
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
+    try std.testing.expect(persistence.terminal_entries.items[0].agent_type == null);
+    try std.testing.expect(persistence.terminal_entries.items[0].agent_session_id == null);
 }
 
 test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {
@@ -2907,6 +2942,7 @@ test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despaw
         session.cwd_path = null;
         session.agent_kind = null;
         session.agent_session_id = null;
+        session.agent_metadata_captured = false;
     }
     var sessions = [_]*SessionState{ &sessions_storage[0], &sessions_storage[1] };
 
@@ -2934,6 +2970,7 @@ test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despaw
 
     sessions_storage[1].agent_kind = .codex;
     sessions_storage[1].agent_session_id = "sid-42";
+    sessions_storage[1].agent_metadata_captured = true;
     try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
     try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
     try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
