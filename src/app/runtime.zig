@@ -92,6 +92,100 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
     return count;
 }
 
+fn optionalStringEql(lhs: ?[]const u8, rhs: ?[]const u8) bool {
+    if (lhs == null and rhs == null) return true;
+    if (lhs == null or rhs == null) return false;
+    return std.mem.eql(u8, lhs.?, rhs.?);
+}
+
+fn persistedAgentType(session: *const SessionState) ?[]const u8 {
+    if (session.agent_kind == null or session.agent_session_id == null) return null;
+    return session.agent_kind.?.name();
+}
+
+fn persistedAgentSessionId(session: *const SessionState, agent_type: ?[]const u8) ?[]const u8 {
+    if (agent_type == null) return null;
+    return session.agent_session_id;
+}
+
+fn seedSessionAgentMetadataFromEntry(
+    session: *SessionState,
+    entry: config_mod.Persistence.TerminalEntry,
+    allocator: std.mem.Allocator,
+) void {
+    const agent_type_str = entry.agent_type orelse return;
+    const session_id = entry.agent_session_id orelse return;
+    if (session_id.len == 0) return;
+    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
+
+    session.agent_kind = agent_kind;
+    if (session.agent_session_id) |sid| {
+        allocator.free(sid);
+        session.agent_session_id = null;
+    }
+    session.agent_session_id = allocator.dupe(u8, session_id) catch |err| {
+        log.warn("failed to seed agent session id for restored session {d}: {}", .{ session.slot_index, err });
+        return;
+    };
+}
+
+fn terminalEntriesMatchSessions(
+    persistence: *const config_mod.Persistence,
+    sessions: []const *SessionState,
+) bool {
+    var entry_idx: usize = 0;
+    for (sessions) |session| {
+        if (!session.spawned or session.dead) continue;
+        const path = session.cwd_path orelse continue;
+        if (path.len == 0) continue;
+
+        if (entry_idx >= persistence.terminal_entries.items.len) return false;
+        const entry = persistence.terminal_entries.items[entry_idx];
+        const agent_type = persistedAgentType(session);
+        const agent_session_id = persistedAgentSessionId(session, agent_type);
+
+        if (!std.mem.eql(u8, entry.path, path)) return false;
+        if (!optionalStringEql(entry.agent_type, agent_type)) return false;
+        if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
+
+        entry_idx += 1;
+    }
+    return entry_idx == persistence.terminal_entries.items.len;
+}
+
+fn syncPersistenceTerminalEntriesFromSessions(
+    persistence: *config_mod.Persistence,
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+) !bool {
+    if (terminalEntriesMatchSessions(persistence, sessions)) return false;
+
+    persistence.clearTerminalEntries(allocator);
+    for (sessions) |session| {
+        if (!session.spawned or session.dead) continue;
+        const path = session.cwd_path orelse continue;
+        if (path.len == 0) continue;
+
+        const agent_type = persistedAgentType(session);
+        const agent_session_id = persistedAgentSessionId(session, agent_type);
+        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
+    }
+    return true;
+}
+
+fn savePersistenceIfDirty(
+    persistence: *config_mod.Persistence,
+    allocator: std.mem.Allocator,
+    dirty: *bool,
+) void {
+    if (!dirty.*) return;
+    persistence.save(allocator) catch |err| {
+        std.debug.print("Failed to save persistence: {}\n", .{err});
+        return;
+    };
+    dirty.* = false;
+}
+
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
     var idx: usize = sessions.len;
     while (idx > 0) {
@@ -936,6 +1030,9 @@ pub fn run() !void {
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
+            if (sessions[new_idx].spawned) {
+                seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+            }
 
             queueResumeCommand: {
                 if (!sessions[new_idx].spawned) break :queueResumeCommand;
@@ -970,6 +1067,7 @@ pub fn run() !void {
     var foreground_cache = ForegroundProcessCache{};
 
     var running = true;
+    var persistence_dirty = false;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -1151,9 +1249,8 @@ pub fn run() !void {
 
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence.save(allocator) catch |err| {
-                        std.debug.print("Failed to save persistence: {}\n", .{err});
-                    };
+                    persistence_dirty = true;
+                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -1198,9 +1295,8 @@ pub fn run() !void {
                     persistence.window.height = window_height_points;
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence.save(allocator) catch |err| {
-                        std.debug.print("Failed to save persistence: {}\n", .{err});
-                    };
+                    persistence_dirty = true;
+                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
@@ -1545,9 +1641,8 @@ pub fn run() !void {
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
-                            persistence.save(allocator) catch |err| {
-                                std.debug.print("Failed to save persistence: {}\n", .{err});
-                            };
+                            persistence_dirty = true;
+                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                         }
 
                         var notification_buf: [64]u8 = undefined;
@@ -1829,12 +1924,22 @@ pub fn run() !void {
                         log.warn("failed to update recent folders: {}", .{err});
                     };
                     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
+                    persistence_dirty = true;
                 }
             }
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace after process session idx={d} id={d}", .{ session.slot_index, session.id });
             }
         }
+
+        const terminal_entries_changed = syncPersistenceTerminalEntriesFromSessions(&persistence, sessions, allocator) catch |err| blk: {
+            log.warn("failed to sync terminal persistence state: {}", .{err});
+            break :blk false;
+        };
+        if (terminal_entries_changed) {
+            persistence_dirty = true;
+        }
+        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
 
         if (quit_teardown.isFinished()) {
             running = false;
@@ -2550,29 +2655,9 @@ pub fn run() !void {
             }
         }
 
-        persistence.clearTerminalEntries(allocator);
-        for (sessions, 0..) |session, idx| {
-            if (!session.spawned or session.dead) continue;
-            if (session.cwd_path) |path| {
-                if (path.len == 0) continue;
-                const persisted_agent_type: ?[]const u8 = if (session.agent_kind != null and session.agent_session_id != null)
-                    session.agent_kind.?.name()
-                else
-                    null;
-                const persisted_session_id: ?[]const u8 = if (persisted_agent_type != null)
-                    session.agent_session_id
-                else
-                    null;
-                persistence.appendTerminalEntry(
-                    allocator,
-                    path,
-                    persisted_agent_type,
-                    persisted_session_id,
-                ) catch |err| {
-                    std.debug.print("Failed to persist terminal {d}: {}\n", .{ idx, err });
-                };
-            }
-        }
+        _ = syncPersistenceTerminalEntriesFromSessions(&persistence, sessions, allocator) catch |err| {
+            std.debug.print("Failed to refresh terminal persistence: {}\n", .{err});
+        };
     }
 
     persistence.save(allocator) catch |err| {
@@ -2782,4 +2867,75 @@ test "applyScaleChangeAndResize skips resize when reload fails" {
 
     try std.testing.expectEqual(@as(usize, 1), ctx.reload_calls);
     try std.testing.expectEqual(@as(usize, 0), ctx.resize_calls);
+}
+
+test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.slot_index = 3;
+    session.agent_kind = null;
+    session.agent_session_id = null;
+
+    const entry = config_mod.Persistence.TerminalEntry{
+        .path = "/tmp/test",
+        .agent_type = "codex",
+        .agent_session_id = "abc-123",
+    };
+    seedSessionAgentMetadataFromEntry(&session, entry, allocator);
+
+    try std.testing.expect(session.agent_kind != null);
+    try std.testing.expectEqual(session_state.AgentKind.codex, session.agent_kind.?);
+    try std.testing.expect(session.agent_session_id != null);
+    try std.testing.expectEqualStrings("abc-123", session.agent_session_id.?);
+    try std.testing.expect(session.agent_session_id.?.ptr != entry.agent_session_id.?.ptr);
+
+    if (session.agent_session_id) |sid| allocator.free(sid);
+}
+
+test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {
+    const allocator = std.testing.allocator;
+
+    var persistence = config_mod.Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    var sessions_storage: [2]SessionState = undefined;
+    for (&sessions_storage) |*session| {
+        session.* = undefined;
+        session.spawned = false;
+        session.dead = false;
+        session.cwd_path = null;
+        session.agent_kind = null;
+        session.agent_session_id = null;
+    }
+    var sessions = [_]*SessionState{ &sessions_storage[0], &sessions_storage[1] };
+
+    sessions_storage[0].spawned = true;
+    sessions_storage[0].cwd_path = "/one";
+
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
+    try std.testing.expectEqualStrings("/one", persistence.terminal_entries.items[0].path);
+
+    sessions_storage[0].cwd_path = "/two";
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqualStrings("/two", persistence.terminal_entries.items[0].path);
+    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
+
+    sessions_storage[0].spawned = false;
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqual(@as(usize, 0), persistence.terminal_entries.items.len);
+
+    sessions_storage[1].spawned = true;
+    sessions_storage[1].cwd_path = "/three";
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
+    try std.testing.expectEqualStrings("/three", persistence.terminal_entries.items[0].path);
+
+    sessions_storage[1].agent_kind = .codex;
+    sessions_storage[1].agent_session_id = "sid-42";
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
+    try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
+    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
 }

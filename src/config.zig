@@ -428,9 +428,7 @@ pub const Persistence = struct {
         try self.serializeToWriter(&writer.writer);
         const serialized = writer.written();
 
-        const file = try fs.createFileAbsolute(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(serialized);
+        try writeFileAtomicallyAbsolute(path, serialized);
     }
 
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
@@ -698,6 +696,22 @@ fn parseTerminalKey(key: []const u8) ?struct { row: usize, col: usize } {
     return .{ .row = row - 1, .col = col - 1 };
 }
 
+fn writeFileAtomicallyAbsolute(path: []const u8, contents: []const u8) !void {
+    const dir_path = fs.path.dirname(path) orelse return error.InvalidPath;
+    var dir = try fs.openDirAbsolute(dir_path, .{});
+    defer dir.close();
+
+    var write_buffer: [4096]u8 = undefined;
+    var atomic_file = try dir.atomicFile(fs.path.basename(path), .{
+        .write_buffer = &write_buffer,
+    });
+    defer atomic_file.deinit();
+
+    try atomic_file.file_writer.file.writeAll(contents);
+    try atomic_file.file_writer.file.sync();
+    try atomic_file.renameIntoPlace();
+}
+
 pub const Config = struct {
     font: FontConfig = .{},
     window: WindowConfig = .{},
@@ -792,9 +806,7 @@ pub const Config = struct {
             \\
         ;
 
-        const file = try fs.createFileAbsolute(config_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(template);
+        try writeFileAtomicallyAbsolute(config_path, template);
     }
 
     fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
@@ -858,7 +870,7 @@ pub const SaveError = error{
     InvalidConfig,
     OutOfMemory,
     WriteFailed,
-} || fs.File.OpenError || fs.File.WriteError || fs.Dir.MakeError;
+} || fs.File.OpenError || fs.File.WriteError || fs.File.SyncError || fs.Dir.MakeError || fs.Dir.OpenError || std.posix.RenameError;
 
 test "Color.fromHex - valid hex colors" {
     const white = Color.fromHex("#FFFFFF") orelse return error.TestUnexpectedResult;
@@ -1148,6 +1160,58 @@ test "Persistence save/load round-trip preserves all fields" {
             try std.testing.expect(loaded_entry.agent_session_id == null);
         }
     }
+}
+
+test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const test_file = try fs.path.join(allocator, &[_][]const u8{ tmp_path, "atomic_persistence.toml" });
+    defer allocator.free(test_file);
+
+    const initial =
+        \\font_size = 12
+        \\[window]
+        \\height = 800
+        \\width = 1200
+        \\x = 10
+        \\y = 20
+        \\
+    ;
+    try writeFileAtomicallyAbsolute(test_file, initial);
+
+    const replaced =
+        \\font_size = 16
+        \\[window]
+        \\height = 900
+        \\width = 1440
+        \\x = 100
+        \\y = 200
+        \\
+    ;
+    try writeFileAtomicallyAbsolute(test_file, replaced);
+
+    const file = try fs.openFileAbsolute(test_file, .{});
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(contents);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(contents);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(c_int, 16), result.value.font_size);
+    try std.testing.expectEqual(@as(i32, 900), result.value.window.height);
+    try std.testing.expectEqual(@as(i32, 1440), result.value.window.width);
+    try std.testing.expectEqual(@as(i32, 100), result.value.window.x);
+    try std.testing.expectEqual(@as(i32, 200), result.value.window.y);
 }
 
 test "Persistence.removeRecentFolder removes the named entry" {

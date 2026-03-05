@@ -87,7 +87,7 @@ Platform    Session    Rendering    UI Overlay
 - Background threads are intentionally limited to two cases: the notification socket listener (`session/notify.zig`) and a quit-time agent-teardown worker in `app/runtime.zig`. Both communicate completion/state back to the main thread through thread-safe primitives.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
-- Runtime persistence finalization is explicit at the end of `app/runtime.zig`: save and deinit `Persistence` before deferred subsystem teardown begins.
+- Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
 - Shared Utilities (`geom`, `colors`, `dpi`, `config`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
