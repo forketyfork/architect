@@ -11,7 +11,7 @@ Architect stores its configuration in `~/.config/architect/` using two TOML file
 
 User-editable preferences file. Changes take effect on next launch. Open it quickly with `Cmd+,`.
 
-If the file doesn't exist, Architect creates a commented template on first run.
+If the file doesn't exist, Architect creates a commented template on first run (written atomically).
 
 ### Font Configuration
 
@@ -250,6 +250,8 @@ y = 50
 | `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
 
 On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Architect was last closed, the agent is automatically resumed.
+
+`persistence.toml` is written atomically (temp file + replace), so updates never leave a partially written file. Architect updates it during runtime when state changes (window move/resize, font size, terminal cwd changes, terminal spawn/despawn) and performs a final save during shutdown.
 
 Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
 
