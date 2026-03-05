@@ -108,6 +108,27 @@ fn persistedAgentSessionId(session: *const SessionState, agent_type: ?[]const u8
     return session.agent_session_id;
 }
 
+fn seedSessionAgentMetadataFromEntry(
+    session: *SessionState,
+    entry: config_mod.Persistence.TerminalEntry,
+    allocator: std.mem.Allocator,
+) void {
+    const agent_type_str = entry.agent_type orelse return;
+    const session_id = entry.agent_session_id orelse return;
+    if (session_id.len == 0) return;
+    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
+
+    session.agent_kind = agent_kind;
+    if (session.agent_session_id) |sid| {
+        allocator.free(sid);
+        session.agent_session_id = null;
+    }
+    session.agent_session_id = allocator.dupe(u8, session_id) catch |err| {
+        log.warn("failed to seed agent session id for restored session {d}: {}", .{ session.slot_index, err });
+        return;
+    };
+}
+
 fn terminalEntriesMatchSessions(
     persistence: *const config_mod.Persistence,
     sessions: []const *SessionState,
@@ -150,6 +171,19 @@ fn syncPersistenceTerminalEntriesFromSessions(
         try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
     }
     return true;
+}
+
+fn savePersistenceIfDirty(
+    persistence: *config_mod.Persistence,
+    allocator: std.mem.Allocator,
+    dirty: *bool,
+) void {
+    if (!dirty.*) return;
+    persistence.save(allocator) catch |err| {
+        std.debug.print("Failed to save persistence: {}\n", .{err});
+        return;
+    };
+    dirty.* = false;
 }
 
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
@@ -996,6 +1030,9 @@ pub fn run() !void {
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
+            if (sessions[new_idx].spawned) {
+                seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+            }
 
             queueResumeCommand: {
                 if (!sessions[new_idx].spawned) break :queueResumeCommand;
@@ -1030,6 +1067,7 @@ pub fn run() !void {
     var foreground_cache = ForegroundProcessCache{};
 
     var running = true;
+    var persistence_dirty = false;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -1211,9 +1249,8 @@ pub fn run() !void {
 
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence.save(allocator) catch |err| {
-                        std.debug.print("Failed to save persistence: {}\n", .{err});
-                    };
+                    persistence_dirty = true;
+                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -1258,9 +1295,8 @@ pub fn run() !void {
                     persistence.window.height = window_height_points;
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence.save(allocator) catch |err| {
-                        std.debug.print("Failed to save persistence: {}\n", .{err});
-                    };
+                    persistence_dirty = true;
+                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
@@ -1605,9 +1641,8 @@ pub fn run() !void {
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
-                            persistence.save(allocator) catch |err| {
-                                std.debug.print("Failed to save persistence: {}\n", .{err});
-                            };
+                            persistence_dirty = true;
+                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                         }
 
                         var notification_buf: [64]u8 = undefined;
@@ -1866,7 +1901,6 @@ pub fn run() !void {
             log.info("frame trace after xev run", .{});
         }
 
-        var persistence_needs_save = false;
         for (sessions) |session| {
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace before process session idx={d} id={d}", .{ session.slot_index, session.id });
@@ -1890,7 +1924,7 @@ pub fn run() !void {
                         log.warn("failed to update recent folders: {}", .{err});
                     };
                     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
-                    persistence_needs_save = true;
+                    persistence_dirty = true;
                 }
             }
             if (relaunch_trace_frames > 0 and session.spawned) {
@@ -1903,13 +1937,9 @@ pub fn run() !void {
             break :blk false;
         };
         if (terminal_entries_changed) {
-            persistence_needs_save = true;
+            persistence_dirty = true;
         }
-        if (persistence_needs_save) {
-            persistence.save(allocator) catch |err| {
-                std.debug.print("Failed to save persistence: {}\n", .{err});
-            };
-        }
+        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
 
         if (quit_teardown.isFinished()) {
             running = false;
@@ -2839,6 +2869,30 @@ test "applyScaleChangeAndResize skips resize when reload fails" {
     try std.testing.expectEqual(@as(usize, 0), ctx.resize_calls);
 }
 
+test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.slot_index = 3;
+    session.agent_kind = null;
+    session.agent_session_id = null;
+
+    const entry = config_mod.Persistence.TerminalEntry{
+        .path = "/tmp/test",
+        .agent_type = "codex",
+        .agent_session_id = "abc-123",
+    };
+    seedSessionAgentMetadataFromEntry(&session, entry, allocator);
+
+    try std.testing.expect(session.agent_kind != null);
+    try std.testing.expectEqual(session_state.AgentKind.codex, session.agent_kind.?);
+    try std.testing.expect(session.agent_session_id != null);
+    try std.testing.expectEqualStrings("abc-123", session.agent_session_id.?);
+    try std.testing.expect(session.agent_session_id.?.ptr != entry.agent_session_id.?.ptr);
+
+    if (session.agent_session_id) |sid| allocator.free(sid);
+}
+
 test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {
     const allocator = std.testing.allocator;
 
@@ -2877,4 +2931,11 @@ test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despaw
     try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
     try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
     try std.testing.expectEqualStrings("/three", persistence.terminal_entries.items[0].path);
+
+    sessions_storage[1].agent_kind = .codex;
+    sessions_storage[1].agent_session_id = "sid-42";
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
+    try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
+    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
 }
