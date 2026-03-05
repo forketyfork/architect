@@ -181,17 +181,12 @@ pub const QuitConfirmComponent = struct {
 
         const modal = self.modalRect(host);
         const sel = host.theme.selection;
+        const modal_r = dpi.scale(modal_radius, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
-        const modal_rect = c.SDL_FRect{
-            .x = @floatFromInt(modal.x),
-            .y = @floatFromInt(modal.y),
-            .w = @floatFromInt(modal.w),
-            .h = @floatFromInt(modal.h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &modal_rect);
+        primitives.fillRoundedRect(renderer, modal, modal_r);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, dpi.scale(modal_radius, host.ui_scale));
+        primitives.drawRoundedBorder(renderer, modal, modal_r);
 
         self.renderText(renderer, modal, host.ui_scale, title_tex, message_tex);
         self.renderButtons(renderer, modal, host.ui_scale, host.theme, body_fonts.regular);

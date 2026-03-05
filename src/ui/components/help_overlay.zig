@@ -149,13 +149,7 @@ pub const HelpOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const sel = host.theme.selection;
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 245);
-        const bg_rect = c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+        primitives.fillRoundedRect(renderer, rect, radius);
 
         const accent = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 255);
