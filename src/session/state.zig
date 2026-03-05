@@ -114,6 +114,9 @@ pub const SessionState = struct {
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
     agent_session_id: ?[]const u8 = null,
+    /// True only when agent_kind/agent_session_id were captured during the current run's quit flow.
+    /// Restored metadata is used for startup resume injection, but must not be re-persisted as fresh data.
+    agent_metadata_captured: bool = false,
     /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
     /// stale UUIDs from earlier scrollback.
     quit_capture: std.ArrayListUnmanaged(u8) = .empty,
@@ -290,6 +293,7 @@ pub const SessionState = struct {
             self.agent_session_id = null;
         }
         self.agent_kind = null;
+        self.agent_metadata_captured = false;
 
         if (self.cwd_path) |path| {
             allocator.free(path);
@@ -454,6 +458,13 @@ pub const SessionState = struct {
             shell.deinit();
             self.shell = null;
         }
+
+        if (self.agent_session_id) |sid| {
+            self.allocator.free(sid);
+            self.agent_session_id = null;
+        }
+        self.agent_kind = null;
+        self.agent_metadata_captured = false;
 
         self.spawned = false;
         self.dead = false;
@@ -871,6 +882,30 @@ test "despawn keeps active wait context alive until callback reclaims it" {
     var completion: xev.Completion = .{};
     const action = SessionState.processExitCallback(wait_ctx, &loop, &completion, 0);
     try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+}
+
+test "resetForRespawn clears agent metadata" {
+    const allocator = std.testing.allocator;
+    const size = pty_mod.winsize{
+        .ws_row = 24,
+        .ws_col = 80,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    defer session.deinit(allocator);
+
+    session.agent_kind = .codex;
+    session.agent_session_id = try allocator.dupe(u8, "sid-42");
+    session.agent_metadata_captured = true;
+
+    session.resetForRespawn();
+
+    try std.testing.expect(session.agent_kind == null);
+    try std.testing.expect(session.agent_session_id == null);
+    try std.testing.expect(!session.agent_metadata_captured);
 }
 
 fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
