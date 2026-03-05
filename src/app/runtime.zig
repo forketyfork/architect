@@ -2910,6 +2910,7 @@ test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata
     try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed");
 
     var session: SessionState = undefined;
+    session.slot_index = 0;
     session.spawned = true;
     session.dead = false;
     session.cwd_path = "/one";
