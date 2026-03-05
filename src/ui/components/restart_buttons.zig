@@ -149,13 +149,7 @@ pub const RestartButtonsComponent = struct {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const sel = theme.selection;
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 220);
-        const bg_rect = c.SDL_FRect{
-            .x = @floatFromInt(button_x),
-            .y = @floatFromInt(button_y),
-            .w = @floatFromInt(button_w),
-            .h = @floatFromInt(button_h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+        primitives.fillRoundedRect(renderer, button_rect, restart_button_radius);
 
         const acc = theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);

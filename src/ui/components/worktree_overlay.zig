@@ -336,13 +336,7 @@ pub const WorktreeOverlayComponent = struct {
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
             const sel = ui_host.theme.selection;
             _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 245);
-            const bg_rect = c.SDL_FRect{
-                .x = @floatFromInt(rect.x),
-                .y = @floatFromInt(rect.y),
-                .w = @floatFromInt(rect.w),
-                .h = @floatFromInt(rect.h),
-            };
-            _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+            primitives.fillRoundedRect(renderer, rect, radius);
 
             const accent = ui_host.theme.accent;
             _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 255);
@@ -1233,16 +1227,17 @@ pub const WorktreeOverlayComponent = struct {
         _ = c.SDL_RenderFillRect(renderer, &backdrop);
 
         // Modal background
-        const sel = theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 235);
-        _ = c.SDL_RenderFillRect(renderer, &layout.modal);
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
-        primitives.drawRoundedBorder(renderer, geom.Rect{
+        const modal_rect = geom.Rect{
             .x = @intFromFloat(layout.modal.x),
             .y = @intFromFloat(layout.modal.y),
             .w = @intFromFloat(layout.modal.w),
             .h = @intFromFloat(layout.modal.h),
-        }, modal_radius);
+        };
+        const sel = theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 235);
+        primitives.fillRoundedRect(renderer, modal_rect, modal_radius);
+        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
+        primitives.drawRoundedBorder(renderer, modal_rect, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.regular, "Create worktree", title_color) catch |err| blk: {
@@ -1262,15 +1257,16 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Input box
-        _ = c.SDL_SetRenderDrawColor(renderer, 20, 23, 28, 255);
-        _ = c.SDL_RenderFillRect(renderer, &layout.input);
-        _ = c.SDL_SetRenderDrawColor(renderer, 70, 76, 86, 255);
-        primitives.drawRoundedBorder(renderer, geom.Rect{
+        const input_rect = geom.Rect{
             .x = @intFromFloat(layout.input.x),
             .y = @intFromFloat(layout.input.y),
             .w = @intFromFloat(layout.input.w),
             .h = @intFromFloat(layout.input.h),
-        }, 6);
+        };
+        _ = c.SDL_SetRenderDrawColor(renderer, 20, 23, 28, 255);
+        primitives.fillRoundedRect(renderer, input_rect, 6);
+        _ = c.SDL_SetRenderDrawColor(renderer, 70, 76, 86, 255);
+        primitives.drawRoundedBorder(renderer, input_rect, 6);
 
         const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
@@ -1346,16 +1342,17 @@ pub const WorktreeOverlayComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &backdrop);
 
-        const sel = theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
-        _ = c.SDL_RenderFillRect(renderer, &layout.modal);
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
-        primitives.drawRoundedBorder(renderer, geom.Rect{
+        const delete_modal_rect = geom.Rect{
             .x = @intFromFloat(layout.modal.x),
             .y = @intFromFloat(layout.modal.y),
             .w = @intFromFloat(layout.modal.w),
             .h = @intFromFloat(layout.modal.h),
-        }, modal_radius);
+        };
+        const sel = theme.selection;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
+        primitives.fillRoundedRect(renderer, delete_modal_rect, modal_radius);
+        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
+        primitives.drawRoundedBorder(renderer, delete_modal_rect, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
         const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch |err| blk: {
