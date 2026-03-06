@@ -17,6 +17,7 @@ pub fn renderButton(
     variant: ButtonVariant,
     theme: *const @import("../../colors.zig").Theme,
     ui_scale: f32,
+    hovered: bool,
 ) void {
     const rect_int = geom.Rect{
         .x = @intFromFloat(rect.x),
@@ -53,6 +54,12 @@ pub fn renderButton(
             _ = c.SDL_SetRenderDrawColor(renderer, bright_red.r, bright_red.g, bright_red.b, 255);
             primitives.drawRoundedBorder(renderer, rect_int, radius);
         },
+    }
+
+    if (hovered) {
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+        primitives.fillRoundedRect(renderer, rect_int, fill_radius);
     }
 
     const text_color = switch (variant) {

@@ -87,6 +87,7 @@ pub const ReaderOverlayComponent = struct {
     selected_match: ?usize = null,
     link_hits: std.ArrayList(LinkHit) = .{},
     hovered_link: ?usize = null,
+    jump_button_hovered: bool = false,
 
     arrow_cursor: ?*c.SDL_Cursor = null,
     pointer_cursor: ?*c.SDL_Cursor = null,
@@ -858,6 +859,7 @@ pub const ReaderOverlayComponent = struct {
                 const mx: c_int = @intFromFloat(event.motion.x);
                 const my: c_int = @intFromFloat(event.motion.y);
                 self.overlay.updateCloseHover(mx, my, host);
+                self.jump_button_hovered = false;
                 const overlay_rect = FullscreenOverlay.overlayRect(host);
                 const title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
                 const metrics = self.syncScrollMetrics(host);
@@ -886,6 +888,7 @@ pub const ReaderOverlayComponent = struct {
                     const jump_rect = jumpButtonRect(host, overlay_rect);
                     if (geom.containsPoint(jump_rect, mx, my)) {
                         want_pointer = true;
+                        self.jump_button_hovered = true;
                     }
                 }
                 if (self.hovered_link != null) want_pointer = true;
@@ -1634,6 +1637,10 @@ pub const ReaderOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 210);
         primitives.fillRoundedRect(renderer, rect, btn_radius);
+        if (self.jump_button_hovered) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, rect, btn_radius);
+        }
 
         const fonts = try font_cache.get(dpi.scale(13, host.ui_scale));
         const label_tex = try makeTextTexture(self.allocator, renderer, fonts.bold orelse fonts.regular, "Jump to bottom", host.theme.background);
