@@ -2836,23 +2836,15 @@ pub const DiffOverlayComponent = struct {
         const input_y = y_pos + dpi.scale(4, host.ui_scale);
         const input_w = rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale);
 
+        const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
+        const input_radius = dpi.scale(4, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         // Input border
         const accent = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(100.0 * alpha));
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.drawRoundedBorder(renderer, input_rect, input_radius);
 
         // Render input text
         const font_cache = assets.font_cache orelse return;
@@ -2981,22 +2973,14 @@ pub const DiffOverlayComponent = struct {
         const input_y = y_pos + dpi.scale(4, host.ui_scale);
         const input_w = rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale);
 
+        const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
+        const input_radius = dpi.scale(4, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         const accent = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(100.0 * alpha));
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.drawRoundedBorder(renderer, input_rect, input_radius);
 
         // Input text
         const font_cache = assets.font_cache orelse {
