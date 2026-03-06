@@ -138,6 +138,8 @@ pub const DiffOverlayComponent = struct {
     agent_dropdown_hovered: ?usize = null,
     send_button_hovered: bool = false,
     delete_hovered_comment: ?usize = null,
+    comment_submit_hovered: bool = false,
+    comment_cancel_hovered: bool = false,
 
     wrap_cols: usize = 0,
 
@@ -762,6 +764,8 @@ pub const DiffOverlayComponent = struct {
         self.show_agent_dropdown = false;
         self.agent_dropdown_hovered = null;
         self.send_button_hovered = false;
+        self.comment_submit_hovered = false;
+        self.comment_cancel_hovered = false;
         if (self.last_repo_root) |root| {
             self.allocator.free(root);
             self.last_repo_root = null;
@@ -1312,6 +1316,8 @@ pub const DiffOverlayComponent = struct {
 
                 self.hovered_file = null;
                 self.delete_hovered_comment = null;
+                self.comment_submit_hovered = false;
+                self.comment_cancel_hovered = false;
                 var want_cursor: CursorKind = .arrow;
                 if (self.overlay.close_hovered or self.send_button_hovered) {
                     want_cursor = .pointer;
@@ -1339,7 +1345,16 @@ pub const DiffOverlayComponent = struct {
                                     want_cursor = .pointer;
                                 } else if (self.editing) |ed| {
                                     if (ed.target_display_row == box_row) {
-                                        want_cursor = .text;
+                                        const btn_rects = self.commentButtonRects(host, rect, scaled_line_h, scroll_int, content_top, ed.target_display_row);
+                                        if (geom.containsPoint(btn_rects.submit, mouse_x, mouse_y)) {
+                                            self.comment_submit_hovered = true;
+                                            want_cursor = .pointer;
+                                        } else if (geom.containsPoint(btn_rects.cancel, mouse_x, mouse_y)) {
+                                            self.comment_cancel_hovered = true;
+                                            want_cursor = .pointer;
+                                        } else {
+                                            want_cursor = .text;
+                                        }
                                     } else {
                                         want_cursor = .pointer;
                                     }
@@ -2802,6 +2817,32 @@ pub const DiffOverlayComponent = struct {
         self.renderCommentDeleteBtn(host, renderer, del_btn, comment_idx);
     }
 
+    fn commentButtonRects(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, scaled_line_h: c_int, scroll_int: c_int, content_top: c_int, target_row: usize) struct { submit: geom.Rect, cancel: geom.Rect } {
+        const total_h = dpi.scale(editing_comment_height, host.ui_scale);
+        const btn_h = dpi.scale(comment_button_height, host.ui_scale);
+        const btn_w = dpi.scale(comment_button_width, host.ui_scale);
+        const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
+
+        const comment_y_base = self.computeRowY(target_row, scaled_line_h, host.ui_scale, host.now_ms) + scaled_line_h;
+        var saved_h: c_int = 0;
+        for (self.comments.items) |comment| {
+            if (comment.sent) continue;
+            if (comment.display_row_index) |dri| {
+                if (dri == target_row) {
+                    saved_h += dpi.scale(saved_comment_height, host.ui_scale);
+                }
+            }
+        }
+        const edit_y = content_top + comment_y_base + saved_h - scroll_int;
+        const btn_y = edit_y + total_h - btn_h - dpi.scale(6, host.ui_scale);
+        const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
+        const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
+        return .{
+            .submit = .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h },
+            .cancel = .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h },
+        };
+    }
+
     fn renderEditingComment(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int) void {
         const ed = self.editing orelse return;
         const total_h = dpi.scale(editing_comment_height, host.ui_scale);
@@ -2836,23 +2877,15 @@ pub const DiffOverlayComponent = struct {
         const input_y = y_pos + dpi.scale(4, host.ui_scale);
         const input_w = rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale);
 
+        const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
+        const input_radius = dpi.scale(4, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         // Input border
         const accent = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(100.0 * alpha));
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.drawRoundedBorder(renderer, input_rect, input_radius);
 
         // Render input text
         const font_cache = assets.font_cache orelse return;
@@ -2903,8 +2936,13 @@ pub const DiffOverlayComponent = struct {
         // Submit button
         const btn_y = y_pos + total_h - btn_h - dpi.scale(6, host.ui_scale);
         const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
+        const btn_radius = dpi.scale(4, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, @intFromFloat(220.0 * alpha));
-        primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
+        if (self.comment_submit_hovered) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
+        }
         const submit_tex = self.makeTextTexture(renderer, fonts.regular, "Submit", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
         defer c.SDL_DestroyTexture(submit_tex.tex);
         _ = c.SDL_SetTextureAlphaMod(submit_tex.tex, @intFromFloat(255.0 * alpha));
@@ -2919,9 +2957,13 @@ pub const DiffOverlayComponent = struct {
         const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
         const fg = host.theme.foreground;
         _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(40.0 * alpha));
-        primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(80.0 * alpha));
-        primitives.drawRoundedBorder(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
+        primitives.drawRoundedBorder(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
+        if (self.comment_cancel_hovered) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
+        }
         const cancel_tex = self.makeTextTexture(renderer, fonts.regular, "Cancel", host.theme.foreground) catch return;
         defer c.SDL_DestroyTexture(cancel_tex.tex);
         _ = c.SDL_SetTextureAlphaMod(cancel_tex.tex, @intFromFloat(255.0 * alpha));
@@ -2981,22 +3023,14 @@ pub const DiffOverlayComponent = struct {
         const input_y = y_pos + dpi.scale(4, host.ui_scale);
         const input_w = rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale);
 
+        const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
+        const input_radius = dpi.scale(4, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         const accent = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(100.0 * alpha));
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(input_x),
-            .y = @floatFromInt(input_y),
-            .w = @floatFromInt(input_w),
-            .h = @floatFromInt(input_h),
-        });
+        primitives.drawRoundedBorder(renderer, input_rect, input_radius);
 
         // Input text
         const font_cache = assets.font_cache orelse {

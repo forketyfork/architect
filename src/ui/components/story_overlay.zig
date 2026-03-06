@@ -1162,22 +1162,13 @@ pub const StoryOverlayComponent = struct {
     fn renderSearchBar(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
         const rect = searchBarRect(host, overlay_rect);
 
+        const search_radius = dpi.scale(6, host.ui_scale);
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.selection.r, host.theme.selection.g, host.theme.selection.b, 230);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        });
+        primitives.fillRoundedRect(renderer, rect, search_radius);
 
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 220);
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        });
+        primitives.drawRoundedBorder(renderer, rect, search_radius);
 
         const fonts = try font_cache.get(dpi.scale(14, host.ui_scale));
         const prefix = "Search: ";

@@ -20,6 +20,8 @@ pub const QuitConfirmComponent = struct {
     dirty: bool = true,
     process_count: usize = 0,
     escape_pressed: bool = false,
+    cancel_hovered: bool = false,
+    quit_hovered: bool = false,
 
     title_tex: ?*c.SDL_Texture = null,
     title_w: c_int = 0,
@@ -138,6 +140,14 @@ pub const QuitConfirmComponent = struct {
                 self.visible = false;
                 return true;
             },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                const mouse_x: c_int = @intFromFloat(event.motion.x);
+                const mouse_y: c_int = @intFromFloat(event.motion.y);
+                const modal = self.modalRect(host);
+                const buttons = self.buttonRects(modal, host.ui_scale);
+                self.cancel_hovered = geom.containsPoint(buttons.cancel, mouse_x, mouse_y);
+                self.quit_hovered = geom.containsPoint(buttons.quit, mouse_x, mouse_y);
+            },
             else => {},
         }
 
@@ -223,7 +233,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.cancel.w),
             .h = @floatFromInt(buttons.cancel.h),
         };
-        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale);
+        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale, self.cancel_hovered);
 
         const quit_rect = c.SDL_FRect{
             .x = @floatFromInt(buttons.quit.x),
@@ -231,7 +241,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.quit.w),
             .h = @floatFromInt(buttons.quit.h),
         };
-        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale);
+        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale, self.quit_hovered);
     }
 
     fn modalRect(self: *QuitConfirmComponent, host: *const types.UiHost) geom.Rect {

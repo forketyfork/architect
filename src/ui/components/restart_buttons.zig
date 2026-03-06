@@ -15,6 +15,7 @@ pub const RestartButtonsComponent = struct {
     texture: ?*c.SDL_Texture = null,
     tex_w: c_int = 0,
     tex_h: c_int = 0,
+    hovered_session: ?usize = null,
 
     const restart_button_font_size: c_int = 20;
     const restart_button_height: c_int = 40;
@@ -48,18 +49,53 @@ pub const RestartButtonsComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
         if (host.view_mode != .Grid) return false;
-        if (event.type != c.SDL_EVENT_MOUSE_BUTTON_DOWN) return false;
 
-        const mouse_x: c_int = @intFromFloat(event.button.x);
-        const mouse_y: c_int = @intFromFloat(event.button.y);
+        switch (event.type) {
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                const mouse_x: c_int = @intFromFloat(event.button.x);
+                const mouse_y: c_int = @intFromFloat(event.button.y);
 
-        const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
-        const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
-        const clicked_session: usize = grid_row * host.grid_cols + grid_col;
-        if (clicked_session >= host.sessions.len) return false;
+                const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
+                const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
+                const clicked_session: usize = grid_row * host.grid_cols + grid_col;
+                if (clicked_session >= host.sessions.len) return false;
 
-        const session_info = host.sessions[clicked_session];
-        if (!(session_info.dead and session_info.spawned)) return false;
+                const session_info = host.sessions[clicked_session];
+                if (!(session_info.dead and session_info.spawned)) return false;
+
+                const cell_rect = geom.Rect{
+                    .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
+                    .y = @as(c_int, @intCast(grid_row)) * host.cell_h,
+                    .w = host.cell_w,
+                    .h = host.cell_h,
+                };
+                const button_rect = self.restartButtonRect(cell_rect);
+                if (!geom.containsPoint(button_rect, mouse_x, mouse_y)) return false;
+
+                actions.append(.{ .RestartSession = clicked_session }) catch |err| {
+                    log.warn("failed to queue restart action for session {d}: {}", .{ clicked_session, err });
+                };
+                return true;
+            },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                const mouse_x: c_int = @intFromFloat(event.motion.x);
+                const mouse_y: c_int = @intFromFloat(event.motion.y);
+                self.hovered_session = self.hoveredSessionAt(host, mouse_x, mouse_y);
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn hoveredSessionAt(self: *RestartButtonsComponent, host: *const types.UiHost, mouse_x: c_int, mouse_y: c_int) ?usize {
+        if (host.cell_w <= 0 or host.cell_h <= 0) return null;
+        const grid_col: usize = @min(@as(usize, @intCast(@max(0, @divFloor(mouse_x, host.cell_w)))), host.grid_cols - 1);
+        const grid_row: usize = @min(@as(usize, @intCast(@max(0, @divFloor(mouse_y, host.cell_h)))), host.grid_rows - 1);
+        const session_idx: usize = grid_row * host.grid_cols + grid_col;
+        if (session_idx >= host.sessions.len) return null;
+
+        const session_info = host.sessions[session_idx];
+        if (!(session_info.dead and session_info.spawned)) return null;
 
         const cell_rect = geom.Rect{
             .x = @as(c_int, @intCast(grid_col)) * host.cell_w,
@@ -68,13 +104,8 @@ pub const RestartButtonsComponent = struct {
             .h = host.cell_h,
         };
         const button_rect = self.restartButtonRect(cell_rect);
-        const inside = geom.containsPoint(button_rect, mouse_x, mouse_y);
-        if (!inside) return false;
-
-        actions.append(.{ .RestartSession = clicked_session }) catch |err| {
-            log.warn("failed to queue restart action for session {d}: {}", .{ clicked_session, err });
-        };
-        return true;
+        if (geom.containsPoint(button_rect, mouse_x, mouse_y)) return session_idx;
+        return null;
     }
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
@@ -126,11 +157,11 @@ pub const RestartButtonsComponent = struct {
                 .w = host.cell_w,
                 .h = host.cell_h,
             };
-            self.renderButton(renderer, cell_rect, host.theme, cache);
+            self.renderButton(renderer, cell_rect, host.theme, cache, i);
         }
     }
 
-    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const colors.Theme, cache: *font_cache.FontCache) void {
+    fn renderButton(self: *RestartButtonsComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, theme: *const colors.Theme, cache: *font_cache.FontCache, session_idx: usize) void {
         self.ensureTexture(renderer, theme, cache) catch return;
         const text_width = self.tex_w;
         const text_height = self.tex_h;
@@ -154,6 +185,13 @@ pub const RestartButtonsComponent = struct {
         const acc = theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, button_rect, restart_button_radius);
+
+        const is_hovered = if (self.hovered_session) |h| h == session_idx else false;
+        if (is_hovered) {
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, button_rect, restart_button_radius);
+        }
 
         const text_x = button_x + restart_button_padding;
         const text_y = button_y + @divFloor(button_h - text_height, 2);

@@ -942,16 +942,11 @@ fn renderWaveStrips(
 fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme: *const colors.Theme) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
+    const radius: c_int = 12;
+
     const bg = theme.background;
     _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 60);
-    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-        .x = @floatFromInt(rect.x),
-        .y = @floatFromInt(rect.y),
-        .w = @floatFromInt(rect.w),
-        .h = @floatFromInt(rect.h),
-    });
-
-    const radius: c_int = 12;
+    primitives.fillRoundedRect(renderer, rect, radius);
 
     const border_color = if (is_focused) blk: {
         const acc = theme.accent;

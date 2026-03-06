@@ -38,6 +38,8 @@ pub const WorktreeOverlayComponent = struct {
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
     cursor_blink_start_ms: i64 = 0,
+    modal_confirm_hovered: bool = false,
+    modal_cancel_hovered: bool = false,
 
     const button_size_small: c_int = 40;
     const button_size_large: c_int = 480;
@@ -175,9 +177,22 @@ pub const WorktreeOverlayComponent = struct {
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 if (self.overlay.state != .Open) return false;
-                const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
+
+                self.modal_confirm_hovered = false;
+                self.modal_cancel_hovered = false;
+                if ((self.creating or self.confirming_removal) and self.cache != null) {
+                    const layout = self.createModalLayout(host);
+                    const mx: f32 = event.motion.x;
+                    const my: f32 = event.motion.y;
+                    self.modal_confirm_hovered = mx >= layout.confirm.x and mx <= layout.confirm.x + layout.confirm.w and
+                        my >= layout.confirm.y and my <= layout.confirm.y + layout.confirm.h;
+                    self.modal_cancel_hovered = mx >= layout.cancel.x and mx <= layout.cancel.x + layout.cancel.w and
+                        my >= layout.cancel.y and my <= layout.cancel.y + layout.cancel.h;
+                }
+
+                const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
                 const inside = geom.containsPoint(rect, mouse_x, mouse_y);
                 if (!inside) {
                     self.hovered_entry = null;
@@ -1302,8 +1317,8 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Buttons
-        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Confirm", .primary, theme, host.ui_scale);
-        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Confirm", .primary, theme, host.ui_scale, self.modal_confirm_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, self.modal_cancel_hovered);
 
         // Error message
         if (self.create_error) |err| {
@@ -1382,8 +1397,8 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Remove", .danger, theme, host.ui_scale);
-        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Remove", .danger, theme, host.ui_scale, self.modal_confirm_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, self.modal_cancel_hovered);
     }
 
     fn entryCount(self: *WorktreeOverlayComponent) usize {

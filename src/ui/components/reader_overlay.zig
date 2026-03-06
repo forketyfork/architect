@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
+const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
@@ -86,6 +87,7 @@ pub const ReaderOverlayComponent = struct {
     selected_match: ?usize = null,
     link_hits: std.ArrayList(LinkHit) = .{},
     hovered_link: ?usize = null,
+    jump_button_hovered: bool = false,
 
     arrow_cursor: ?*c.SDL_Cursor = null,
     pointer_cursor: ?*c.SDL_Cursor = null,
@@ -857,6 +859,7 @@ pub const ReaderOverlayComponent = struct {
                 const mx: c_int = @intFromFloat(event.motion.x);
                 const my: c_int = @intFromFloat(event.motion.y);
                 self.overlay.updateCloseHover(mx, my, host);
+                self.jump_button_hovered = false;
                 const overlay_rect = FullscreenOverlay.overlayRect(host);
                 const title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
                 const metrics = self.syncScrollMetrics(host);
@@ -885,6 +888,7 @@ pub const ReaderOverlayComponent = struct {
                     const jump_rect = jumpButtonRect(host, overlay_rect);
                     if (geom.containsPoint(jump_rect, mx, my)) {
                         want_pointer = true;
+                        self.jump_button_hovered = true;
                     }
                 }
                 if (self.hovered_link != null) want_pointer = true;
@@ -1583,22 +1587,13 @@ pub const ReaderOverlayComponent = struct {
     fn renderSearchBar(self: *ReaderOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
         const rect = searchBarRect(host, overlay_rect);
 
+        const search_radius = dpi.scale(6, host.ui_scale);
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.selection.r, host.theme.selection.g, host.theme.selection.b, 230);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        });
+        primitives.fillRoundedRect(renderer, rect, search_radius);
 
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 220);
-        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        });
+        primitives.drawRoundedBorder(renderer, rect, search_radius);
 
         const fonts = try font_cache.get(dpi.scale(14, host.ui_scale));
         const prefix = "Search: ";
@@ -1638,14 +1633,14 @@ pub const ReaderOverlayComponent = struct {
     fn renderJumpButton(self: *ReaderOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
         const rect = jumpButtonRect(host, overlay_rect);
 
+        const btn_radius = dpi.scale(6, host.ui_scale);
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 210);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        });
+        primitives.fillRoundedRect(renderer, rect, btn_radius);
+        if (self.jump_button_hovered) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, rect, btn_radius);
+        }
 
         const fonts = try font_cache.get(dpi.scale(13, host.ui_scale));
         const label_tex = try makeTextTexture(self.allocator, renderer, fonts.bold orelse fonts.regular, "Jump to bottom", host.theme.background);

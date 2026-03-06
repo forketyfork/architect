@@ -5,41 +5,55 @@ const geom = @import("../geom.zig");
 const Rect = geom.Rect;
 
 pub fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) void {
-    const fx = @as(f32, @floatFromInt(rect.x));
-    const fy = @as(f32, @floatFromInt(rect.y));
-    const fw = @as(f32, @floatFromInt(rect.w));
-    const fh = @as(f32, @floatFromInt(rect.h));
+    if (rect.w <= 0 or rect.h <= 0) return;
     const clamped = @min(radius, @divFloor(@min(rect.w, rect.h), 2));
-    const frad = @as(f32, @floatFromInt(clamped));
 
-    // Straight edges
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy, fx + fw - frad - 1.0, fy);
-    _ = c.SDL_RenderLine(renderer, fx + frad, fy + fh - 1.0, fx + fw - frad - 1.0, fy + fh - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx, fy + frad, fx, fy + fh - frad - 1.0);
-    _ = c.SDL_RenderLine(renderer, fx + fw - 1.0, fy + frad, fx + fw - 1.0, fy + fh - frad - 1.0);
+    if (clamped <= 0) {
+        _ = c.SDL_RenderRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .w = @floatFromInt(rect.w),
+            .h = @floatFromInt(rect.h),
+        });
+        return;
+    }
 
-    // Corner arcs using angle stepping with connected line segments
-    const corners = [_]struct { cx: f32, cy: f32, sx: f32, sy: f32 }{
-        .{ .cx = fx + frad, .cy = fy + frad, .sx = -1.0, .sy = -1.0 },
-        .{ .cx = fx + fw - frad - 1.0, .cy = fy + frad, .sx = 1.0, .sy = -1.0 },
-        .{ .cx = fx + frad, .cy = fy + fh - frad - 1.0, .sx = -1.0, .sy = 1.0 },
-        .{ .cx = fx + fw - frad - 1.0, .cy = fy + fh - frad - 1.0, .sx = 1.0, .sy = 1.0 },
-    };
+    // Trace the outline using the same scanline span math as fillRoundedRect,
+    // so the border pixels align exactly with the fill boundary.
 
-    const steps: u32 = @max(8, @as(u32, @intCast(clamped)) * 4);
-    const half_pi = std.math.pi / 2.0;
+    // Find the first and last visible rows.
+    var first_y: c_int = rect.y;
+    while (first_y < rect.y + rect.h) : (first_y += 1) {
+        if (roundedRectXSpan(rect, clamped, first_y) != null) break;
+    }
+    var last_y: c_int = rect.y + rect.h - 1;
+    while (last_y > first_y) : (last_y -= 1) {
+        if (roundedRectXSpan(rect, clamped, last_y) != null) break;
+    }
 
-    for (corners) |corner| {
-        var prev_x: f32 = corner.cx;
-        var prev_y: f32 = corner.cy + corner.sy * frad;
-        var i: u32 = 1;
-        while (i <= steps) : (i += 1) {
-            const angle = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(steps)) * half_pi;
-            const px = corner.cx + corner.sx * frad * @sin(angle);
-            const py = corner.cy + corner.sy * frad * @cos(angle);
-            _ = c.SDL_RenderLine(renderer, prev_x, prev_y, px, py);
-            prev_x = px;
-            prev_y = py;
+    // Top edge
+    if (roundedRectXSpan(rect, clamped, first_y)) |span| {
+        _ = c.SDL_RenderLine(renderer, span.left, @floatFromInt(first_y), span.right, @floatFromInt(first_y));
+    }
+
+    // Side edges: draw left/right boundary pixels, connecting to the previous row
+    var prev = roundedRectXSpan(rect, clamped, first_y) orelse return;
+    var y: c_int = first_y + 1;
+    while (y < last_y) : (y += 1) {
+        const span = roundedRectXSpan(rect, clamped, y) orelse continue;
+        const fy = @as(f32, @floatFromInt(y));
+        _ = c.SDL_RenderLine(renderer, @min(span.left, prev.left), fy, @max(span.left, prev.left), fy);
+        _ = c.SDL_RenderLine(renderer, @min(span.right, prev.right), fy, @max(span.right, prev.right), fy);
+        prev = span;
+    }
+
+    // Bottom edge: connect last side span to bottom row, then draw full bottom span
+    if (last_y > first_y) {
+        if (roundedRectXSpan(rect, clamped, last_y)) |span| {
+            const fy_last = @as(f32, @floatFromInt(last_y));
+            _ = c.SDL_RenderLine(renderer, @min(span.left, prev.left), fy_last, @max(span.left, prev.left), fy_last);
+            _ = c.SDL_RenderLine(renderer, @min(span.right, prev.right), fy_last, @max(span.right, prev.right), fy_last);
+            _ = c.SDL_RenderLine(renderer, span.left, fy_last, span.right, fy_last);
         }
     }
 }

@@ -18,6 +18,8 @@ pub const ConfirmDialogComponent = struct {
     visible: bool = false,
     dirty: bool = true,
     escape_pressed: bool = false,
+    cancel_hovered: bool = false,
+    confirm_hovered: bool = false,
 
     title_text: []const u8 = "",
     message_text: []const u8 = "",
@@ -162,6 +164,14 @@ pub const ConfirmDialogComponent = struct {
                 }
                 if (geom.containsPoint(modal, mouse_x, mouse_y)) return true;
             },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                const mouse_x: c_int = @intFromFloat(event.motion.x);
+                const mouse_y: c_int = @intFromFloat(event.motion.y);
+                const modal = self.modalRect(host);
+                const buttons = self.buttonRects(modal, host.ui_scale);
+                self.cancel_hovered = geom.containsPoint(buttons.cancel, mouse_x, mouse_y);
+                self.confirm_hovered = geom.containsPoint(buttons.confirm, mouse_x, mouse_y);
+            },
             else => {},
         }
 
@@ -243,16 +253,27 @@ pub const ConfirmDialogComponent = struct {
         const buttons = self.buttonRects(modal, ui_scale);
 
         const btn_radius = dpi.scale(8, ui_scale);
+        const fill_radius = @max(1, btn_radius - 1);
         const bg = theme.background;
         _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
-        primitives.fillRoundedRect(renderer, buttons.cancel, btn_radius);
+        primitives.fillRoundedRect(renderer, buttons.cancel, fill_radius);
+        if (self.cancel_hovered) {
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, buttons.cancel, fill_radius);
+        }
         const acc = theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
         primitives.drawRoundedBorder(renderer, buttons.cancel, btn_radius);
 
         const red = theme.palette[1];
         _ = c.SDL_SetRenderDrawColor(renderer, red.r, red.g, red.b, 255);
-        primitives.fillRoundedRect(renderer, buttons.confirm, btn_radius);
+        primitives.fillRoundedRect(renderer, buttons.confirm, fill_radius);
+        if (self.confirm_hovered) {
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            primitives.fillRoundedRect(renderer, buttons.confirm, fill_radius);
+        }
         const bright_red = theme.palette[9];
         _ = c.SDL_SetRenderDrawColor(renderer, bright_red.r, bright_red.g, bright_red.b, 255);
         primitives.drawRoundedBorder(renderer, buttons.confirm, btn_radius);
