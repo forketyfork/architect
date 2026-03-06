@@ -47,10 +47,13 @@ pub fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) v
         prev = span;
     }
 
-    // Bottom edge
+    // Bottom edge: connect last side span to bottom row, then draw full bottom span
     if (last_y > first_y) {
         if (roundedRectXSpan(rect, clamped, last_y)) |span| {
-            _ = c.SDL_RenderLine(renderer, span.left, @floatFromInt(last_y), span.right, @floatFromInt(last_y));
+            const fy_last = @as(f32, @floatFromInt(last_y));
+            _ = c.SDL_RenderLine(renderer, @min(span.left, prev.left), fy_last, @max(span.left, prev.left), fy_last);
+            _ = c.SDL_RenderLine(renderer, @min(span.right, prev.right), fy_last, @max(span.right, prev.right), fy_last);
+            _ = c.SDL_RenderLine(renderer, span.left, fy_last, span.right, fy_last);
         }
     }
 }
