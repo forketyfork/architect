@@ -240,10 +240,7 @@ pub fn init(allocator: std.mem.Allocator, options: InitOptions) !void {
         try defaultLogDirectoryPath(allocator);
     errdefer allocator.free(directory_path);
 
-    fs.makeDirAbsolute(directory_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    try fs.cwd().makePath(directory_path);
 
     const active = try openActiveLogFile(directory_path);
 
