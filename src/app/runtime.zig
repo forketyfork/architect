@@ -24,6 +24,7 @@ const pty_mod = @import("../pty.zig");
 const font_mod = @import("../font.zig");
 const font_paths_mod = @import("../font_paths.zig");
 const config_mod = @import("../config.zig");
+const logging_mod = @import("../logging.zig");
 const colors_mod = @import("../colors.zig");
 const ui_mod = @import("../ui/mod.zig");
 const font_cache_mod = @import("../font_cache.zig");
@@ -847,6 +848,27 @@ pub fn run() !void {
         };
     };
     defer config.deinit(allocator);
+
+    var file_logging_enabled = false;
+    logging_mod.init(allocator, .{
+        .min_level = config.logging.getMinLevel(),
+    }) catch |err| {
+        std.debug.print("Failed to initialize file logging: {}\n", .{err});
+    };
+    if (logging_mod.isInitialized()) {
+        file_logging_enabled = true;
+        logging_mod.writeStartupMarker() catch |err| {
+            std.debug.print("Failed to write startup marker: {}\n", .{err});
+        };
+    }
+    defer {
+        if (file_logging_enabled) {
+            logging_mod.writeShutdownMarker() catch |err| {
+                std.debug.print("Failed to write shutdown marker: {}\n", .{err});
+            };
+        }
+        logging_mod.deinit();
+    }
 
     var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
         std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
