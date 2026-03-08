@@ -234,6 +234,21 @@ fn writeRecordLocked(
     s.current_size += line.len;
 }
 
+fn writeEventLocked(
+    s: *LoggerState,
+    scope_name: []const u8,
+    message: []const u8,
+    event_name: []const u8,
+    extra_data: ?[]const u8,
+) !void {
+    var event_buf: [512]u8 = undefined;
+    const extra_fields = if (extra_data) |extra|
+        try std.fmt.bufPrint(&event_buf, "event={s} {s}", .{ event_name, extra })
+    else
+        try std.fmt.bufPrint(&event_buf, "event={s}", .{event_name});
+    try writeRecordLocked(s, .info, scope_name, message, extra_fields, true);
+}
+
 fn emitLoggingInternalError(err: anyerror) void {
     var stderr_buf: [128]u8 = undefined;
     var stderr_writer = std.debug.lockStderrWriter(&stderr_buf);
@@ -303,13 +318,24 @@ pub fn isInitialized() bool {
 pub fn writeStartupMarker() !void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    try writeRecordLocked(&state, .info, "runtime", "architect startup", "event=startup", true);
+    try writeEventLocked(&state, "runtime", "architect startup", "startup", null);
 }
 
 pub fn writeShutdownMarker() !void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    try writeRecordLocked(&state, .info, "runtime", "architect shutdown", "event=shutdown", true);
+    try writeEventLocked(&state, "runtime", "architect shutdown", "shutdown", null);
+}
+
+pub fn writeEvent(
+    scope_name: []const u8,
+    message: []const u8,
+    event_name: []const u8,
+    extra_data: ?[]const u8,
+) !void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    try writeEventLocked(&state, scope_name, message, event_name, extra_data);
 }
 
 pub fn logFn(
@@ -469,7 +495,7 @@ test "rotation archives old file once size limit is exceeded" {
     try std.testing.expect(archive_count > 0);
 }
 
-test "startup and shutdown markers are emitted with explicit event fields" {
+test "startup, shutdown, and explicit events are emitted with info level" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -484,11 +510,21 @@ test "startup and shutdown markers are emitted with explicit event fields" {
     defer deinit();
 
     try writeStartupMarker();
+    try writeEvent("runtime", "entered full view", "view_enter_full", "from=Grid to=Full");
     try writeShutdownMarker();
 
     const contents = try readActiveLogAlloc(allocator, tmp_path);
     defer allocator.free(contents);
 
-    try std.testing.expect(std.mem.containsAtLeast(u8, contents, 1, "event=startup"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, contents, 1, "event=shutdown"));
+    var event_lines: usize = 0;
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.containsAtLeast(u8, line, 1, "event=")) {
+            event_lines += 1;
+            try std.testing.expect(std.mem.containsAtLeast(u8, line, 1, "level=INFO"));
+        }
+    }
+    try std.testing.expect(std.mem.containsAtLeast(u8, contents, 1, "event=view_enter_full from=Grid to=Full"));
+    try std.testing.expectEqual(@as(usize, 3), event_lines);
 }

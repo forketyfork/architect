@@ -93,6 +93,45 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
     return count;
 }
 
+fn writeRuntimeEvent(message: []const u8, event_name: []const u8, extra_data: []const u8) void {
+    logging_mod.writeEvent("runtime", message, event_name, extra_data) catch |err| {
+        log.warn("failed to write runtime event {s}: {}", .{ event_name, err });
+    };
+}
+
+fn emitViewModeTransitionEvents(
+    previous_mode: app_state.ViewMode,
+    next_mode: app_state.ViewMode,
+    focused_session: usize,
+    spawned_count: usize,
+) void {
+    if (previous_mode == next_mode) return;
+
+    var extra_buf: [160]u8 = undefined;
+    const extra_data = std.fmt.bufPrint(&extra_buf, "from={s} to={s} focused_session={d} spawned_count={d}", .{
+        @tagName(previous_mode),
+        @tagName(next_mode),
+        focused_session,
+        spawned_count,
+    }) catch |err| {
+        log.warn("failed to format runtime view event payload: {}", .{err});
+        return;
+    };
+
+    if (previous_mode == .Grid and next_mode != .Grid) {
+        writeRuntimeEvent("exiting grid view", "view_exit_grid", extra_data);
+    }
+    if (next_mode == .Grid and previous_mode != .Grid) {
+        writeRuntimeEvent("entered grid view", "view_enter_grid", extra_data);
+    }
+    if (previous_mode == .Full and next_mode != .Full) {
+        writeRuntimeEvent("exiting full view", "view_exit_full", extra_data);
+    }
+    if (next_mode == .Full and previous_mode != .Full) {
+        writeRuntimeEvent("entered full view", "view_enter_full", extra_data);
+    }
+}
+
 fn optionalStringEql(lhs: ?[]const u8, rhs: ?[]const u8) bool {
     if (lhs == null and rhs == null) return true;
     if (lhs == null or rhs == null) return false;
@@ -1106,6 +1145,7 @@ pub fn run() !void {
     };
     var ime_composition = input_text.ImeComposition{};
     var last_focused_session: usize = anim_state.focused_session;
+    var last_logged_mode = anim_state.mode;
     var relaunch_trace_frames: u8 = 0;
     var window_close_suppress_countdown: u8 = 0;
 
@@ -2543,6 +2583,11 @@ pub fn run() !void {
                 }
                 std.debug.print("Grid resize complete: {d}x{d}\n", .{ grid.cols, grid.rows });
             }
+        }
+
+        if (anim_state.mode != last_logged_mode) {
+            emitViewModeTransitionEvents(last_logged_mode, anim_state.mode, anim_state.focused_session, countSpawnedSessions(sessions));
+            last_logged_mode = anim_state.mode;
         }
 
         const desired_font_scale = layout.gridFontScaleForMode(anim_state.mode, config.grid.font_scale);

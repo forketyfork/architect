@@ -156,6 +156,8 @@ Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a ti
 |---------|---------|-------------|
 | `min_level` | `"info"` | Minimum severity written to the log file. Accepts `err`, `warn`, `info`, or `debug` (case-insensitive). Unknown values fall back to `info`. |
 
+Event markers (startup/shutdown and grid/full view transitions) are always recorded at `INFO` level.
+
 ### Worktree Configuration
 
 ```toml
