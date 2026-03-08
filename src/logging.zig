@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
 const posix = std.posix;
+const time_c = @cImport({
+    @cInclude("time.h");
+});
 
 pub const active_log_filename = "architect.log";
 pub const default_max_file_size_bytes: u64 = 10 * 1024 * 1024;
@@ -55,24 +58,34 @@ fn buildPath(path_buf: []u8, directory_path: []const u8, basename: []const u8) !
     return std.fmt.bufPrint(path_buf, "{s}/{s}", .{ directory_path, basename });
 }
 
-fn timestampToUtcIso8601(timestamp_secs: i64, output: []u8) ![]const u8 {
-    const seconds_u64: u64 = if (timestamp_secs < 0) 0 else @intCast(timestamp_secs);
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds_u64 };
-    const day_seconds = epoch_seconds.getDaySeconds();
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const month = month_day.month.numeric();
-    const day = month_day.day_index + 1;
-    const hour = day_seconds.getHoursIntoDay();
-    const minute = day_seconds.getMinutesIntoHour();
-    const second = day_seconds.getSecondsIntoMinute();
-    return std.fmt.bufPrint(output, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-        year_day.year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
+fn timestampToLocalIso8601(timestamp_secs: i64, output: []u8) ![]const u8 {
+    var ts: time_c.time_t = @intCast(timestamp_secs);
+    var local_tm: time_c.struct_tm = undefined;
+    if (time_c.localtime_r(&ts, &local_tm) == null) return error.TimeConversionFailed;
+
+    var raw_buf: [40]u8 = undefined;
+    const written = time_c.strftime(&raw_buf, raw_buf.len, "%Y-%m-%dT%H:%M:%S%z", &local_tm);
+    if (written == 0) return error.TimeFormatFailed;
+
+    const raw = raw_buf[0..written];
+    if (raw.len < 5) return error.InvalidTimezoneOffset;
+
+    const tz = raw[raw.len - 5 ..];
+    const tz_sign = tz[0];
+    if (tz_sign != '+' and tz_sign != '-') return error.InvalidTimezoneOffset;
+    if (!std.ascii.isDigit(tz[1]) or !std.ascii.isDigit(tz[2]) or
+        !std.ascii.isDigit(tz[3]) or !std.ascii.isDigit(tz[4]))
+    {
+        return error.InvalidTimezoneOffset;
+    }
+
+    return std.fmt.bufPrint(output, "{s}{c}{c}{c}:{c}{c}", .{
+        raw[0 .. raw.len - 5],
+        tz[0],
+        tz[1],
+        tz[2],
+        tz[3],
+        tz[4],
     });
 }
 
@@ -181,7 +194,7 @@ fn writeRecordLocked(
     if (!force_write and !isEnabled(s.min_level, level)) return;
 
     var timestamp_buf: [32]u8 = undefined;
-    const timestamp = try timestampToUtcIso8601(std.time.timestamp(), &timestamp_buf);
+    const timestamp = try timestampToLocalIso8601(std.time.timestamp(), &timestamp_buf);
 
     var line_buf: [8192]u8 = undefined;
     const line = blk: {
@@ -344,10 +357,17 @@ fn readActiveLogAlloc(allocator: std.mem.Allocator, directory_path: []const u8) 
     return file.readToEndAlloc(allocator, 4 * 1024 * 1024);
 }
 
-test "timestampToUtcIso8601 formats canonical UTC shape" {
+test "timestampToLocalIso8601 includes local timezone offset" {
     var output: [32]u8 = undefined;
-    const ts = try timestampToUtcIso8601(0, &output);
-    try std.testing.expectEqualStrings("1970-01-01T00:00:00Z", ts);
+    const ts = try timestampToLocalIso8601(0, &output);
+    try std.testing.expectEqual(@as(usize, 25), ts.len);
+    try std.testing.expectEqual(@as(u8, '-'), ts[4]);
+    try std.testing.expectEqual(@as(u8, '-'), ts[7]);
+    try std.testing.expectEqual(@as(u8, 'T'), ts[10]);
+    try std.testing.expectEqual(@as(u8, ':'), ts[13]);
+    try std.testing.expectEqual(@as(u8, ':'), ts[16]);
+    try std.testing.expect(ts[19] == '+' or ts[19] == '-');
+    try std.testing.expectEqual(@as(u8, ':'), ts[22]);
 }
 
 test "logFn respects minimum level filtering" {
@@ -401,7 +421,8 @@ test "log line includes timestamp, level, scope, and message fields" {
     try std.testing.expectEqual(@as(u8, 'T'), line[10]);
     try std.testing.expectEqual(@as(u8, ':'), line[13]);
     try std.testing.expectEqual(@as(u8, ':'), line[16]);
-    try std.testing.expectEqual(@as(u8, 'Z'), line[19]);
+    try std.testing.expect(line[19] == '+' or line[19] == '-');
+    try std.testing.expectEqual(@as(u8, ':'), line[22]);
     try std.testing.expect(std.mem.containsAtLeast(u8, line, 1, "level=INFO"));
     try std.testing.expect(std.mem.containsAtLeast(u8, line, 1, "scope=runtime"));
     try std.testing.expect(std.mem.containsAtLeast(u8, line, 1, "msg=\"hello structured log\""));

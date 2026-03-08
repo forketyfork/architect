@@ -148,6 +148,8 @@ min_level = "info"  # One of: err, warn, info, debug (case-insensitive)
 Architect writes structured application logs to:
 - macOS: `~/Library/Logs/Architect/architect.log`
 
+Each log line uses local time with an explicit timezone offset (for example, `2026-03-08T14:23:00+01:00`).
+
 Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a timestamped file (for example, `architect-20260306T143000Z.log`) and a new active log file is created.
 
 | Setting | Default | Description |

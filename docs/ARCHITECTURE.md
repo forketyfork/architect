@@ -305,7 +305,7 @@ std.log.scoped(...) callsite
 main.zig std_options.logFn -> logging.zig
     | runtime min-level filter from [logging].min_level
     v
-Structured log line (UTC timestamp, level, scope, msg, optional fields)
+Structured log line (local timestamp with timezone offset, level, scope, msg, optional fields)
     | append to active file
     v
 ~/Library/Logs/Architect/architect.log (macOS)
