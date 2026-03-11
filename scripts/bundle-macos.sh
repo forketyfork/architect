@@ -47,6 +47,7 @@ fi
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 
+rm -rf "$APP_DIR"
 mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$SHARE_DIR"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
