@@ -138,6 +138,26 @@ When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-ri
 
 Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
 
+### Logging Configuration
+
+```toml
+[logging]
+min_level = "info"  # One of: err, warn, info, debug (case-insensitive)
+```
+
+Architect writes structured application logs to:
+- macOS: `~/Library/Logs/Architect/architect.log`
+
+Each log line uses local time with an explicit timezone offset (for example, `2026-03-08T14:23:00+01:00`).
+
+Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a timestamped file (for example, `architect-20260306T143000Z.log`) and a new active log file is created.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `min_level` | `"info"` | Minimum severity written to the log file. Accepts `err`, `warn`, `info`, or `debug` (case-insensitive). Unknown values fall back to `info`. |
+
+Event markers (startup/shutdown and grid/full view transitions) are always recorded at `INFO` level.
+
 ### Worktree Configuration
 
 ```toml
@@ -202,6 +222,9 @@ vsync = true
 
 [metrics]
 enabled = false
+
+[logging]
+min_level = "info"
 
 [worktree]
 # directory = "~/.architect-worktrees"

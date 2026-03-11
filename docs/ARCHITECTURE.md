@@ -42,7 +42,7 @@ graph TD
     end
 
     subgraph Shared Utilities
-        SHARED["geom, colors, dpi, config,<br/>url_matcher, metrics, os/open"]
+        SHARED["geom, colors, dpi, config,<br/>logging, url_matcher, metrics, os/open"]
     end
 
     MAIN --> RT
@@ -90,7 +90,7 @@ Platform    Session    Rendering    UI Overlay
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
-- Shared Utilities (`geom`, `colors`, `dpi`, `config`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
+- Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
 - **Exception:** `app/*` modules may import `c.zig` directly for SDL type definitions used in input handling. This is a pragmatic shortcut for FFI constants, not a general license to depend on the Platform layer.
 
 ## Rules for New Code
@@ -116,6 +116,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 | Add terminal behavior or PTY logic  | `session/`                                |
 | Add a rendering primitive           | `gfx/`                                    |
 | Add a new config option             | `config.zig` + `config.toml` docs         |
+| Add or change file logging behavior | `logging.zig` + `main.zig` (`std_options.logFn`) + `config.zig` |
 | Add a new persisted runtime value   | `config.zig` (persistence section) + `persistence.toml` docs |
 | Add cross-layer shared types        | Shared Utilities (`geom.zig`, `colors.zig`, etc.) |
 | Add a new UiAction                  | `ui/types.zig` (tagged union) + handler in `app/runtime.zig` |
@@ -295,6 +296,24 @@ Story notifications  -> StoryOverlay opens with file content
 Renderer draws attention border / story overlay
 ```
 
+### Logging Path
+
+```
+std.log.scoped(...) callsite
+    | compile-time scope + level
+    v
+main.zig std_options.logFn -> logging.zig
+    | runtime min-level filter from [logging].min_level
+    v
+Structured log line (local timestamp with timezone offset, level, scope, msg, optional fields)
+    | append to active file
+    v
+~/Library/Logs/Architect/architect.log (macOS)
+    | if size > 10 MiB
+    v
+Rotate: rename active file to architect-<UTC timestamp>.log and continue in new active file
+```
+
 ### Entry Points
 
 | Entry Point | Source | Description |
@@ -313,6 +332,7 @@ Renderer draws attention border / story overlay
 | Render cache | GPU textures per session | Cached terminal renders, epoch-invalidated |
 | config.toml | `~/.config/architect/config.toml` | User preferences (font, theme, UI flags, worktree location) |
 | persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
+| architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
 
 ### Exit Points
@@ -322,14 +342,15 @@ Renderer draws attention border / story overlay
 | PTY write | Shell process stdin | Encoded keyboard input |
 | SDL renderer | Display | Rendered frames via GPU |
 | Config write | Filesystem | Persisted window state and terminal cwds on quit |
+| Log write | Filesystem | Structured log append and size-based rotation |
 | URL open | OS browser | Cmd+Click hyperlinks via `os/open.zig` |
 
 ## Module Boundary Table
 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
-| `main.zig` | Thin entrypoint | `main()` | `app/runtime` |
-| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, all `app/*` modules |
+| `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
+| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
@@ -350,7 +371,8 @@ Renderer draws attention border / story overlay
 | `ui/components/markdown_renderer.zig` | Line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator and story-specific line kinds (diff headers, diff lines, code lines with anchor/kind metadata) | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |
 | `ui/components/reader_overlay.zig` | Fullscreen reader overlay for the selected terminal history (full view or grid selection) with live markdown updates, centered reading-width layout, bottom pinning, jump-to-bottom, incremental search, clickable links, shared scrollbar interactions, styled inline markdown in table cells, and left-to-right gradient prompt separators | `ReaderOverlayComponent`, `toggle()` | `ui/components/fullscreen_overlay`, `ui/components/scrollbar`, `app/terminal_history`, `ui/components/markdown_parser`, `ui/components/markdown_renderer`, `os/open`, `font_cache`, `geom`, `c` |
 | `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker, diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline), reader mode overlay, fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
-| Shared Utilities (`geom`, `colors`, `dpi`, `config`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, DPI scaling helpers, TOML config loading/persistence, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `Metrics`, `dpi.scale()`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
+| `logging.zig` | File-backed structured logger with runtime level filtering and size-based rotation | `init()`, `deinit()`, `logFn()`, `writeEvent()`, `writeStartupMarker()`, `writeShutdownMarker()` | std |
+| Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, DPI scaling helpers, TOML config loading/persistence, file-backed logging, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `logFn`, `Metrics`, `dpi.scale()`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
 ## Key Architectural Decisions
 

@@ -230,6 +230,49 @@ pub const MetricsConfig = struct {
     enabled: bool = false,
 };
 
+pub const LoggingConfig = struct {
+    min_level: []const u8 = default_min_level,
+    min_level_owned: bool = false,
+
+    pub const default_min_level = "info";
+
+    pub fn deinit(self: *LoggingConfig, allocator: std.mem.Allocator) void {
+        if (self.min_level_owned) {
+            allocator.free(self.min_level);
+        }
+        self.min_level = default_min_level;
+        self.min_level_owned = false;
+    }
+
+    pub fn duplicate(self: LoggingConfig, allocator: std.mem.Allocator) !LoggingConfig {
+        const min_level_dup = try allocator.dupe(u8, self.min_level);
+        return LoggingConfig{
+            .min_level = min_level_dup,
+            .min_level_owned = true,
+        };
+    }
+
+    pub fn getMinLevel(self: LoggingConfig) std.log.Level {
+        if (std.ascii.eqlIgnoreCase(self.min_level, "err") or
+            std.ascii.eqlIgnoreCase(self.min_level, "error"))
+        {
+            return .err;
+        }
+        if (std.ascii.eqlIgnoreCase(self.min_level, "warn") or
+            std.ascii.eqlIgnoreCase(self.min_level, "warning"))
+        {
+            return .warn;
+        }
+        if (std.ascii.eqlIgnoreCase(self.min_level, "debug")) {
+            return .debug;
+        }
+        if (std.ascii.eqlIgnoreCase(self.min_level, "info")) {
+            return .info;
+        }
+        return .info;
+    }
+};
+
 pub const WorktreeConfig = struct {
     directory: ?[]const u8 = null,
     init_command: ?[]const u8 = null,
@@ -720,6 +763,7 @@ pub const Config = struct {
     ui: UiConfig = .{},
     rendering: Rendering = .{},
     metrics: MetricsConfig = .{},
+    logging: LoggingConfig = .{},
     worktree: WorktreeConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
@@ -799,6 +843,10 @@ pub const Config = struct {
             \\# [metrics]
             \\# enabled = false
             \\
+            \\# Logging options
+            \\# [logging]
+            \\# min_level = "info"  # One of: err, warn, info, debug (case-insensitive)
+            \\
             \\# Worktree options
             \\# [worktree]
             \\# directory = "~/.architect-worktrees"  # Base directory for new worktrees (default: ~/.architect-worktrees)
@@ -834,6 +882,7 @@ pub const Config = struct {
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
+        config.logging = try config.logging.duplicate(allocator);
         config.worktree = try config.worktree.duplicate(allocator);
 
         return config;
@@ -842,6 +891,7 @@ pub const Config = struct {
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         self.font.deinit(allocator);
         self.theme.deinit(allocator);
+        self.logging.deinit(allocator);
         self.worktree.deinit(allocator);
     }
 
@@ -951,6 +1001,9 @@ test "Config - decode sectioned toml" {
         \\[rendering]
         \\vsync = false
         \\
+        \\[logging]
+        \\min_level = "warn"
+        \\
         \\[ui]
         \\show_hotkey_feedback = false
         \\enable_animations = false
@@ -976,8 +1029,14 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqualStrings("#1E1E2E", config.theme.background.?);
     try std.testing.expectApproxEqAbs(@as(f32, 1.25), config.grid.font_scale, 0.0001);
     try std.testing.expectEqual(false, config.rendering.vsync);
+    try std.testing.expectEqual(std.log.Level.warn, config.logging.getMinLevel());
     try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
     try std.testing.expectEqual(false, config.ui.enable_animations);
+}
+
+test "LoggingConfig.getMinLevel falls back to info for unknown values" {
+    const logging = LoggingConfig{ .min_level = "unexpected-level" };
+    try std.testing.expectEqual(std.log.Level.info, logging.getMinLevel());
 }
 
 test "Config - parse with all theme palette colors" {
