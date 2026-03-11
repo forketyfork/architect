@@ -45,16 +45,6 @@ jobs:
           restore-keys: |
             zig-${{ runner.os }}-${{ matrix.arch }}-
 
-      - name: Import code-signing certificate
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-        if: ${{ env.MACOS_CERTIFICATE != '' && env.MACOS_CERTIFICATE_PWD != '' }}
-        uses: Apple-Actions/import-codesign-certs@v6
-        with:
-          p12-file-base64: ${{ env.MACOS_CERTIFICATE }}
-          p12-password: ${{ env.MACOS_CERTIFICATE_PWD }}
-
       - name: Cache Nix store
         uses: cachix/cachix-action@v16
         with:
@@ -82,44 +72,22 @@ jobs:
       - name: Bundle libraries and package
         run: |
           chmod +x scripts/bundle-macos.sh
-          ./scripts/bundle-macos.sh zig-out/bin/architect release
-          if security find-identity -v -p codesigning >/tmp/codesign-identities.txt 2>/dev/null; then
-            IDENTITY=$(awk 'NR==1 {print $2}' /tmp/codesign-identities.txt)
-            echo "Signing with identity ${IDENTITY}"
-            for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
-              codesign --force --options runtime --timestamp --sign "$IDENTITY" "$lib"
-            done
-            codesign --force --options runtime --timestamp --sign "$IDENTITY" \
-              --entitlements macos/Architect.entitlements \
-              release/Architect.app/Contents/MacOS/architect
-            codesign --force --options runtime --timestamp --sign "$IDENTITY" \
-              --entitlements macos/Architect.entitlements \
-              release/Architect.app
-          else
-            echo "No Developer ID cert available; applying ad-hoc signature for Gatekeeper"
-            for lib in release/Architect.app/Contents/MacOS/lib/*.dylib; do
-              codesign --force --sign - "$lib"
-            done
-            codesign --force --sign - --entitlements macos/Architect.entitlements \
-              release/Architect.app/Contents/MacOS/architect
-            codesign --force --sign - --entitlements macos/Architect.entitlements \
-              release/Architect.app
-          fi
+          ./scripts/bundle-macos.sh zig-out/bin/architect release --unsigned
           cd release
-          tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
+          tar -czf architect-macos-${{ matrix.arch }}-unsigned.tar.gz Architect.app
         working-directory: architect
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: architect-macos-${{ matrix.arch }}
-          path: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
+          name: architect-macos-${{ matrix.arch }}-unsigned
+          path: architect/release/architect-macos-${{ matrix.arch }}-unsigned.tar.gz
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
+          files: architect/release/architect-macos-${{ matrix.arch }}-unsigned.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true

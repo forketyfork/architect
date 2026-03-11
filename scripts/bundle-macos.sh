@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Usage: $0 <executable> <output-dir> [--debug]"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 <executable> <output-dir> [--debug] [--unsigned]"
     exit 1
 fi
 
 EXECUTABLE="$1"
 OUTPUT_DIR="$2"
 DEBUG_MODE=false
-if [[ "${3:-}" == "--debug" ]]; then
-    DEBUG_MODE=true
-fi
+SIGN_APP=true
+
+for arg in "${@:3}"; do
+    case "$arg" in
+        --debug)
+            DEBUG_MODE=true
+            ;;
+        --unsigned)
+            SIGN_APP=false
+            ;;
+        *)
+            echo "Unknown flag: $arg"
+            exit 1
+            ;;
+    esac
+done
 
 APP_NAME="Architect"
 APP_DIR="$OUTPUT_DIR/${APP_NAME}.app"
@@ -24,14 +37,17 @@ ICON_SOURCE="assets/macos/${APP_NAME}.icns"
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-if [[ "$DEBUG_MODE" == true ]]; then
-    ENTITLEMENTS="$REPO_ROOT/macos/ArchitectDebug.entitlements"
-else
-    ENTITLEMENTS="$REPO_ROOT/macos/Architect.entitlements"
+if [[ "$SIGN_APP" == true ]]; then
+    if [[ "$DEBUG_MODE" == true ]]; then
+        ENTITLEMENTS="$REPO_ROOT/macos/ArchitectDebug.entitlements"
+    else
+        ENTITLEMENTS="$REPO_ROOT/macos/Architect.entitlements"
+    fi
 fi
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 
+rm -rf "$APP_DIR"
 mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$SHARE_DIR"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
@@ -122,10 +138,18 @@ $dep"
     fi
 }
 
+remove_signature_if_present() {
+    local file="$1"
+    if codesign -dv "$file" >/dev/null 2>&1; then
+        echo "Removing embedded signature from $(basename "$file")..."
+        codesign --remove-signature "$file"
+    fi
+}
+
 echo "Analyzing dynamic library dependencies..."
 initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
 
-# Use a flag instead of early return: signing must always happen even without Nix deps
+# Use a flag instead of early return: bundling must still finish even without Nix deps
 skip_lib_patching=false
 if [[ -z "$initial_deps" ]]; then
     echo "No Nix store dependencies found"
@@ -202,30 +226,39 @@ if [[ "$skip_lib_patching" != true ]]; then
     fi
 fi
 
-echo ""
-echo "Signing application bundle with entitlements..."
-if [[ ! -f "$ENTITLEMENTS" ]]; then
-    echo "Error: Entitlements file not found: $ENTITLEMENTS"
-    exit 1
+if [[ "$SIGN_APP" == true ]]; then
+    echo ""
+    echo "Signing application bundle with entitlements..."
+    if [[ ! -f "$ENTITLEMENTS" ]]; then
+        echo "Error: Entitlements file not found: $ENTITLEMENTS"
+        exit 1
+    fi
+
+    shopt -s nullglob
+    for lib in "$LIB_DIR"/*.dylib; do
+        echo "Signing $(basename "$lib")..."
+        codesign --force --sign - "$lib"
+    done
+    shopt -u nullglob
+
+    echo "Signing architect..."
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
+
+    echo "Signing ${APP_NAME}.app..."
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR"
+
+    echo "Code signing complete."
+else
+    echo ""
+    echo "Removing embedded signatures (--unsigned)..."
+    remove_signature_if_present "$MACOS_DIR/architect"
+    shopt -s nullglob
+    for lib in "$LIB_DIR"/*.dylib; do
+        remove_signature_if_present "$lib"
+    done
+    shopt -u nullglob
+    echo "Skipping code signing (--unsigned)."
 fi
-
-# Sign all bundled libraries first
-shopt -s nullglob
-for lib in "$LIB_DIR"/*.dylib; do
-    echo "Signing $(basename "$lib")..."
-    codesign --force --sign - "$lib"
-done
-shopt -u nullglob
-
-# Sign the main binary
-echo "Signing architect..."
-codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
-
-# Sign the entire app bundle
-echo "Signing ${APP_NAME}.app..."
-codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR"
-
-echo "Code signing complete."
 
 echo ""
 echo "Bundle complete! Structure:"
