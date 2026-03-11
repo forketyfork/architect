@@ -50,28 +50,29 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ## Installation
 
-### Download Pre-built Binary (macOS)
+### Download Pre-built Binary (macOS, unsigned)
 
-Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
+Download the latest unsigned release from the [releases page](https://github.com/forketyfork/architect/releases).
 
 **For Apple Silicon (M1/M2/M3/M4):**
 ```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
-tar -xzf architect-macos-arm64.tar.gz
+curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64-unsigned.tar.gz
+tar -xzf architect-macos-arm64-unsigned.tar.gz
 xattr -dr com.apple.quarantine Architect.app
 open Architect.app
 ```
 
 **For Intel Macs:**
 ```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
-tar -xzf architect-macos-x86_64.tar.gz
+curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64-unsigned.tar.gz
+tar -xzf architect-macos-x86_64-unsigned.tar.gz
 xattr -dr com.apple.quarantine Architect.app
 open Architect.app
 ```
 
 **Note**:
 
+* These GitHub release archives are unsigned. Clear the quarantine attribute before first launch, or macOS may block the app.
 * The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. Keep the bundle contents intact.
 * Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 

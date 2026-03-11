@@ -89,6 +89,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+The release workflow packages unsigned app bundles. It does not import macOS signing certificates and does not notarize the app. Release downloads therefore require clearing the quarantine attribute after extraction, as described in the README installation instructions. You can also run the Release workflow manually with `workflow_dispatch` to validate the packaging flow before pushing a real release tag.
+
 Each release includes:
-- `architect-macos-arm64.tar.gz` - Apple Silicon
-- `architect-macos-x86_64.tar.gz` - Intel
+- `architect-macos-arm64-unsigned.tar.gz` - Apple Silicon
+- `architect-macos-x86_64-unsigned.tar.gz` - Intel
