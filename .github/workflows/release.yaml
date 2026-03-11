@@ -72,22 +72,22 @@ jobs:
       - name: Bundle libraries and package
         run: |
           chmod +x scripts/bundle-macos.sh
-          ./scripts/bundle-macos.sh zig-out/bin/architect release --unsigned
+          ./scripts/bundle-macos.sh zig-out/bin/architect release
           cd release
-          tar -czf architect-macos-${{ matrix.arch }}-unsigned.tar.gz Architect.app
+          tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
         working-directory: architect
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: architect-macos-${{ matrix.arch }}-unsigned
-          path: architect/release/architect-macos-${{ matrix.arch }}-unsigned.tar.gz
+          name: architect-macos-${{ matrix.arch }}
+          path: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: architect/release/architect-macos-${{ matrix.arch }}-unsigned.tar.gz
+          files: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true
