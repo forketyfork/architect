@@ -286,7 +286,7 @@ pub fn render(
                     };
                 };
 
-                renderSessionOverlays(renderer, session, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme, ui_scale);
+                renderSessionOverlays(renderer, session, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme, ui_scale, font.cell_height);
             }
         },
     }
@@ -310,7 +310,7 @@ fn renderSession(
     ui_scale: f32,
 ) RenderError!void {
     try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
-    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale, font.cell_height);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
@@ -369,18 +369,39 @@ fn renderSessionContent(
     if (drawable_w <= 0 or drawable_h <= 0) return;
 
     const origin_x: c_int = rect.x + padding;
-    const origin_y: c_int = rect.y + padding;
+    const origin_y_base: c_int = rect.y + padding;
+
+    // Pixel-precision scroll: shift content by sub-line pixel offset
+    const pixel_offset: f32 = if (view.is_viewing_scrollback) view.scroll_pixel_offset else 0.0;
+    const pixel_offset_int: c_int = @intFromFloat(pixel_offset);
+    const origin_y: c_int = origin_y_base - pixel_offset_int;
 
     const max_cols_fit: usize = @intCast(@max(0, @divFloor(drawable_w, cell_width_actual)));
     const max_rows_fit: usize = @intCast(@max(0, @divFloor(drawable_h, cell_height_actual)));
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
-    const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
+    // Render one extra row when pixel offset is non-zero to fill the gap at the bottom.
+    // The extra row may not have data (getCell returns null), in which case it's skipped
+    // and the background color (already filled) provides a seamless appearance.
+    const extra_row: usize = if (pixel_offset_int > 0) 1 else 0;
+    const render_rows: usize = @min(@as(usize, term_rows) + extra_row, max_rows_fit + extra_row);
+
+    // Set clip rect to prevent overflow from pixel offset
+    const content_clip = c.SDL_Rect{
+        .x = rect.x + padding,
+        .y = origin_y_base,
+        .w = drawable_w,
+        .h = drawable_h,
+    };
+    var prev_clip: c.SDL_Rect = undefined;
+    _ = c.SDL_GetRenderClipRect(renderer, &prev_clip);
+    _ = c.SDL_SetRenderClipRect(renderer, &content_clip);
+    defer _ = c.SDL_SetRenderClipRect(renderer, &prev_clip);
 
     const default_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
     const active_selection = screen.selection;
 
     var row: usize = 0;
-    while (row < visible_rows) : (row += 1) {
+    while (row < render_rows) : (row += 1) {
         const eff_cw = cell_width_actual;
         const eff_ch = cell_height_actual;
 
@@ -609,7 +630,7 @@ fn renderSessionContent(
         const message = "[Process completed]";
         const message_row: usize = @intCast(cursor.y);
 
-        if (message_row < visible_rows) {
+        if (message_row < render_rows) {
             const message_x: c_int = origin_x;
             const message_y: c_int = origin_y + @as(c_int, @intCast(message_row)) * cell_height_actual;
             const fg_color = c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 255 };
@@ -634,6 +655,7 @@ fn renderSessionOverlays(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    cell_height: c_int,
 ) void {
     const has_attention = is_grid_view and view.attention;
     const border_thickness: c_int = dpi.scale(attention_thickness, ui_scale);
@@ -715,7 +737,7 @@ fn renderSessionOverlays(
         _ = c.SDL_RenderFillRect(renderer, &tint_rect);
     }
 
-    renderTerminalScrollbar(renderer, session, view, rect, theme, ui_scale);
+    renderTerminalScrollbar(renderer, session, view, rect, theme, ui_scale, cell_height);
 }
 
 fn renderTerminalScrollbar(
@@ -725,6 +747,7 @@ fn renderTerminalScrollbar(
     rect: Rect,
     theme: *const colors.Theme,
     ui_scale: f32,
+    cell_height: c_int,
 ) void {
     if (!session.spawned) {
         view.terminal_scrollbar.hideNow();
@@ -739,9 +762,12 @@ fn renderTerminalScrollbar(
         return;
     };
     const bar = terminal.screens.active.pages.scrollbar();
+    // Add fractional offset from pixel-precision scrolling for smooth scrollbar thumb
+    const cell_h_f: f32 = @floatFromInt(@max(1, cell_height));
+    const fractional_offset = if (view.is_viewing_scrollback) view.scroll_pixel_offset / cell_h_f else 0.0;
     const metrics = scrollbar.Metrics.init(
         @as(f32, @floatFromInt(bar.total)),
-        @as(f32, @floatFromInt(bar.offset)),
+        @as(f32, @floatFromInt(bar.offset)) + fractional_offset,
         @as(f32, @floatFromInt(bar.len)),
     );
     const layout = scrollbar.computeLayout(content_rect, ui_scale, metrics) orelse {
@@ -842,7 +868,7 @@ fn renderGridSessionCached(
                 const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
                 try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
                 if (any_waving and render_overlays) {
-                    renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
+                    renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale, font.cell_height);
                 }
                 cache_entry.cache_epoch = session.render_epoch;
                 _ = c.SDL_SetRenderTarget(renderer, null);
@@ -859,7 +885,7 @@ fn renderGridSessionCached(
                 };
                 _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
                 if (render_overlays) {
-                    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
+                    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale, font.cell_height);
                 }
             }
             cache_entry.presented_epoch = session.render_epoch;

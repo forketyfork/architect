@@ -8,6 +8,7 @@ pub const SessionViewState = struct {
     is_viewing_scrollback: bool = false,
     scroll_velocity: f32 = 0.0,
     scroll_remainder: f32 = 0.0,
+    scroll_pixel_offset: f32 = 0.0,
     last_scroll_time: i64 = 0,
     scroll_inertia_allowed: bool = true,
     selection_anchor: ?ghostty_vt.Pin = null,
@@ -39,6 +40,7 @@ pub const SessionViewState = struct {
         self.is_viewing_scrollback = false;
         self.scroll_velocity = 0.0;
         self.scroll_remainder = 0.0;
+        self.scroll_pixel_offset = 0.0;
         self.last_scroll_time = 0;
         self.scroll_inertia_allowed = true;
         self.terminal_scrollbar.hideNow();
