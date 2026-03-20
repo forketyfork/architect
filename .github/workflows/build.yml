@@ -55,7 +55,7 @@ jobs:
             zig-${{ runner.os }}-
 
       - name: Cache Nix store
-        uses: cachix/cachix-action@v16
+        uses: cachix/cachix-action@v17
         with:
           name: forketyfork
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
