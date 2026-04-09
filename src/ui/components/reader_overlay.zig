@@ -13,17 +13,14 @@ const open_url = @import("../../os/open.zig");
 const markdown_parser = @import("markdown_parser.zig");
 const markdown_renderer = @import("markdown_renderer.zig");
 const scrollbar = @import("scrollbar.zig");
+const search_utils = @import("search_utils.zig");
 
 const log = std.log.scoped(.reader_overlay);
 const SessionState = session_state.SessionState;
 const FontCache = font_cache_mod.FontCache;
 const FontSet = font_cache_mod.FontSet;
 
-const SearchMatch = struct {
-    line_index: usize,
-    start: usize,
-    len: usize,
-};
+const SearchMatch = search_utils.SearchMatch;
 
 const LinkHit = struct {
     rect: geom.Rect,
@@ -40,11 +37,7 @@ const TableRowMetrics = struct {
     row_height: c_int = 0,
 };
 
-const TextTex = struct {
-    tex: *c.SDL_Texture,
-    w: c_int,
-    h: c_int,
-};
+const TextTex = search_utils.TextTex;
 
 const DrawSize = struct {
     w: c_int,
@@ -280,55 +273,12 @@ pub const ReaderOverlayComponent = struct {
     }
 
     fn rebuildSearchMatches(self: *ReaderOverlayComponent) void {
-        self.matches.clearRetainingCapacity();
-
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
-        if (query.len == 0) {
-            self.selected_match = null;
-            return;
+        const plain_texts = self.allocator.alloc([]const u8, self.lines.items.len) catch return;
+        defer self.allocator.free(plain_texts);
+        for (self.lines.items, 0..) |line, i| {
+            plain_texts[i] = line.plain_text;
         }
-
-        for (self.lines.items, 0..) |line, line_idx| {
-            if (line.kind == .blank or line.kind == .horizontal_rule or line.kind == .prompt_separator) continue;
-
-            var pos: usize = 0;
-            while (findCaseInsensitive(line.plain_text, query, pos)) |found| {
-                self.matches.append(self.allocator, .{
-                    .line_index = line_idx,
-                    .start = found,
-                    .len = query.len,
-                }) catch |err| {
-                    log.warn("failed to append search match: {}", .{err});
-                    return;
-                };
-                pos = found + 1;
-            }
-        }
-
-        if (self.matches.items.len == 0) {
-            self.selected_match = null;
-            return;
-        }
-
-        if (self.selected_match) |idx| {
-            if (idx >= self.matches.items.len) {
-                self.selected_match = 0;
-            }
-        } else {
-            self.selected_match = 0;
-        }
-    }
-
-    fn findCaseInsensitive(haystack: []const u8, needle: []const u8, from: usize) ?usize {
-        if (needle.len == 0 or haystack.len < needle.len or from >= haystack.len) return null;
-
-        var pos = from;
-        while (pos + needle.len <= haystack.len) : (pos += 1) {
-            if (std.ascii.eqlIgnoreCase(haystack[pos .. pos + needle.len], needle)) {
-                return pos;
-            }
-        }
-        return null;
+        search_utils.rebuildMatches(self.allocator, &self.matches, plain_texts, self.search_query.items, &self.selected_match, null);
     }
 
     fn nextMatch(self: *ReaderOverlayComponent, host: *const types.UiHost) void {
@@ -1065,7 +1015,7 @@ pub const ReaderOverlayComponent = struct {
                 continue;
             };
 
-            self.renderSearchHighlights(renderer, host, col_rect, y, lh, cached_char_w, idx);
+            self.renderSearchHighlights(renderer, host, col_rect, y, lh, idx, line, line_fonts);
 
             var x = col_rect.x + scaled_padding;
             if (line.quote_depth > 0) {
@@ -1557,11 +1507,20 @@ pub const ReaderOverlayComponent = struct {
         col_rect: geom.Rect,
         y: c_int,
         lh: c_int,
-        char_w: c_int,
         line_idx: usize,
+        line: markdown_renderer.RenderLine,
+        line_fonts: *FontSet,
     ) void {
         const query = std.mem.trim(u8, self.search_query.items, " \t");
         if (query.len == 0) return;
+
+        const scaled_padding = dpi.scale(10, host.ui_scale);
+        const max_text_h = @max(1, lh - dpi.scale(4, host.ui_scale));
+
+        var base_x: c_int = col_rect.x + scaled_padding;
+        if (line.quote_depth > 0) {
+            base_x += dpi.scale(10, host.ui_scale);
+        }
 
         for (self.matches.items, 0..) |match_item, match_idx| {
             if (match_item.line_index != line_idx) continue;
@@ -1570,64 +1529,58 @@ pub const ReaderOverlayComponent = struct {
             const bg = if (selected) host.theme.accent else host.theme.selection;
             const alpha: u8 = if (selected) 180 else 120;
 
-            const x = col_rect.x + dpi.scale(10, host.ui_scale) + @as(c_int, @intCast(match_item.start)) * char_w;
-            const w = @as(c_int, @intCast(match_item.len)) * char_w;
+            const start_x = byteOffsetToPixelX(line, line_fonts, base_x, max_text_h, match_item.start);
+            const end_x = byteOffsetToPixelX(line, line_fonts, base_x, max_text_h, match_item.start + match_item.len);
+            const highlight_w = end_x - start_x;
 
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
             _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, alpha);
             _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                .x = @floatFromInt(x),
+                .x = @floatFromInt(start_x),
                 .y = @floatFromInt(y + dpi.scale(3, host.ui_scale)),
-                .w = @floatFromInt(w),
+                .w = @floatFromInt(highlight_w),
                 .h = @floatFromInt(lh - dpi.scale(6, host.ui_scale)),
             });
         }
     }
 
+    fn byteOffsetToPixelX(
+        line: markdown_renderer.RenderLine,
+        line_fonts: *FontSet,
+        base_x: c_int,
+        max_text_h: c_int,
+        target_byte: usize,
+    ) c_int {
+        var byte_pos: usize = 0;
+        var pixel_x: c_int = base_x;
+
+        for (line.runs) |run| {
+            if (byte_pos >= target_byte) break;
+
+            const run_font = chooseFontForStyle(line_fonts, run.style, line.heading_level > 0);
+
+            if (target_byte < byte_pos + run.text.len) {
+                const offset = target_byte - byte_pos;
+                return pixel_x + measureScaledTextWidth(run_font, run.text[0..offset], max_text_h);
+            }
+            pixel_x += measureScaledTextWidth(run_font, run.text, max_text_h);
+            byte_pos += run.text.len;
+        }
+
+        return pixel_x;
+    }
+
+    fn measureScaledTextWidth(font: *c.TTF_Font, text: []const u8, max_text_h: c_int) c_int {
+        if (text.len == 0) return 0;
+        var w: c_int = 0;
+        var h: c_int = 0;
+        _ = c.TTF_GetStringSize(font, @ptrCast(text.ptr), text.len, &w, &h);
+        return fitTextureHeight(w, h, max_text_h).w;
+    }
+
     fn renderSearchBar(self: *ReaderOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
         const rect = searchBarRect(host, overlay_rect);
-
-        const search_radius = dpi.scale(6, host.ui_scale);
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.selection.r, host.theme.selection.g, host.theme.selection.b, 230);
-        primitives.fillRoundedRect(renderer, rect, search_radius);
-
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 220);
-        primitives.drawRoundedBorder(renderer, rect, search_radius);
-
-        const fonts = try font_cache.get(dpi.scale(14, host.ui_scale));
-        const prefix = "Search: ";
-        const query = self.search_query.items;
-        var count_buf: [32]u8 = undefined;
-        const count_text = if (self.matches.items.len == 0)
-            "0/0"
-        else blk: {
-            const selected = (self.selected_match orelse 0) + 1;
-            break :blk try std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ selected, self.matches.items.len });
-        };
-
-        var text_buf = std.ArrayList(u8).empty;
-        defer text_buf.deinit(self.allocator);
-        try text_buf.appendSlice(self.allocator, prefix);
-        try text_buf.appendSlice(self.allocator, query);
-
-        const query_tex = try makeTextTexture(self.allocator, renderer, fonts.regular, text_buf.items, host.theme.foreground);
-        defer c.SDL_DestroyTexture(query_tex.tex);
-        _ = c.SDL_RenderTexture(renderer, query_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x + dpi.scale(8, host.ui_scale)),
-            .y = @floatFromInt(rect.y + @divFloor(rect.h - query_tex.h, 2)),
-            .w = @floatFromInt(query_tex.w),
-            .h = @floatFromInt(query_tex.h),
-        });
-
-        const count_tex = try makeTextTexture(self.allocator, renderer, fonts.regular, count_text, host.theme.accent);
-        defer c.SDL_DestroyTexture(count_tex.tex);
-        _ = c.SDL_RenderTexture(renderer, count_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x + rect.w - count_tex.w - dpi.scale(8, host.ui_scale)),
-            .y = @floatFromInt(rect.y + @divFloor(rect.h - count_tex.h, 2)),
-            .w = @floatFromInt(count_tex.w),
-            .h = @floatFromInt(count_tex.h),
-        });
+        try search_utils.renderSearchBar(self.allocator, renderer, host, rect, font_cache, self.search_query.items, self.matches.items.len, self.selected_match);
     }
 
     fn renderJumpButton(self: *ReaderOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
@@ -1720,38 +1673,7 @@ pub const ReaderOverlayComponent = struct {
         return fonts.regular;
     }
 
-    fn makeTextTexture(
-        allocator: std.mem.Allocator,
-        renderer: *c.SDL_Renderer,
-        font: *c.TTF_Font,
-        text: []const u8,
-        color: c.SDL_Color,
-    ) !TextTex {
-        if (text.len == 0) return error.EmptyText;
-
-        var stack_buf: [256]u8 = undefined;
-        var surface: *c.SDL_Surface = undefined;
-
-        if (text.len < stack_buf.len) {
-            @memcpy(stack_buf[0..text.len], text);
-            stack_buf[text.len] = 0;
-            surface = c.TTF_RenderText_Blended(font, @ptrCast(&stack_buf), @intCast(text.len), color) orelse return error.SurfaceFailed;
-        } else {
-            const heap_buf = try allocator.alloc(u8, text.len + 1);
-            defer allocator.free(heap_buf);
-            @memcpy(heap_buf[0..text.len], text);
-            heap_buf[text.len] = 0;
-            surface = c.TTF_RenderText_Blended(font, @ptrCast(heap_buf.ptr), @intCast(text.len), color) orelse return error.SurfaceFailed;
-        }
-        defer c.SDL_DestroySurface(surface);
-
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
-        var w: f32 = 0;
-        var h: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &w, &h);
-        _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
-        return .{ .tex = texture, .w = @intFromFloat(w), .h = @intFromFloat(h) };
-    }
+    const makeTextTexture = search_utils.makeTextTexture;
 
     fn measureCharWidth(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font: *c.TTF_Font) ?c_int {
         const tex = makeTextTexture(allocator, renderer, font, "0", c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return null;
