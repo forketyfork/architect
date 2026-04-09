@@ -307,11 +307,12 @@ pub const WorktreeConfig = struct {
 
 pub const Persistence = struct {
     const terminal_key_prefix = "terminal_";
-    const max_recent_folders: usize = 10;
+    const max_recent_folders: usize = 1000;
 
     pub const RecentFolder = struct {
         path: []const u8,
         count: u32,
+        last_visited: u32 = 0,
     };
 
     pub const TerminalEntry = struct {
@@ -324,6 +325,7 @@ pub const Persistence = struct {
     font_size: c_int = 14,
     terminal_entries: std.ArrayListUnmanaged(TerminalEntry) = .{},
     recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
+    visit_counter: u32 = 0,
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
@@ -569,12 +571,16 @@ pub const Persistence = struct {
     }
 
     /// Increment visit count for a folder. Adds it if not present.
-    /// Keeps list sorted by count (descending) and trims to max size.
+    /// Keeps list sorted by count (descending), then by recency (descending),
+    /// and trims to max size.
     pub fn appendRecentFolder(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8) !void {
+        self.visit_counter += 1;
+
         // Check if folder already exists
         for (self.recent_folders.items) |*existing| {
             if (std.mem.eql(u8, existing.path, folder)) {
                 existing.count += 1;
+                existing.last_visited = self.visit_counter;
                 self.sortRecentFolders();
                 return;
             }
@@ -587,6 +593,7 @@ pub const Persistence = struct {
         try self.recent_folders.append(allocator, .{
             .path = path_copy,
             .count = 1,
+            .last_visited = self.visit_counter,
         });
 
         self.sortRecentFolders();
@@ -599,11 +606,12 @@ pub const Persistence = struct {
         }
     }
 
-    /// Sort recent folders by visit count (descending)
+    /// Sort recent folders by visit count (descending), then by recency (descending).
     fn sortRecentFolders(self: *Persistence) void {
         std.mem.sort(RecentFolder, self.recent_folders.items, {}, struct {
             fn lessThan(_: void, a: RecentFolder, b: RecentFolder) bool {
-                return a.count > b.count; // Descending order
+                if (a.count != b.count) return a.count > b.count;
+                return a.last_visited > b.last_visited;
             }
         }.lessThan);
     }
@@ -612,11 +620,13 @@ pub const Persistence = struct {
     fn loadRecentFoldersFromMap(self: *Persistence, allocator: std.mem.Allocator, map: toml.HashMap(u32)) !void {
         var it = map.map.iterator();
         while (it.next()) |entry| {
+            self.visit_counter += 1;
             const path_copy = try allocator.dupe(u8, entry.key_ptr.*);
             errdefer allocator.free(path_copy);
             try self.recent_folders.append(allocator, .{
                 .path = path_copy,
                 .count = entry.value_ptr.*,
+                .last_visited = self.visit_counter,
             });
         }
         self.sortRecentFolders();
@@ -625,11 +635,13 @@ pub const Persistence = struct {
     /// Directly append a folder with count (used during migration from V2)
     fn appendRecentFolderDirect(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8, count: u32) !void {
         if (self.recent_folders.items.len >= max_recent_folders) return;
+        self.visit_counter += 1;
         const path_copy = try allocator.dupe(u8, folder);
         errdefer allocator.free(path_copy);
         try self.recent_folders.append(allocator, .{
             .path = path_copy,
             .count = count,
+            .last_visited = self.visit_counter,
         });
     }
 
@@ -1287,6 +1299,69 @@ test "Persistence.removeRecentFolder removes the named entry" {
     const folders = persistence.getRecentFolders();
     try std.testing.expectEqual(@as(usize, 1), folders.len);
     try std.testing.expectEqualStrings("/home/user/project", folders[0].path);
+}
+
+test "Persistence.appendRecentFolder stores more than 10 directories" {
+    const allocator = std.testing.allocator;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    // Add 10 directories with count > 1 to fill the old cap
+    for (0..10) |i| {
+        const path = try std.fmt.allocPrint(allocator, "/dir/{d}", .{i});
+        defer allocator.free(path);
+        // Visit twice so count = 2
+        try persistence.appendRecentFolder(allocator, path);
+        try persistence.appendRecentFolder(allocator, path);
+    }
+
+    // Add an 11th directory — must survive and be able to accumulate visits
+    try persistence.appendRecentFolder(allocator, "/dir/new");
+    try std.testing.expectEqual(@as(usize, 11), persistence.recent_folders.items.len);
+
+    // Visit it again — count should reach 2
+    try persistence.appendRecentFolder(allocator, "/dir/new");
+
+    var found = false;
+    for (persistence.getRecentFolders()) |f| {
+        if (std.mem.eql(u8, f.path, "/dir/new")) {
+            try std.testing.expectEqual(@as(u32, 2), f.count);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Persistence.appendRecentFolder evicts oldest entry when cap is reached" {
+    const allocator = std.testing.allocator;
+
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    // Fill to max capacity with single-visit directories
+    for (0..Persistence.max_recent_folders) |i| {
+        const path = try std.fmt.allocPrint(allocator, "/dir/{d}", .{i});
+        defer allocator.free(path);
+        try persistence.appendRecentFolder(allocator, path);
+    }
+    try std.testing.expectEqual(Persistence.max_recent_folders, persistence.recent_folders.items.len);
+
+    // Add one more — should evict the oldest (first added), not the newest
+    try persistence.appendRecentFolder(allocator, "/dir/fresh");
+    try std.testing.expectEqual(Persistence.max_recent_folders, persistence.recent_folders.items.len);
+
+    // The fresh directory must be present
+    var fresh_found = false;
+    // The oldest directory (/dir/0) must have been evicted
+    var oldest_found = false;
+    for (persistence.getRecentFolders()) |f| {
+        if (std.mem.eql(u8, f.path, "/dir/fresh")) fresh_found = true;
+        if (std.mem.eql(u8, f.path, "/dir/0")) oldest_found = true;
+    }
+    try std.testing.expect(fresh_found);
+    try std.testing.expect(!oldest_found);
 }
 
 test "Persistence.appendRecentFolder skipping logic: removeRecentFolder leaves other entries intact" {
