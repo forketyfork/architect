@@ -5,6 +5,7 @@ const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
+const colors_mod = @import("../colors.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
@@ -90,6 +91,7 @@ pub const SessionState = struct {
     session_id_z: [session_id_buf_len:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
+    theme: colors_mod.Theme,
     cwd_path: ?[]const u8 = null,
     /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
     /// When cwd_path is freed, this becomes invalid and must not be used.
@@ -158,6 +160,7 @@ pub const SessionState = struct {
         shell_path: []const u8,
         size: pty_mod.winsize,
         notify_sock: [:0]const u8,
+        theme: colors_mod.Theme,
     ) InitError!SessionState {
         const session_id_buf = [_:0]u8{0} ** session_id_buf_len;
 
@@ -174,6 +177,7 @@ pub const SessionState = struct {
             .session_id_z = session_id_buf,
             .notify_sock_z = notify_sock,
             .allocator = allocator,
+            .theme = theme,
         };
     }
 
@@ -209,6 +213,7 @@ pub const SessionState = struct {
             .rows = self.pty_size.ws_row,
             .max_scrollback = 10_000_000,
             .default_modes = .{ .grapheme_cluster = true },
+            .colors = terminalColorsFromTheme(self.theme),
         });
         errdefer terminal.deinit(self.allocator);
 
@@ -720,6 +725,32 @@ pub const SessionState = struct {
     }
 };
 
+fn terminalColorsFromTheme(theme: colors_mod.Theme) ghostty_vt.Terminal.Colors {
+    var palette = ghostty_vt.color.default;
+    for (theme.palette, 0..) |entry, idx| {
+        palette[idx] = .{
+            .r = entry.r,
+            .g = entry.g,
+            .b = entry.b,
+        };
+    }
+
+    return .{
+        .background = .init(.{
+            .r = theme.background.r,
+            .g = theme.background.g,
+            .b = theme.background.b,
+        }),
+        .foreground = .init(.{
+            .r = theme.foreground.r,
+            .g = theme.foreground.g,
+            .b = theme.foreground.b,
+        }),
+        .cursor = .unset,
+        .palette = .init(palette),
+    };
+}
+
 /// Returns the AgentKind for a given PID by inspecting its process name via sysctl.
 /// Falls back to KERN_PROCARGS2 for Node.js wrappers.
 fn detectAgentByPid(pid: posix.pid_t) ?AgentKind {
@@ -829,6 +860,7 @@ pub const MakeNonBlockingError = posix.FcntlError;
 test "SessionState assigns incrementing ids" {
     const allocator = std.testing.allocator;
     next_session_id.store(0, .seq_cst);
+    const theme = colors_mod.Theme.default();
 
     const size = pty_mod.winsize{
         .ws_row = 24,
@@ -838,13 +870,13 @@ test "SessionState assigns incrementing ids" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
     defer first.deinit(allocator);
     first.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 0), first.id);
     try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
 
-    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock);
+    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme);
     defer second.deinit(allocator);
     second.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 1), second.id);
@@ -853,6 +885,7 @@ test "SessionState assigns incrementing ids" {
 
 test "despawn keeps active wait context alive until callback reclaims it" {
     const allocator = std.testing.allocator;
+    const theme = colors_mod.Theme.default();
     const size = pty_mod.winsize{
         .ws_row = 24,
         .ws_col = 80,
@@ -861,7 +894,7 @@ test "despawn keeps active wait context alive until callback reclaims it" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
     defer session.deinit(allocator);
 
     const wait_ctx = try allocator.create(SessionState.WaitContext);
@@ -886,6 +919,7 @@ test "despawn keeps active wait context alive until callback reclaims it" {
 
 test "resetForRespawn clears agent metadata" {
     const allocator = std.testing.allocator;
+    const theme = colors_mod.Theme.default();
     const size = pty_mod.winsize{
         .ws_row = 24,
         .ws_col = 80,
@@ -894,7 +928,7 @@ test "resetForRespawn clears agent metadata" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock);
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
     defer session.deinit(allocator);
 
     session.agent_kind = .codex;

@@ -336,10 +336,15 @@ fn renderSessionContent(
     };
 
     const base_bg = c.SDL_Color{ .r = theme.background.r, .g = theme.background.g, .b = theme.background.b, .a = 255 };
+    const base_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
     const session_bg_color = if (terminal.colors.background.get()) |rgb|
         c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
     else
         base_bg;
+    const session_fg_color = if (terminal.colors.foreground.get()) |rgb|
+        c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
+    else
+        base_fg;
 
     _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
@@ -376,7 +381,6 @@ fn renderSessionContent(
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
 
-    const default_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
     const active_selection = screen.selection;
 
     var row: usize = 0;
@@ -422,7 +426,7 @@ fn renderSessionContent(
             const on_cursor = should_render_cursor and cursor_col == col and cursor_row == row;
 
             const style = list_cell.style();
-            var fg_color = getCellColor(style.fg_color, default_fg, theme);
+            var fg_color = getCellColor(style.fg_color, session_fg_color, &terminal.colors.palette.current);
             var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
                 c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
             else
@@ -960,10 +964,22 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme
     primitives.drawRoundedBorder(renderer, rect, radius);
 }
 
-fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color, theme: *const colors.Theme) c.SDL_Color {
+fn getCellColor(
+    color: ghostty_vt.Style.Color,
+    default: c.SDL_Color,
+    palette: *const ghostty_vt.color.Palette,
+) c.SDL_Color {
     return switch (color) {
         .none => default,
-        .palette => |idx| colors.get256ColorWithTheme(idx, theme),
+        .palette => |idx| {
+            const rgb = palette[idx];
+            return c.SDL_Color{
+                .r = rgb.r,
+                .g = rgb.g,
+                .b = rgb.b,
+                .a = 255,
+            };
+        },
         .rgb => |rgb| c.SDL_Color{
             .r = rgb.r,
             .g = rgb.g,
@@ -971,6 +987,22 @@ fn getCellColor(color: ghostty_vt.Style.Color, default: c.SDL_Color, theme: *con
             .a = 255,
         },
     };
+}
+
+test "getCellColor uses the live terminal palette for indexed colors" {
+    var palette = ghostty_vt.color.default;
+    palette[17] = .{ .r = 0x12, .g = 0x34, .b = 0x56 };
+
+    const color = getCellColor(
+        .{ .palette = 17 },
+        .{ .r = 0xaa, .g = 0xbb, .b = 0xcc, .a = 255 },
+        &palette,
+    );
+
+    try std.testing.expectEqual(@as(u8, 0x12), color.r);
+    try std.testing.expectEqual(@as(u8, 0x34), color.g);
+    try std.testing.expectEqual(@as(u8, 0x56), color.b);
+    try std.testing.expectEqual(@as(u8, 255), color.a);
 }
 
 fn flushRun(

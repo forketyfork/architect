@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
         exe.linkFramework("CoreFoundation");
         exe.linkFramework("AppKit");
 
-        if (findSdkRoot()) |sdk_root| {
+        if (findSdkRoot(b)) |sdk_root| {
             const framework_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
             exe.addFrameworkPath(.{ .cwd_relative = framework_path });
         }
@@ -114,8 +114,18 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn findSdkRoot() ?[]const u8 {
+// Prefer the active developer selection over hardcoded SDK locations so
+// macOS SDK overrides in the dev shell stay local to the environment.
+fn findSdkRoot(b: *std.Build) ?[]const u8 {
     if (std.posix.getenv("SDKROOT")) |sdk_root| {
+        return sdk_root;
+    }
+
+    if (findDeveloperDirSdkRoot(b)) |sdk_root| {
+        return sdk_root;
+    }
+
+    if (findXcrunSdkRoot(b.allocator)) |sdk_root| {
         return sdk_root;
     }
 
@@ -125,12 +135,67 @@ fn findSdkRoot() ?[]const u8 {
     };
 
     for (candidates) |candidate| {
-        if (std.fs.openDirAbsolute(candidate, .{})) |dir_const| {
-            var dir = dir_const;
-            dir.close();
+        if (sdkExists(candidate)) {
             return candidate;
-        } else |_| {}
+        }
     }
 
     return null;
+}
+
+fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
+    const developer_dir = std.posix.getenv("DEVELOPER_DIR") orelse return null;
+    const candidates = [_][]const u8{
+        b.fmt("{s}/SDKs/MacOSX.sdk", .{developer_dir}),
+        b.fmt("{s}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk", .{developer_dir}),
+    };
+
+    for (candidates) |candidate| {
+        if (sdkExists(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+fn findXcrunSdkRoot(allocator: std.mem.Allocator) ?[]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" },
+    }) catch return null;
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            allocator.free(result.stdout);
+            return null;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return null;
+        },
+    }
+
+    const trimmed = std.mem.trimRight(u8, result.stdout, "\r\n");
+    if (trimmed.len == 0) {
+        allocator.free(result.stdout);
+        return null;
+    }
+    if (trimmed.len == result.stdout.len) {
+        return result.stdout;
+    }
+
+    defer allocator.free(result.stdout);
+    return allocator.dupe(u8, trimmed) catch null;
+}
+
+fn sdkExists(path: []const u8) bool {
+    if (std.fs.openDirAbsolute(path, .{})) |dir_const| {
+        var dir = dir_const;
+        dir.close();
+        return true;
+    } else |_| {
+        return false;
+    }
 }
