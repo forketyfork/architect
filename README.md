@@ -45,6 +45,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Per-cell cwd bar in grid view with reserved space so terminal content stays visible
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
+- Replies to OSC 10/11 default color queries so Codex and similar CLIs do not stall on startup probes
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions
 
