@@ -1075,7 +1075,7 @@ pub fn run() !void {
 
     // Initialize all session slots
     for (0..grid_layout.max_terminals) |i| {
-        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock);
+        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock, theme);
         sessions[i] = &sessions_storage[i];
         init_count += 1;
     }
