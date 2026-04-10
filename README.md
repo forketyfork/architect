@@ -33,7 +33,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repo tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
-- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with arrow key selection
+- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)

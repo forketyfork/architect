@@ -10,6 +10,8 @@ const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const flowing_line = @import("flowing_line.zig");
+const search_utils = @import("search_utils.zig");
+const font_cache_mod = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.recent_folders_overlay);
 
@@ -18,7 +20,8 @@ pub const RecentFoldersOverlayComponent = struct {
     overlay: ExpandingOverlay = ExpandingOverlay.init(1, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
 
-    folders: std.ArrayList(Folder) = .{},
+    all_folders: std.ArrayList(Folder) = .{},
+    filtered_indices: std.ArrayList(usize) = .{},
     selected_index: usize = 0,
     hovered_entry: ?usize = null,
     escape_pressed: bool = false,
@@ -26,12 +29,15 @@ pub const RecentFoldersOverlayComponent = struct {
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
 
+    search_query: std.ArrayList(u8) = .{},
+
     const button_size_small: c_int = 40;
     const button_size_large: c_int = 400;
     const button_margin: c_int = 20;
     const button_animation_duration_ms: i64 = 200;
     const line_height: c_int = 28;
-    const max_folders: usize = 10;
+    const max_display: usize = 10;
+    const search_bar_height: c_int = 28;
 
     const title = "Recent Folders";
 
@@ -40,15 +46,12 @@ pub const RecentFoldersOverlayComponent = struct {
         display: []const u8,
     };
 
-    const TextTex = struct {
-        tex: *c.SDL_Texture,
-        w: c_int,
-        h: c_int,
-    };
+    const TextTex = search_utils.TextTex;
 
     const EntryTex = struct {
         hotkey: TextTex,
         path: TextTex,
+        displayed_text: []const u8,
     };
 
     const Cache = struct {
@@ -59,6 +62,8 @@ pub const RecentFoldersOverlayComponent = struct {
         entries: []EntryTex,
         theme_fg: c.SDL_Color,
         font_generation: u64,
+        query_len: usize,
+        filtered_count: usize,
     };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
@@ -75,7 +80,9 @@ pub const RecentFoldersOverlayComponent = struct {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.destroyCache();
         self.clearFolders();
-        self.folders.deinit(self.allocator);
+        self.all_folders.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
+        self.search_query.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -84,7 +91,6 @@ pub const RecentFoldersOverlayComponent = struct {
         self.destroyCache();
 
         for (recent_folders) |folder| {
-            if (self.folders.items.len >= max_folders) break;
             const abs = self.allocator.dupe(u8, folder.path) catch |err| {
                 log.warn("failed to dupe folder path: {}", .{err});
                 continue;
@@ -94,7 +100,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 self.allocator.free(abs);
                 continue;
             };
-            self.folders.append(self.allocator, .{
+            self.all_folders.append(self.allocator, .{
                 .abs_path = abs,
                 .display = display,
             }) catch |err| {
@@ -105,9 +111,36 @@ pub const RecentFoldersOverlayComponent = struct {
             };
         }
 
-        if (self.selected_index >= self.folders.items.len) {
-            self.selected_index = if (self.folders.items.len > 0) self.folders.items.len - 1 else 0;
+        self.refilter();
+    }
+
+    fn refilter(self: *RecentFoldersOverlayComponent) void {
+        self.filtered_indices.clearRetainingCapacity();
+        self.destroyCache();
+
+        const query = std.mem.trim(u8, self.search_query.items, " \t");
+
+        for (self.all_folders.items, 0..) |folder, idx| {
+            if (self.filtered_indices.items.len >= max_display) break;
+
+            if (query.len == 0 or search_utils.findCaseInsensitive(folder.display, query, 0) != null) {
+                self.filtered_indices.append(self.allocator, idx) catch |err| {
+                    log.warn("failed to append filtered index: {}", .{err});
+                    break;
+                };
+            }
         }
+
+        if (self.selected_index >= self.filtered_indices.items.len) {
+            self.selected_index = if (self.filtered_indices.items.len > 0) self.filtered_indices.items.len - 1 else 0;
+        }
+    }
+
+    fn filteredFolder(self: *RecentFoldersOverlayComponent, display_idx: usize) ?Folder {
+        if (display_idx >= self.filtered_indices.items.len) return null;
+        const source_idx = self.filtered_indices.items[display_idx];
+        if (source_idx >= self.all_folders.items.len) return null;
+        return self.all_folders.items[source_idx];
     }
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -130,9 +163,9 @@ pub const RecentFoldersOverlayComponent = struct {
 
                 if (inside and self.overlay.state == .Open) {
                     if (self.entryIndexAtPoint(host, mouse_y)) |idx| {
-                        if (idx < self.folders.items.len) {
-                            self.emitChangeDir(actions, host.focused_session, self.folders.items[idx].abs_path);
-                            self.overlay.startCollapsing(host.now_ms);
+                        if (self.filteredFolder(idx)) |folder| {
+                            self.emitChangeDir(actions, host.focused_session, folder.abs_path);
+                            self.closeOverlay(host.now_ms);
                         }
                         return true;
                     }
@@ -143,14 +176,14 @@ pub const RecentFoldersOverlayComponent = struct {
                         .Closed => {
                             self.overlay.startExpanding(host.now_ms);
                         },
-                        .Open => self.overlay.startCollapsing(host.now_ms),
+                        .Open => self.closeOverlay(host.now_ms),
                         else => {},
                     }
                     return true;
                 }
 
                 if (self.overlay.state == .Open and !inside) {
-                    self.overlay.startCollapsing(host.now_ms);
+                    self.closeOverlay(host.now_ms);
                     return true;
                 }
             },
@@ -175,7 +208,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 // Cmd+O toggles overlay
                 if (has_gui and !has_blocking_mod and key == c.SDLK_O) {
                     if (self.overlay.state == .Open) {
-                        self.overlay.startCollapsing(host.now_ms);
+                        self.closeOverlay(host.now_ms);
                     } else {
                         self.overlay.startExpanding(host.now_ms);
                     }
@@ -183,20 +216,28 @@ pub const RecentFoldersOverlayComponent = struct {
                 }
 
                 if (self.overlay.state == .Open) {
+                    if (key == c.SDLK_BACKSPACE) {
+                        if (self.search_query.items.len > 0) {
+                            self.search_query.items.len -= 1;
+                            self.refilter();
+                        }
+                        return true;
+                    }
+
                     // Arrow navigation
                     if (key == c.SDLK_UP) {
-                        if (self.folders.items.len > 0) {
+                        if (self.filtered_indices.items.len > 0) {
                             if (self.selected_index > 0) {
                                 self.selected_index -= 1;
                             } else {
-                                self.selected_index = self.folders.items.len - 1;
+                                self.selected_index = self.filtered_indices.items.len - 1;
                             }
                         }
                         return true;
                     }
                     if (key == c.SDLK_DOWN) {
-                        if (self.folders.items.len > 0) {
-                            if (self.selected_index < self.folders.items.len - 1) {
+                        if (self.filtered_indices.items.len > 0) {
+                            if (self.selected_index < self.filtered_indices.items.len - 1) {
                                 self.selected_index += 1;
                             } else {
                                 self.selected_index = 0;
@@ -207,9 +248,9 @@ pub const RecentFoldersOverlayComponent = struct {
 
                     // Enter selects current
                     if (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER) {
-                        if (self.selected_index < self.folders.items.len) {
-                            self.emitChangeDir(actions, host.focused_session, self.folders.items[self.selected_index].abs_path);
-                            self.overlay.startCollapsing(host.now_ms);
+                        if (self.filteredFolder(self.selected_index)) |folder| {
+                            self.emitChangeDir(actions, host.focused_session, folder.abs_path);
+                            self.closeOverlay(host.now_ms);
                         }
                         return true;
                     }
@@ -217,7 +258,7 @@ pub const RecentFoldersOverlayComponent = struct {
                     // Escape closes
                     if (key == c.SDLK_ESCAPE) {
                         self.escape_pressed = true;
-                        self.overlay.startCollapsing(host.now_ms);
+                        self.closeOverlay(host.now_ms);
                         return true;
                     }
 
@@ -225,19 +266,37 @@ pub const RecentFoldersOverlayComponent = struct {
                     if (has_gui and !has_blocking_mod) {
                         if (key >= c.SDLK_1 and key <= c.SDLK_9) {
                             const digit_idx: usize = @intCast(key - c.SDLK_1);
-                            if (digit_idx < self.folders.items.len) {
-                                self.emitChangeDir(actions, host.focused_session, self.folders.items[digit_idx].abs_path);
-                                self.overlay.startCollapsing(host.now_ms);
+                            if (self.filteredFolder(digit_idx)) |folder| {
+                                self.emitChangeDir(actions, host.focused_session, folder.abs_path);
+                                self.closeOverlay(host.now_ms);
                                 return true;
                             }
                         }
                     }
+
+                    return true;
+                }
+            },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (self.overlay.state == .Open) {
+                    const text = std.mem.span(event.text.text);
+                    self.search_query.appendSlice(self.allocator, text) catch |err| {
+                        log.warn("failed to append search input: {}", .{err});
+                    };
+                    self.refilter();
+                    return true;
                 }
             },
             else => {},
         }
 
         return false;
+    }
+
+    fn closeOverlay(self: *RecentFoldersOverlayComponent, now_ms: i64) void {
+        self.overlay.startCollapsing(now_ms);
+        self.search_query.clearRetainingCapacity();
+        self.refilter();
     }
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
@@ -257,7 +316,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 self.hovered_entry = null;
                 self.escape_pressed = false;
                 if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
-                    self.overlay.startCollapsing(host.now_ms);
+                    self.closeOverlay(host.now_ms);
                 }
             }
         }
@@ -286,7 +345,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (self.folders.items.len == 0) return;
+        if (self.all_folders.items.len == 0) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
         const radius: c_int = 8;
@@ -358,9 +417,38 @@ pub const RecentFoldersOverlayComponent = struct {
             .w = @floatFromInt(title_tex.w),
             .h = @floatFromInt(title_tex.h),
         });
-        y_offset += title_tex.h + scaled_line_height;
+        y_offset += title_tex.h + dpi.scale(8, ui_scale);
+
+        // Render search bar
+        const font_cache = assets.font_cache orelse return;
+        const search_bar_rect = geom.Rect{
+            .x = rect.x + scaled_margin,
+            .y = y_offset,
+            .w = rect.w - 2 * scaled_margin,
+            .h = dpi.scale(search_bar_height, ui_scale),
+        };
+        search_utils.renderSearchBar(
+            self.allocator,
+            renderer,
+            host,
+            search_bar_rect,
+            font_cache,
+            self.search_query.items,
+            self.filtered_indices.items.len,
+            if (self.filtered_indices.items.len > 0) self.selected_index else null,
+        ) catch |err| {
+            log.warn("failed to render search bar: {}", .{err});
+        };
+        y_offset += dpi.scale(search_bar_height, ui_scale) + dpi.scale(8, ui_scale);
 
         // Render entries
+        const entry_font_size: c_int = dpi.scale(16, ui_scale);
+        const entry_fonts = font_cache.get(entry_font_size) catch |err| blk: {
+            log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
+            break :blk null;
+        };
+        const query = std.mem.trim(u8, self.search_query.items, " \t");
+
         for (cache.entries, 0..) |entry_tex, idx| {
             const is_selected = idx == self.selected_index;
             const is_hovered = if (self.hovered_entry) |h| h == idx else false;
@@ -423,12 +511,28 @@ pub const RecentFoldersOverlayComponent = struct {
             });
 
             // Render path (right-aligned)
+            const path_x = rect.x + rect.w - scaled_margin - entry_tex.path.w;
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + rect.w - scaled_margin - entry_tex.path.w),
+                .x = @floatFromInt(path_x),
                 .y = @floatFromInt(y_offset),
                 .w = @floatFromInt(entry_tex.path.w),
                 .h = @floatFromInt(entry_tex.path.h),
             });
+
+            // Render search match highlights on path text
+            if (query.len > 0 and entry_fonts != null) {
+                self.renderPathHighlights(
+                    renderer,
+                    host,
+                    entry_fonts.?,
+                    path_x,
+                    y_offset,
+                    scaled_line_height,
+                    ui_scale,
+                    entry_tex.displayed_text,
+                    query,
+                );
+            }
 
             // Render flowing line for selected entry
             if (is_selected) {
@@ -440,6 +544,50 @@ pub const RecentFoldersOverlayComponent = struct {
         }
     }
 
+    fn renderPathHighlights(
+        _: *RecentFoldersOverlayComponent,
+        renderer: *c.SDL_Renderer,
+        host: *const types.UiHost,
+        entry_fonts: *font_cache_mod.FontSet,
+        path_x: c_int,
+        y_offset: c_int,
+        lh: c_int,
+        ui_scale: f32,
+        display_path: []const u8,
+        query: []const u8,
+    ) void {
+        var pos: usize = 0;
+        while (search_utils.findCaseInsensitive(display_path, query, pos)) |found| {
+            const before_text = display_path[0..found];
+            const match_text = display_path[found .. found + query.len];
+
+            var before_w: c_int = 0;
+            var before_h: c_int = 0;
+            if (before_text.len > 0) {
+                _ = c.TTF_GetStringSize(entry_fonts.regular, @ptrCast(before_text.ptr), before_text.len, &before_w, &before_h);
+            }
+
+            var match_w: c_int = 0;
+            var match_h: c_int = 0;
+            _ = c.TTF_GetStringSize(entry_fonts.regular, @ptrCast(match_text.ptr), match_text.len, &match_w, &match_h);
+
+            const highlight_x = path_x + before_w;
+            const highlight_y = y_offset + dpi.scale(2, ui_scale);
+            const highlight_h = lh - dpi.scale(6, ui_scale);
+
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 120);
+            _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                .x = @floatFromInt(highlight_x),
+                .y = @floatFromInt(highlight_y),
+                .w = @floatFromInt(match_w),
+                .h = @floatFromInt(highlight_h),
+            });
+
+            pos = found + 1;
+        }
+    }
+
     fn emitChangeDir(_: *RecentFoldersOverlayComponent, actions: *types.UiActionQueue, session_idx: usize, abs_path: []const u8) void {
         const path_copy = actions.allocator.dupe(u8, abs_path) catch return;
         actions.append(.{ .ChangeDirectory = .{ .session = session_idx, .path = path_copy } }) catch {
@@ -448,11 +596,12 @@ pub const RecentFoldersOverlayComponent = struct {
     }
 
     fn clearFolders(self: *RecentFoldersOverlayComponent) void {
-        for (self.folders.items) |folder| {
+        for (self.all_folders.items) |folder| {
             self.allocator.free(folder.abs_path);
             self.allocator.free(folder.display);
         }
-        self.folders.clearRetainingCapacity();
+        self.all_folders.clearRetainingCapacity();
+        self.filtered_indices.clearRetainingCapacity();
         self.hovered_entry = null;
     }
 
@@ -462,11 +611,12 @@ pub const RecentFoldersOverlayComponent = struct {
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const scaled_margin: c_int = dpi.scale(button_margin, host.ui_scale);
         const scaled_lh: c_int = dpi.scale(line_height, host.ui_scale);
-        const start_y = rect.y + scaled_margin + cache.title.h + scaled_lh;
+        const search_h = dpi.scale(search_bar_height, host.ui_scale) + dpi.scale(8, host.ui_scale);
+        const start_y = rect.y + scaled_margin + cache.title.h + dpi.scale(8, host.ui_scale) + search_h;
         if (y < start_y) return null;
         const rel = y - start_y;
         const idx = @as(usize, @intCast(@divFloor(rel, scaled_lh)));
-        if (idx >= self.folders.items.len) return null;
+        if (idx >= self.filtered_indices.items.len) return null;
         return idx;
     }
 
@@ -475,7 +625,7 @@ pub const RecentFoldersOverlayComponent = struct {
         const title_font_size: c_int = dpi.scale(20, ui_scale);
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
         const fg = theme.foreground;
-        const entry_count = self.folders.items.len;
+        const entry_count = self.filtered_indices.items.len;
 
         if (self.cache) |cache| {
             if (cache.title_font_size == title_font_size and
@@ -483,7 +633,9 @@ pub const RecentFoldersOverlayComponent = struct {
                 cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and
                 cache.ui_scale == ui_scale and
                 cache.entries.len == entry_count and
-                cache.font_generation == cache_store.generation)
+                cache.font_generation == cache_store.generation and
+                cache.query_len == self.search_query.items.len and
+                cache.filtered_count == entry_count)
             {
                 return cache;
             }
@@ -524,6 +676,7 @@ pub const RecentFoldersOverlayComponent = struct {
         const hotkey_spacing = dpi.scale(10, ui_scale);
 
         for (0..entry_count) |idx| {
+            const source_idx = self.filtered_indices.items[idx];
             var key_buf: [8]u8 = undefined;
             const digit: u8 = @as(u8, @intCast((idx + 1) % 10));
             const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
@@ -531,14 +684,14 @@ pub const RecentFoldersOverlayComponent = struct {
                 break :blk key_buf[0..0];
             };
             const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
-                destroyEntryTextures(entries[0..idx]);
+                destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
                 self.allocator.destroy(cache);
                 return null;
             };
 
-            const path_slice = self.folders.items[idx].display;
+            const path_slice = self.all_folders.items[source_idx].display;
             const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing;
 
             var path_buf: [256]u8 = undefined;
@@ -548,13 +701,22 @@ pub const RecentFoldersOverlayComponent = struct {
             };
             const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
-                destroyEntryTextures(entries[0..idx]);
+                destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
                 self.allocator.destroy(cache);
                 return null;
             };
-            entries[idx] = .{ .hotkey = key_tex, .path = path_tex };
+            const stored_text = self.allocator.dupe(u8, truncated_path) catch {
+                c.SDL_DestroyTexture(path_tex.tex);
+                c.SDL_DestroyTexture(key_tex.tex);
+                destroyEntryTextures(self.allocator, entries[0..idx]);
+                self.allocator.free(entries);
+                c.SDL_DestroyTexture(title_tex.tex);
+                self.allocator.destroy(cache);
+                return null;
+            };
+            entries[idx] = .{ .hotkey = key_tex, .path = path_tex, .displayed_text = stored_text };
         }
 
         cache.* = .{
@@ -565,13 +727,16 @@ pub const RecentFoldersOverlayComponent = struct {
             .entries = entries,
             .theme_fg = fg,
             .font_generation = cache_store.generation,
+            .query_len = self.search_query.items.len,
+            .filtered_count = entry_count,
         };
 
         self.cache = cache;
 
         const scaled_lh: c_int = dpi.scale(line_height, ui_scale);
         const scaled_padding: c_int = dpi.scale(2 * button_margin, ui_scale);
-        const content_height = scaled_padding + title_tex.h + scaled_lh + @as(c_int, @intCast(entry_count)) * scaled_lh;
+        const search_h = dpi.scale(search_bar_height, ui_scale) + dpi.scale(8, ui_scale);
+        const content_height = scaled_padding + title_tex.h + dpi.scale(8, ui_scale) + search_h + @as(c_int, @intCast(entry_count)) * scaled_lh;
         self.overlay.setContentHeight(content_height);
 
         return cache;
@@ -580,7 +745,7 @@ pub const RecentFoldersOverlayComponent = struct {
     fn destroyCache(self: *RecentFoldersOverlayComponent) void {
         if (self.cache) |cache| {
             c.SDL_DestroyTexture(cache.title.tex);
-            destroyEntryTextures(cache.entries);
+            destroyEntryTextures(self.allocator, cache.entries);
             self.allocator.free(cache.entries);
             self.allocator.destroy(cache);
             self.cache = null;
@@ -671,10 +836,11 @@ pub const RecentFoldersOverlayComponent = struct {
         };
     }
 
-    fn destroyEntryTextures(entries: []EntryTex) void {
+    fn destroyEntryTextures(allocator: std.mem.Allocator, entries: []EntryTex) void {
         for (entries) |entry| {
             c.SDL_DestroyTexture(entry.hotkey.tex);
             c.SDL_DestroyTexture(entry.path.tex);
+            allocator.free(entry.displayed_text);
         }
     }
 
