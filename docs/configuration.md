@@ -64,6 +64,7 @@ accent = "#61AFEF"      # Accent color (focused borders, UI elements)
 ```
 
 Colors are specified in hexadecimal format (`#RRGGBB` or `RRGGBB`).
+The configured theme colors are reused across terminal chrome and overlay surfaces, including modal panels and their input fields.
 
 #### Default Theme Colors
 

@@ -467,7 +467,7 @@ fn renderSessionContent(
                 if (pages.pin(point_tag)) |pin| {
                     if (sel.contains(screen, pin)) {
                         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, 27, 34, 48, 255);
+                        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
                         const sel_rect = c.SDL_FRect{
                             .x = @floatFromInt(x),
                             .y = @floatFromInt(y),

@@ -76,6 +76,13 @@ pub const WorktreeOverlayComponent = struct {
         path: TextTex,
     };
 
+    const ModalInputStyle = struct {
+        fill: c.SDL_Color,
+        border: c.SDL_Color,
+        text: c.SDL_Color,
+        placeholder: c.SDL_Color,
+    };
+
     const Cache = struct {
         ui_scale: f32,
         title_font_size: c_int,
@@ -1278,14 +1285,15 @@ pub const WorktreeOverlayComponent = struct {
             .w = @intFromFloat(layout.input.w),
             .h = @intFromFloat(layout.input.h),
         };
-        _ = c.SDL_SetRenderDrawColor(renderer, 20, 23, 28, 255);
+        const input_style = createModalInputStyle(theme);
+        _ = c.SDL_SetRenderDrawColor(renderer, input_style.fill.r, input_style.fill.g, input_style.fill.b, input_style.fill.a);
         primitives.fillRoundedRect(renderer, input_rect, 6);
-        _ = c.SDL_SetRenderDrawColor(renderer, 70, 76, 86, 255);
+        _ = c.SDL_SetRenderDrawColor(renderer, input_style.border.r, input_style.border.g, input_style.border.b, input_style.border.a);
         primitives.drawRoundedBorder(renderer, input_rect, 6);
 
         const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
         const placeholder = self.create_input.items.len == 0;
-        const input_color = if (placeholder) c.SDL_Color{ .r = 140, .g = 148, .b = 161, .a = 255 } else c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
+        const input_color = if (placeholder) input_style.placeholder else input_style.text;
         const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch |err| blk: {
             log.warn("failed to create input texture: {}", .{err});
             break :blk null;
@@ -1338,6 +1346,18 @@ pub const WorktreeOverlayComponent = struct {
                 });
             }
         }
+    }
+
+    fn createModalInputStyle(theme: *const colors.Theme) ModalInputStyle {
+        const bg = theme.background;
+        const accent = theme.accent;
+        const fg = theme.foreground;
+        return .{
+            .fill = .{ .r = bg.r, .g = bg.g, .b = bg.b, .a = 255 },
+            .border = .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 },
+            .text = .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 },
+            .placeholder = .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 150 },
+        };
     }
 
     fn renderRemoveModal(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, theme: *const colors.Theme) void {
@@ -1671,3 +1691,33 @@ pub const WorktreeOverlayComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "createModalInputStyle uses the active theme colors" {
+    const base = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const palette = [_]c.SDL_Color{base} ** 16;
+    const theme = colors.Theme{
+        .background = .{ .r = 1, .g = 2, .b = 3, .a = 255 },
+        .foreground = .{ .r = 4, .g = 5, .b = 6, .a = 255 },
+        .selection = .{ .r = 7, .g = 8, .b = 9, .a = 255 },
+        .accent = .{ .r = 10, .g = 11, .b = 12, .a = 255 },
+        .palette = palette,
+    };
+
+    const style = WorktreeOverlayComponent.createModalInputStyle(&theme);
+    try std.testing.expectEqual(@as(u8, 1), style.fill.r);
+    try std.testing.expectEqual(@as(u8, 2), style.fill.g);
+    try std.testing.expectEqual(@as(u8, 3), style.fill.b);
+    try std.testing.expectEqual(@as(u8, 255), style.fill.a);
+    try std.testing.expectEqual(@as(u8, 10), style.border.r);
+    try std.testing.expectEqual(@as(u8, 11), style.border.g);
+    try std.testing.expectEqual(@as(u8, 12), style.border.b);
+    try std.testing.expectEqual(@as(u8, 160), style.border.a);
+    try std.testing.expectEqual(@as(u8, 4), style.text.r);
+    try std.testing.expectEqual(@as(u8, 5), style.text.g);
+    try std.testing.expectEqual(@as(u8, 6), style.text.b);
+    try std.testing.expectEqual(@as(u8, 255), style.text.a);
+    try std.testing.expectEqual(@as(u8, 4), style.placeholder.r);
+    try std.testing.expectEqual(@as(u8, 5), style.placeholder.g);
+    try std.testing.expectEqual(@as(u8, 6), style.placeholder.b);
+    try std.testing.expectEqual(@as(u8, 150), style.placeholder.a);
+}
