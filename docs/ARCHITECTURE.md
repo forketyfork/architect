@@ -99,7 +99,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 1. **UI components use the vtable interface and communicate via UiAction queue.** Never mutate application state directly from a UI component. Push a `UiAction` to the queue; the main loop drains it after all component updates complete. (See ADR-003.)
 
-2. **Render invalidation uses epoch comparison.** When terminal content changes, increment `render_epoch` on the `SessionState`. The renderer checks `presented_epoch < render_epoch` to know whether a session needs to be redrawn this frame, and cached session textures refresh when their stored epoch no longer matches the session epoch. This applies to both grid tiles and the steady-state full-screen terminal view. Never force a full re-render. (See ADR-004.)
+2. **Render invalidation uses epoch comparison.** When terminal content changes, increment `render_epoch` on the `SessionState`. The renderer checks whether `presented_epoch` no longer matches `render_epoch` to know whether a session needs to be redrawn this frame, and cached session textures refresh when their stored epoch no longer matches the session epoch. This applies to both grid tiles and the steady-state full-screen terminal view. Never force a full re-render. (See ADR-004.)
 
 3. **Blocking I/O goes on a background thread with a thread-safe queue.** The frame loop must never block. Any new external I/O source must follow the notification socket pattern: background thread + queue + main-loop drain. (See ADR-009.)
 

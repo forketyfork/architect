@@ -154,6 +154,7 @@ pub fn render(
             }
         },
         .Full => {
+            releaseNonFocusedCaches(render_cache, anim_state.focused_session);
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             const entry = render_cache.entry(anim_state.focused_session);
             try renderSessionCached(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, term_cols, term_rows, current_time, false, theme, ui_scale);
@@ -775,18 +776,32 @@ fn terminalContentRect(rect: Rect, ui_scale: f32) ?Rect {
     };
 }
 
+fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
+    if (cache_entry.texture) |tex| {
+        c.SDL_DestroyTexture(tex);
+        cache_entry.texture = null;
+    }
+    cache_entry.width = 0;
+    cache_entry.height = 0;
+    cache_entry.cache_epoch = 0;
+    cache_entry.cache_composition = .content_only;
+}
+
+fn releaseNonFocusedCaches(render_cache: *RenderCache, focused_session: usize) void {
+    for (render_cache.entries, 0..) |*cache_entry, idx| {
+        if (idx == focused_session) continue;
+        releaseCacheTexture(cache_entry);
+    }
+}
+
 fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry, session: *SessionState, width: c_int, height: c_int) bool {
     if (cache_entry.texture) |tex| {
         if (cache_entry.width == width and cache_entry.height == height) {
             return true;
         }
         log.debug("destroying cache for session {d} (resize)", .{session.id});
-        c.SDL_DestroyTexture(tex);
-        cache_entry.texture = null;
-        cache_entry.width = 0;
-        cache_entry.height = 0;
-        cache_entry.cache_epoch = 0;
-        cache_entry.cache_composition = .content_only;
+        _ = tex;
+        releaseCacheTexture(cache_entry);
     }
 
     log.debug("creating cache for session {d} spawned={}", .{ session.id, session.spawned });
@@ -1080,7 +1095,7 @@ test "getCellColor uses the live terminal palette for indexed colors" {
     try std.testing.expectEqual(@as(u8, 255), color.a);
 }
 
-test "full-view cached frames reuse the existing texture when the epoch is unchanged" {
+test "cache refresh predicate stays clean for an unchanged content-only texture" {
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
         .cache_composition = .content_only,
