@@ -37,12 +37,18 @@ pub const RenderCache = struct {
     allocator: std.mem.Allocator,
     entries: []Entry,
 
+    pub const CacheComposition = enum {
+        content_only,
+        content_and_overlays,
+    };
+
     pub const Entry = struct {
         texture: ?*c.SDL_Texture = null,
         width: c_int = 0,
         height: c_int = 0,
         cache_epoch: u64 = 0,
         presented_epoch: u64 = 0,
+        cache_composition: CacheComposition = .content_only,
     };
 
     pub fn init(allocator: std.mem.Allocator, session_count: usize) !RenderCache {
@@ -143,14 +149,14 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderGridSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
+                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
                 }
             }
         },
         .Full => {
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            try renderSessionCached(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, term_cols, term_rows, current_time, false, theme, ui_scale);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -218,7 +224,7 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, font, term_cols, term_rows, current_time, theme, ui_scale);
+                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
                 }
             }
 
@@ -257,7 +263,7 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderGridSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, font, term_cols, term_rows, current_time, theme, ui_scale);
+                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
             }
 
             // Render borders and overlays on top of the animated content.
@@ -780,6 +786,7 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
         cache_entry.width = 0;
         cache_entry.height = 0;
         cache_entry.cache_epoch = 0;
+        cache_entry.cache_composition = .content_only;
     }
 
     log.debug("creating cache for session {d} spawned={}", .{ session.id, session.spawned });
@@ -792,32 +799,17 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
     cache_entry.width = width;
     cache_entry.height = height;
     cache_entry.cache_epoch = 0;
+    cache_entry.cache_composition = .content_only;
     return true;
 }
 
-fn renderGridSessionCached(
-    renderer: *c.SDL_Renderer,
-    session: *SessionState,
-    view: *SessionViewState,
-    cache_entry: *RenderCache.Entry,
-    rect: Rect,
-    scale: f32,
-    is_focused: bool,
-    apply_effects: bool,
-    render_overlays: bool,
-    font: *font_mod.Font,
-    term_cols: u16,
-    term_rows: u16,
-    current_time_ms: i64,
-    theme: *const colors.Theme,
-    ui_scale: f32,
-) RenderError!void {
-    if (!session.spawned) {
-        cache_entry.presented_epoch = session.render_epoch;
-        return;
-    }
-    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
+const WaveEffect = struct {
+    elapsed_ms: f32,
+    amplitude: f32,
+    total_ms: f32,
+};
 
+fn currentWaveEffect(view: *const SessionViewState, current_time_ms: i64) ?WaveEffect {
     const wave_total: f32 = @floatFromInt(session_interaction.wave_total_ms);
     const nav_wave_total: f32 = @floatFromInt(session_interaction.nav_wave_total_ms);
 
@@ -829,42 +821,125 @@ fn renderGridSessionCached(
     const nav_wave_elapsed_ms: f32 = if (nav_wave_active) @as(f32, @floatFromInt(current_time_ms - view.nav_wave_start_time)) else 0;
     const is_nav_waving = nav_wave_active and nav_wave_elapsed_ms < nav_wave_total;
 
-    // Attention wave takes priority; nav wave is used only when no attention wave is active.
-    const any_waving = is_waving or is_nav_waving;
-    const effective_elapsed_ms = if (is_waving) wave_elapsed_ms else nav_wave_elapsed_ms;
-    const effective_amplitude = if (is_waving) session_interaction.wave_amplitude else session_interaction.nav_wave_amplitude;
-    const effective_total_ms = if (is_waving) wave_total else nav_wave_total;
+    if (is_waving) {
+        return .{
+            .elapsed_ms = wave_elapsed_ms,
+            .amplitude = session_interaction.wave_amplitude,
+            .total_ms = wave_total,
+        };
+    }
+    if (is_nav_waving) {
+        return .{
+            .elapsed_ms = nav_wave_elapsed_ms,
+            .amplitude = session_interaction.nav_wave_amplitude,
+            .total_ms = nav_wave_total,
+        };
+    }
+    return null;
+}
+
+fn cacheComposition(cache_overlays: bool) RenderCache.CacheComposition {
+    return if (cache_overlays) .content_and_overlays else .content_only;
+}
+
+fn cacheNeedsRefresh(
+    cache_entry: *const RenderCache.Entry,
+    session_epoch: u64,
+    composition: RenderCache.CacheComposition,
+) bool {
+    return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition;
+}
+
+fn refreshSessionCacheTexture(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    apply_effects: bool,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+    current_time_ms: i64,
+    cache_overlays: bool,
+    composition: RenderCache.CacheComposition,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) RenderError!void {
+    log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
+    const previous_target = c.SDL_GetRenderTarget(renderer);
+    defer _ = c.SDL_SetRenderTarget(renderer, previous_target);
+
+    const tex = cache_entry.texture orelse return;
+    _ = c.SDL_SetRenderTarget(renderer, tex);
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
+    _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
+    _ = c.SDL_RenderClear(renderer);
+
+    const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
+    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
+    if (cache_overlays) {
+        renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    }
+    cache_entry.cache_epoch = session.render_epoch;
+    cache_entry.cache_composition = composition;
+}
+
+fn renderCachedTexture(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect) void {
+    const dest_rect = c.SDL_FRect{
+        .x = @floatFromInt(rect.x),
+        .y = @floatFromInt(rect.y),
+        .w = @floatFromInt(rect.w),
+        .h = @floatFromInt(rect.h),
+    };
+    _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
+}
+
+fn renderSessionCached(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    apply_effects: bool,
+    render_overlays: bool,
+    wave_effect: ?WaveEffect,
+    font: *font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+    current_time_ms: i64,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) RenderError!void {
+    if (!session.spawned) {
+        cache_entry.presented_epoch = session.render_epoch;
+        return;
+    }
+
+    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
+    const cache_overlays = render_overlays and wave_effect != null;
+    const composition = cacheComposition(cache_overlays);
 
     if (can_cache) {
         if (cache_entry.texture) |tex| {
-            if (cache_entry.cache_epoch != session.render_epoch) {
-                log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
-                _ = c.SDL_SetRenderTarget(renderer, tex);
-                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
-                _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
-                _ = c.SDL_RenderClear(renderer);
-                const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-                try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
-                if (any_waving and render_overlays) {
-                    renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
-                }
-                cache_entry.cache_epoch = session.render_epoch;
-                _ = c.SDL_SetRenderTarget(renderer, null);
+            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition)) {
+                try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
             }
 
-            if (any_waving) {
-                renderWaveStrips(renderer, tex, rect, effective_elapsed_ms, effective_amplitude, effective_total_ms);
+            if (wave_effect) |wave| {
+                renderWaveStrips(renderer, tex, rect, wave.elapsed_ms, wave.amplitude, wave.total_ms);
             } else {
-                const dest_rect = c.SDL_FRect{
-                    .x = @floatFromInt(rect.x),
-                    .y = @floatFromInt(rect.y),
-                    .w = @floatFromInt(rect.w),
-                    .h = @floatFromInt(rect.h),
-                };
-                _ = c.SDL_RenderTexture(renderer, tex, null, &dest_rect);
-                if (render_overlays) {
-                    renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, true, theme, ui_scale);
-                }
+                renderCachedTexture(renderer, tex, rect);
+            }
+
+            if (render_overlays and composition == .content_only) {
+                renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
             }
             cache_entry.presented_epoch = session.render_epoch;
             return;
@@ -872,7 +947,7 @@ fn renderGridSessionCached(
     }
 
     if (render_overlays) {
-        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, true, theme, ui_scale);
+        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
         return;
     }
 
@@ -1003,6 +1078,33 @@ test "getCellColor uses the live terminal palette for indexed colors" {
     try std.testing.expectEqual(@as(u8, 0x34), color.g);
     try std.testing.expectEqual(@as(u8, 0x56), color.b);
     try std.testing.expectEqual(@as(u8, 255), color.a);
+}
+
+test "full-view cached frames reuse the existing texture when the epoch is unchanged" {
+    const entry = RenderCache.Entry{
+        .cache_epoch = 42,
+        .cache_composition = .content_only,
+    };
+
+    try std.testing.expect(!cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+}
+
+test "cached session texture refreshes when the render epoch changes" {
+    const entry = RenderCache.Entry{
+        .cache_epoch = 41,
+        .cache_composition = .content_only,
+    };
+
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+}
+
+test "cached session texture refreshes when wave rendering needs overlays baked into the cache" {
+    const entry = RenderCache.Entry{
+        .cache_epoch = 42,
+        .cache_composition = .content_only,
+    };
+
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(true)));
 }
 
 fn flushRun(
