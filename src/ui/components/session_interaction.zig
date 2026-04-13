@@ -443,7 +443,7 @@ pub const SessionInteractionComponent = struct {
                         }
 
                         if (!forwarded) {
-                            scrollSession(session, view, scroll_delta, host.now_ms);
+                            scrollSession(session, view, scroll_delta, self.font.cell_height, host.now_ms);
                             if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
                                 view.scroll_inertia_allowed = false;
                             }
@@ -475,7 +475,7 @@ pub const SessionInteractionComponent = struct {
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
             const view = &self.views[idx];
-            updateScrollInertia(session, view, delta_time_s, host.now_ms);
+            updateScrollInertia(session, view, delta_time_s, self.font.cell_height, host.now_ms);
             view.terminal_scrollbar.update(host.now_ms);
             if (view.wave_start_time > 0) {
                 const wave_elapsed = host.now_ms - view.wave_start_time;
@@ -617,6 +617,7 @@ pub const SessionInteractionComponent = struct {
             ctx.view.is_viewing_scrollback = (pages.viewport != .active);
             ctx.view.scroll_velocity = 0.0;
             ctx.view.scroll_remainder = 0.0;
+            ctx.view.scroll_pixel_offset = 0.0;
             ctx.view.scroll_inertia_allowed = false;
             ctx.view.last_scroll_time = now_ms;
             ctx.view.terminal_scrollbar.noteActivity(now_ms);
@@ -1069,31 +1070,61 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
     return null;
 }
 
-fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, now: i64) void {
+fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, cell_height: c_int, now: i64) void {
     if (!session.spawned) return;
+    if (cell_height <= 0) return;
 
     view.last_scroll_time = now;
     view.scroll_remainder = 0.0;
     view.scroll_inertia_allowed = true;
 
-    if (session.terminal) |*terminal| {
-        var pages = &terminal.screens.active.pages;
-        pages.scroll(.{ .delta_row = delta });
-        view.is_viewing_scrollback = (pages.viewport != .active);
-        view.terminal_scrollbar.noteActivity(now);
-        session.markDirty();
-    }
+    const pixel_delta = @as(f32, @floatFromInt(delta)) * @as(f32, @floatFromInt(cell_height));
+    applyPixelScroll(session, view, pixel_delta, cell_height, now);
 
     const sensitivity: f32 = 0.08;
     view.scroll_velocity += @as(f32, @floatFromInt(delta)) * sensitivity;
     view.scroll_velocity = std.math.clamp(view.scroll_velocity, -max_scroll_velocity, max_scroll_velocity);
 }
 
-fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32, now_ms: i64) void {
+fn applyPixelScroll(session: *SessionState, view: *SessionViewState, pixel_delta: f32, cell_height: c_int, now: i64) void {
+    const cell_h_f: f32 = @floatFromInt(cell_height);
+    if (session.terminal) |*terminal| {
+        var pages = &terminal.screens.active.pages;
+
+        // Scrolling up (negative delta = towards older content): increase pixel offset
+        // Scrolling down (positive delta = towards newer content): decrease pixel offset
+        view.scroll_pixel_offset -= pixel_delta;
+
+        // Flush whole lines to ghostty-vt
+        if (view.scroll_pixel_offset >= cell_h_f) {
+            const lines_f = @floor(view.scroll_pixel_offset / cell_h_f);
+            const lines: isize = @intFromFloat(lines_f);
+            pages.scroll(.{ .delta_row = -lines });
+            view.scroll_pixel_offset -= lines_f * cell_h_f;
+        } else if (view.scroll_pixel_offset < 0.0) {
+            const lines_f = @ceil(-view.scroll_pixel_offset / cell_h_f);
+            const lines: isize = @intFromFloat(lines_f);
+            pages.scroll(.{ .delta_row = lines });
+            view.scroll_pixel_offset += lines_f * cell_h_f;
+        }
+
+        // When we've scrolled back to the active viewport, snap pixel offset to 0
+        view.is_viewing_scrollback = (pages.viewport != .active);
+        if (!view.is_viewing_scrollback) {
+            view.scroll_pixel_offset = 0.0;
+        }
+
+        view.terminal_scrollbar.noteActivity(now);
+        session.markDirty();
+    }
+}
+
+fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32, cell_height: c_int, now_ms: i64) void {
     if (!session.spawned) return;
     if (!view.scroll_inertia_allowed) return;
     if (view.scroll_velocity == 0.0) return;
     if (view.last_scroll_time == 0) return;
+    if (cell_height <= 0) return;
 
     const decay_constant: f32 = 7.5;
     const decay_factor = std.math.exp(-decay_constant * delta_time_s);
@@ -1102,25 +1133,39 @@ fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_ti
     if (@abs(view.scroll_velocity) < velocity_threshold) {
         view.scroll_velocity = 0.0;
         view.scroll_remainder = 0.0;
+        // Snap to nearest line boundary when inertia stops
+        if (view.scroll_pixel_offset != 0.0) {
+            const cell_h_f: f32 = @floatFromInt(cell_height);
+            if (session.terminal) |*terminal| {
+                var pages = &terminal.screens.active.pages;
+                if (view.scroll_pixel_offset >= cell_h_f * 0.5) {
+                    // Closer to next line up: commit one more scroll line
+                    pages.scroll(.{ .delta_row = -1 });
+                }
+                view.is_viewing_scrollback = (pages.viewport != .active);
+            }
+            view.scroll_pixel_offset = 0.0;
+            if (!view.is_viewing_scrollback) {
+                view.scroll_pixel_offset = 0.0;
+            }
+            session.markDirty();
+        }
         return;
     }
 
     const reference_fps: f32 = 60.0;
+    const cell_h_f: f32 = @floatFromInt(cell_height);
 
-    if (session.terminal) |*terminal| {
-        const scroll_amount = view.scroll_velocity * delta_time_s * reference_fps + view.scroll_remainder;
-        const scroll_lines: isize = @intFromFloat(scroll_amount);
+    // velocity is in lines/unit; convert to pixel delta
+    const scroll_lines = view.scroll_velocity * delta_time_s * reference_fps + view.scroll_remainder;
+    const pixel_delta = scroll_lines * cell_h_f;
 
-        if (scroll_lines != 0) {
-            var pages = &terminal.screens.active.pages;
-            pages.scroll(.{ .delta_row = scroll_lines });
-            view.is_viewing_scrollback = (pages.viewport != .active);
-            view.terminal_scrollbar.noteActivity(now_ms);
-            session.markDirty();
-        }
-
-        view.scroll_remainder = scroll_amount - @as(f32, @floatFromInt(scroll_lines));
+    if (pixel_delta != 0.0) {
+        applyPixelScroll(session, view, pixel_delta, cell_height, now_ms);
     }
+
+    // Track remainder in line-space for next frame
+    view.scroll_remainder = 0.0;
 
     view.scroll_velocity *= decay_factor;
 }
