@@ -8,6 +8,7 @@ const dpi = @import("../../dpi.zig");
 const easing = @import("../../anim/easing.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
 const scrollbar = @import("scrollbar.zig");
+const comment_layout = @import("diff_comment_layout.zig");
 
 const log = std.log.scoped(.diff_overlay);
 
@@ -893,76 +894,12 @@ pub const DiffOverlayComponent = struct {
         return i;
     }
 
-    const WrappedCommentLine = struct {
-        start: usize,
-        end: usize,
-    };
-
-    fn forEachWrappedCommentLine(
-        text: []const u8,
-        max_cols: usize,
-        context: anytype,
-        comptime callback: fn (@TypeOf(context), WrappedCommentLine) void,
-    ) void {
-        var logical_start: usize = 0;
-        while (logical_start <= text.len) {
-            const logical_end = std.mem.indexOfScalarPos(u8, text, logical_start, '\n') orelse text.len;
-            const logical_line = text[logical_start..logical_end];
-
-            if (logical_line.len == 0) {
-                callback(context, .{ .start = logical_start, .end = logical_start });
-            } else if (max_cols == 0 or textDisplayCols(logical_line) <= max_cols) {
-                callback(context, .{ .start = logical_start, .end = logical_end });
-            } else {
-                var rel_start: usize = 0;
-                while (rel_start < logical_line.len) {
-                    const rel_end = byteOffsetAtDisplayCol(logical_line, rel_start, max_cols);
-                    if (rel_end <= rel_start) {
-                        const byte_len = std.unicode.utf8ByteSequenceLength(logical_line[rel_start]) catch |err| blk: {
-                            log.warn("invalid UTF-8 lead byte in comment text at offset {}: {}", .{ rel_start, err });
-                            break :blk 1;
-                        };
-                        const safe_end = @min(logical_line.len, rel_start + byte_len);
-                        callback(context, .{
-                            .start = logical_start + rel_start,
-                            .end = logical_start + safe_end,
-                        });
-                        rel_start = safe_end;
-                        continue;
-                    }
-                    callback(context, .{
-                        .start = logical_start + rel_start,
-                        .end = logical_start + rel_end,
-                    });
-                    rel_start = rel_end;
-                }
-            }
-
-            if (logical_end == text.len) break;
-            logical_start = logical_end + 1;
-        }
-    }
-
     fn wrappedCommentLineCount(text: []const u8, max_cols: usize) usize {
-        const CountContext = struct {
-            count: usize = 0,
-
-            fn visit(ctx: *@This(), _: WrappedCommentLine) void {
-                ctx.count += 1;
-            }
-        };
-
-        var context = CountContext{};
-        forEachWrappedCommentLine(text, max_cols, &context, CountContext.visit);
-        return @max(@as(usize, 1), context.count);
+        return comment_layout.wrappedLineCount(text, max_cols, tab_display_width, min_printable_char);
     }
 
     fn savedCommentHeightForLineCount(ui_scale: f32, line_height_px: c_int, line_count: usize) c_int {
-        const wrapped_line_count = @max(@as(usize, 1), line_count);
-        return @max(
-            dpi.scale(saved_comment_min_height, ui_scale),
-            @as(c_int, @intCast(wrapped_line_count)) * line_height_px + dpi.scale(8, ui_scale),
-        );
+        return comment_layout.savedCommentHeightForLineCount(ui_scale, line_height_px, saved_comment_min_height, line_count);
     }
 
     const EditingCommentLayout = struct {
@@ -973,19 +910,19 @@ pub const DiffOverlayComponent = struct {
     };
 
     fn editingCommentLayoutForLineCount(ui_scale: f32, line_height_px: c_int, line_count: usize) EditingCommentLayout {
-        const wrapped_line_count = @max(@as(usize, 1), line_count);
-        const input_h = @max(
-            dpi.scale(comment_input_min_height, ui_scale),
-            @as(c_int, @intCast(wrapped_line_count)) * line_height_px + dpi.scale(8, ui_scale),
+        const layout = comment_layout.editingCommentLayoutForLineCount(
+            ui_scale,
+            line_height_px,
+            comment_input_min_height,
+            editing_comment_min_height,
+            46,
+            line_count,
         );
         return .{
             .wrap_cols = 0,
-            .line_count = wrapped_line_count,
-            .input_h = input_h,
-            .total_h = @max(
-                dpi.scale(editing_comment_min_height, ui_scale),
-                input_h + dpi.scale(46, ui_scale),
-            ),
+            .line_count = layout.line_count,
+            .input_h = layout.input_h,
+            .total_h = layout.total_h,
         };
     }
 
@@ -1102,7 +1039,7 @@ pub const DiffOverlayComponent = struct {
             line_height_px: c_int,
             line_index: usize = 0,
 
-            fn renderLine(ctx: *@This(), line: WrappedCommentLine) void {
+            fn renderLine(ctx: *@This(), line: comment_layout.WrappedLine) void {
                 defer ctx.line_index += 1;
 
                 const line_text = ctx.text[line.start..line.end];
@@ -1130,7 +1067,7 @@ pub const DiffOverlayComponent = struct {
             .max_width = max_width,
             .line_height_px = line_height_px,
         };
-        forEachWrappedCommentLine(text, wrap_cols, &context, RenderContext.renderLine);
+        comment_layout.forEachWrappedLine(text, wrap_cols, tab_display_width, min_printable_char, &context, RenderContext.renderLine);
     }
 
     fn wrappedCommentCursorLayout(text: []const u8, wrap_cols: usize) struct { line_index: usize, line_start: usize, line_end: usize } {
@@ -1140,7 +1077,7 @@ pub const DiffOverlayComponent = struct {
             last_line_start: usize = 0,
             last_line_end: usize = 0,
 
-            fn visit(ctx: *@This(), line: WrappedCommentLine) void {
+            fn visit(ctx: *@This(), line: comment_layout.WrappedLine) void {
                 ctx.last_line_index = ctx.line_index;
                 ctx.last_line_start = line.start;
                 ctx.last_line_end = line.end;
@@ -1149,7 +1086,7 @@ pub const DiffOverlayComponent = struct {
         };
 
         var context = CursorContext{};
-        forEachWrappedCommentLine(text, wrap_cols, &context, CursorContext.visit);
+        comment_layout.forEachWrappedLine(text, wrap_cols, tab_display_width, min_printable_char, &context, CursorContext.visit);
         return .{
             .line_index = context.last_line_index,
             .line_start = context.last_line_start,
@@ -3622,19 +3559,3 @@ pub const DiffOverlayComponent = struct {
         .wantsFrame = wantsFrameFn,
     };
 };
-
-test "wrapped diff comments expand beyond single-line minimum heights" {
-    const long_comment =
-        "This diff comment should wrap across multiple lines instead of shrinking to fit into one line.";
-    const wrap_cols = 18;
-    const line_count = DiffOverlayComponent.wrappedCommentLineCount(long_comment, wrap_cols);
-
-    try std.testing.expect(line_count > 1);
-
-    const saved_h = DiffOverlayComponent.savedCommentHeightForLineCount(1.0, 22, line_count);
-    try std.testing.expect(saved_h > DiffOverlayComponent.saved_comment_min_height);
-
-    const editing_layout = DiffOverlayComponent.editingCommentLayoutForLineCount(1.0, 22, line_count);
-    try std.testing.expect(editing_layout.input_h > DiffOverlayComponent.comment_input_min_height);
-    try std.testing.expect(editing_layout.total_h > DiffOverlayComponent.editing_comment_min_height);
-}

@@ -14,5 +14,5 @@ pub fn main() !void {
 }
 
 test {
-    _ = @import("ui/components/diff_overlay.zig");
+    _ = @import("ui/components/diff_comment_layout.zig");
 }
