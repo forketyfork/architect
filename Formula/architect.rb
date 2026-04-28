@@ -6,7 +6,7 @@ class Architect < Formula
   license "MIT"
 
   depends_on "pkg-config" => :build
-  depends_on "zig" => :build
+  depends_on "zig@0.15" => :build
   depends_on xcode: :build
   depends_on "sdl3"
   depends_on "sdl3_ttf"
