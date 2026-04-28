@@ -17,6 +17,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const mcp_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const control_mod = b.createModule(.{
+        .root_source_file = b.path("src/app/control.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_mod.addImport("control", control_mod);
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),
         .target = target,
@@ -52,10 +63,15 @@ pub fn build(b: *std.Build) void {
         .name = "architect",
         .root_module = exe_mod,
     });
+    const mcp_exe = b.addExecutable(.{
+        .name = "architect-mcp",
+        .root_module = mcp_mod,
+    });
 
     exe.linkSystemLibrary("SDL3");
     exe.linkSystemLibrary("SDL3_ttf");
     exe.linkLibC();
+    mcp_exe.linkLibC();
 
     if (target.result.os.tag == .macos) {
         exe.linkSystemLibrary("proc");
@@ -81,6 +97,7 @@ pub fn build(b: *std.Build) void {
     }
 
     b.installArtifact(exe);
+    b.installArtifact(mcp_exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -95,11 +112,17 @@ pub fn build(b: *std.Build) void {
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_mod,
     });
+    const mcp_unit_tests = b.addTest(.{
+        .root_module = mcp_mod,
+    });
+    mcp_unit_tests.linkLibC();
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    const run_mcp_unit_tests = b.addRunArtifact(mcp_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+    test_step.dependOn(&run_mcp_unit_tests.step);
 
     // Lint step using zwanzig
     if (b.lazyDependency("zwanzig", .{

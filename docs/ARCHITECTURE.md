@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
+Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
 
 ## Component Diagram
 
@@ -10,10 +10,12 @@ Architect is a **single-process, layered desktop application** built in Zig that
 graph TD
     subgraph Entrypoint
         MAIN["main.zig"]
+        MCP["mcp/main.zig<br/><i>architect-mcp stdio MCP helper</i>"]
     end
 
     subgraph Application Layer
         RT["app/runtime.zig<br/><i>Frame loop, lifetime, config, session spawning</i>"]
+        CTRL["app/control.zig<br/><i>Local control socket, spawn request schema</i>"]
         APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, terminal_actions, worktree"]
     end
 
@@ -46,13 +48,16 @@ graph TD
     end
 
     MAIN --> RT
+    MCP --> CTRL
     RT --> APP_MODS
+    RT --> CTRL
     RT --> SDL
     RT --> SS
     RT --> REN
     RT --> UR
     SS --> SESSION_MODS
     SN -.->|"thread-safe queue"| RT
+    CTRL -.->|"thread-safe queue"| RT
     REN --> FONT
     REN --> GFX
     UR --> UI_CORE
@@ -84,7 +89,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- Background threads are intentionally limited to two cases: the notification socket listener (`session/notify.zig`) and a quit-time agent-teardown worker in `app/runtime.zig`. Both communicate completion/state back to the main thread through thread-safe primitives. The notification listener also posts a custom SDL wake event after queueing a notification so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
+- Background threads are intentionally limited to three cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification and control listeners also post a custom SDL wake event after queueing work so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
@@ -101,7 +106,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 2. **Render invalidation uses epoch comparison.** When terminal content changes, increment `render_epoch` on the `SessionState`. The renderer checks whether `presented_epoch` no longer matches `render_epoch` to know whether a session needs to be redrawn this frame, and cached session textures refresh when their stored epoch no longer matches the session epoch. This applies to both grid tiles and the steady-state full-screen terminal view. Never force a full re-render. (See ADR-004.)
 
-3. **Blocking I/O goes on a background thread with a thread-safe queue.** The frame loop must never block. Any new external I/O source must follow the notification socket pattern: background thread + queue + main-loop drain. (See ADR-009.)
+3. **Blocking I/O goes on a background thread with a thread-safe queue.** The frame loop must never block. Any new external I/O source must follow the notification/control socket pattern: background thread + queue + main-loop drain. (See ADR-009.)
 
 4. **Config vs. persistence separation.** User-editable preferences go in `config.toml`. Auto-managed runtime state (window position, recent folders, terminal cwds) goes in `persistence.toml`. Never mix them. (See ADR-010.)
 
@@ -120,7 +125,8 @@ These patterns are mandatory for all new code. They are derived from the archite
 | Add a new persisted runtime value   | `config.zig` (persistence section) + `persistence.toml` docs |
 | Add cross-layer shared types        | Shared Utilities (`geom.zig`, `colors.zig`, etc.) |
 | Add a new UiAction                  | `ui/types.zig` (tagged union) + handler in `app/runtime.zig` |
-| Add external tool integration       | `session/notify.zig` (extend notification protocol) |
+| Add notification-only external tool integration | `session/notify.zig` (extend notification protocol) |
+| Add external control of app state   | `app/control.zig` + a runtime drain handler in `app/runtime.zig` |
 
 ## Data Flow
 
@@ -303,6 +309,35 @@ Story notifications  -> StoryOverlay opens with file content
 Renderer draws attention border / story overlay
 ```
 
+### External MCP Spawn Path
+
+```
+MCP client
+    | launches architect-mcp over stdio
+    v
+src/mcp/main.zig
+    | JSON-RPC initialize/tools/list/tools/call
+    | validates spawn_session arguments
+    v
+app/control.zig
+    | reads discovery file in ${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}
+    | connects to architect_control_<pid>.sock
+    v
+Control socket listener thread in the running app
+    | parses request and queues PendingSpawn
+    | posts SDL wake event
+    v
+app/runtime.zig main loop
+    | validates cwd, chooses or expands a grid slot
+    | calls SessionState.ensureSpawnedWithDir()
+    | queues optional command into pending_write
+    v
+Control response
+    | status + session_id + slot_index, or stable error code
+    v
+architect-mcp MCP tool result
+```
+
 ### Logging Path
 
 ```
@@ -328,6 +363,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | SDL event queue | Keyboard, mouse, window events | Primary user interaction |
 | PTY read | Shell process stdout/stderr | Terminal content updates |
 | Unix domain socket | External AI tools | Status notifications (JSON) |
+| Unix domain socket | `architect-mcp` | Local `spawn_session` control requests |
 | Config files | `~/.config/architect/` | Startup configuration and persistence |
 
 ### Storage
@@ -341,6 +377,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
 | architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
+| architect_control.json | `${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}` | Discovery file pointing `architect-mcp` at the running app's local control socket |
 
 ### Exit Points
 
@@ -357,7 +394,9 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
+| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main()`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
@@ -386,8 +425,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-001: Five-Layer Single-Thread Architecture
 
-- **Decision:** Organize the application into five layers (entrypoint, platform, session, rendering, UI overlay) running on a single main thread with only the notification socket on a background thread.
-- **Context:** A terminal multiplexer needs tight control over frame timing, event ordering, and GPU resource management. Multi-threaded rendering introduces synchronization complexity without clear benefit for a UI-bound application. The notification socket is the only I/O that must not block the frame loop.
+- **Decision:** Organize the application into five layers (entrypoint, platform, session, rendering, UI overlay) running on a single main thread with bounded background threads only for blocking external I/O and quit-time agent teardown.
+- **Context:** A terminal multiplexer needs tight control over frame timing, event ordering, and GPU resource management. Multi-threaded rendering introduces synchronization complexity without clear benefit for a UI-bound application. Notification and control sockets are isolated on listener threads because their accept/read paths must not block the frame loop.
 - **Alternatives considered:**
   - *Multi-threaded rendering* -- rejected because SDL3 renderers are not thread-safe, and the complexity of synchronizing terminal state across threads outweighs the marginal throughput gain.
   - *Async I/O everywhere* -- rejected because the frame loop is inherently synchronous (poll, update, render, present), and async patterns add indirection without improving latency for a 60 FPS UI.

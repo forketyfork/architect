@@ -13,6 +13,7 @@ const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
+const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
@@ -50,6 +51,7 @@ const foreground_process_cache_ms: i64 = 150;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
+const ControlQueue = control.SpawnQueue;
 const SessionState = session_state.SessionState;
 const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
@@ -477,6 +479,204 @@ const WorkingDir = struct {
     }
 };
 
+const ExternalSpawnPlan = struct {
+    slot_index: usize,
+    cols: usize,
+    rows: usize,
+    expands_grid: bool,
+};
+
+fn planExternalSpawnSlot(
+    sessions: []const *SessionState,
+    grid_cols: usize,
+    grid_rows: usize,
+    focused_session: usize,
+) ?ExternalSpawnPlan {
+    const spawned_count = countSpawnedSessions(sessions);
+    if (spawned_count >= grid_layout.max_terminals) return null;
+
+    const capacity = grid_cols * grid_rows;
+    if (spawned_count >= capacity) {
+        const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
+        const new_capacity = new_dims.cols * new_dims.rows;
+        if (new_capacity > grid_layout.max_terminals) return null;
+        const slot_index = findNextFreeSlotAfter(sessions, new_capacity, focused_session) orelse return null;
+        return .{
+            .slot_index = slot_index,
+            .cols = new_dims.cols,
+            .rows = new_dims.rows,
+            .expands_grid = true,
+        };
+    }
+
+    const slot_index = if (focused_session < sessions.len and !sessions[focused_session].spawned)
+        focused_session
+    else
+        findNextFreeSlotAfter(sessions, capacity, focused_session) orelse return null;
+
+    return .{
+        .slot_index = slot_index,
+        .cols = grid_cols,
+        .rows = grid_rows,
+        .expands_grid = false,
+    };
+}
+
+fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
+    if (!std.fs.path.isAbsolute(cwd)) {
+        return .{
+            .code = .invalid_cwd,
+            .message = "cwd must be an absolute directory",
+        };
+    }
+
+    var dir = std.fs.openDirAbsolute(cwd, .{}) catch {
+        return .{
+            .code = .invalid_cwd,
+            .message = "cwd must be an existing directory",
+        };
+    };
+    dir.close();
+    return null;
+}
+
+fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    if (command.len == 0) return error.EmptyCommand;
+    const needs_newline = command[command.len - 1] != '\n';
+    const out_len = command.len + @as(usize, if (needs_newline) 1 else 0);
+    const out = try allocator.alloc(u8, out_len);
+    @memcpy(out[0..command.len], command);
+    if (needs_newline) out[out.len - 1] = '\n';
+    return out;
+}
+
+fn completeExternalSpawnFailure(
+    pending: *control.PendingSpawn,
+    code: control.SpawnErrorCode,
+    message: []const u8,
+) void {
+    pending.completion.complete(.{ .failure = .{
+        .code = code,
+        .message = message,
+    } });
+}
+
+fn handleExternalSpawnRequest(
+    allocator: std.mem.Allocator,
+    pending: *control.PendingSpawn,
+    sessions: []const *SessionState,
+    grid: *GridLayout,
+    anim_state: *AnimationState,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
+    loop: *xev.Loop,
+    animations_enabled: bool,
+    now: i64,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    font: *font_mod.Font,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+    cell_width_pixels: *c_int,
+    cell_height_pixels: *c_int,
+) void {
+    if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
+        pending.completion.complete(.{ .failure = failure });
+        return;
+    }
+
+    const plan = planExternalSpawnSlot(sessions, grid.cols, grid.rows, anim_state.focused_session) orelse {
+        completeExternalSpawnFailure(pending, .full_grid, "all Architect terminal slots are in use");
+        return;
+    };
+
+    const command_input = if (pending.request.command) |command| blk: {
+        break :blk buildQueuedCommand(allocator, command) catch |err| {
+            log.warn("failed to prepare external spawn command: {}", .{err});
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare command for the new session");
+            return;
+        };
+    } else null;
+    defer if (command_input) |input_bytes| allocator.free(input_bytes);
+
+    const cwd_buf = allocZ(allocator, pending.request.cwd) catch |err| {
+        log.warn("failed to allocate external spawn cwd: {}", .{err});
+        completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare working directory");
+        return;
+    };
+    defer allocator.free(cwd_buf);
+    const cwd_z: [:0]const u8 = cwd_buf[0..pending.request.cwd.len :0];
+
+    if (plan.expands_grid) {
+        var moves = collectSessionMovesCurrent(sessions, allocator) catch |err| {
+            log.warn("failed to collect external spawn grid moves: {}", .{err});
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare grid expansion");
+            return;
+        };
+        defer moves.deinit(allocator);
+
+        if (animations_enabled) {
+            grid.startResize(plan.cols, plan.rows, now, render_width, render_height, moves.items) catch |err| {
+                log.warn("failed to start external spawn grid resize: {}", .{err});
+                grid.cols = plan.cols;
+                grid.rows = plan.rows;
+            };
+            if (grid.is_resizing) {
+                anim_state.mode = .GridResizing;
+            }
+        } else {
+            grid.cols = plan.cols;
+            grid.rows = plan.rows;
+        }
+    }
+
+    const session = sessions[plan.slot_index];
+    session.ensureSpawnedWithDir(cwd_z, loop) catch |err| {
+        log.warn("external spawn failed for cwd {s}: {}", .{ pending.request.cwd, err });
+        completeExternalSpawnFailure(pending, .spawn_failed, "failed to spawn terminal session");
+        return;
+    };
+
+    if (command_input) |input_bytes| {
+        session.pending_write.appendSlice(allocator, input_bytes) catch |err| {
+            log.warn("failed to queue external spawn command for session {d}: {}", .{ session.id, err });
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to queue command for the new session");
+            return;
+        };
+    }
+
+    session_interaction_component.setStatus(plan.slot_index, .running);
+    session_interaction_component.setAttention(plan.slot_index, false, now);
+    session_interaction_component.clearSelection(anim_state.focused_session);
+    session_interaction_component.clearSelection(plan.slot_index);
+
+    anim_state.previous_session = anim_state.focused_session;
+    anim_state.focused_session = plan.slot_index;
+
+    cell_width_pixels.* = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+    cell_height_pixels.* = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+    applyTerminalLayout(
+        sessions,
+        allocator,
+        font,
+        render_width,
+        render_height,
+        ui_scale,
+        anim_state.mode,
+        grid.cols,
+        grid.rows,
+        grid_font_scale,
+        full_cols,
+        full_rows,
+    );
+
+    pending.completion.complete(.{ .success = .{
+        .session_id = session.id,
+        .slot_index = plan.slot_index,
+    } });
+}
+
 fn initSharedFont(
     allocator: std.mem.Allocator,
     renderer: *c.SDL_Renderer,
@@ -901,10 +1101,20 @@ pub fn run() !void {
     var notify_queue = NotificationQueue{};
     defer notify_queue.deinit(allocator);
 
+    var control_queue = ControlQueue{};
+    defer control_queue.deinit(allocator);
+
     const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
+    const control_sock = try control.getControlSocketPath(allocator);
+    defer allocator.free(control_sock);
+
+    const control_discovery_path = try control.getControlDiscoveryPath(allocator);
+    defer allocator.free(control_discovery_path);
+
     var notify_stop = std.atomic.Value(bool).init(false);
+    var control_stop = std.atomic.Value(bool).init(false);
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1013,6 +1223,23 @@ pub fn run() !void {
     defer {
         notify_stop.store(true, .seq_cst);
         notify_thread.join();
+    }
+    const control_thread = try control.startControlThread(
+        allocator,
+        control_sock,
+        control_discovery_path,
+        &control_queue,
+        &control_stop,
+        .{
+            .context = &sdl,
+            .callback = platform.pushWakeEventFromOpaque,
+        },
+    );
+    defer {
+        control_stop.store(true, .seq_cst);
+        control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
+        control_thread.join();
+        control.cleanupControlFiles(control_sock, control_discovery_path);
     }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
@@ -2071,6 +2298,33 @@ pub fn run() !void {
         }
         const any_session_dirty = render_cache.anyDirty(sessions);
 
+        var control_requests = control_queue.drainAll();
+        defer control_requests.deinit(allocator);
+        const had_control_requests = control_requests.items.len > 0;
+        for (control_requests.items) |*request| {
+            handleExternalSpawnRequest(
+                allocator,
+                request,
+                sessions,
+                &grid,
+                &anim_state,
+                session_interaction_component,
+                &loop,
+                animations_enabled,
+                now,
+                render_width,
+                render_height,
+                ui_scale,
+                &font,
+                config.grid.font_scale,
+                &full_cols,
+                &full_rows,
+                &cell_width_pixels,
+                &cell_height_pixels,
+            );
+            request.request.deinit(allocator);
+        }
+
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
@@ -2690,7 +2944,7 @@ pub fn run() !void {
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
+        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -2733,7 +2987,7 @@ pub fn run() !void {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications;
+        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;
@@ -2797,6 +3051,65 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     @memcpy(buf[0..data.len], data);
     buf[data.len] = 0;
     return buf;
+}
+
+test "planExternalSpawnSlot expands a full current grid" {
+    var first: SessionState = undefined;
+    first.spawned = true;
+    var second: SessionState = undefined;
+    second.spawned = false;
+    var sessions = [_]*SessionState{ &first, &second };
+
+    const plan = planExternalSpawnSlot(&sessions, 1, 1, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 2), plan.cols);
+    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
+}
+
+test "planExternalSpawnSlot reuses free capacity" {
+    var first: SessionState = undefined;
+    first.spawned = true;
+    var second: SessionState = undefined;
+    second.spawned = false;
+    var sessions = [_]*SessionState{ &first, &second };
+
+    const plan = planExternalSpawnSlot(&sessions, 2, 1, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 2), plan.cols);
+    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
+}
+
+test "planExternalSpawnSlot reports full grid" {
+    var storage: [grid_layout.max_terminals]SessionState = undefined;
+    var sessions: [grid_layout.max_terminals]*SessionState = undefined;
+    for (&storage, 0..) |*session, idx| {
+        session.* = undefined;
+        session.spawned = true;
+        sessions[idx] = session;
+    }
+
+    try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
+}
+
+test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
+    try std.testing.expect(validateExternalSpawnCwd("/tmp") == null);
+
+    const failure = validateExternalSpawnCwd("relative/path") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(control.SpawnErrorCode.invalid_cwd, failure.code);
+}
+
+test "buildQueuedCommand appends a newline only when needed" {
+    const allocator = std.testing.allocator;
+
+    const first = try buildQueuedCommand(allocator, "echo ok");
+    defer allocator.free(first);
+    try std.testing.expectEqualStrings("echo ok\n", first);
+
+    const second = try buildQueuedCommand(allocator, "echo ok\n");
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("echo ok\n", second);
 }
 
 test "waitTimeoutMsFromNs rounds up to whole milliseconds" {

@@ -67,6 +67,8 @@ class Architect < Formula
     EOS
 
     macos.install buildpath/"zig-out/bin/architect"
+    macos.install buildpath/"zig-out/bin/architect-mcp"
+    bin.install_symlink macos/"architect-mcp" => "architect-mcp"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
@@ -81,10 +83,18 @@ class Architect < Formula
 
       Launch with:
         open -a Architect
+
+      MCP helper command:
+        architect-mcp
+
+      MCP helper app-bundle path:
+        #{prefix}/Architect.app/Contents/MacOS/architect-mcp
     EOS
   end
 
   test do
     assert_path_exists prefix/"Architect.app/Contents/MacOS/architect"
+    assert_path_exists prefix/"Architect.app/Contents/MacOS/architect-mcp"
+    assert_path_exists bin/"architect-mcp"
   end
 end
