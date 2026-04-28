@@ -25,12 +25,20 @@ pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: s
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
+    var discarding_oversized_line = false;
     var chunk: [4096]u8 = undefined;
     while (true) {
         const n = try stdin_file.read(&chunk);
         if (n == 0) break;
 
         for (chunk[0..n]) |byte| {
+            if (discarding_oversized_line) {
+                if (byte == '\n') {
+                    discarding_oversized_line = false;
+                }
+                continue;
+            }
+
             if (byte == '\n') {
                 if (buffer.items.len > 0) {
                     try handleMessage(allocator, stdout_file, buffer.items);
@@ -42,13 +50,14 @@ pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: s
             if (buffer.items.len >= control.max_message_bytes) {
                 try writeJsonRpcError(allocator, stdout_file, null, .invalid_request, "message is too large");
                 buffer.clearRetainingCapacity();
+                discarding_oversized_line = true;
                 continue;
             }
             try buffer.append(allocator, byte);
         }
     }
 
-    if (buffer.items.len > 0) {
+    if (!discarding_oversized_line and buffer.items.len > 0) {
         try handleMessage(allocator, stdout_file, buffer.items);
     }
 }
@@ -500,4 +509,43 @@ test "tool failure response is an MCP tool error result" {
     const code = structured_content.object.get("code") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("error", status.string);
     try std.testing.expectEqualStrings("invalid_cwd", code.string);
+}
+
+test "run discards the rest of an oversized line" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var input = try tmp.dir.createFile("input.jsonl", .{ .read = true });
+    defer input.close();
+
+    const oversized = try allocator.alloc(u8, control.max_message_bytes + 10);
+    defer allocator.free(oversized);
+    @memset(oversized, 'x');
+
+    try input.writeAll(oversized);
+    try input.writeAll("\n");
+    try input.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+    try input.seekTo(0);
+
+    var out = try tmp.dir.createFile("output.jsonl", .{ .read = true });
+    defer out.close();
+
+    try run(allocator, input, out);
+    try out.seekTo(0);
+
+    const output = try out.readToEndAlloc(allocator, 64 * 1024);
+    defer allocator.free(output);
+
+    var line_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, output, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        line_count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), line_count);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"message\":\"message is too large\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"tools\"") != null);
 }

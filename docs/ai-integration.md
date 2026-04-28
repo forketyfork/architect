@@ -21,6 +21,8 @@ Examples:
 
 `architect-mcp` is launched by an MCP client as a stdio server. It exposes exactly one tool, `spawn_session`, and forwards each call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running.
 
+The running app writes a per-instance discovery file named `architect_control_<uid>_<pid>.json` under `${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}` and logs that full path together with the socket path. When several Architect instances are running, `architect-mcp` tries the newest reachable discovery entry.
+
 Helper paths:
 
 - Source builds: `zig-out/bin/architect-mcp`

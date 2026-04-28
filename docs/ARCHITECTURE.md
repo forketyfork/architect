@@ -320,7 +320,7 @@ src/mcp/main.zig
     | validates spawn_session arguments
     v
 app/control.zig
-    | reads discovery file in ${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}
+    | scans per-instance discovery files in ${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}
     | connects to architect_control_<pid>.sock
     v
 Control socket listener thread in the running app
@@ -377,7 +377,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
 | architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
-| architect_control.json | `${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}` | Discovery file pointing `architect-mcp` at the running app's local control socket |
+| architect_control_<uid>_<pid>.json | `${XDG_RUNTIME_DIR:-$TMPDIR:-/tmp}` | Per-instance discovery file pointing `architect-mcp` at a running app's local control socket |
 
 ### Exit Points
 
