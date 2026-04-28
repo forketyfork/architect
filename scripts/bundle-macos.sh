@@ -287,11 +287,11 @@ if [[ "$SIGN_APP" == true ]]; then
     done
     shopt -u nullglob
 
-    echo "Signing architect..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
-
     echo "Signing architect-mcp..."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+
+    echo "Signing architect..."
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
 
     echo "Signing ${APP_NAME}.app..."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR"
