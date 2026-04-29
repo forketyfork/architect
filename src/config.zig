@@ -273,6 +273,48 @@ pub const LoggingConfig = struct {
     }
 };
 
+pub const McpSseConfig = struct {
+    enabled: bool = false,
+    host: []const u8 = default_host,
+    port: u16 = default_port,
+    host_owned: bool = false,
+
+    pub const default_host = "127.0.0.1";
+    pub const default_port: u16 = 39813;
+
+    pub fn deinit(self: *McpSseConfig, allocator: std.mem.Allocator) void {
+        if (self.host_owned) {
+            allocator.free(self.host);
+        }
+        self.host = default_host;
+        self.host_owned = false;
+    }
+
+    pub fn duplicate(self: McpSseConfig, allocator: std.mem.Allocator) !McpSseConfig {
+        const host_dup = try allocator.dupe(u8, self.host);
+        return McpSseConfig{
+            .enabled = self.enabled,
+            .host = host_dup,
+            .port = self.port,
+            .host_owned = true,
+        };
+    }
+};
+
+pub const McpConfig = struct {
+    sse: McpSseConfig = .{},
+
+    pub fn deinit(self: *McpConfig, allocator: std.mem.Allocator) void {
+        self.sse.deinit(allocator);
+    }
+
+    pub fn duplicate(self: McpConfig, allocator: std.mem.Allocator) !McpConfig {
+        return McpConfig{
+            .sse = try self.sse.duplicate(allocator),
+        };
+    }
+};
+
 pub const WorktreeConfig = struct {
     directory: ?[]const u8 = null,
     init_command: ?[]const u8 = null,
@@ -783,6 +825,7 @@ pub const Config = struct {
     metrics: MetricsConfig = .{},
     logging: LoggingConfig = .{},
     worktree: WorktreeConfig = .{},
+    mcp: McpConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -902,6 +945,7 @@ pub const Config = struct {
         config.theme = try config.theme.duplicate(allocator);
         config.logging = try config.logging.duplicate(allocator);
         config.worktree = try config.worktree.duplicate(allocator);
+        config.mcp = try config.mcp.duplicate(allocator);
 
         return config;
     }
@@ -911,6 +955,7 @@ pub const Config = struct {
         self.theme.deinit(allocator);
         self.logging.deinit(allocator);
         self.worktree.deinit(allocator);
+        self.mcp.deinit(allocator);
     }
 
     pub fn getFontSize(self: Config) i32 {

@@ -2,7 +2,7 @@
 
 Architect exposes a Unix domain socket to let external tools (Claude Code, Codex, Gemini CLI, etc.) signal UI states.
 
-Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions.
+Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions. The same `spawn_session` tool is also available as an in-app SSE MCP server when enabled in `config.toml`.
 
 ## Socket Protocol
 
@@ -80,6 +80,37 @@ Tool errors use stable codes:
 - `full_grid`: every Architect terminal slot is already in use
 - `invalid_cwd`: `cwd` is not an absolute existing directory
 - `spawn_failed`: Architect accepted the request but could not create or initialize the terminal session
+
+## MCP over SSE (in-app)
+
+Architect can serve the same `spawn_session` tool over the legacy MCP SSE transport directly from the running app, without invoking the standalone `architect-mcp` helper. Enable it in `~/.config/architect/config.toml`:
+
+```toml
+[mcp.sse]
+enabled = true
+host = "127.0.0.1"
+port = 39813
+```
+
+When enabled, the app exposes two HTTP endpoints on `host:port`:
+
+- `GET /sse` — opens a `text/event-stream`. The first event is `event: endpoint` whose `data` is the relative URL the client must POST JSON-RPC requests to (e.g. `/messages?session_id=1`).
+- `POST /messages?session_id=<id>` — JSON-RPC request body (UTF-8 JSON). The server replies `202 Accepted`; the matching JSON-RPC response arrives as a `message` SSE event on the GET stream that established the session.
+
+The bind address defaults to loopback (`127.0.0.1`). Bind failures (port already in use, etc.) are logged and the app continues to run with the transport disabled.
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "architect-sse": {
+      "transport": "sse",
+      "url": "http://127.0.0.1:39813/sse"
+    }
+  }
+}
+```
 
 ## Built-in Command (inside Architect terminals)
 

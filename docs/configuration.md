@@ -178,6 +178,25 @@ Creating worktrees outside the repository tree prevents agents (Claude Code, Cod
 
 Existing worktrees (including legacy ones under `.architect/` inside the repo) remain visible in the worktree picker and can be switched to or removed normally.
 
+### MCP Server Configuration
+
+Architect ships a JSON-RPC MCP server that lets external tools (Claude Code, Cursor, etc.) ask the running app to spawn new terminal sessions. The stdio variant ships as the standalone `architect-mcp` binary; the SSE variant runs inside the app on a localhost TCP port.
+
+```toml
+[mcp.sse]
+enabled = false     # Run an SSE MCP server alongside the app (default: false)
+host = "127.0.0.1"  # Bind address. Keep on loopback to avoid exposing the tool externally.
+port = 39813        # TCP port (default: 39813). Set to 0 to let the OS pick a free port.
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `false` | When true, the app starts an SSE MCP transport on `host:port`. Disabled by default. |
+| `host` | `"127.0.0.1"` | Loopback address to bind. Listening on a non-loopback interface is not recommended without additional access control. |
+| `port` | `39813` | TCP port to bind. The chosen port is logged on startup; bind failures are logged and the app keeps running without the SSE transport. |
+
+The endpoint follows the legacy MCP SSE transport: clients open `GET http://<host>:<port>/sse` for the event stream, then POST JSON-RPC requests to the `/messages?session_id=<id>` URL announced in the first `endpoint` event.
+
 ### Complete Example
 
 ```toml
@@ -230,6 +249,11 @@ min_level = "info"
 [worktree]
 # directory = "~/.architect-worktrees"
 # init_command = "script/setup"
+
+[mcp.sse]
+# enabled = false
+# host = "127.0.0.1"
+# port = 39813
 ```
 
 ## persistence.toml

@@ -152,6 +152,19 @@ For Homebrew installs, `architect-mcp` is also symlinked onto `PATH`; the app-bu
 $(brew --prefix)/Cellar/architect/$(brew list --versions architect | awk '{print $2}')/Architect.app/Contents/MacOS/architect-mcp
 ```
 
+### MCP over SSE
+
+The same `spawn_session` tool is also available over the legacy MCP SSE transport directly from the running Architect app. Enable it in `~/.config/architect/config.toml`:
+
+```toml
+[mcp.sse]
+enabled = true
+host = "127.0.0.1"
+port = 39813
+```
+
+When enabled, the app listens on `http://<host>:<port>` and serves `GET /sse` for the event stream and `POST /messages?session_id=<id>` for JSON-RPC requests. See [`docs/ai-integration.md`](docs/ai-integration.md) for the full protocol details and an example MCP client config.
+
 ## Configuration
 
 Architect stores configuration in `~/.config/architect/`:

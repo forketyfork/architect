@@ -13,7 +13,8 @@ const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
-const control = @import("control.zig");
+const control = @import("control");
+const mcp_sse = @import("mcp_sse.zig");
 const notify = @import("../session/notify.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
@@ -1241,6 +1242,27 @@ pub fn run() !void {
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
     }
+
+    var mcp_sse_server: ?*mcp_sse.Server = null;
+    if (config.mcp.sse.enabled) {
+        mcp_sse_server = mcp_sse.Server.start(
+            allocator,
+            &control_queue,
+            .{
+                .context = &sdl,
+                .callback = platform.pushWakeEventFromOpaque,
+            },
+            .{ .host = config.mcp.sse.host, .port = config.mcp.sse.port },
+        ) catch |err| blk: {
+            log.warn("failed to start MCP SSE server on {s}:{d}: {}", .{
+                config.mcp.sse.host,
+                config.mcp.sse.port,
+                err,
+            });
+            break :blk null;
+        };
+    }
+    defer if (mcp_sse_server) |s| s.stopAndJoin();
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
     defer input_source_tracker.deinit();

@@ -16,7 +16,13 @@ graph TD
     subgraph Application Layer
         RT["app/runtime.zig<br/><i>Frame loop, lifetime, config, session spawning</i>"]
         CTRL["app/control.zig<br/><i>Local control socket, spawn request schema</i>"]
+        SSE["app/mcp_sse.zig<br/><i>Optional in-app MCP SSE server (localhost)</i>"]
         APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, terminal_actions, worktree"]
+    end
+
+    subgraph MCP Layer
+        MCPMAIN["mcp/main.zig<br/><i>architect-mcp stdio binary</i>"]
+        MCPHDLR["mcp/handler.zig<br/><i>Transport-agnostic JSON-RPC dispatcher</i>"]
     end
 
     subgraph Platform Layer
@@ -89,7 +95,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- Background threads are intentionally limited to three cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification and control listeners also post a custom SDL wake event after queueing work so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
+- Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the optional in-app MCP SSE server (`app/mcp_sse.zig`, gated on `[mcp.sse] enabled = true`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification, control, and MCP SSE listeners also post a custom SDL wake event after queueing work so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
@@ -394,9 +400,11 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main()`, `run()` | `app/control` module import, std |
+| `mcp/main.zig` | Separate `architect-mcp` stdio MCP binary. Pumps newline-delimited JSON-RPC into the shared handler over stdio. | `main()`, `run()` | `mcp/handler` module import, `app/control` module import, std |
+| `mcp/handler.zig` | Transport-agnostic JSON-RPC dispatcher: implements `initialize`, `ping`, `tools/list`, and `tools/call spawn_session`. Spawning is parameterized via `Spawner` so different transports plug in different implementations (stdio uses the local control socket; in-app SSE enqueues directly). | `handleMessage()`, `Spawner`, `control_socket_spawner` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
+| `app/mcp_sse.zig` | Optional in-app MCP server speaking the legacy SSE transport on a localhost TCP port. Reuses `mcp/handler` and feeds the existing `SpawnQueue`; gated on `[mcp.sse] enabled`. | `Server.start()`, `Server.stopAndJoin()`, `Options` | `mcp/handler`, `app/control`, std |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
