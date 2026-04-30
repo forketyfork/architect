@@ -147,31 +147,33 @@ pub fn applyTerminalResize(
 
     for (sessions) |session| {
         const cells_changed = terminalCellSizeChanged(session.pty_size, cols, rows);
-        session.pty_size = new_size;
-        if (!cells_changed) continue;
-
-        if (session.spawned) {
-            const shell = &(session.shell orelse continue);
-            const terminal = &(session.terminal orelse continue);
-
-            shell.pty.setSize(new_size) catch |err| {
-                std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-            };
-
-            resizeTerminalPreservingPrompt(allocator, terminal, cols, rows) catch |err| {
-                std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-                continue;
-            };
-
-            if (session.stream) |*stream| {
-                stream.handler.deinit();
-                stream.handler = vt_stream.Handler.init(terminal, shell);
-            } else {
-                session.stream = vt_stream.initStream(allocator, terminal, shell);
-            }
-
-            session.markDirty();
+        if (!session.spawned or !cells_changed) {
+            session.pty_size = new_size;
+            continue;
         }
+
+        const shell = &(session.shell orelse continue);
+        const terminal = &(session.terminal orelse continue);
+
+        shell.pty.setSize(new_size) catch |err| {
+            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+            continue;
+        };
+
+        resizeTerminalPreservingPrompt(allocator, terminal, cols, rows) catch |err| {
+            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+            continue;
+        };
+
+        session.pty_size = new_size;
+        if (session.stream) |*stream| {
+            stream.handler.deinit();
+            stream.handler = vt_stream.Handler.init(terminal, shell);
+        } else {
+            session.stream = vt_stream.initStream(allocator, terminal, shell);
+        }
+
+        session.markDirty();
     }
 }
 

@@ -43,6 +43,11 @@ pub const RenderCache = struct {
         content_and_overlays,
     };
 
+    pub const CacheRenderMode = enum {
+        full,
+        grid,
+    };
+
     pub const Entry = struct {
         texture: ?*c.SDL_Texture = null,
         width: c_int = 0,
@@ -50,6 +55,7 @@ pub const RenderCache = struct {
         cache_epoch: u64 = 0,
         presented_epoch: u64 = 0,
         cache_composition: CacheComposition = .content_only,
+        cache_render_mode: CacheRenderMode = .full,
     };
 
     pub fn init(allocator: std.mem.Allocator, session_count: usize) !RenderCache {
@@ -648,7 +654,7 @@ fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize,
     if (!is_grid_view or is_viewing_scrollback) return 0;
     if (visible_rows == 0) return 0;
 
-    const total_rows: usize = term_rows;
+    const total_rows: usize = @intCast(term_rows);
     if (visible_rows >= total_rows) return 0;
     if (cursor_row < visible_rows) return 0;
 
@@ -816,6 +822,7 @@ fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
     cache_entry.height = 0;
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
+    cache_entry.cache_render_mode = .full;
 }
 
 fn releaseNonFocusedCaches(render_cache: *RenderCache, focused_session: usize) void {
@@ -846,6 +853,7 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
     cache_entry.height = height;
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
+    cache_entry.cache_render_mode = .full;
     return true;
 }
 
@@ -888,12 +896,17 @@ fn cacheComposition(cache_overlays: bool) RenderCache.CacheComposition {
     return if (cache_overlays) .content_and_overlays else .content_only;
 }
 
+fn cacheRenderMode(is_grid_view: bool) RenderCache.CacheRenderMode {
+    return if (is_grid_view) .grid else .full;
+}
+
 fn cacheNeedsRefresh(
     cache_entry: *const RenderCache.Entry,
     session_epoch: u64,
     composition: RenderCache.CacheComposition,
+    render_mode: RenderCache.CacheRenderMode,
 ) bool {
-    return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition;
+    return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition or cache_entry.cache_render_mode != render_mode;
 }
 
 fn refreshSessionCacheTexture(
@@ -916,6 +929,7 @@ fn refreshSessionCacheTexture(
     ui_scale: f32,
 ) RenderError!void {
     log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
+    const render_mode = cacheRenderMode(is_grid_view);
     const previous_target = c.SDL_GetRenderTarget(renderer);
     defer _ = c.SDL_SetRenderTarget(renderer, previous_target);
 
@@ -932,6 +946,7 @@ fn refreshSessionCacheTexture(
     }
     cache_entry.cache_epoch = session.render_epoch;
     cache_entry.cache_composition = composition;
+    cache_entry.cache_render_mode = render_mode;
 }
 
 fn renderCachedTexture(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect) void {
@@ -971,10 +986,11 @@ fn renderSessionCached(
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     const cache_overlays = render_overlays and wave_effect != null;
     const composition = cacheComposition(cache_overlays);
+    const render_mode = cacheRenderMode(is_grid_view);
 
     if (can_cache) {
         if (cache_entry.texture) |tex| {
-            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition)) {
+            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
                 try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
             }
 
@@ -1130,27 +1146,40 @@ test "cache refresh predicate stays clean for an unchanged content-only texture"
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(!cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+    try std.testing.expect(!cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(false)));
 }
 
 test "cached session texture refreshes when the render epoch changes" {
     const entry = RenderCache.Entry{
         .cache_epoch = 41,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(false)));
 }
 
 test "cached session texture refreshes when wave rendering needs overlays baked into the cache" {
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(true)));
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(true), cacheRenderMode(false)));
+}
+
+test "cached session texture refreshes when grid render mode changes" {
+    const entry = RenderCache.Entry{
+        .cache_epoch = 42,
+        .cache_composition = .content_only,
+        .cache_render_mode = .full,
+    };
+
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(true)));
 }
 
 fn flushRun(
