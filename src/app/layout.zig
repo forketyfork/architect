@@ -2,6 +2,7 @@ const std = @import("std");
 const app_state = @import("app_state.zig");
 const c = @import("../c.zig");
 const font_mod = @import("../font.zig");
+const ghostty_vt = @import("ghostty-vt");
 const pty_mod = @import("../pty.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const dpi = @import("../dpi.zig");
@@ -113,27 +114,16 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
 }
 
 pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
-    return switch (mode) {
-        .Grid, .Expanding, .Collapsing, .GridResizing => {
-            const grid_dim = @max(grid_cols, grid_rows);
-            const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
-            const effective_scale: f32 = base_grid_scale * grid_font_scale;
-            return calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale);
-        },
-        else => calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
-    };
+    _ = mode;
+    _ = grid_font_scale;
+    _ = grid_cols;
+    _ = grid_rows;
+    return calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale);
 }
 
 pub fn scaledFontSize(points: c_int, scale: f32) c_int {
     const scaled = std.math.round(@as(f32, @floatFromInt(points)) * scale);
     return @max(1, @as(c_int, @intFromFloat(scaled)));
-}
-
-pub fn gridFontScaleForMode(mode: app_state.ViewMode, grid_font_scale: f32) f32 {
-    return switch (mode) {
-        .Grid, .Expanding, .Collapsing, .GridResizing => grid_font_scale,
-        else => 1.0,
-    };
 }
 
 pub fn applyTerminalResize(
@@ -156,28 +146,106 @@ pub fn applyTerminalResize(
     };
 
     for (sessions) |session| {
-        session.pty_size = new_size;
-        if (session.spawned) {
-            const shell = &(session.shell orelse continue);
-            const terminal = &(session.terminal orelse continue);
-
-            shell.pty.setSize(new_size) catch |err| {
-                std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
-            };
-
-            terminal.resize(allocator, cols, rows) catch |err| {
-                std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
-                continue;
-            };
-
-            if (session.stream) |*stream| {
-                stream.handler.deinit();
-                stream.handler = vt_stream.Handler.init(terminal, shell);
-            } else {
-                session.stream = vt_stream.initStream(allocator, terminal, shell);
-            }
-
-            session.markDirty();
+        const cells_changed = terminalCellSizeChanged(session.pty_size, cols, rows);
+        if (!session.spawned or !cells_changed) {
+            session.pty_size = new_size;
+            continue;
         }
+
+        const shell = &(session.shell orelse continue);
+        const terminal = &(session.terminal orelse continue);
+
+        shell.pty.setSize(new_size) catch |err| {
+            std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+            continue;
+        };
+
+        resizeTerminalPreservingPrompt(allocator, terminal, cols, rows) catch |err| {
+            std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+            continue;
+        };
+
+        session.pty_size = new_size;
+        if (session.stream) |*stream| {
+            stream.handler.deinit();
+            stream.handler = vt_stream.Handler.init(terminal, shell);
+        } else {
+            session.stream = vt_stream.initStream(allocator, terminal, shell);
+        }
+
+        session.markDirty();
     }
+}
+
+fn terminalCellSizeChanged(current: pty_mod.winsize, cols: u16, rows: u16) bool {
+    return current.ws_col != cols or current.ws_row != rows;
+}
+
+fn resizeTerminalPreservingPrompt(
+    allocator: std.mem.Allocator,
+    terminal: *ghostty_vt.Terminal,
+    cols: u16,
+    rows: u16,
+) !void {
+    const prompt_redraw = terminal.flags.shell_redraws_prompt;
+    terminal.flags.shell_redraws_prompt = .false;
+    defer terminal.flags.shell_redraws_prompt = prompt_redraw;
+
+    try terminal.resize(allocator, cols, rows);
+}
+
+test "view mode and grid font scale do not change terminal size" {
+    var font: font_mod.Font = undefined;
+    font.cell_width = 10;
+    font.cell_height = 20;
+
+    const full = calculateTerminalSizeForMode(&font, 1200, 800, .Full, 2.0, 2, 1, 1.0);
+    const normal_grid = calculateTerminalSizeForMode(&font, 1200, 800, .Grid, 1.0, 2, 1, 1.0);
+    const enlarged_grid = calculateTerminalSizeForMode(&font, 1200, 800, .Grid, 2.0, 2, 1, 1.0);
+
+    try std.testing.expectEqual(full, normal_grid);
+    try std.testing.expectEqual(full, enlarged_grid);
+}
+
+test "terminal cell size ignores pixel-only resize differences" {
+    const size = pty_mod.winsize{
+        .ws_row = 40,
+        .ws_col = 120,
+        .ws_xpixel = 1200,
+        .ws_ypixel = 800,
+    };
+
+    try std.testing.expect(!terminalCellSizeChanged(size, 120, 40));
+    try std.testing.expect(terminalCellSizeChanged(size, 121, 40));
+    try std.testing.expect(terminalCellSizeChanged(size, 120, 41));
+}
+
+test "terminal resize preserves semantic prompt contents" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer terminal.deinit(allocator);
+
+    const screen = terminal.screens.active;
+    try screen.testWriteString("ABCDE\n");
+    screen.cursorSetSemanticContent(.{ .prompt = .initial });
+    try screen.testWriteString("> ");
+    screen.cursorSetSemanticContent(.{ .input = .clear_eol });
+    try screen.testWriteString("echo");
+
+    const before = try terminal.plainString(allocator);
+    defer allocator.free(before);
+    try std.testing.expectEqualStrings("ABCDE\n> echo", before);
+
+    const prompt_redraw = terminal.flags.shell_redraws_prompt;
+    try resizeTerminalPreservingPrompt(allocator, &terminal, 20, 3);
+    try std.testing.expectEqual(prompt_redraw, terminal.flags.shell_redraws_prompt);
+
+    const after = try terminal.plainString(allocator);
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings("ABCDE\n> echo", after);
 }

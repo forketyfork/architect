@@ -285,20 +285,6 @@ fn agentProcessStarted(session: *const SessionState) bool {
     return session.hasForegroundProcess();
 }
 
-fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
-    return switch (mode) {
-        .Grid, .Expanding, .Collapsing, .GridResizing => blk: {
-            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
-            const can_render_bar = cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale);
-            const per_cell_reserve: c_int = if (can_render_bar) ui_mod.cwd_bar.reservedHeight(ui_scale) else 0;
-            const total_reserve: c_int = per_cell_reserve * @as(c_int, @intCast(grid_rows));
-            const adjusted: c_int = render_height - total_reserve;
-            break :blk if (adjusted > 0) adjusted else 0;
-        },
-        else => render_height,
-    };
-}
-
 fn applyTerminalLayout(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
@@ -313,7 +299,7 @@ fn applyTerminalLayout(
     full_cols: *u16,
     full_rows: *u16,
 ) void {
-    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
+    const term_render_height = render_height;
     const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
     full_cols.* = term_size.cols;
     full_rows.* = term_size.rows;
@@ -845,12 +831,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const term_render_height = adjustedRenderHeightForMode(
-        ctx.mode,
-        ctx.render_height,
-        ctx.ui_scale,
-        ctx.grid_rows,
-    );
+    const term_render_height = ctx.render_height;
     const new_term_size = layout.calculateTerminalSizeForMode(
         ctx.font,
         ctx.render_width,
@@ -1192,7 +1173,6 @@ pub fn run() !void {
     grid.cols = initial_dims.cols;
     grid.rows = initial_dims.rows;
 
-    var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
     const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
@@ -1308,7 +1288,7 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid.rows);
+    const initial_term_render_height = render_height;
     const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
@@ -1985,7 +1965,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
+                            const term_render_height = render_height;
                             const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
                             full_cols = term_size.cols;
                             full_rows = term_size.rows;
@@ -2903,22 +2883,6 @@ pub fn run() !void {
         if (anim_state.mode != last_logged_mode) {
             emitViewModeTransitionEvents(last_logged_mode, anim_state.mode, anim_state.focused_session, countSpawnedSessions(sessions));
             last_logged_mode = anim_state.mode;
-        }
-
-        const desired_font_scale = layout.gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
-        if (desired_font_scale != current_grid_font_scale) {
-            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
-            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-            full_cols = term_size.cols;
-            full_rows = term_size.rows;
-            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
-            current_grid_font_scale = desired_font_scale;
-            std.debug.print("Adjusted terminal size for view mode {s}: scale={d:.2} size={d}x{d}\n", .{
-                @tagName(anim_state.mode),
-                desired_font_scale,
-                full_cols,
-                full_rows,
-            });
         }
 
         focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);

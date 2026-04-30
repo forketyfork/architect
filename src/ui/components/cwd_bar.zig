@@ -8,23 +8,24 @@ const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const input = @import("../../input/mapper.zig");
 const colors = @import("../../colors.zig");
+const metrics = @import("cwd_bar_metrics.zig");
 
 const log = std.log.scoped(.cwd_bar);
 
 const Rect = geom.Rect;
 
-const cwd_bar_height: c_int = 24;
-const cwd_font_size: c_int = 12;
-const cwd_padding: c_int = 8;
+const cwd_bar_height = metrics.height;
+const cwd_font_size = metrics.font_size;
+const cwd_padding = metrics.padding;
 const marquee_speed: f32 = 30.0;
 const fade_fade_width: c_int = 20;
 
 pub fn reservedHeight(ui_scale: f32) c_int {
-    return dpi.scale(cwd_bar_height, ui_scale) + dpi.scale(renderer_mod.grid_border_thickness, ui_scale);
+    return metrics.reservedHeight(ui_scale, renderer_mod.grid_border_thickness);
 }
 
 pub fn minCellHeight(ui_scale: f32) c_int {
-    return reservedHeight(ui_scale) + 1;
+    return metrics.minCellHeight(ui_scale, renderer_mod.grid_border_thickness);
 }
 
 pub const CwdBarComponent = struct {
