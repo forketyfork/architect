@@ -178,6 +178,8 @@ pub fn applyTerminalResize(
             if (session.stream == null) {
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
+            session.resetSynchronizedOutputTracking();
+            session.beginTerminalResizeHold(std.time.milliTimestamp());
             session.markDirty();
             terminal_resized = true;
         }

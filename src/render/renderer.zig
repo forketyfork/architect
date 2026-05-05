@@ -323,6 +323,8 @@ fn renderSession(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
+    if (renderHeldSessionTexture(renderer, session, view, cache_entry, rect, is_focused, apply_effects, true, null, current_time_ms, is_grid_view, theme, ui_scale)) return;
+
     try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
@@ -909,6 +911,65 @@ fn cacheNeedsRefresh(
     return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition or cache_entry.cache_render_mode != render_mode;
 }
 
+fn shouldHoldSessionCacheRefresh(
+    output_hold_active: bool,
+    has_texture: bool,
+    cache_epoch: u64,
+    cache_width: c_int,
+    cache_height: c_int,
+    requested_rect: Rect,
+    cached_render_mode: RenderCache.CacheRenderMode,
+    requested_render_mode: RenderCache.CacheRenderMode,
+) bool {
+    return output_hold_active and
+        has_texture and
+        cache_epoch != 0 and
+        cache_width == requested_rect.w and
+        cache_height == requested_rect.h and
+        cached_render_mode == requested_render_mode;
+}
+
+fn renderHeldSessionTexture(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    is_focused: bool,
+    apply_effects: bool,
+    render_overlays: bool,
+    wave_effect: ?WaveEffect,
+    current_time_ms: i64,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) bool {
+    const render_mode = cacheRenderMode(is_grid_view);
+    if (!shouldHoldSessionCacheRefresh(
+        session.outputHoldActive(),
+        cache_entry.texture != null,
+        cache_entry.cache_epoch,
+        cache_entry.width,
+        cache_entry.height,
+        rect,
+        cache_entry.cache_render_mode,
+        render_mode,
+    )) return false;
+
+    const tex = cache_entry.texture orelse return false;
+    if (wave_effect) |wave| {
+        renderWaveStrips(renderer, tex, rect, wave.elapsed_ms, wave.amplitude, wave.total_ms);
+    } else {
+        renderCachedTexture(renderer, tex, rect);
+    }
+
+    if (render_overlays and cache_entry.cache_composition == .content_only) {
+        renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    }
+    cache_entry.presented_epoch = session.render_epoch;
+    return true;
+}
+
 fn refreshSessionCacheTexture(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
@@ -983,11 +1044,13 @@ fn renderSessionCached(
         return;
     }
 
-    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     const cache_overlays = render_overlays and wave_effect != null;
     const composition = cacheComposition(cache_overlays);
     const render_mode = cacheRenderMode(is_grid_view);
 
+    if (renderHeldSessionTexture(renderer, session, view, cache_entry, rect, is_focused, apply_effects, render_overlays, wave_effect, current_time_ms, is_grid_view, theme, ui_scale)) return;
+
+    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     if (can_cache) {
         if (cache_entry.texture) |tex| {
             if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
@@ -1015,6 +1078,18 @@ fn renderSessionCached(
 
     try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
+}
+
+test "synchronized output hold reuses populated cache only" {
+    const rect = Rect{ .x = 0, .y = 0, .w = 100, .h = 80 };
+
+    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 99, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 79, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .full));
 }
 
 /// Render the cached tile texture in horizontal strips with per-strip wave scaling.
