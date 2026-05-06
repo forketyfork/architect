@@ -2320,7 +2320,9 @@ pub fn run() !void {
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
             _ = session.expireSynchronizedOutput(now);
-            _ = session.expireTerminalResizeHold(now);
+            if (anim_state.mode != .GridResizing) {
+                _ = session.expireTerminalResizeHold(now);
+            }
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;

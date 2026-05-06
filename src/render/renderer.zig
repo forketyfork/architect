@@ -915,17 +915,12 @@ fn shouldHoldSessionCacheRefresh(
     output_hold_active: bool,
     has_texture: bool,
     cache_epoch: u64,
-    cache_width: c_int,
-    cache_height: c_int,
-    requested_rect: Rect,
     cached_render_mode: RenderCache.CacheRenderMode,
     requested_render_mode: RenderCache.CacheRenderMode,
 ) bool {
     return output_hold_active and
         has_texture and
         cache_epoch != 0 and
-        cache_width == requested_rect.w and
-        cache_height == requested_rect.h and
         cached_render_mode == requested_render_mode;
 }
 
@@ -945,16 +940,15 @@ fn renderHeldSessionTexture(
     ui_scale: f32,
 ) bool {
     const render_mode = cacheRenderMode(is_grid_view);
-    if (!shouldHoldSessionCacheRefresh(
-        session.outputHoldActive(),
+    const output_hold_active = session.outputHoldActive();
+    const should_hold = shouldHoldSessionCacheRefresh(
+        output_hold_active,
         cache_entry.texture != null,
         cache_entry.cache_epoch,
-        cache_entry.width,
-        cache_entry.height,
-        rect,
         cache_entry.cache_render_mode,
         render_mode,
-    )) return false;
+    );
+    if (!should_hold) return false;
 
     const tex = cache_entry.texture orelse return false;
     if (wave_effect) |wave| {
@@ -1080,16 +1074,13 @@ fn renderSessionCached(
     cache_entry.presented_epoch = session.render_epoch;
 }
 
-test "synchronized output hold reuses populated cache only" {
-    const rect = Rect{ .x = 0, .y = 0, .w = 100, .h = 80 };
-
-    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1, 100, 80, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1, 100, 80, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0, 100, 80, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 99, 80, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 79, rect, .grid, .grid));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .full));
+test "output hold reuses same-mode populated cache only" {
+    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, .grid, .full));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, .full, .grid));
 }
 
 /// Render the cached tile texture in horizontal strips with per-strip wave scaling.
