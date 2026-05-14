@@ -296,6 +296,36 @@ session.pending_write buffer
 PTY write() -> shell process stdin
 ```
 
+### Pull Request Listing Path
+
+```
+Cmd+P pressed -> pr_dropdown component
+    | check .git/config -> origin URL contains "github.com"?
+    | check .git/HEAD -> current branch
+    v
+PRDropdownComponent.openOverlay()
+    | startFetch() spawns worker std.Thread
+    v
+Worker thread: gh pr list --state open --json number,title,headRefName
+    | parse JSON
+    | acquire fetch_mutex
+    | write FetchResult into pending slot
+    | release fetch_mutex
+    | atomic.store(fetch_done, true)
+    v
+Main loop next frame:
+    | wantsFrame() returns true (fetch_done == true)
+    | update() observes fetch_done, calls collectFetchResult()
+    | joins worker thread, drains pending slot, populates PR list
+    v
+Render overlay with PR titles + branch matching for current PR badge
+
+On Enter / click:
+    | emit UiAction.CheckoutPullRequest { session, pr_number, branch }
+    v
+runtime.zig dispatch: send `gh pr checkout <number>\n` to the focused shell
+```
+
 ### External Notification Path
 
 ```
@@ -431,6 +461,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `ui/components/dropdown_menu.zig` | Reusable vertical list menu: owns open/hover/keyboard-nav state and the committed `selected` index, renders its own cached item-label textures, and reports a `.selected`/`.closed` event on click or Enter/Escape so the owning component reacts (persist the pick, or act on it immediately) instead of tracking hit-testing and highlight rendering itself. Used by `selection_agent_overlay.zig`'s agent selector and `diff_overlay.zig`'s "Send to agent" menu | `DropdownMenu`, `openMenu()`, `close()`, `handleKey()`, `handleClick()`, `handleMotion()`, `itemAt()`, `itemRect()`, `render()` | `gfx/primitives`, `font_cache`, `ui/text_render`, `geom`, `c` |
 | `ui/components/selection_agent_overlay.zig` | Selection action form with highlighted agent selector, multiline prompt field, fully wrapped and scrollable selected-context preview, viewport-bounded context textures, cached UI text, and launch action containing the selected terminal context | `SelectionAgentOverlayComponent`, `open()`, `formatAgentPrompt()` | `ui/text_edit`, `ui/text_render`, `ui/first_frame_guard`, `ui/components/modal_frame`, `ui/components/dropdown_menu`, `ui/components/scrollbar`, `gfx/primitives`, `font_cache`, `geom`, `c` |
 | `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper (badge-to-panel animation; `State.isOpenOrOpening()` is the canonical "this overlay owns the keyboard and is visible" test, so input is never dropped during the expand), button, confirm dialog (shares its scrim/panel chrome and dismiss-key check with the selection-agent overlay via `ui/components/modal_frame`), marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/pr_dropdown.zig` | GitHub pull request picker: detects the current repository and branch, lists open PRs through `gh pr list` on a worker thread, and emits checkout actions | `PRDropdownComponent`, `findRepoRoot()`, `parseGhJson()` | `ui/components/expanding_overlay`, `ui/components/pill_group`, `ui/types`, `font_cache`, `gfx/primitives`, `geom`, `c` |
+| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), PR dropdown, diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper (badge-to-panel animation; `State.isOpenOrOpening()` is the canonical "this overlay owns the keyboard and is visible" test, so input is never dropped during the expand), button, confirm dialog (shares its scrim/panel chrome and dismiss-key check with the selection-agent overlay via `ui/components/modal_frame`), marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
 | `logging.zig` | File-backed structured logger with runtime level filtering and size-based rotation | `init()`, `deinit()`, `logFn()`, `writeEvent()`, `writeStartupMarker()`, `writeShutdownMarker()` | std |
 | Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, DPI scaling helpers, TOML config loading/persistence, file-backed logging, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `logFn`, `Metrics`, `dpi.scale()`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
@@ -550,7 +582,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 - **Decision:** UI overlay components may perform synchronous I/O on the main thread for two categories of operations: (1) running short-lived `git` commands (e.g., `git diff`, `git rev-parse`) whose output is needed immediately for rendering, and (2) reading/writing small per-repo data files (e.g., `<repo>/.architect/diff_comments.json`).
 - **Context:** The diff overlay needs `git diff` output to render its content and persists inline review comments as a small JSON file. ADR-009 establishes that blocking I/O should go on a background thread, but these operations complete in single-digit milliseconds for typical repositories and small data files. Introducing a background thread with a callback-based rendering pipeline for each git command would add significant complexity (deferred rendering, loading states, race conditions with overlay visibility) for negligible latency improvement.
-- **Constraints:** This exception applies only when the data is small and the command is fast. Large or potentially slow operations (e.g., network I/O, cloning, `git log` on deep histories) must still use the background thread pattern from ADR-009.
+- **Constraints:** This exception applies only when the data is small and the command is fast. Large or potentially slow operations (e.g., network I/O, cloning, `git log` on deep histories, `gh pr list` which hits the network) must still use the background thread pattern from ADR-009. The PR dropdown follows this rule: detection of a GitHub origin and the current branch is a synchronous read of `.git/config` and `.git/HEAD` on the main thread, but the actual `gh pr list` invocation runs on a worker thread spawned per-open with results delivered through a mutex-guarded slot and atomic completion flag.
 - **Alternatives considered:**
   - *Background thread + queue for all git commands* -- deferred; would require deferred rendering with loading states in the overlay, adding complexity disproportionate to the latency risk. May be revisited if git operations become noticeably slow on large repositories.
   - *Lazy/cached persistence* -- partially adopted; comments are only saved on overlay close and on comment submit, not on every keystroke.
