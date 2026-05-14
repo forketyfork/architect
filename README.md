@@ -37,6 +37,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Pull requests** (⌘P) — when the focused terminal is inside a GitHub-cloned repo, the ⌘P pill shows the current branch's PR number (e.g. `#123`); expand it to list open PRs (via `gh pr list`) with search filtering and check out a branch with `gh pr checkout`
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
+- **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
@@ -44,7 +45,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘P for pull requests (GitHub repos), ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Git diff overlay title shows the repo root folder being diffed
-- Per-cell cwd bar in grid view with reserved space so terminal content stays visible
+- Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
@@ -77,7 +78,7 @@ open Architect.app
 
 * These GitHub release archives are ad-hoc signed so macOS can launch them locally, but they are not Developer ID signed or notarized.
 * Clear the quarantine attribute before first launch, or macOS may block the app.
-* The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. Keep the bundle contents intact.
+* The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. The MCP helper is bundled at `./Architect.app/Contents/MacOS/architect-mcp`. Keep the bundle contents intact.
 * Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
 ### Homebrew (macOS)
@@ -97,6 +98,9 @@ brew install architect
 
 # Copy the app to your Applications folder
 cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
+
+# MCP clients can use the helper on PATH
+architect-mcp
 ```
 
 Or install directly without tapping:
@@ -113,6 +117,8 @@ nix develop
 just build
 ```
 
+Source builds install both executables under `zig-out/bin/`: `architect` and `architect-mcp`.
+
 ## Hooks
 
 To add hooks for Claude Code, Codex or Gemini, use the `architect` command available in the terminal:
@@ -120,6 +126,31 @@ To add hooks for Claude Code, Codex or Gemini, use the `architect` command avail
 architect hook claude
 architect hook codex
 architect hook gemini
+```
+
+## MCP
+
+`architect-mcp` is a stdio MCP server for local clients. It exposes one tool, `spawn_session`, which forwards the request to the running Architect app. It does not launch Architect by itself.
+
+`spawn_session` arguments:
+```json
+{
+  "cwd": "/absolute/path/to/worktree",
+  "command": "codex",
+  "display_name": "Issue 291"
+}
+```
+
+`cwd` is required. `command` and `display_name` are optional. On success, the tool returns structured content with `status`, `session_id`, and `slot_index`. If Architect is not running, the grid is full, `cwd` is invalid, or spawning fails, the tool returns an MCP tool error with a stable `code` and `message`.
+
+For release downloads, use:
+```bash
+./Architect.app/Contents/MacOS/architect-mcp
+```
+
+For Homebrew installs, `architect-mcp` is also symlinked onto `PATH`; the app-bundle fallback is:
+```bash
+$(brew --prefix)/Cellar/architect/$(brew list --versions architect | awk '{print $2}')/Architect.app/Contents/MacOS/architect-mcp
 ```
 
 ## Configuration
@@ -143,7 +174,7 @@ Common settings include font family, theme colors, grid font scale, and logging 
 
 ## Documentation
 
-* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications (includes `architect notify`, `architect hook ...`, and timestamped backups).
+* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications, plus the `architect-mcp` `spawn_session` interface.
 * [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): architecture overview and system boundaries.
 * [`docs/configuration.md`](docs/configuration.md): detailed configuration reference for `config.toml` and `persistence.toml`.
 * [`docs/development.md`](docs/development.md): build, test, and release process.

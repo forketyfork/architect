@@ -15,6 +15,7 @@ const dpi = @import("../dpi.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
 const scrollbar = @import("../ui/components/scrollbar.zig");
+const cwd_bar_metrics = @import("../ui/components/cwd_bar_metrics.zig");
 
 const log = std.log.scoped(.render);
 
@@ -42,6 +43,11 @@ pub const RenderCache = struct {
         content_and_overlays,
     };
 
+    pub const CacheRenderMode = enum {
+        full,
+        grid,
+    };
+
     pub const Entry = struct {
         texture: ?*c.SDL_Texture = null,
         width: c_int = 0,
@@ -49,6 +55,7 @@ pub const RenderCache = struct {
         cache_epoch: u64 = 0,
         presented_epoch: u64 = 0,
         cache_composition: CacheComposition = .content_only,
+        cache_render_mode: CacheRenderMode = .full,
     };
 
     pub fn init(allocator: std.mem.Allocator, session_count: usize) !RenderCache {
@@ -316,7 +323,9 @@ fn renderSession(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
+    if (renderHeldSessionTexture(renderer, session, view, cache_entry, rect, is_focused, apply_effects, true, null, current_time_ms, is_grid_view, theme, ui_scale)) return;
+
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -332,6 +341,7 @@ fn renderSessionContent(
     term_cols: u16,
     term_rows: u16,
     _: i64,
+    is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
@@ -377,7 +387,11 @@ fn renderSessionContent(
 
     const padding: c_int = dpi.scale(terminal_padding, ui_scale);
     const drawable_w: c_int = rect.w - padding * 2;
-    const drawable_h: c_int = rect.h - padding * 2;
+    const grid_reserved_h: c_int = if (is_grid_view and rect.h >= cwd_bar_metrics.minCellHeight(ui_scale, grid_border_thickness))
+        cwd_bar_metrics.reservedHeight(ui_scale, grid_border_thickness)
+    else
+        0;
+    const drawable_h: c_int = rect.h - padding * 2 - grid_reserved_h;
     if (drawable_w <= 0 or drawable_h <= 0) return;
 
     const origin_x: c_int = rect.x + padding;
@@ -387,6 +401,7 @@ fn renderSessionContent(
     const max_rows_fit: usize = @intCast(@max(0, @divFloor(drawable_h, cell_height_actual)));
     const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
     const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
+    const active_row_offset = activeScreenRowOffset(term_rows, visible_rows, cursor_row, is_grid_view, view.is_viewing_scrollback);
 
     const active_selection = screen.selection;
 
@@ -412,10 +427,11 @@ fn renderSessionContent(
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
+            const source_row = row + active_row_offset;
             const list_cell = pages.getCell(if (view.is_viewing_scrollback)
                 .{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
             else
-                .{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse continue;
+                .{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } }) orelse continue;
 
             const cell = list_cell.cell;
             const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint else 0;
@@ -430,7 +446,7 @@ fn renderSessionContent(
             if (x + eff_cw <= rect.x or x >= rect.x + rect.w) continue;
             if (y + eff_ch <= rect.y or y >= rect.y + rect.h) continue;
 
-            const on_cursor = should_render_cursor and cursor_col == col and cursor_row == row;
+            const on_cursor = should_render_cursor and cursor_col == col and cursor_row == source_row;
 
             const style = list_cell.style();
             var fg_color = getCellColor(style.fg_color, session_fg_color, &terminal.colors.palette.current);
@@ -470,7 +486,7 @@ fn renderSessionContent(
                 const point_tag = if (view.is_viewing_scrollback)
                     ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
                 else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
+                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
                 if (pages.pin(point_tag)) |pin| {
                     if (sel.contains(screen, pin)) {
                         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -491,7 +507,7 @@ fn renderSessionContent(
                     const point_for_link = if (view.is_viewing_scrollback)
                         ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
                     else
-                        ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
+                        ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
                     if (pages.pin(point_for_link)) |link_pin| {
                         const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
                         if (link_sel.contains(screen, link_pin)) {
@@ -619,10 +635,12 @@ fn renderSessionContent(
     if (session.dead) {
         const message = "[Process completed]";
         const message_row: usize = @intCast(cursor.y);
+        const visible_end_row = active_row_offset + visible_rows;
 
-        if (message_row < visible_rows) {
+        if (message_row >= active_row_offset and message_row < visible_end_row) {
+            const display_row = message_row - active_row_offset;
             const message_x: c_int = origin_x;
-            const message_y: c_int = origin_y + @as(c_int, @intCast(message_row)) * cell_height_actual;
+            const message_y: c_int = origin_y + @as(c_int, @intCast(display_row)) * cell_height_actual;
             const fg_color = c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 255 };
 
             var offset_x = message_x;
@@ -632,6 +650,27 @@ fn renderSessionContent(
             }
         }
     }
+}
+
+fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize, is_grid_view: bool, is_viewing_scrollback: bool) usize {
+    if (!is_grid_view or is_viewing_scrollback) return 0;
+    if (visible_rows == 0) return 0;
+
+    const total_rows: usize = @intCast(term_rows);
+    if (visible_rows >= total_rows) return 0;
+    if (cursor_row < visible_rows) return 0;
+
+    return @min(cursor_row - visible_rows + 1, total_rows - visible_rows);
+}
+
+test "grid active screen rendering follows cursor row" {
+    try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 50, 49, true, false));
+    try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 20, 10, true, false));
+    try std.testing.expectEqual(@as(usize, 11), activeScreenRowOffset(50, 20, 30, true, false));
+    try std.testing.expectEqual(@as(usize, 30), activeScreenRowOffset(50, 20, 49, true, false));
+    try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 20, 49, false, false));
+    try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 20, 49, true, true));
+    try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 0, 49, true, false));
 }
 
 fn renderSessionOverlays(
@@ -785,6 +824,7 @@ fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
     cache_entry.height = 0;
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
+    cache_entry.cache_render_mode = .full;
 }
 
 fn releaseNonFocusedCaches(render_cache: *RenderCache, focused_session: usize) void {
@@ -815,6 +855,7 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
     cache_entry.height = height;
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
+    cache_entry.cache_render_mode = .full;
     return true;
 }
 
@@ -857,12 +898,70 @@ fn cacheComposition(cache_overlays: bool) RenderCache.CacheComposition {
     return if (cache_overlays) .content_and_overlays else .content_only;
 }
 
+fn cacheRenderMode(is_grid_view: bool) RenderCache.CacheRenderMode {
+    return if (is_grid_view) .grid else .full;
+}
+
 fn cacheNeedsRefresh(
     cache_entry: *const RenderCache.Entry,
     session_epoch: u64,
     composition: RenderCache.CacheComposition,
+    render_mode: RenderCache.CacheRenderMode,
 ) bool {
-    return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition;
+    return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition or cache_entry.cache_render_mode != render_mode;
+}
+
+fn shouldHoldSessionCacheRefresh(
+    output_hold_active: bool,
+    has_texture: bool,
+    cache_epoch: u64,
+    cached_render_mode: RenderCache.CacheRenderMode,
+    requested_render_mode: RenderCache.CacheRenderMode,
+) bool {
+    return output_hold_active and
+        has_texture and
+        cache_epoch != 0 and
+        cached_render_mode == requested_render_mode;
+}
+
+fn renderHeldSessionTexture(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    is_focused: bool,
+    apply_effects: bool,
+    render_overlays: bool,
+    wave_effect: ?WaveEffect,
+    current_time_ms: i64,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) bool {
+    const render_mode = cacheRenderMode(is_grid_view);
+    const output_hold_active = session.outputHoldActive();
+    const should_hold = shouldHoldSessionCacheRefresh(
+        output_hold_active,
+        cache_entry.texture != null,
+        cache_entry.cache_epoch,
+        cache_entry.cache_render_mode,
+        render_mode,
+    );
+    if (!should_hold) return false;
+
+    const tex = cache_entry.texture orelse return false;
+    if (wave_effect) |wave| {
+        renderWaveStrips(renderer, tex, rect, wave.elapsed_ms, wave.amplitude, wave.total_ms);
+    } else {
+        renderCachedTexture(renderer, tex, rect);
+    }
+
+    if (render_overlays and cache_entry.cache_composition == .content_only) {
+        renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    }
+    cache_entry.presented_epoch = session.render_epoch;
+    return true;
 }
 
 fn refreshSessionCacheTexture(
@@ -885,6 +984,7 @@ fn refreshSessionCacheTexture(
     ui_scale: f32,
 ) RenderError!void {
     log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
+    const render_mode = cacheRenderMode(is_grid_view);
     const previous_target = c.SDL_GetRenderTarget(renderer);
     defer _ = c.SDL_SetRenderTarget(renderer, previous_target);
 
@@ -895,12 +995,13 @@ fn refreshSessionCacheTexture(
     _ = c.SDL_RenderClear(renderer);
 
     const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
     if (cache_overlays) {
         renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     }
     cache_entry.cache_epoch = session.render_epoch;
     cache_entry.cache_composition = composition;
+    cache_entry.cache_render_mode = render_mode;
 }
 
 fn renderCachedTexture(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect) void {
@@ -937,13 +1038,16 @@ fn renderSessionCached(
         return;
     }
 
-    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     const cache_overlays = render_overlays and wave_effect != null;
     const composition = cacheComposition(cache_overlays);
+    const render_mode = cacheRenderMode(is_grid_view);
 
+    if (renderHeldSessionTexture(renderer, session, view, cache_entry, rect, is_focused, apply_effects, render_overlays, wave_effect, current_time_ms, is_grid_view, theme, ui_scale)) return;
+
+    const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     if (can_cache) {
         if (cache_entry.texture) |tex| {
-            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition)) {
+            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
                 try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
             }
 
@@ -966,8 +1070,17 @@ fn renderSessionCached(
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
+}
+
+test "output hold reuses same-mode populated cache only" {
+    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, .grid, .full));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, .full, .grid));
 }
 
 /// Render the cached tile texture in horizontal strips with per-strip wave scaling.
@@ -1099,27 +1212,40 @@ test "cache refresh predicate stays clean for an unchanged content-only texture"
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(!cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+    try std.testing.expect(!cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(false)));
 }
 
 test "cached session texture refreshes when the render epoch changes" {
     const entry = RenderCache.Entry{
         .cache_epoch = 41,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false)));
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(false)));
 }
 
 test "cached session texture refreshes when wave rendering needs overlays baked into the cache" {
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
         .cache_composition = .content_only,
+        .cache_render_mode = .full,
     };
 
-    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(true)));
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(true), cacheRenderMode(false)));
+}
+
+test "cached session texture refreshes when grid render mode changes" {
+    const entry = RenderCache.Entry{
+        .cache_epoch = 42,
+        .cache_composition = .content_only,
+        .cache_render_mode = .full,
+    };
+
+    try std.testing.expect(cacheNeedsRefresh(&entry, 42, cacheComposition(false), cacheRenderMode(true)));
 }
 
 fn flushRun(

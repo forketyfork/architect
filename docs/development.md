@@ -100,3 +100,5 @@ The release workflow packages ad-hoc-signed app bundles with local `codesign --s
 Each release includes:
 - `architect-macos-arm64.tar.gz` - Apple Silicon
 - `architect-macos-x86_64.tar.gz` - Intel
+
+Each archive contains `Architect.app` with both `Contents/MacOS/architect` and the stdio MCP helper `Contents/MacOS/architect-mcp`.

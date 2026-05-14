@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
+const ghostty_vt = @import("ghostty-vt");
 const posix = std.posix;
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
@@ -13,6 +14,7 @@ const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
+const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
@@ -29,6 +31,7 @@ const colors_mod = @import("../colors.zig");
 const ui_mod = @import("../ui/mod.zig");
 const font_cache_mod = @import("../font_cache.zig");
 const c = @import("../c.zig");
+const dpi = @import("../dpi.zig");
 const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
@@ -50,6 +53,7 @@ const foreground_process_cache_ms: i64 = 150;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
+const ControlQueue = control.SpawnQueue;
 const SessionState = session_state.SessionState;
 const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
@@ -113,7 +117,11 @@ fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
     return @intCast(@min(timeout_ms, max_timeout_ms));
 }
 
-fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
+fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128, visible_output_hold: bool) FrameWaitDecision {
+    if (visible_output_hold) {
+        const sleep_ns = remainingFrameBudgetNs(active_frame_ns, frame_ns);
+        return if (sleep_ns > 0) .{ .active_sleep_ns = sleep_ns } else .none;
+    }
     if (is_idle) {
         const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
         return if (timeout_ms > 0) .{ .idle_wait_ms = timeout_ms } else .none;
@@ -285,16 +293,41 @@ fn agentProcessStarted(session: *const SessionState) bool {
 
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
     return switch (mode) {
-        .Grid, .Expanding, .Collapsing, .GridResizing => blk: {
+        .Grid => blk: {
             const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
-            const can_render_bar = cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale);
-            const per_cell_reserve: c_int = if (can_render_bar) ui_mod.cwd_bar.reservedHeight(ui_scale) else 0;
-            const total_reserve: c_int = per_cell_reserve * @as(c_int, @intCast(grid_rows));
-            const adjusted: c_int = render_height - total_reserve;
-            break :blk if (adjusted > 0) adjusted else 0;
+            const reserved_per_cell: c_int = if (cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale))
+                ui_mod.cwd_bar.reservedHeight(ui_scale)
+            else
+                0;
+            const reserved_total = reserved_per_cell * @as(c_int, @intCast(grid_rows));
+            break :blk @max(0, render_height - reserved_total);
         },
-        else => render_height,
+        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
     };
+}
+
+fn anyVisibleSessionOutputHold(
+    sessions: []const *SessionState,
+    anim_state: *const AnimationState,
+    grid_cols: usize,
+    grid_rows: usize,
+) bool {
+    return switch (anim_state.mode) {
+        .Grid, .GridResizing => blk: {
+            const visible_count = @min(sessions.len, grid_cols * grid_rows);
+            for (sessions[0..visible_count]) |session| {
+                if (session.outputHoldActive()) break :blk true;
+            }
+            break :blk false;
+        },
+        .Full => outputHoldActiveAt(sessions, anim_state.focused_session),
+        .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => outputHoldActiveAt(sessions, anim_state.focused_session) or
+            outputHoldActiveAt(sessions, anim_state.previous_session),
+    };
+}
+
+fn outputHoldActiveAt(sessions: []const *SessionState, idx: usize) bool {
+    return idx < sessions.len and sessions[idx].outputHoldActive();
 }
 
 fn applyTerminalLayout(
@@ -315,7 +348,35 @@ fn applyTerminalLayout(
     const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
     full_cols.* = term_size.cols;
     full_rows.* = term_size.rows;
-    layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+    _ = layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+}
+
+fn applyTerminalLayoutIfSizeChanged(
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+    font: *font_mod.Font,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    mode: app_state.ViewMode,
+    grid_cols: usize,
+    grid_rows: usize,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+) bool {
+    switch (mode) {
+        .Grid, .Full => {},
+        .GridResizing, .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => return false,
+    }
+
+    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
+    const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    if (full_cols.* == term_size.cols and full_rows.* == term_size.rows) return false;
+
+    full_cols.* = term_size.cols;
+    full_rows.* = term_size.rows;
+    return layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
 }
 
 const SessionIndexSnapshot = struct {
@@ -476,6 +537,204 @@ const WorkingDir = struct {
         if (self.buf) |buf| allocator.free(buf);
     }
 };
+
+const ExternalSpawnPlan = struct {
+    slot_index: usize,
+    cols: usize,
+    rows: usize,
+    expands_grid: bool,
+};
+
+fn planExternalSpawnSlot(
+    sessions: []const *SessionState,
+    grid_cols: usize,
+    grid_rows: usize,
+    focused_session: usize,
+) ?ExternalSpawnPlan {
+    const spawned_count = countSpawnedSessions(sessions);
+    if (spawned_count >= grid_layout.max_terminals) return null;
+
+    const capacity = grid_cols * grid_rows;
+    if (spawned_count >= capacity) {
+        const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
+        const new_capacity = new_dims.cols * new_dims.rows;
+        if (new_capacity > grid_layout.max_terminals) return null;
+        const slot_index = findNextFreeSlotAfter(sessions, new_capacity, focused_session) orelse return null;
+        return .{
+            .slot_index = slot_index,
+            .cols = new_dims.cols,
+            .rows = new_dims.rows,
+            .expands_grid = true,
+        };
+    }
+
+    const slot_index = if (focused_session < sessions.len and !sessions[focused_session].spawned)
+        focused_session
+    else
+        findNextFreeSlotAfter(sessions, capacity, focused_session) orelse return null;
+
+    return .{
+        .slot_index = slot_index,
+        .cols = grid_cols,
+        .rows = grid_rows,
+        .expands_grid = false,
+    };
+}
+
+fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
+    if (!std.fs.path.isAbsolute(cwd)) {
+        return .{
+            .code = .invalid_cwd,
+            .message = "cwd must be an absolute directory",
+        };
+    }
+
+    var dir = std.fs.openDirAbsolute(cwd, .{}) catch {
+        return .{
+            .code = .invalid_cwd,
+            .message = "cwd must be an existing directory",
+        };
+    };
+    dir.close();
+    return null;
+}
+
+fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    if (command.len == 0) return error.EmptyCommand;
+    const needs_newline = command[command.len - 1] != '\n';
+    const out_len = command.len + @as(usize, if (needs_newline) 1 else 0);
+    const out = try allocator.alloc(u8, out_len);
+    @memcpy(out[0..command.len], command);
+    if (needs_newline) out[out.len - 1] = '\n';
+    return out;
+}
+
+fn completeExternalSpawnFailure(
+    pending: *control.PendingSpawn,
+    code: control.SpawnErrorCode,
+    message: []const u8,
+) void {
+    pending.completion.complete(.{ .failure = .{
+        .code = code,
+        .message = message,
+    } });
+}
+
+fn handleExternalSpawnRequest(
+    allocator: std.mem.Allocator,
+    pending: *control.PendingSpawn,
+    sessions: []const *SessionState,
+    grid: *GridLayout,
+    anim_state: *AnimationState,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
+    loop: *xev.Loop,
+    animations_enabled: bool,
+    now: i64,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    font: *font_mod.Font,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+    cell_width_pixels: *c_int,
+    cell_height_pixels: *c_int,
+) void {
+    if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
+        pending.completion.complete(.{ .failure = failure });
+        return;
+    }
+
+    const plan = planExternalSpawnSlot(sessions, grid.cols, grid.rows, anim_state.focused_session) orelse {
+        completeExternalSpawnFailure(pending, .full_grid, "all Architect terminal slots are in use");
+        return;
+    };
+
+    const command_input = if (pending.request.command) |command| blk: {
+        break :blk buildQueuedCommand(allocator, command) catch |err| {
+            log.warn("failed to prepare external spawn command: {}", .{err});
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare command for the new session");
+            return;
+        };
+    } else null;
+    defer if (command_input) |input_bytes| allocator.free(input_bytes);
+
+    const cwd_buf = allocZ(allocator, pending.request.cwd) catch |err| {
+        log.warn("failed to allocate external spawn cwd: {}", .{err});
+        completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare working directory");
+        return;
+    };
+    defer allocator.free(cwd_buf);
+    const cwd_z: [:0]const u8 = cwd_buf[0..pending.request.cwd.len :0];
+
+    if (plan.expands_grid) {
+        var moves = collectSessionMovesCurrent(sessions, allocator) catch |err| {
+            log.warn("failed to collect external spawn grid moves: {}", .{err});
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare grid expansion");
+            return;
+        };
+        defer moves.deinit(allocator);
+
+        if (animations_enabled) {
+            grid.startResize(plan.cols, plan.rows, now, render_width, render_height, moves.items) catch |err| {
+                log.warn("failed to start external spawn grid resize: {}", .{err});
+                grid.cols = plan.cols;
+                grid.rows = plan.rows;
+            };
+            if (grid.is_resizing) {
+                anim_state.mode = .GridResizing;
+            }
+        } else {
+            grid.cols = plan.cols;
+            grid.rows = plan.rows;
+        }
+    }
+
+    const session = sessions[plan.slot_index];
+    session.ensureSpawnedWithDir(cwd_z, loop) catch |err| {
+        log.warn("external spawn failed for cwd {s}: {}", .{ pending.request.cwd, err });
+        completeExternalSpawnFailure(pending, .spawn_failed, "failed to spawn terminal session");
+        return;
+    };
+
+    if (command_input) |input_bytes| {
+        session.pending_write.appendSlice(allocator, input_bytes) catch |err| {
+            log.warn("failed to queue external spawn command for session {d}: {}", .{ session.id, err });
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to queue command for the new session");
+            return;
+        };
+    }
+
+    session_interaction_component.setStatus(plan.slot_index, .running);
+    session_interaction_component.setAttention(plan.slot_index, false, now);
+    session_interaction_component.clearSelection(anim_state.focused_session);
+    session_interaction_component.clearSelection(plan.slot_index);
+
+    anim_state.previous_session = anim_state.focused_session;
+    anim_state.focused_session = plan.slot_index;
+
+    cell_width_pixels.* = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+    cell_height_pixels.* = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+    applyTerminalLayout(
+        sessions,
+        allocator,
+        font,
+        render_width,
+        render_height,
+        ui_scale,
+        anim_state.mode,
+        grid.cols,
+        grid.rows,
+        grid_font_scale,
+        full_cols,
+        full_rows,
+    );
+
+    pending.completion.complete(.{ .success = .{
+        .session_id = session.id,
+        .slot_index = plan.slot_index,
+    } });
+}
 
 fn initSharedFont(
     allocator: std.mem.Allocator,
@@ -645,12 +904,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const term_render_height = adjustedRenderHeightForMode(
-        ctx.mode,
-        ctx.render_height,
-        ctx.ui_scale,
-        ctx.grid_rows,
-    );
+    const term_render_height = adjustedRenderHeightForMode(ctx.mode, ctx.render_height, ctx.ui_scale, ctx.grid_rows);
     const new_term_size = layout.calculateTerminalSizeForMode(
         ctx.font,
         ctx.render_width,
@@ -663,7 +917,7 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
     );
     ctx.full_cols.* = new_term_size.cols;
     ctx.full_rows.* = new_term_size.rows;
-    layout.applyTerminalResize(
+    _ = layout.applyTerminalResize(
         ctx.sessions,
         ctx.allocator,
         ctx.full_cols.*,
@@ -901,10 +1155,20 @@ pub fn run() !void {
     var notify_queue = NotificationQueue{};
     defer notify_queue.deinit(allocator);
 
+    var control_queue = ControlQueue{};
+    defer control_queue.deinit(allocator);
+
     const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
+    const control_sock = try control.getControlSocketPath(allocator);
+    defer allocator.free(control_sock);
+
+    const control_discovery_path = try control.getControlDiscoveryPath(allocator);
+    defer allocator.free(control_discovery_path);
+
     var notify_stop = std.atomic.Value(bool).init(false);
+    var control_stop = std.atomic.Value(bool).init(false);
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -982,7 +1246,6 @@ pub fn run() !void {
     grid.cols = initial_dims.cols;
     grid.rows = initial_dims.rows;
 
-    var current_grid_font_scale: f32 = config.grid.font_scale;
     const animations_enabled = config.ui.enable_animations;
 
     const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
@@ -1013,6 +1276,23 @@ pub fn run() !void {
     defer {
         notify_stop.store(true, .seq_cst);
         notify_thread.join();
+    }
+    const control_thread = try control.startControlThread(
+        allocator,
+        control_sock,
+        control_discovery_path,
+        &control_queue,
+        &control_stop,
+        .{
+            .context = &sdl,
+            .callback = platform.pushWakeEventFromOpaque,
+        },
+    );
+    defer {
+        control_stop.store(true, .seq_cst);
+        control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
+        control_thread.join();
+        control.cleanupControlFiles(control_sock, control_discovery_path);
     }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
@@ -1081,8 +1361,9 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid.rows);
-    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
+    const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
+    const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, render_height, ui_scale, grid.rows);
+    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, initial_view_mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -1094,8 +1375,9 @@ pub fn run() !void {
     var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
     var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
-    const usable_width = @max(0, render_width - renderer_mod.terminal_padding * 2);
-    const usable_height = @max(0, initial_term_render_height - renderer_mod.terminal_padding * 2);
+    const terminal_padding = dpi.scale(renderer_mod.terminal_padding, ui_scale);
+    const usable_width = @max(0, render_width - terminal_padding * 2);
+    const usable_height = @max(0, initial_term_render_height - terminal_padding * 2);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
@@ -1185,7 +1467,7 @@ pub fn run() !void {
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
-    const initial_mode: app_state.ViewMode = if (countSpawnedSessions(sessions) == 1) .Full else .Grid;
+    const initial_mode = initial_view_mode;
     var anim_state = AnimationState{
         .mode = initial_mode,
         .focused_session = 0,
@@ -1767,11 +2049,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
-                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-                            full_cols = term_size.cols;
-                            full_rows = term_size.rows;
-                            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -2050,6 +2328,10 @@ pub fn run() !void {
             };
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
+            _ = session.expireSynchronizedOutput(now);
+            if (anim_state.mode != .GridResizing) {
+                _ = session.expireTerminalResizeHold(now);
+            }
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
@@ -2078,7 +2360,34 @@ pub fn run() !void {
         if (quit_teardown.isFinished()) {
             running = false;
         }
-        const any_session_dirty = render_cache.anyDirty(sessions);
+        var any_session_dirty = render_cache.anyDirty(sessions);
+
+        var control_requests = control_queue.drainAll();
+        defer control_requests.deinit(allocator);
+        const had_control_requests = control_requests.items.len > 0;
+        for (control_requests.items) |*request| {
+            handleExternalSpawnRequest(
+                allocator,
+                request,
+                sessions,
+                &grid,
+                &anim_state,
+                session_interaction_component,
+                &loop,
+                animations_enabled,
+                now,
+                render_width,
+                render_height,
+                ui_scale,
+                &font,
+                config.grid.font_scale,
+                &full_cols,
+                &full_rows,
+                &cell_width_pixels,
+                &cell_height_pixels,
+            );
+            request.request.deinit(allocator);
+        }
 
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
@@ -2689,25 +2998,32 @@ pub fn run() !void {
             }
         }
 
-        if (anim_state.mode != last_logged_mode) {
-            emitViewModeTransitionEvents(last_logged_mode, anim_state.mode, anim_state.focused_session, countSpawnedSessions(sessions));
-            last_logged_mode = anim_state.mode;
-        }
-
-        const desired_font_scale = layout.gridFontScaleForMode(anim_state.mode, config.grid.font_scale);
-        if (desired_font_scale != current_grid_font_scale) {
-            const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid.rows);
-            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-            full_cols = term_size.cols;
-            full_rows = term_size.rows;
-            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
-            current_grid_font_scale = desired_font_scale;
-            std.debug.print("Adjusted terminal size for view mode {s}: scale={d:.2} size={d}x{d}\n", .{
+        const terminal_layout_changed = applyTerminalLayoutIfSizeChanged(
+            sessions,
+            allocator,
+            &font,
+            render_width,
+            render_height,
+            ui_scale,
+            anim_state.mode,
+            grid.cols,
+            grid.rows,
+            config.grid.font_scale,
+            &full_cols,
+            &full_rows,
+        );
+        if (terminal_layout_changed) {
+            any_session_dirty = true;
+            std.debug.print("Terminal layout adjusted for {s}: {d}x{d}\n", .{
                 @tagName(anim_state.mode),
-                desired_font_scale,
                 full_cols,
                 full_rows,
             });
+        }
+
+        if (anim_state.mode != last_logged_mode) {
+            emitViewModeTransitionEvents(last_logged_mode, anim_state.mode, anim_state.focused_session, countSpawnedSessions(sessions));
+            last_logged_mode = anim_state.mode;
         }
 
         focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
@@ -2731,9 +3047,10 @@ pub fn run() !void {
         );
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
+        const visible_output_hold = anyVisibleSessionOutputHold(sessions, &anim_state, grid.cols, grid.rows);
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or last_render_stale;
+        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -2776,7 +3093,7 @@ pub fn run() !void {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications;
+        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;
@@ -2784,7 +3101,7 @@ pub fn run() !void {
 
         const frame_end_ns: i128 = std.time.nanoTimestamp();
         const frame_ns = frame_end_ns - frame_start_ns;
-        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
+        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns, visible_output_hold);
     }
 
     if (builtin.os.tag == .macos) {
@@ -2842,6 +3159,65 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return buf;
 }
 
+test "planExternalSpawnSlot expands a full current grid" {
+    var first: SessionState = undefined;
+    first.spawned = true;
+    var second: SessionState = undefined;
+    second.spawned = false;
+    var sessions = [_]*SessionState{ &first, &second };
+
+    const plan = planExternalSpawnSlot(&sessions, 1, 1, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 2), plan.cols);
+    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
+}
+
+test "planExternalSpawnSlot reuses free capacity" {
+    var first: SessionState = undefined;
+    first.spawned = true;
+    var second: SessionState = undefined;
+    second.spawned = false;
+    var sessions = [_]*SessionState{ &first, &second };
+
+    const plan = planExternalSpawnSlot(&sessions, 2, 1, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 2), plan.cols);
+    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
+}
+
+test "planExternalSpawnSlot reports full grid" {
+    var storage: [grid_layout.max_terminals]SessionState = undefined;
+    var sessions: [grid_layout.max_terminals]*SessionState = undefined;
+    for (&storage, 0..) |*session, idx| {
+        session.* = undefined;
+        session.spawned = true;
+        sessions[idx] = session;
+    }
+
+    try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
+}
+
+test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
+    try std.testing.expect(validateExternalSpawnCwd("/tmp") == null);
+
+    const failure = validateExternalSpawnCwd("relative/path") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(control.SpawnErrorCode.invalid_cwd, failure.code);
+}
+
+test "buildQueuedCommand appends a newline only when needed" {
+    const allocator = std.testing.allocator;
+
+    const first = try buildQueuedCommand(allocator, "echo ok");
+    defer allocator.free(first);
+    try std.testing.expectEqualStrings("echo ok\n", first);
+
+    const second = try buildQueuedCommand(allocator, "echo ok\n");
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("echo ok\n", second);
+}
+
 test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
     try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(0));
     try std.testing.expectEqual(@as(c_int, 1), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
@@ -2849,7 +3225,7 @@ test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
 }
 
 test "computeFrameWaitDecision returns idle wait while idle" {
-    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms, false);
     switch (decision) {
         .idle_wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
         else => try std.testing.expect(false),
@@ -2857,7 +3233,7 @@ test "computeFrameWaitDecision returns idle wait while idle" {
 }
 
 test "computeFrameWaitDecision keeps active pacing without vsync" {
-    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms, false);
     switch (decision) {
         .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
         else => try std.testing.expect(false),
@@ -2865,11 +3241,59 @@ test "computeFrameWaitDecision keeps active pacing without vsync" {
 }
 
 test "computeFrameWaitDecision defers to vsync while active" {
-    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms, false);
     switch (decision) {
         .none => {},
         else => try std.testing.expect(false),
     }
+}
+
+test "computeFrameWaitDecision paces synchronized output holds with vsync" {
+    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms, true);
+    switch (decision) {
+        .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "full view synchronized hold ignores previous session" {
+    const allocator = std.testing.allocator;
+
+    var focused: SessionState = undefined;
+    focused.spawned = true;
+    focused.dead = false;
+    focused.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer focused.terminal.?.deinit(allocator);
+
+    var previous: SessionState = undefined;
+    previous.spawned = true;
+    previous.dead = false;
+    previous.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer previous.terminal.?.deinit(allocator);
+    previous.terminal.?.modes.set(.synchronized_output, true);
+
+    var sessions = [_]*SessionState{ &focused, &previous };
+    const rect = Rect{ .x = 0, .y = 0, .w = 10, .h = 10 };
+    var anim_state = AnimationState{
+        .mode = .Full,
+        .focused_session = 0,
+        .previous_session = 1,
+        .start_time = 0,
+        .start_rect = rect,
+        .target_rect = rect,
+    };
+
+    try std.testing.expect(!anyVisibleSessionOutputHold(&sessions, &anim_state, 2, 1));
+    anim_state.mode = .Expanding;
+    try std.testing.expect(anyVisibleSessionOutputHold(&sessions, &anim_state, 2, 1));
 }
 
 test "markTeardownComplete returns true only once" {
@@ -3012,6 +3436,16 @@ fn reloadTestScaleChange(ctx: *TestScaleChangeContext) TestScaleChangeError!void
 
 fn resizeTestScaleChange(ctx: *TestScaleChangeContext) void {
     ctx.resize_calls += 1;
+}
+
+test "adjustedRenderHeightForMode reserves cwd bar only in stable grid mode" {
+    const render_height: c_int = 800;
+    const grid_height = adjustedRenderHeightForMode(.Grid, render_height, 1.0, 2);
+
+    try std.testing.expect(grid_height < render_height);
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Collapsing, render_height, 1.0, 2));
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.GridResizing, render_height, 1.0, 2));
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Full, render_height, 1.0, 2));
 }
 
 test "applyScaleChangeAndResize reloads then resizes when scale changes" {

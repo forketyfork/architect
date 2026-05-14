@@ -1,12 +1,12 @@
 class Architect < Formula
   desc "Terminal window manager with AI-powered workspace orchestration"
   homepage "https://github.com/forketyfork/architect"
-  url "https://github.com/forketyfork/architect/archive/refs/tags/v0.58.0.tar.gz"
-  sha256 "5c2776a1c53aac9cec18d3aa14953ee5322b4e60886cee87edef6fc6bf3d2f20"
+  url "https://github.com/forketyfork/architect/archive/refs/tags/v0.65.2.tar.gz"
+  sha256 "41de067e67596fd50378f4e184a63c817bb36c443e683728c3703b75288125e3"
   license "MIT"
 
   depends_on "pkg-config" => :build
-  depends_on "zig" => :build
+  depends_on "zig@0.15" => :build
   depends_on xcode: :build
   depends_on "sdl3"
   depends_on "sdl3_ttf"
@@ -67,6 +67,8 @@ class Architect < Formula
     EOS
 
     macos.install buildpath/"zig-out/bin/architect"
+    macos.install buildpath/"zig-out/bin/architect-mcp"
+    bin.install_symlink macos/"architect-mcp" => "architect-mcp"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
@@ -81,10 +83,18 @@ class Architect < Formula
 
       Launch with:
         open -a Architect
+
+      MCP helper command:
+        architect-mcp
+
+      MCP helper app-bundle path:
+        #{prefix}/Architect.app/Contents/MacOS/architect-mcp
     EOS
   end
 
   test do
     assert_path_exists prefix/"Architect.app/Contents/MacOS/architect"
+    assert_path_exists prefix/"Architect.app/Contents/MacOS/architect-mcp"
+    assert_path_exists bin/"architect-mcp"
   end
 end

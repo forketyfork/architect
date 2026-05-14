@@ -2,12 +2,13 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <executable> <output-dir> [--debug] [--unsigned]"
+    echo "Usage: $0 <executable> <output-dir> [architect-mcp-executable] [--debug] [--unsigned]"
     exit 1
 fi
 
 EXECUTABLE="$1"
 OUTPUT_DIR="$2"
+MCP_EXECUTABLE=""
 DEBUG_MODE=false
 SIGN_APP=true
 
@@ -20,11 +21,19 @@ for arg in "${@:3}"; do
             SIGN_APP=false
             ;;
         *)
-            echo "Unknown flag: $arg"
-            exit 1
+            if [[ -z "$MCP_EXECUTABLE" ]]; then
+                MCP_EXECUTABLE="$arg"
+            else
+                echo "Unknown flag: $arg"
+                exit 1
+            fi
             ;;
     esac
 done
+
+if [[ -z "$MCP_EXECUTABLE" ]]; then
+    MCP_EXECUTABLE="$(dirname "$EXECUTABLE")/architect-mcp"
+fi
 
 APP_NAME="Architect"
 APP_DIR="$OUTPUT_DIR/${APP_NAME}.app"
@@ -46,6 +55,12 @@ if [[ "$SIGN_APP" == true ]]; then
 fi
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
+echo "Including MCP helper: $MCP_EXECUTABLE"
+
+if [[ ! -f "$MCP_EXECUTABLE" ]]; then
+    echo "Error: architect-mcp executable not found: $MCP_EXECUTABLE"
+    exit 1
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$SHARE_DIR"
@@ -109,6 +124,8 @@ fi
 # Copy the binary as the main executable (dylibs use @executable_path/lib/)
 cp "$EXECUTABLE" "$MACOS_DIR/architect"
 chmod +x "$MACOS_DIR/architect"
+cp "$MCP_EXECUTABLE" "$MACOS_DIR/architect-mcp"
+chmod +x "$MACOS_DIR/architect-mcp"
 
 seen_list=""
 queue=""
@@ -146,8 +163,36 @@ remove_signature_if_present() {
     fi
 }
 
+nix_deps_for() {
+    local file="$1"
+    otool -L "$file" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true
+}
+
+patch_binary_deps() {
+    local binary="$1"
+    local label="$2"
+    local deps original name
+
+    deps=$(nix_deps_for "$binary")
+    if [[ -z "$deps" ]]; then
+        echo "No Nix store dependencies found in $label"
+        return
+    fi
+
+    while IFS= read -r original; do
+        [[ -z "$original" ]] && continue
+        name=$(basename "$original")
+        install_name_tool -change "$original" "@executable_path/lib/$name" "$binary"
+    done <<< "$deps"
+}
+
 echo "Analyzing dynamic library dependencies..."
-initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
+initial_deps=$(
+    {
+        nix_deps_for "$EXECUTABLE"
+        nix_deps_for "$MCP_EXECUTABLE"
+    } | sort -u
+)
 
 # Use a flag instead of early return: bundling must still finish even without Nix deps
 skip_lib_patching=false
@@ -188,7 +233,7 @@ if [[ "$skip_lib_patching" != true ]]; then
 
         install_name_tool -id "@executable_path/lib/$lib_name" "$dest"
 
-        nested_list=$(otool -L "$lib_path" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
+        nested_list=$(nix_deps_for "$lib_path")
         while IFS= read -r nested_dep; do
             [[ -z "$nested_dep" ]] && continue
             nested_name=$(basename "$nested_dep")
@@ -197,17 +242,18 @@ if [[ "$skip_lib_patching" != true ]]; then
         done <<< "$nested_list"
     done
 
-    while IFS= read -r original; do
-        [[ -z "$original" ]] && continue
-        name=$(basename "$original")
-        install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect" || true
-    done <<< "$seen_list"
+    patch_binary_deps "$MACOS_DIR/architect" "architect"
+    patch_binary_deps "$MACOS_DIR/architect-mcp" "architect-mcp"
 
     echo ""
     echo "Verifying final dependencies..."
     if otool -L "$MACOS_DIR/architect" | grep -q '/nix/store'; then
         echo "Warning: Nix store references remain in architect binary"
         otool -L "$MACOS_DIR/architect" | grep '/nix/store'
+    fi
+    if otool -L "$MACOS_DIR/architect-mcp" | grep -q '/nix/store'; then
+        echo "Warning: Nix store references remain in architect-mcp binary"
+        otool -L "$MACOS_DIR/architect-mcp" | grep '/nix/store'
     fi
 
     remaining=0
@@ -241,6 +287,9 @@ if [[ "$SIGN_APP" == true ]]; then
     done
     shopt -u nullglob
 
+    echo "Signing architect-mcp..."
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+
     echo "Signing architect..."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
 
@@ -252,6 +301,7 @@ else
     echo ""
     echo "Removing embedded signatures (--unsigned)..."
     remove_signature_if_present "$MACOS_DIR/architect"
+    remove_signature_if_present "$MACOS_DIR/architect-mcp"
     shopt -s nullglob
     for lib in "$LIB_DIR"/*.dylib; do
         remove_signature_if_present "$lib"

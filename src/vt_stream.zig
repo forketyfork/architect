@@ -38,6 +38,8 @@ pub const Handler = struct {
             .device_status => try self.handleDeviceStatus(value.request),
             .kitty_keyboard_query => try self.handleKittyKeyboardQuery(),
             .color_operation => try self.handleColorOperation(value),
+            .request_mode => try self.handleRequestMode(value.mode),
+            .request_mode_unknown => try self.handleRequestModeUnknown(value.mode, value.ansi),
             .kitty_keyboard_push => {
                 log.debug("kitty_keyboard_push: flags={d}", .{value.flags.int()});
                 try self.readonly.vt(action, value);
@@ -118,6 +120,18 @@ pub const Handler = struct {
         log.debug("kitty_keyboard_query: responding with flags={d}", .{flags.int()});
         var buf: [16]u8 = undefined;
         const resp = try formatKittyQueryResponse(&buf, flags.int());
+        _ = try self.shell.write(resp);
+    }
+
+    fn handleRequestMode(self: *Handler, mode: ghostty_vt.Mode) !void {
+        var buf: [32]u8 = undefined;
+        const resp = try formatModeReportResponse(&buf, mode, self.terminal.modes.get(mode));
+        _ = try self.shell.write(resp);
+    }
+
+    fn handleRequestModeUnknown(self: *Handler, mode_raw: u16, ansi: bool) !void {
+        var buf: [32]u8 = undefined;
+        const resp = try formatUnknownModeReportResponse(&buf, mode_raw, ansi);
         _ = try self.shell.write(resp);
     }
 
@@ -202,6 +216,23 @@ fn formatKittyQueryResponse(buf: []u8, flags: u5) error{NoSpaceLeft}![]u8 {
     return std.fmt.bufPrint(buf, "\x1b[?{d}u", .{flags});
 }
 
+fn formatModeReportResponse(buf: []u8, mode: ghostty_vt.Mode, enabled: bool) error{NoSpaceLeft}![]u8 {
+    const tag: ghostty_vt.modes.ModeTag = @bitCast(@intFromEnum(mode));
+    const code: u8 = if (enabled) 1 else 2;
+    return std.fmt.bufPrint(buf, "\x1b[{s}{d};{d}$y", .{
+        if (tag.ansi) "" else "?",
+        tag.value,
+        code,
+    });
+}
+
+fn formatUnknownModeReportResponse(buf: []u8, mode_raw: u16, ansi: bool) error{NoSpaceLeft}![]u8 {
+    return std.fmt.bufPrint(buf, "\x1b[{s}{d};0$y", .{
+        if (ansi) "" else "?",
+        mode_raw,
+    });
+}
+
 fn formatOscColorQueryResponse(
     buf: []u8,
     target: ghostty_vt.osc.color.Target,
@@ -243,6 +274,28 @@ test "formatKittyQueryResponse - all flags (flags=31)" {
     var buf: [16]u8 = undefined;
     const resp = try formatKittyQueryResponse(&buf, 31);
     try std.testing.expectEqualSlices(u8, "\x1b[?31u", resp);
+}
+
+test "formatModeReportResponse reports enabled DEC modes" {
+    var buf: [32]u8 = undefined;
+    const resp = try formatModeReportResponse(&buf, .synchronized_output, true);
+    try std.testing.expectEqualSlices(u8, "\x1b[?2026;1$y", resp);
+}
+
+test "formatModeReportResponse reports disabled DEC modes" {
+    var buf: [32]u8 = undefined;
+    const resp = try formatModeReportResponse(&buf, .synchronized_output, false);
+    try std.testing.expectEqualSlices(u8, "\x1b[?2026;2$y", resp);
+}
+
+test "formatUnknownModeReportResponse preserves private and ansi mode prefixes" {
+    var buf: [32]u8 = undefined;
+
+    const private_resp = try formatUnknownModeReportResponse(&buf, 9999, false);
+    try std.testing.expectEqualSlices(u8, "\x1b[?9999;0$y", private_resp);
+
+    const ansi_resp = try formatUnknownModeReportResponse(&buf, 9999, true);
+    try std.testing.expectEqualSlices(u8, "\x1b[9999;0$y", ansi_resp);
 }
 
 test "formatOscColorQueryResponse formats dynamic queries with the input terminator" {
@@ -295,6 +348,78 @@ test "stream answers OSC 10 and OSC 11 color queries" {
     try stream.nextSlice("\x1b]11;?\x1b\\");
     const bg_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b]11;rgb:1212/3434/5656\x1b\\", buf[0..bg_len]);
+}
+
+test "stream answers synchronized output mode report queries" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    defer terminal.deinit(allocator);
+
+    const pipe_fds = try std.posix.pipe();
+    defer std.posix.close(pipe_fds[0]);
+    defer std.posix.close(pipe_fds[1]);
+
+    var shell = shell_mod.Shell{
+        .pty = .{
+            .master = pipe_fds[1],
+            .slave = pipe_fds[0],
+        },
+        .child_pid = 0,
+    };
+
+    var stream = initStream(allocator, &terminal, &shell);
+    defer stream.deinit();
+
+    var buf: [128]u8 = undefined;
+
+    try stream.nextSlice("\x1b[?2026$p");
+    const disabled_len = try std.posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[?2026;2$y", buf[0..disabled_len]);
+
+    terminal.modes.set(.synchronized_output, true);
+
+    try stream.nextSlice("\x1b[?2026$p");
+    const enabled_len = try std.posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[?2026;1$y", buf[0..enabled_len]);
+}
+
+test "stream answers unknown mode report queries" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    defer terminal.deinit(allocator);
+
+    const pipe_fds = try std.posix.pipe();
+    defer std.posix.close(pipe_fds[0]);
+    defer std.posix.close(pipe_fds[1]);
+
+    var shell = shell_mod.Shell{
+        .pty = .{
+            .master = pipe_fds[1],
+            .slave = pipe_fds[0],
+        },
+        .child_pid = 0,
+    };
+
+    var stream = initStream(allocator, &terminal, &shell);
+    defer stream.deinit();
+
+    var buf: [128]u8 = undefined;
+
+    try stream.nextSlice("\x1b[?9999$p");
+    const private_len = try std.posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[?9999;0$y", buf[0..private_len]);
+
+    try stream.nextSlice("\x1b[9999$p");
+    const ansi_len = try std.posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[9999;0$y", buf[0..ansi_len]);
 }
 
 test "stream answers OSC 4 palette queries with the current terminal palette" {
