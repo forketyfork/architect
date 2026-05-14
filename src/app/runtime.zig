@@ -1238,7 +1238,16 @@ pub fn run() !void {
     };
     try ui.register(help_component);
 
-    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr);
+    const pr_dropdown_comp_ptr = try allocator.create(ui_mod.pr_dropdown.PRDropdownComponent);
+    pr_dropdown_comp_ptr.* = .{ .allocator = allocator };
+    const pr_dropdown_component = ui_mod.UiComponent{
+        .ptr = pr_dropdown_comp_ptr,
+        .vtable = &ui_mod.pr_dropdown.PRDropdownComponent.vtable,
+        .z_index = 1000,
+    };
+    try ui.register(pr_dropdown_component);
+
+    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr, pr_dropdown_comp_ptr);
     try ui.register(pill_group_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
@@ -2612,6 +2621,40 @@ pub fn run() !void {
                     ui.showToast("Failed to open story file", now);
                 }
                 allocator.free(story_action.path);
+            },
+            .CheckoutPullRequest => |pr_action| {
+                defer allocator.free(pr_action.branch);
+                if (pr_action.session >= sessions.len) continue;
+
+                var session = sessions[pr_action.session];
+                if (session.hasForegroundProcess()) {
+                    ui.showToast("Stop the running process first", now);
+                    continue;
+                }
+                if (!session.spawned or session.dead) {
+                    ui.showToast("Start the shell first", now);
+                    continue;
+                }
+
+                // Send `gh pr checkout <number>` to the focused shell. We rely on
+                // gh to do the heavy lifting (fetch, branch creation, switch).
+                var command_buf: [64]u8 = undefined;
+                const command = std.fmt.bufPrint(&command_buf, "\x15gh pr checkout {d}\n", .{pr_action.pr_number}) catch {
+                    ui.showToast("Could not check out PR", now);
+                    continue;
+                };
+                session.sendInput(command) catch |err| {
+                    log.warn("failed to send pr checkout command: {}", .{err});
+                    ui.showToast("Could not check out PR", now);
+                    continue;
+                };
+
+                session_interaction_component.setStatus(pr_action.session, .running);
+                session_interaction_component.setAttention(pr_action.session, false, now);
+
+                var toast_buf: [64]u8 = undefined;
+                const toast_msg = std.fmt.bufPrint(&toast_buf, "Checking out PR #{d}…", .{pr_action.pr_number}) catch "Checking out PR…";
+                ui.showToast(toast_msg, now);
             },
         };
 
