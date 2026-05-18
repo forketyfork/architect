@@ -933,6 +933,20 @@ fn cacheNeedsRefresh(
     return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition or cache_entry.cache_render_mode != render_mode;
 }
 
+/// DEC mode 2026 (synchronized output): while a session has the mode set, the
+/// app expects the terminal to suppress intermediate frames until it sends the
+/// closing `\e[?2026l`. We do that by reusing the last cached texture for that
+/// session instead of refreshing from the in-progress vt model. Skipped when
+/// the cache has no texture yet (initial render must run) or when the cached
+/// render mode doesn't match the requested one (a grid-sized cache can't fill
+/// a full-window rect cleanly).
+fn synchronizedOutputHoldsCache(session: *const SessionState, cache_entry: *const RenderCache.Entry, requested_render_mode: RenderCache.CacheRenderMode) bool {
+    if (cache_entry.cache_epoch == 0) return false;
+    if (cache_entry.cache_render_mode != requested_render_mode) return false;
+    const terminal = session.terminal orelse return false;
+    return terminal.modes.get(.synchronized_output);
+}
+
 fn refreshSessionCacheTexture(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
@@ -1014,7 +1028,8 @@ fn renderSessionCached(
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     if (can_cache) {
         if (cache_entry.texture) |tex| {
-            if (cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
+            const sync_holding = synchronizedOutputHoldsCache(session, cache_entry, render_mode);
+            if (!sync_holding and cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
                 try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
             }
 
