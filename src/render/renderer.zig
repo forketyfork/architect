@@ -156,7 +156,8 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
+                    const session_dims = sessionTermDims(session, term_cols, term_rows);
+                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
                 }
             }
         },
@@ -164,7 +165,9 @@ pub fn render(
             releaseNonFocusedCaches(render_cache, anim_state.focused_session);
             const full_rect = Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height };
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSessionCached(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            const focused_session = sessions[anim_state.focused_session];
+            const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
+            try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -176,7 +179,9 @@ pub fn render(
 
             const prev_rect = Rect{ .x = pan_offset, .y = 0, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            const prev_session = sessions[anim_state.previous_session];
+            const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
@@ -184,7 +189,9 @@ pub fn render(
                 -window_width + offset;
             const new_rect = Rect{ .x = new_offset, .y = 0, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            const new_session = sessions[anim_state.focused_session];
+            const new_dims = sessionTermDims(new_session, term_cols, term_rows);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -196,7 +203,9 @@ pub fn render(
 
             const prev_rect = Rect{ .x = 0, .y = pan_offset, .w = window_width, .h = window_height };
             const prev_entry = render_cache.entry(anim_state.previous_session);
-            try renderSession(renderer, sessions[anim_state.previous_session], &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            const prev_session = sessions[anim_state.previous_session];
+            const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
@@ -204,7 +213,9 @@ pub fn render(
                 -window_height + offset;
             const new_rect = Rect{ .x = 0, .y = new_offset, .w = window_width, .h = window_height };
             const new_entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, term_cols, term_rows, current_time, false, theme, ui_scale);
+            const new_session = sessions[anim_state.focused_session];
+            const new_dims = sessionTermDims(new_session, term_cols, term_rows);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -232,13 +243,16 @@ pub fn render(
                     };
 
                     const entry = render_cache.entry(i);
-                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
+                    const session_dims = sessionTermDims(session, term_cols, term_rows);
+                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
                 }
             }
 
             const apply_effects = anim_scale < 0.999;
             const entry = render_cache.entry(anim_state.focused_session);
-            try renderSession(renderer, sessions[anim_state.focused_session], &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, term_cols, term_rows, current_time, true, theme, ui_scale);
+            const focused_session = sessions[anim_state.focused_session];
+            const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
+            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale);
         },
         .GridResizing => {
             // Render session contents first so borders draw on top.
@@ -271,7 +285,8 @@ pub fn render(
                 };
 
                 const entry = render_cache.entry(i);
-                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, term_cols, term_rows, current_time, true, theme, ui_scale);
+                const session_dims = sessionTermDims(session, term_cols, term_rows);
+                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
             }
 
             // Render borders and overlays on top of the animated content.
@@ -823,6 +838,15 @@ fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
     cache_entry.cache_render_mode = .full;
+}
+
+/// Returns the session's own VT dimensions, or the passed-in fallback when the
+/// session hasn't been spawned yet (no terminal). Used so each grid tile and
+/// panning rect renders at the session's actual cell count instead of the
+/// process-global "full size" hint.
+fn sessionTermDims(session: *const SessionState, fallback_cols: u16, fallback_rows: u16) struct { cols: u16, rows: u16 } {
+    if (session.terminal) |t| return .{ .cols = t.cols, .rows = t.rows };
+    return .{ .cols = fallback_cols, .rows = fallback_rows };
 }
 
 fn releaseNonFocusedCaches(render_cache: *RenderCache, focused_session: usize) void {

@@ -115,26 +115,45 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
     return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale, ui_scale);
 }
 
-pub fn calculateTerminalSizeForMode(
+pub const Sizes = struct {
+    grid: TerminalSize,
+    full: TerminalSize,
+};
+
+pub fn calculateTerminalSizes(
     font: *const font_mod.Font,
     window_width: c_int,
     window_height: c_int,
-    mode: app_state.ViewMode,
     grid_font_scale: f32,
     grid_cols: usize,
     grid_rows: usize,
     ui_scale: f32,
-) TerminalSize {
-    return switch (mode) {
-        .Grid => {
-            const grid_dim = @max(grid_cols, grid_rows);
-            const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
-            const effective_scale: f32 = base_grid_scale * grid_font_scale;
-            return calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale);
-        },
-        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
+) Sizes {
+    const grid_dim = @max(grid_cols, grid_rows);
+    const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
+    const effective_scale: f32 = base_grid_scale * grid_font_scale;
+    return .{
+        .grid = calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale),
+        .full = calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
     };
 }
+
+/// Describes which sessions need full-window cell dimensions. All other
+/// sessions remain at grid-cell size. Only the focused session in stable Full
+/// mode (and the previous focused session during a panning transition) is at
+/// full size; the rest are invisible in Full mode and rendered at grid-cell
+/// scale in Grid mode, so paying for full-size PTYs would just force them to
+/// redraw their content on every view toggle.
+pub const FullSet = struct {
+    primary: ?usize = null,
+    secondary: ?usize = null,
+
+    pub fn contains(self: FullSet, idx: usize) bool {
+        if (self.primary) |p| if (p == idx) return true;
+        if (self.secondary) |s| if (s == idx) return true;
+        return false;
+    }
+};
 
 pub fn scaledFontSize(points: c_int, scale: f32) c_int {
     const scaled = std.math.round(@as(f32, @floatFromInt(points)) * scale);
@@ -144,45 +163,53 @@ pub fn scaledFontSize(points: c_int, scale: f32) c_int {
 pub fn applyTerminalResize(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
-    cols: u16,
-    rows: u16,
+    sizes: Sizes,
+    full_set: FullSet,
     render_width: c_int,
     render_height: c_int,
     ui_scale: f32,
 ) bool {
-    const usable_width = @max(0, render_width - dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2);
-    const usable_height = @max(0, render_height - dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2);
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2;
+    const usable_width: u16 = @intCast(@max(0, render_width - padding));
+    const usable_height: u16 = @intCast(@max(0, render_height - padding));
 
-    const new_size = pty_mod.winsize{
-        .ws_row = rows,
-        .ws_col = cols,
-        .ws_xpixel = @intCast(usable_width),
-        .ws_ypixel = @intCast(usable_height),
+    const grid_size = pty_mod.winsize{
+        .ws_row = sizes.grid.rows,
+        .ws_col = sizes.grid.cols,
+        .ws_xpixel = usable_width,
+        .ws_ypixel = usable_height,
+    };
+    const full_size = pty_mod.winsize{
+        .ws_row = sizes.full.rows,
+        .ws_col = sizes.full.cols,
+        .ws_xpixel = usable_width,
+        .ws_ypixel = usable_height,
     };
 
     var terminal_resized = false;
-    for (sessions) |session| {
+    for (sessions, 0..) |session, idx| {
+        const target = if (full_set.contains(idx)) full_size else grid_size;
         if (!session.spawned) {
-            session.pty_size = new_size;
+            session.pty_size = target;
             continue;
         }
 
         const shell = &(session.shell orelse continue);
         const terminal = &(session.terminal orelse continue);
 
-        const winsize_changed = !std.meta.eql(session.pty_size, new_size);
-        const terminal_cells_changed = terminal.cols != cols or terminal.rows != rows;
+        const winsize_changed = !std.meta.eql(session.pty_size, target);
+        const terminal_cells_changed = terminal.cols != target.ws_col or terminal.rows != target.ws_row;
 
         if (winsize_changed) {
-            shell.pty.setSize(new_size) catch |err| {
-                log.warn("failed to resize PTY session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
+            shell.pty.setSize(target) catch |err| {
+                log.warn("failed to resize PTY session={d} target={d}x{d}: {}", .{ session.id, target.ws_col, target.ws_row, err });
                 continue;
             };
         }
 
         if (terminal_cells_changed) {
-            resizeTerminal(allocator, terminal, cols, rows, new_size) catch |err| {
-                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
+            resizeTerminal(allocator, terminal, target.ws_col, target.ws_row, target) catch |err| {
+                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, target.ws_col, target.ws_row, err });
                 continue;
             };
 
@@ -197,10 +224,10 @@ pub fn applyTerminalResize(
         // DEC 2048 reports carry pixel fields, so apps tracking pixel
         // geometry need them even when the cell count is unchanged.
         if (winsize_changed and terminal.modes.get(.in_band_size_reports)) {
-            sendInBandSizeReport(shell, new_size);
+            sendInBandSizeReport(shell, target);
         }
 
-        session.pty_size = new_size;
+        session.pty_size = target;
     }
     return terminal_resized;
 }
@@ -232,20 +259,25 @@ fn sendInBandSizeReport(shell: *shell_mod.Shell, size: pty_mod.winsize) void {
     };
 }
 
-test "grid mode sizes terminals to the rendered tile area" {
+test "calculateTerminalSizes returns smaller grid than full and shrinks grid further when font scale shrinks" {
     var font: font_mod.Font = undefined;
     font.cell_width = 10;
     font.cell_height = 20;
 
-    const full = calculateTerminalSizeForMode(&font, 1200, 800, .Full, 1.0, 2, 1, 1.0);
-    const normal_grid = calculateTerminalSizeForMode(&font, 1200, 800, .Grid, 1.0, 2, 1, 1.0);
-    const enlarged_grid = calculateTerminalSizeForMode(&font, 1200, 800, .Grid, 2.0, 2, 1, 1.0);
+    const normal = calculateTerminalSizes(&font, 1200, 800, 1.0, 2, 1, 1.0);
+    const enlarged = calculateTerminalSizes(&font, 1200, 800, 2.0, 2, 1, 1.0);
 
-    try std.testing.expect(normal_grid.cols < full.cols);
-    try std.testing.expect(enlarged_grid.cols < normal_grid.cols);
-    try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Expanding, 1.0, 2, 1, 1.0));
-    try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Collapsing, 1.0, 2, 1, 1.0));
-    try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .GridResizing, 1.0, 2, 1, 1.0));
+    try std.testing.expect(normal.grid.cols < normal.full.cols);
+    try std.testing.expect(enlarged.grid.cols < normal.grid.cols);
+    try std.testing.expectEqual(normal.full, enlarged.full);
+}
+
+test "FullSet.contains identifies primary and secondary indices" {
+    try std.testing.expect(!(FullSet{}).contains(0));
+    try std.testing.expect((FullSet{ .primary = 3 }).contains(3));
+    try std.testing.expect(!(FullSet{ .primary = 3 }).contains(2));
+    try std.testing.expect((FullSet{ .primary = 3, .secondary = 5 }).contains(5));
+    try std.testing.expect(!(FullSet{ .primary = 3, .secondary = 5 }).contains(4));
 }
 
 test "terminal resize preserves prompt contents when shell does not redraw" {

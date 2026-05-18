@@ -301,6 +301,17 @@ fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, u
     };
 }
 
+/// Which sessions need full-window cell dimensions for the given view mode.
+/// During Panning the previous session is still visible at full size on its way
+/// off-screen, so it stays at full size until the pan completes.
+fn fullSetForMode(mode: app_state.ViewMode, focused: usize, previous: usize) layout.FullSet {
+    return switch (mode) {
+        .Grid, .GridResizing => .{},
+        .Full, .Expanding, .Collapsing => .{ .primary = focused },
+        .PanningLeft, .PanningRight, .PanningUp, .PanningDown => .{ .primary = focused, .secondary = previous },
+    };
+}
+
 fn applyTerminalLayout(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
@@ -308,18 +319,19 @@ fn applyTerminalLayout(
     render_width: c_int,
     render_height: c_int,
     ui_scale: f32,
-    mode: app_state.ViewMode,
+    anim_state: *const AnimationState,
     grid_cols: usize,
     grid_rows: usize,
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
 ) void {
-    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
-    const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
-    full_cols.* = term_size.cols;
-    full_rows.* = term_size.rows;
-    _ = layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+    const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid_rows);
+    const sizes = layout.calculateTerminalSizes(font, render_width, term_render_height, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    full_cols.* = sizes.full.cols;
+    full_rows.* = sizes.full.rows;
+    const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
+    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, term_render_height, ui_scale);
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -329,20 +341,19 @@ fn applyTerminalLayoutIfSizeChanged(
     render_width: c_int,
     render_height: c_int,
     ui_scale: f32,
-    mode: app_state.ViewMode,
+    anim_state: *const AnimationState,
     grid_cols: usize,
     grid_rows: usize,
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
 ) bool {
-    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
-    const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
-    if (full_cols.* == term_size.cols and full_rows.* == term_size.rows) return false;
-
-    full_cols.* = term_size.cols;
-    full_rows.* = term_size.rows;
-    return layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+    const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid_rows);
+    const sizes = layout.calculateTerminalSizes(font, render_width, term_render_height, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    full_cols.* = sizes.full.cols;
+    full_rows.* = sizes.full.rows;
+    const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
+    return layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, term_render_height, ui_scale);
 }
 
 const SessionIndexSnapshot = struct {
@@ -688,7 +699,7 @@ fn handleExternalSpawnRequest(
         render_width,
         render_height,
         ui_scale,
-        anim_state.mode,
+        anim_state,
         grid.cols,
         grid.rows,
         grid_font_scale,
@@ -846,7 +857,7 @@ const RuntimeScaleChangeContext = struct {
     sessions: []const *SessionState,
     render_width: c_int,
     render_height: c_int,
-    mode: app_state.ViewMode,
+    anim_state: *const AnimationState,
     grid_cols: usize,
     grid_rows: usize,
     grid_font_scale: f32,
@@ -870,24 +881,24 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const term_render_height = adjustedRenderHeightForMode(ctx.mode, ctx.render_height, ctx.ui_scale, ctx.grid_rows);
-    const new_term_size = layout.calculateTerminalSizeForMode(
+    const term_render_height = adjustedRenderHeightForMode(ctx.anim_state.mode, ctx.render_height, ctx.ui_scale, ctx.grid_rows);
+    const sizes = layout.calculateTerminalSizes(
         ctx.font,
         ctx.render_width,
         term_render_height,
-        ctx.mode,
         ctx.grid_font_scale,
         ctx.grid_cols,
         ctx.grid_rows,
         ctx.ui_scale,
     );
-    ctx.full_cols.* = new_term_size.cols;
-    ctx.full_rows.* = new_term_size.rows;
+    ctx.full_cols.* = sizes.full.cols;
+    ctx.full_rows.* = sizes.full.rows;
+    const full_set = fullSetForMode(ctx.anim_state.mode, ctx.anim_state.focused_session, ctx.anim_state.previous_session);
     _ = layout.applyTerminalResize(
         ctx.sessions,
         ctx.allocator,
-        ctx.full_cols.*,
-        ctx.full_rows.*,
+        sizes,
+        full_set,
         ctx.render_width,
         term_render_height,
         ctx.ui_scale,
@@ -1329,11 +1340,11 @@ pub fn run() !void {
 
     const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
     const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, render_height, ui_scale, grid.rows);
-    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, initial_view_mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-    var full_cols: u16 = initial_term_size.cols;
-    var full_rows: u16 = initial_term_size.rows;
+    const initial_sizes = layout.calculateTerminalSizes(&font, render_width, initial_term_render_height, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
+    var full_cols: u16 = initial_sizes.full.cols;
+    var full_rows: u16 = initial_sizes.full.rows;
 
-    std.debug.print("Grid cell terminal size: {d}x{d}\n", .{ full_cols, full_rows });
+    std.debug.print("Grid cell terminal size: {d}x{d}; full size: {d}x{d}\n", .{ initial_sizes.grid.cols, initial_sizes.grid.rows, full_cols, full_rows });
 
     const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
     std.debug.print("Starting with {d}x{d} grid: {s}\n", .{ grid.cols, grid.rows, shell_path });
@@ -1345,9 +1356,11 @@ pub fn run() !void {
     const usable_width = @max(0, render_width - terminal_padding * 2);
     const usable_height = @max(0, initial_term_render_height - terminal_padding * 2);
 
+    // All sessions seed at grid-cell size. The first applyTerminalLayoutIfSizeChanged
+    // promotes the focused session to full size if the initial view is Full.
     const size = pty_mod.winsize{
-        .ws_row = full_rows,
-        .ws_col = full_cols,
+        .ws_row = initial_sizes.grid.rows,
+        .ws_col = initial_sizes.grid.cols,
         .ws_xpixel = @intCast(usable_width),
         .ws_ypixel = @intCast(usable_height),
     };
@@ -1643,7 +1656,7 @@ pub fn run() !void {
                         .sessions = sessions,
                         .render_width = render_width,
                         .render_height = render_height,
-                        .mode = anim_state.mode,
+                        .anim_state = &anim_state,
                         .grid_cols = grid.cols,
                         .grid_rows = grid.rows,
                         .grid_font_scale = config.grid.font_scale,
@@ -1872,7 +1885,7 @@ pub fn run() !void {
                                 cell_width_pixels = render_width;
                                 cell_height_pixels = render_height;
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             } else if (remaining_count == 1) {
                                 // Only 1 terminal remains - go directly to Full mode, no resize animation
                                 grid.cols = 1;
@@ -1888,7 +1901,7 @@ pub fn run() !void {
                                     }
                                 }
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -1928,7 +1941,7 @@ pub fn run() !void {
 
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
@@ -2006,7 +2019,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -2068,7 +2081,7 @@ pub fn run() !void {
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(new_idx);
@@ -2491,7 +2504,7 @@ pub fn run() !void {
                         cell_width_pixels = render_width;
                         cell_height_pixels = render_height;
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                     } else if (remaining_count == 1) {
                         // Only 1 terminal remains - go directly to Full mode, no resize animation
                         grid.cols = 1;
@@ -2507,7 +2520,7 @@ pub fn run() !void {
                             }
                         }
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2546,7 +2559,7 @@ pub fn run() !void {
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
@@ -2925,7 +2938,7 @@ pub fn run() !void {
             render_width,
             render_height,
             ui_scale,
-            anim_state.mode,
+            &anim_state,
             grid.cols,
             grid.rows,
             config.grid.font_scale,
@@ -3165,6 +3178,27 @@ test "computeFrameWaitDecision defers to vsync while active" {
         .none => {},
         else => try std.testing.expect(false),
     }
+}
+
+test "fullSetForMode promotes focused (and previous during panning) to full size" {
+    try std.testing.expectEqual(@as(?usize, null), fullSetForMode(.Grid, 2, 7).primary);
+    try std.testing.expectEqual(@as(?usize, null), fullSetForMode(.GridResizing, 2, 7).primary);
+
+    const full = fullSetForMode(.Full, 2, 7);
+    try std.testing.expectEqual(@as(?usize, 2), full.primary);
+    try std.testing.expectEqual(@as(?usize, null), full.secondary);
+
+    const expanding = fullSetForMode(.Expanding, 2, 7);
+    try std.testing.expectEqual(@as(?usize, 2), expanding.primary);
+    try std.testing.expectEqual(@as(?usize, null), expanding.secondary);
+
+    const collapsing = fullSetForMode(.Collapsing, 2, 7);
+    try std.testing.expectEqual(@as(?usize, 2), collapsing.primary);
+    try std.testing.expectEqual(@as(?usize, null), collapsing.secondary);
+
+    const pan = fullSetForMode(.PanningLeft, 2, 7);
+    try std.testing.expectEqual(@as(?usize, 2), pan.primary);
+    try std.testing.expectEqual(@as(?usize, 7), pan.secondary);
 }
 
 test "markTeardownComplete returns true only once" {
