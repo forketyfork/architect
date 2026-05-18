@@ -170,12 +170,11 @@ pub fn applyTerminalResize(
         const shell = &(session.shell orelse continue);
         const terminal = &(session.terminal orelse continue);
 
-        const cells_changed = terminalCellSizeChanged(session.pty_size, cols, rows);
+        const winsize_changed = !std.meta.eql(session.pty_size, new_size);
         const terminal_cells_changed = terminal.cols != cols or terminal.rows != rows;
 
-        if (cells_changed) {
+        if (winsize_changed) {
             shell.pty.setSize(new_size) catch |err| {
-                std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
                 log.warn("failed to resize PTY session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
@@ -183,7 +182,6 @@ pub fn applyTerminalResize(
 
         if (terminal_cells_changed) {
             resizeTerminal(allocator, terminal, cols, rows, new_size) catch |err| {
-                std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
                 log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
@@ -192,20 +190,19 @@ pub fn applyTerminalResize(
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
             session.resetSynchronizedOutputTracking();
-            if (terminal.modes.get(.in_band_size_reports)) {
-                sendInBandSizeReport(shell, new_size);
-            }
             session.markDirty();
             terminal_resized = true;
+        }
+
+        // DEC 2048 reports carry pixel fields, so apps tracking pixel
+        // geometry need them even when the cell count is unchanged.
+        if (winsize_changed and terminal.modes.get(.in_band_size_reports)) {
+            sendInBandSizeReport(shell, new_size);
         }
 
         session.pty_size = new_size;
     }
     return terminal_resized;
-}
-
-fn terminalCellSizeChanged(current: pty_mod.winsize, cols: u16, rows: u16) bool {
-    return current.ws_col != cols or current.ws_row != rows;
 }
 
 fn resizeTerminal(
@@ -249,19 +246,6 @@ test "grid mode sizes terminals to the rendered tile area" {
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Expanding, 1.0, 2, 1, 1.0));
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Collapsing, 1.0, 2, 1, 1.0));
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .GridResizing, 1.0, 2, 1, 1.0));
-}
-
-test "terminal cell size ignores pixel-only resize differences" {
-    const size = pty_mod.winsize{
-        .ws_row = 40,
-        .ws_col = 120,
-        .ws_xpixel = 1200,
-        .ws_ypixel = 800,
-    };
-
-    try std.testing.expect(!terminalCellSizeChanged(size, 120, 40));
-    try std.testing.expect(terminalCellSizeChanged(size, 121, 40));
-    try std.testing.expect(terminalCellSizeChanged(size, 120, 41));
 }
 
 test "terminal resize preserves prompt contents when shell does not redraw" {

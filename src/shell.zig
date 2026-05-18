@@ -1082,7 +1082,7 @@ pub const Shell = struct {
                 posix.chdir(dir) catch {};
             }
 
-            try pty_instance.childPreExec();
+            pty_instance.childPreExec() catch std.c._exit(1);
 
             const shell_path_z = @as([*:0]const u8, @ptrCast(shell_path.ptr));
             const login_flag = "-l\x00";

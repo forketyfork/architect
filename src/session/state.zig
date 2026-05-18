@@ -771,25 +771,12 @@ pub const SessionState = struct {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
 
-        const fg_pgrp = blk: {
-            if (getForegroundPgrp(shell.child_pid)) |fg| {
-                log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_sysctl={d}", .{ shell.child_pid, fg });
-                if (fg == shell.child_pid) {
-                    log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
-                    return null;
-                }
-                break :blk fg;
-            }
-            log.debug("detectForegroundAgent: sysctl fg pgrp unavailable, falling back to tcgetpgrp", .{});
-            const slave_path_z = ptsname(shell.pty.master) orelse return null;
-            const slave_path = std.mem.sliceTo(slave_path_z, 0);
-            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
-            defer posix.close(fd);
-            const fg = tcgetpgrp(fd);
-            log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_tcgetpgrp={d}", .{ shell.child_pid, fg });
-            if (fg <= 0 or fg == shell.child_pid) return null;
-            break :blk @as(posix.pid_t, @intCast(fg));
-        };
+        const fg_pgrp = self.foregroundPgrp() orelse return null;
+        log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp={d}", .{ shell.child_pid, fg_pgrp });
+        if (fg_pgrp == shell.child_pid) {
+            log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
+            return null;
+        }
 
         if (detectAgentByPid(fg_pgrp)) |kind| {
             log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (process inspection)", .{ fg_pgrp, kind.name() });
