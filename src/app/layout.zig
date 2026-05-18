@@ -9,6 +9,7 @@ const dpi = @import("../dpi.zig");
 const session_state = @import("../session/state.zig");
 const vt_stream = @import("../vt_stream.zig");
 
+const log = std.log.scoped(.layout);
 const AnimationState = app_state.AnimationState;
 const SessionState = session_state.SessionState;
 
@@ -149,9 +150,20 @@ pub fn applyTerminalResize(
         .ws_ypixel = @intCast(usable_height),
     };
 
+    log.debug("terminal layout resize request cols={d} rows={d} pixels={d}x{d} usable={d}x{d} sessions={d}", .{
+        cols,
+        rows,
+        render_width,
+        render_height,
+        usable_width,
+        usable_height,
+        sessions.len,
+    });
+
     var terminal_resized = false;
     for (sessions) |session| {
         if (!session.spawned) {
+            log.debug("terminal layout resize session={d} slot={d} skipped unspawned target={d}x{d}", .{ session.id, session.slot_index, cols, rows });
             session.pty_size = new_size;
             continue;
         }
@@ -161,25 +173,44 @@ pub fn applyTerminalResize(
 
         const cells_changed = terminalCellSizeChanged(session.pty_size, cols, rows);
         const terminal_cells_changed = terminal.cols != cols or terminal.rows != rows;
+        log.debug("terminal layout resize session={d} slot={d} target={d}x{d} current_pty={d}x{d} current_vt={d}x{d} cells_changed={} vt_changed={} agent={?s}", .{
+            session.id,
+            session.slot_index,
+            cols,
+            rows,
+            session.pty_size.ws_col,
+            session.pty_size.ws_row,
+            terminal.cols,
+            terminal.rows,
+            cells_changed,
+            terminal_cells_changed,
+            if (session.detectOutputHoldAgent()) |kind| kind.name() else null,
+        });
 
         if (cells_changed) {
             shell.pty.setSize(new_size) catch |err| {
                 std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+                log.warn("failed to resize PTY session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
+            log.debug("terminal layout PTY resized session={d} target={d}x{d}", .{ session.id, cols, rows });
+            session.beginTerminalResizeTrace(std.time.milliTimestamp());
+            session.notifyTerminalResize();
         }
 
         if (terminal_cells_changed) {
             resizeTerminal(allocator, terminal, cols, rows, new_size) catch |err| {
                 std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
+            log.debug("terminal layout VT resized session={d} target={d}x{d}", .{ session.id, cols, rows });
 
             if (session.stream == null) {
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
             session.resetSynchronizedOutputTracking();
-            session.beginTerminalResizeHold(std.time.milliTimestamp());
+            session.beginTerminalResizeHold(std.time.milliTimestamp(), session.detectOutputHoldAgent());
             session.markDirty();
             terminal_resized = true;
         }

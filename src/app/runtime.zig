@@ -379,6 +379,11 @@ fn applyTerminalLayoutIfSizeChanged(
     return layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
 }
 
+fn shouldRenderPreResizeFullFrame(previous_mode: app_state.ViewMode, next_mode: app_state.ViewMode, focused_is_output_hold_agent: bool) bool {
+    if (!focused_is_output_hold_agent) return false;
+    return previous_mode == .Expanding and next_mode == .Full;
+}
+
 const SessionIndexSnapshot = struct {
     session_id: usize,
     index: usize,
@@ -2320,6 +2325,7 @@ pub fn run() !void {
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
             _ = session.expireSynchronizedOutput(now);
+            session.updateTerminalResizeTrace(now);
             if (anim_state.mode != .GridResizing) {
                 _ = session.expireTerminalResizeHold(now);
             }
@@ -2924,6 +2930,7 @@ pub fn run() !void {
             },
         };
 
+        var delay_terminal_layout_for_pre_resize_full_frame = false;
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
             anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight or
             anim_state.mode == .PanningUp or anim_state.mode == .PanningDown)
@@ -2935,9 +2942,16 @@ pub fn run() !void {
                     .Collapsing => .Grid,
                     else => anim_state.mode,
                 };
+                const focused_is_output_hold_agent = anim_state.focused_session < sessions.len and
+                    sessions[anim_state.focused_session].detectOutputHoldAgent() != null;
+                delay_terminal_layout_for_pre_resize_full_frame = shouldRenderPreResizeFullFrame(previous_mode, next_mode, focused_is_output_hold_agent);
                 anim_state.mode = next_mode;
                 if (previous_mode == .Collapsing and next_mode == .Grid and anim_state.focused_session < sessions.len) {
                     sessions[anim_state.focused_session].markDirty();
+                }
+                if (delay_terminal_layout_for_pre_resize_full_frame) {
+                    any_session_dirty = true;
+                    log.debug("delaying agent terminal resize until full-mode cache is populated session={d}", .{anim_state.focused_session});
                 }
                 std.debug.print("Animation complete, new mode: {s}\n", .{@tagName(anim_state.mode)});
             }
@@ -2955,20 +2969,23 @@ pub fn run() !void {
             }
         }
 
-        const terminal_layout_changed = applyTerminalLayoutIfSizeChanged(
-            sessions,
-            allocator,
-            &font,
-            render_width,
-            render_height,
-            ui_scale,
-            anim_state.mode,
-            grid.cols,
-            grid.rows,
-            config.grid.font_scale,
-            &full_cols,
-            &full_rows,
-        );
+        const terminal_layout_changed = if (delay_terminal_layout_for_pre_resize_full_frame)
+            false
+        else
+            applyTerminalLayoutIfSizeChanged(
+                sessions,
+                allocator,
+                &font,
+                render_width,
+                render_height,
+                ui_scale,
+                anim_state.mode,
+                grid.cols,
+                grid.rows,
+                config.grid.font_scale,
+                &full_cols,
+                &full_rows,
+            );
         if (terminal_layout_changed) {
             any_session_dirty = true;
             std.debug.print("Terminal layout adjusted for {s}: {d}x{d}\n", .{
@@ -3219,6 +3236,9 @@ test "full view synchronized hold ignores previous session" {
     var focused: SessionState = undefined;
     focused.spawned = true;
     focused.dead = false;
+    focused.synchronized_output_hold_agent = null;
+    focused.terminal_resize_started_ms = 0;
+    focused.terminal_resize_hold_agent = null;
     focused.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -3229,6 +3249,9 @@ test "full view synchronized hold ignores previous session" {
     var previous: SessionState = undefined;
     previous.spawned = true;
     previous.dead = false;
+    previous.synchronized_output_hold_agent = .codex;
+    previous.terminal_resize_started_ms = 0;
+    previous.terminal_resize_hold_agent = null;
     previous.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -3251,6 +3274,14 @@ test "full view synchronized hold ignores previous session" {
     try std.testing.expect(!anyVisibleSessionOutputHold(&sessions, &anim_state, 2, 1));
     anim_state.mode = .Expanding;
     try std.testing.expect(anyVisibleSessionOutputHold(&sessions, &anim_state, 2, 1));
+}
+
+test "agent expansion delays terminal resize for one full-mode cache frame" {
+    try std.testing.expect(shouldRenderPreResizeFullFrame(.Expanding, .Full, true));
+    try std.testing.expect(!shouldRenderPreResizeFullFrame(.Expanding, .Full, false));
+    try std.testing.expect(!shouldRenderPreResizeFullFrame(.Collapsing, .Grid, true));
+    try std.testing.expect(!shouldRenderPreResizeFullFrame(.PanningLeft, .Full, true));
+    try std.testing.expect(!shouldRenderPreResizeFullFrame(.Grid, .Full, true));
 }
 
 test "markTeardownComplete returns true only once" {

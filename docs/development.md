@@ -86,6 +86,10 @@ Format code:
 zig fmt src/
 ```
 
+## Terminal Resize Debugging
+
+For grid/full resize bugs, set `[logging].min_level = "debug"` in `~/.config/architect/config.toml`, restart Architect, reproduce the resize transition, and inspect `~/Library/Logs/Architect/architect.log`. The resize path logs the requested grid/full terminal size, per-session PTY and ghostty-vt dimensions, PTY winsize calls, foreground process group lookup, `SIGWINCH` delivery, whether PTY output arrives during the first second after a resize, cursor style for the active screen, and whether vim-family focus, delayed `SIGWINCH`, or redraw nudges were sent.
+
 ## Release Process
 
 macOS release binaries are automatically built for both ARM64 (Apple Silicon) and x86_64 (Intel) architectures via GitHub Actions when a version tag is pushed:
