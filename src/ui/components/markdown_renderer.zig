@@ -1,8 +1,7 @@
 const std = @import("std");
 const parser = @import("markdown_parser.zig");
 
-const max_list_indent_level: u8 = 12;
-const indent_padding: [max_list_indent_level * 2]u8 = [_]u8{' '} ** (max_list_indent_level * 2);
+const indent_padding: [parser.max_indent_level * 2]u8 = [_]u8{' '} ** (parser.max_indent_level * 2);
 
 pub const LineKind = enum {
     text,
