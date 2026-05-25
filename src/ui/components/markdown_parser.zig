@@ -324,7 +324,7 @@ const ListItem = struct {
 
 fn parseListItem(line: []const u8) ?ListItem {
     const leading = countLeadingSpaces(line);
-    const indent_level: u8 = @intCast(@min(leading / 2, 12));
+    const indent_level: u8 = @intCast(@min(leading / 2, max_indent_level));
     const trimmed = std.mem.trimLeft(u8, line, " \t");
     if (trimmed.len < 2) return null;
 
@@ -437,6 +437,7 @@ fn isPromptHeuristicLine(line: []const u8) bool {
 }
 
 pub const max_table_columns: usize = 32;
+pub const max_indent_level: u8 = 12;
 const prompt_marker_line = "@@ARCH_PROMPT@@";
 
 fn splitTableCellsFixed(line: []const u8, cells: *[max_table_columns][]const u8) usize {

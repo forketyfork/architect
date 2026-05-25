@@ -1,6 +1,8 @@
 const std = @import("std");
 const parser = @import("markdown_parser.zig");
 
+const indent_padding: [parser.max_indent_level * 2]u8 = [_]u8{' '} ** (parser.max_indent_level * 2);
+
 pub const LineKind = enum {
     text,
     code,
@@ -166,6 +168,7 @@ pub fn buildLines(
                 var heading_level: u8 = 0;
                 var quote_depth: u8 = 0;
                 var indent_level: u8 = 0;
+                var marker_buf: [32]u8 = undefined;
 
                 if (block.kind == .heading) {
                     heading_level = @max(@as(u8, 1), block.level);
@@ -177,12 +180,9 @@ pub fn buildLines(
 
                 if (block.kind == .list_item) {
                     indent_level = block.level;
-                    const indent_spaces = @as(usize, indent_level) * 2;
+                    const indent_spaces = @min(@as(usize, indent_level) * 2, indent_padding.len);
                     if (indent_spaces > 0) {
-                        const spaces = try allocator.alloc(u8, indent_spaces);
-                        @memset(spaces, ' ');
-                        defer allocator.free(spaces);
-                        try run_inputs.append(allocator, .{ .text = spaces, .style = .normal, .marker = true });
+                        try run_inputs.append(allocator, .{ .text = indent_padding[0..indent_spaces], .style = .normal, .marker = true });
                     }
 
                     if (block.task_state == .unchecked) {
@@ -190,7 +190,6 @@ pub fn buildLines(
                     } else if (block.task_state == .checked) {
                         try run_inputs.append(allocator, .{ .text = "✅ ", .style = .normal, .marker = true });
                     } else if (block.ordered_index) |idx| {
-                        var marker_buf: [32]u8 = undefined;
                         const marker = try std.fmt.bufPrint(&marker_buf, "{d}. ", .{idx});
                         try run_inputs.append(allocator, .{ .text = marker, .style = .normal, .marker = true });
                     } else {
@@ -644,6 +643,58 @@ test "renderer preserves href on link runs" {
     try std.testing.expectEqual(@as(usize, 1), lines.items[0].runs.len);
     try std.testing.expectEqual(parser.InlineStyle.link, lines.items[0].runs[0].style);
     try std.testing.expectEqualStrings("https://example.com", lines.items[0].runs[0].href.?);
+}
+
+const PoisonAllocator = struct {
+    backing: std.mem.Allocator,
+
+    fn allocator(self: *PoisonAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(buf, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(buf, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        @memset(buf, 0xAA);
+        self.backing.rawFree(buf, alignment, ret_addr);
+    }
+};
+
+test "renderer handles nested list items without use-after-free" {
+    var poison = PoisonAllocator{ .backing = std.testing.allocator };
+    const allocator = poison.allocator();
+
+    var blocks = try parser.parse(allocator, "  - nested item\n");
+    defer parser.freeBlocks(allocator, &blocks);
+
+    var lines = try buildLines(allocator, blocks.items, 80);
+    defer freeLines(allocator, &lines);
+
+    try std.testing.expectEqual(@as(usize, 1), lines.items.len);
+    try std.testing.expectEqual(@as(u8, 1), lines.items[0].indent_level);
+    try std.testing.expectEqualStrings("• nested item", lines.items[0].plain_text);
 }
 
 test "renderer emits prompt separator line kind" {
