@@ -515,26 +515,19 @@ fn renderSessionContent(
                 }
             }
 
-            if (view.hovered_link_start) |link_start| {
-                if (view.hovered_link_end) |link_end| {
-                    const point_for_link = if (view.is_viewing_scrollback)
-                        ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                    else
-                        ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                    if (pages.pin(point_for_link)) |link_pin| {
-                        const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
-                        if (link_sel.contains(screen, link_pin)) {
-                            _ = c.SDL_SetRenderDrawColor(renderer, fg_color.r, fg_color.g, fg_color.b, 255);
-                            const underline_y: f32 = @floatFromInt(y + eff_ch - 1);
-                            const x_start: f32 = @floatFromInt(x);
-                            const x_end: f32 = @floatFromInt(x + eff_cw * glyph_width_cells - 1);
-                            _ = c.SDL_RenderLine(renderer, x_start, underline_y, x_end, underline_y);
-                        }
-                    }
-                }
-            }
+            const has_hover_underline = blk: {
+                const link_start = view.hovered_link_start orelse break :blk false;
+                const link_end = view.hovered_link_end orelse break :blk false;
+                const point_for_link = if (view.is_viewing_scrollback)
+                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
+                else
+                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
+                const link_pin = pages.pin(point_for_link) orelse break :blk false;
+                const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
+                break :blk link_sel.contains(screen, link_pin);
+            };
 
-            if (style.flags.underline != .none and underline_count < underline_segments.len) {
+            if ((style.flags.underline != .none or has_hover_underline) and underline_count < underline_segments.len) {
                 underline_segments[underline_count] = .{
                     .x_start = @floatFromInt(x),
                     .x_end = @floatFromInt(x + eff_cw * glyph_width_cells - 1),
