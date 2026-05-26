@@ -2030,7 +2030,10 @@ pub fn run() !void {
                         }
 
                         var notification_buf: [64]u8 = undefined;
-                        const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch "Font size changed";
+                        const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch |err| blk: {
+                            log.warn("failed to format font size toast: {}", .{err});
+                            break :blk "Font size changed";
+                        };
                         ui.showToast(notification_msg, now);
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
@@ -2813,7 +2816,10 @@ pub fn run() !void {
                 session_interaction_component.setAttention(cd_action.session, false, now);
 
                 const basename = std.fs.path.basename(cd_action.path);
-                const toast_msg_buf = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch null;
+                const toast_msg_buf: ?[]u8 = std.fmt.allocPrint(allocator, "Changed to {s}", .{basename}) catch |err| blk: {
+                    log.warn("failed to allocate cd toast: {}", .{err});
+                    break :blk null;
+                };
                 const toast_msg = toast_msg_buf orelse "Changed directory";
                 defer if (toast_msg_buf) |buf| allocator.free(buf);
                 ui.showToast(toast_msg, now);
