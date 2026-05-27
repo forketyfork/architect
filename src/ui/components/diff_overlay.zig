@@ -1904,7 +1904,10 @@ pub const DiffOverlayComponent = struct {
                 if (!is_continuation) {
                     if (line.old_line) |num| {
                         var num_buf: [12]u8 = undefined;
-                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
+                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch |err| blk: {
+                            log.warn("failed to format old line number: {}", .{err});
+                            break :blk "";
+                        };
                         if (num_str.len > 0) {
                             const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
                             errdefer c.SDL_DestroyTexture(tex.tex);
@@ -1922,7 +1925,10 @@ pub const DiffOverlayComponent = struct {
 
                     if (line.new_line) |num| {
                         var num_buf: [12]u8 = undefined;
-                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch "";
+                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch |err| blk: {
+                            log.warn("failed to format new line number: {}", .{err});
+                            break :blk "";
+                        };
                         if (num_str.len > 0) {
                             const tex = try self.makeTextTexture(renderer, mono_font, num_str, dim_color);
                             errdefer c.SDL_DestroyTexture(tex.tex);

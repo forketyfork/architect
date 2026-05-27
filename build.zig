@@ -127,10 +127,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_mcp_unit_tests.step);
 
-    // Lint step using zwanzig
+    // Lint step using zwanzig. Always build the linter with ReleaseFast: it is a
+    // build-time tool and Debug-mode safety/allocator overhead makes analysis
+    // multiple orders of magnitude slower on x86 Linux runners.
     if (b.lazyDependency("zwanzig", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     })) |zw| {
         const zw_exe = zw.artifact("zwanzig");
         const lint_run = b.addRunArtifact(zw_exe);
