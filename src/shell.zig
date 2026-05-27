@@ -1155,3 +1155,65 @@ test "pathContainsEntry" {
     try std.testing.expect(pathContainsEntry("/usr/bin", "/usr/bin"));
     try std.testing.expect(!pathContainsEntry("", "/usr/bin"));
 }
+
+// Regression test for issue #318: the bundled terminfo source must compile to
+// the legacy short-int format (magic 0x011a) so that macOS system tools linked
+// against the old libncurses 5.4 in dyld_shared_cache (less, man, etc.) can read
+// it. If `use=xterm-256color` inherits `pairs#0x10000` from a modern ncurses
+// terminfo DB without an override, tic emits the extended-numbers format (magic
+// 0x021e), which those tools cannot parse and they print "WARNING: terminal is
+// not fully functional".
+test "bundled terminfo compiles to legacy short-int format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const src_path = try std.fs.path.join(allocator, &.{ tmp_path, "xterm-ghostty.terminfo" });
+    defer allocator.free(src_path);
+
+    {
+        const src_file = try std.fs.createFileAbsolute(src_path, .{});
+        defer src_file.close();
+        try src_file.writeAll(architect_terminfo_src);
+    }
+
+    const tic_path = findExecutableInPath("tic") orelse return error.SkipZigTest;
+
+    var child = std.process.Child.init(&.{ tic_path, "-x", "-o", tmp_path, src_path }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const term = try child.spawnAndWait();
+    try testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+
+    // tic stores the compiled entry in either `78/xterm-ghostty` (hashed,
+    // modern ncurses default) or `x/xterm-ghostty` (legacy single-char), so try
+    // both locations.
+    const candidates = [_][]const u8{ "78/xterm-ghostty", "x/xterm-ghostty" };
+    var magic: [2]u8 = undefined;
+    var read_ok = false;
+    for (candidates) |rel| {
+        const full = try std.fs.path.join(allocator, &.{ tmp_path, rel });
+        defer allocator.free(full);
+        const file = std.fs.openFileAbsolute(full, .{}) catch continue;
+        defer file.close();
+        const n = try file.readAll(&magic);
+        if (n == magic.len) {
+            read_ok = true;
+            break;
+        }
+    }
+    try testing.expect(read_ok);
+
+    // Legacy short-int magic is 0x011a (little-endian on disk: 0x1a, 0x01).
+    // Extended-numbers magic 0x021e (0x1e, 0x02) means the entry inherited a
+    // numeric capability that overflows signed 16-bit and is unreadable by
+    // macOS's bundled libncurses 5.4.
+    try testing.expectEqual(@as(u8, 0x1a), magic[0]);
+    try testing.expectEqual(@as(u8, 0x01), magic[1]);
+}
