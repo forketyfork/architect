@@ -5,8 +5,16 @@
 # to ~/.cache/architect/terminfo on first run.
 #
 # Manual compile: tic -x -o <output_dir> xterm-ghostty.terminfo
+#
+# pairs#0x7fff clamps the inherited xterm-256color value (0x10000 on modern
+# ncurses 6.x) back into signed 16-bit so tic emits the legacy short-int
+# format (magic 0x011a). macOS ships libncurses 5.4 inside dyld_shared_cache,
+# and tools linked against it (less, man, ...) cannot read the extended
+# format (magic 0x021e); without this override they fall back to
+# "WARNING: terminal is not fully functional". See issue #318.
 
 xterm-ghostty|Architect terminal with truecolor and kitty keyboard,
 	Tc,
 	RGB,
+	pairs#0x7fff,
 	use=xterm-256color,
