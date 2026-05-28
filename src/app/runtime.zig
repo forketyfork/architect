@@ -102,6 +102,15 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
     return count;
 }
 
+/// Mark a session as dead and dirty after a non-recoverable I/O or terminal-state error.
+/// Used to keep the runtime loop alive when a single session's output processing fails
+/// (e.g. ghostty-vt resource exhaustion like `HyperlinkSetOutOfMemory`). The user can
+/// then restart the session or quit cleanly, preserving persistence.
+fn failSession(session: *SessionState) void {
+    session.dead = true;
+    session.markDirty();
+}
+
 fn remainingFrameBudgetNs(target_frame_ns: i128, frame_ns: i128) u64 {
     if (frame_ns >= target_frame_ns) return 0;
     return @intCast(target_frame_ns - frame_ns);
@@ -2291,12 +2300,14 @@ pub fn run() !void {
             }
             session.checkAlive();
             session.processOutput() catch |err| {
-                log.err("session {d}: process output failed: {}", .{ session.id, err });
-                return err;
+                log.err("session {d}: process output failed, marking session dead: {}", .{ session.id, err });
+                failSession(session);
+                continue;
             };
             session.flushPendingWrites() catch |err| {
-                log.err("session {d}: flush pending writes failed: {}", .{ session.id, err });
-                return err;
+                log.err("session {d}: flush pending writes failed, marking session dead: {}", .{ session.id, err });
+                failSession(session);
+                continue;
             };
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
@@ -3131,6 +3142,17 @@ test "planExternalSpawnSlot reports full grid" {
     }
 
     try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
+}
+
+test "failSession marks the session dead and bumps render epoch" {
+    var session: SessionState = undefined;
+    session.dead = false;
+    session.render_epoch = 7;
+
+    failSession(&session);
+
+    try std.testing.expect(session.dead);
+    try std.testing.expectEqual(@as(u64, 8), session.render_epoch);
 }
 
 test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
