@@ -144,6 +144,33 @@ fn writeRuntimeEvent(message: []const u8, event_name: []const u8, extra_data: []
     };
 }
 
+fn agentLabel(session: *const SessionState) []const u8 {
+    if (session.agent_icon) |kind| return kind.name();
+    return "none";
+}
+
+/// Log a structured `session_failed` event plus a human-readable error line
+/// when a session is terminated due to an unrecoverable runtime error. The
+/// `source` argument names the failing call site (e.g. `process_output`) and
+/// becomes the `source=` field on the event so a future investigation can
+/// grep `event=session_failed source=process_output` and find every instance.
+fn reportSessionFailure(session: *const SessionState, err: anyerror, source: []const u8) void {
+    const agent = agentLabel(session);
+    const cwd = session.cwd_path orelse "<unknown>";
+    log.err(
+        "session {d}: {s} failed, marking session dead: {} (agent={s} cwd={s})",
+        .{ session.id, source, err, agent, cwd },
+    );
+    var extra_buf: [192]u8 = undefined;
+    const extra = std.fmt.bufPrint(&extra_buf, "session={d} agent={s} error={s} source={s}", .{
+        session.id, agent, @errorName(err), source,
+    }) catch |fmt_err| {
+        log.warn("failed to format session_failed event payload: {}", .{fmt_err});
+        return;
+    };
+    writeRuntimeEvent("session terminated after unrecoverable error", "session_failed", extra);
+}
+
 fn emitViewModeTransitionEvents(
     previous_mode: app_state.ViewMode,
     next_mode: app_state.ViewMode,
@@ -2294,12 +2321,12 @@ pub fn run() !void {
             }
             session.checkAlive();
             session.processOutput() catch |err| {
-                log.err("session {d}: process output failed, marking session dead: {}", .{ session.id, err });
+                reportSessionFailure(session, err, "process_output");
                 session.failAndTerminate();
                 continue;
             };
             session.flushPendingWrites() catch |err| {
-                log.err("session {d}: flush pending writes failed, marking session dead: {}", .{ session.id, err });
+                reportSessionFailure(session, err, "flush_pending_writes");
                 session.failAndTerminate();
                 continue;
             };
@@ -3139,6 +3166,18 @@ test "planExternalSpawnSlot reports full grid" {
     }
 
     try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
+}
+
+test "agentLabel reports the detected agent name or 'none'" {
+    var session: SessionState = undefined;
+    session.agent_icon = null;
+    try std.testing.expectEqualStrings("none", agentLabel(&session));
+
+    session.agent_icon = .codex;
+    try std.testing.expectEqualStrings("codex", agentLabel(&session));
+
+    session.agent_icon = .claude;
+    try std.testing.expectEqualStrings("claude", agentLabel(&session));
 }
 
 test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
