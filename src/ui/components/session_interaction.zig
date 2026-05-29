@@ -791,6 +791,19 @@ fn isWordCharacter(codepoint: u21) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
+/// Reads a terminal cell's codepoint while honoring `content_tag`. Only text
+/// cells (`.codepoint` / `.codepoint_grapheme`) carry a real codepoint; palette
+/// or RGB background cells and wide-char spacers store unrelated bits in the
+/// `content` union, so reading `content.codepoint` for them yields garbage.
+/// Mirrors the guard in `renderer.zig` so selection and URL detection never act
+/// on non-text cells.
+fn cellCodepoint(cell: anytype) u21 {
+    return if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme)
+        cell.content.codepoint
+    else
+        0;
+}
+
 fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.Pin) void {
     const terminal = &(session.terminal orelse return);
     const page = &pin.node.data;
@@ -810,7 +823,7 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
         else
             ghostty_vt.point.Point{ .active = .{ .x = click_x, .y = click_y } },
     ) orelse return;
-    const clicked_cp = clicked_cell.cell.content.codepoint;
+    const clicked_cp = cellCodepoint(clicked_cell.cell);
     if (!isWordCharacter(clicked_cp)) return;
 
     var start_x = click_x;
@@ -822,7 +835,7 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
             else
                 ghostty_vt.point.Point{ .active = .{ .x = prev_x, .y = click_y } },
         ) orelse break;
-        if (!isWordCharacter(prev_cell.cell.content.codepoint)) break;
+        if (!isWordCharacter(cellCodepoint(prev_cell.cell))) break;
         start_x = prev_x;
     }
 
@@ -835,7 +848,7 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
             else
                 ghostty_vt.point.Point{ .active = .{ .x = next_x, .y = click_y } },
         ) orelse break;
-        if (!isWordCharacter(next_cell.cell.content.codepoint)) break;
+        if (!isWordCharacter(cellCodepoint(next_cell.cell))) break;
         end_x = next_x;
     }
 
@@ -987,7 +1000,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
             cell_to_byte.append(allocator, byte_pos) catch return null;
 
             const list_cell_cell = list_cell.cell;
-            const cp = list_cell_cell.content.codepoint;
+            const cp = cellCodepoint(list_cell_cell);
             const encoded_len: usize = blk: {
                 if (cp != 0 and cp != ' ') {
                     var utf8_buf: [4]u8 = undefined;
@@ -1217,4 +1230,37 @@ test "setAttention does not affect nav_wave_start_time" {
 
 test "nav_wave_amplitude is smaller than wave_amplitude" {
     try testing.expect(nav_wave_amplitude < wave_amplitude);
+}
+
+test "cellCodepoint honors content_tag for text and non-text cells" {
+    const MockTag = enum { codepoint, codepoint_grapheme, bg_color_palette, bg_color_rgb };
+    const MockContent = union {
+        codepoint: u21,
+        color_palette: u8,
+    };
+    const MockCell = struct {
+        content_tag: MockTag,
+        content: MockContent,
+    };
+
+    // Text cells expose their codepoint, including grapheme bases.
+    try testing.expectEqual(@as(u21, 'a'), cellCodepoint(MockCell{
+        .content_tag = .codepoint,
+        .content = .{ .codepoint = 'a' },
+    }));
+    try testing.expectEqual(@as(u21, 0x1F600), cellCodepoint(MockCell{
+        .content_tag = .codepoint_grapheme,
+        .content = .{ .codepoint = 0x1F600 },
+    }));
+
+    // Palette/RGB background cells carry unrelated bits in the union; they must
+    // read as 0 instead of garbage so selection and URL detection ignore them.
+    try testing.expectEqual(@as(u21, 0), cellCodepoint(MockCell{
+        .content_tag = .bg_color_palette,
+        .content = .{ .color_palette = 7 },
+    }));
+    try testing.expectEqual(@as(u21, 0), cellCodepoint(MockCell{
+        .content_tag = .bg_color_rgb,
+        .content = .{ .color_palette = 0xFF },
+    }));
 }
