@@ -610,6 +610,24 @@ pub const SessionState = struct {
         return quit_capture_active;
     }
 
+    /// Mark the session as failed after an unrecoverable output-processing error
+    /// (e.g. ghostty-vt resource exhaustion like `HyperlinkSetOutOfMemory`). Sends
+    /// SIGTERM to the still-running child so it stops consuming resources behind a
+    /// "[Process completed]" UI, drops queued stdin so `flushPendingWrites` does
+    /// not retry every frame, then flips `dead` and bumps the render epoch. The
+    /// shell/terminal/stream wrappers stay alive so scrollback remains visible and
+    /// the session can be restarted through the existing dead-state UI path.
+    pub fn failAndTerminate(self: *SessionState) void {
+        if (self.shell) |shell| {
+            if (self.spawned and !self.dead) {
+                _ = std.c.kill(shell.child_pid, std.c.SIG.TERM);
+            }
+        }
+        self.pending_write.clearAndFree(self.allocator);
+        self.dead = true;
+        self.markDirty();
+    }
+
     /// Try to flush any queued stdin data; preserves ordering relative to new input.
     pub fn flushPendingWrites(self: *SessionState) !void {
         if (self.pending_write.items.len == 0) return;
@@ -1162,6 +1180,27 @@ test "shouldProcessOutput drains dead sessions only during quit capture" {
     try std.testing.expect(SessionState.shouldProcessOutput(true, false, false));
     try std.testing.expect(!SessionState.shouldProcessOutput(true, true, false));
     try std.testing.expect(SessionState.shouldProcessOutput(true, true, true));
+}
+
+test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.shell = null;
+    session.spawned = false;
+    session.dead = false;
+    session.render_epoch = 4;
+    session.allocator = allocator;
+    session.pending_write = .empty;
+    try session.pending_write.appendSlice(allocator, "queued");
+    defer session.pending_write.deinit(allocator);
+
+    session.failAndTerminate();
+
+    try std.testing.expect(session.dead);
+    try std.testing.expectEqual(@as(u64, 5), session.render_epoch);
+    try std.testing.expectEqual(@as(usize, 0), session.pending_write.items.len);
+    try std.testing.expectEqual(@as(usize, 0), session.pending_write.capacity);
 }
 
 test "AgentKind.fromComm recognises known agent names" {
