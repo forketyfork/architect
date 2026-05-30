@@ -72,6 +72,8 @@ just test
 zig build test
 ```
 
+The `zig build test` step runs the application and MCP unit tests plus a dedicated compile-time smoke suite in `src/comptime_checks.zig`. Add to that suite when a helper is expected to stay evaluable at comptime, especially for configuration defaults, layout math, or other pure code used by generated tables and compile-time validation.
+
 Check formatting and script linting:
 ```bash
 just lint
