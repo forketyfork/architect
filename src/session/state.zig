@@ -594,7 +594,15 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
-            try stream.nextSlice(self.output_buf[0..n]);
+            stream.nextSlice(self.output_buf[0..n]) catch |err| switch (err) {
+                // Hyperlink capacity errors: drop the hyperlink but keep the session alive.
+                // ghostty-vt already uses this strategy inside Terminal.print.
+                error.HyperlinkSetOutOfMemory,
+                error.HyperlinkSetNeedsRehash,
+                error.HyperlinkMapOutOfMemory,
+                => log.warn("session {d}: OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{ self.id, err }),
+                else => return err,
+            };
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
