@@ -180,19 +180,6 @@ pub fn fillRoundedRect(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) voi
     }
 }
 
-pub fn fillCircle(renderer: *c.SDL_Renderer, cx: f32, cy: f32, radius: f32) void {
-    const r_int: c_int = @intFromFloat(radius);
-    var dy: c_int = -r_int;
-    while (dy <= r_int) : (dy += 1) {
-        const dy_f: f32 = @floatFromInt(dy);
-        const dx_sq = radius * radius - dy_f * dy_f;
-        if (dx_sq > 0) {
-            const dx = @sqrt(dx_sq);
-            _ = c.SDL_RenderLine(renderer, cx - dx, cy + dy_f, cx + dx, cy + dy_f);
-        }
-    }
-}
-
 pub fn renderBezierArrow(
     renderer: *c.SDL_Renderer,
     x1: f32,
