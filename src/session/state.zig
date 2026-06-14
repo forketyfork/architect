@@ -594,7 +594,18 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
-            try stream.nextSlice(self.output_buf[0..n]);
+            // Process byte-by-byte so a hyperlink capacity error on byte N doesn't
+            // silently discard bytes N+1..end of the PTY read. Hyperlink errors drop
+            // only that byte's side effect; normal output/control sequences continue.
+            for (self.output_buf[0..n]) |byte| {
+                stream.next(byte) catch |err| switch (err) {
+                    error.HyperlinkSetOutOfMemory,
+                    error.HyperlinkSetNeedsRehash,
+                    error.HyperlinkMapOutOfMemory,
+                    => log.warn("session {d}: OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{ self.id, err }),
+                    else => return err,
+                };
+            }
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();

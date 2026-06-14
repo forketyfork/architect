@@ -1,15 +1,15 @@
 final: prev: {
   sdl3 = prev.sdl3.overrideAttrs (old: rec {
-    version = "3.4.0";
+    version = "3.4.10";
 
     src = prev.fetchFromGitHub {
       owner = "libsdl-org";
       repo = "SDL";
       rev = "release-${version}";
-      hash = "sha256-/A1y/NaZVebzI58F4TlwtDwuzlcA33Y1YuZqd5lz/Sk=";
+      hash = "sha256-6Dph2eLiJUmpQzPWe8EuY5LrWhrFwde2f2dwfgCcWNw=";
     };
 
-    # Drop nixpkgs' Linux-only zenity substitutions that no longer match SDL 3.4.0.
+    # Drop nixpkgs' Linux-only zenity substitutions that no longer match SDL 3.4.x.
     # Keep the test timeout bump to avoid slow CTest hangs.
     postPatch = ''
       substituteInPlace test/CMakeLists.txt \

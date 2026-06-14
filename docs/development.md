@@ -61,7 +61,7 @@ zig build run
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).
-- **SDL3** and **SDL3_ttf** are provided by Nix. SDL3 is pinned to 3.4.0 via `overlays/sdl3-3-4-0.nix` with binaries cached in the public `forketyfork` Cachix to avoid rebuilds.
+- **SDL3** and **SDL3_ttf** are provided by Nix. SDL3 is pinned to 3.4.10 via `overlays/sdl3-3-4-10.nix` with binaries cached in the public `forketyfork` Cachix to avoid rebuilds.
 
 ## Tests and Formatting
 
