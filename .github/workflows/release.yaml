@@ -31,7 +31,7 @@ jobs:
       # and thinking it is its own release tag.
       GIT_CEILING_DIRECTORIES: ${{ github.workspace }}/architect/.zig-cache
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: architect
 
@@ -105,7 +105,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
           token: ${{ secrets.PAT_TOKEN }}
