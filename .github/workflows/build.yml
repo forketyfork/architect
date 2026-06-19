@@ -15,7 +15,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -36,7 +36,7 @@ jobs:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
       ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: architect
 
