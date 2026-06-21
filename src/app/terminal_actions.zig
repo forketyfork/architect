@@ -37,27 +37,58 @@ pub fn pasteText(
     }
 }
 
-/// Cmd+V image passthrough (opt-in via `[paste] image_passthrough`).
+/// Cmd+V image paste (opt-in via `[paste] image_passthrough`).
 ///
-/// When the system clipboard holds an image, Architect can't paste the image
-/// bytes itself (its paste path is text-only). Instead we forward the Ctrl+V
-/// control byte (0x16) to the focused terminal so a CLI running there (e.g.
-/// Claude Code) performs its own native inline image paste — matching VS Code's
-/// Cmd+V behavior.
+/// When the system clipboard holds an image, Architect reads it, writes it to a
+/// temp PNG file, and pastes that file path as text into the focused terminal.
+/// CLIs like Claude Code recognize an image file path and attach the image. This
+/// is far more reliable than forwarding Ctrl+V and relying on the program's own
+/// clipboard read, which can't materialize promised (lazily transferred)
+/// Universal Clipboard data and fails on large images.
 ///
-/// Returns true if it handled the event (an image was present and 0x16 was
-/// sent); false means there was no image and the caller should fall back to the
-/// normal text paste. macOS only — `hasClipboardImage` is always false elsewhere.
+/// Returns true if it handled the event (an image was read and its path pasted);
+/// false means there was no readable image and the caller should fall back to
+/// the normal text paste. macOS only — `readClipboardImagePng` is null elsewhere.
 pub fn tryPasteImagePassthrough(
     session: *SessionState,
+    allocator: std.mem.Allocator,
     ui: *ui_mod.UiRoot,
     now: i64,
+    session_interaction: *ui_mod.SessionInteractionComponent,
 ) !bool {
     if (!macos_clipboard.hasClipboardImage()) return false;
 
-    try session.sendInput(&[_]u8{0x16}); // Ctrl+V
-    ui.showToast("Forwarded image paste (⌃V)", now);
+    // Detected an image but couldn't read its bytes -> let the caller fall back
+    // to the normal text paste rather than swallowing the event.
+    const png = macos_clipboard.readClipboardImagePng(allocator) orelse return false;
+    defer allocator.free(png);
+
+    const path = writeClipboardImageTempFile(allocator, png, session.id, now) catch |err| {
+        log.warn("session {d}: failed to write clipboard image temp file: {}", .{ session.id, err });
+        return false;
+    };
+    defer allocator.free(path);
+
+    try pasteText(session, allocator, path, session_interaction);
+    ui.showToast("Pasted image as file path", now);
     return true;
+}
+
+/// Writes clipboard image PNG bytes to a uniquely-named temp file and returns
+/// the absolute path (caller owns it). The file is intentionally left on disk so
+/// the CLI can read it when the message is sent; the OS reclaims the temp dir.
+fn writeClipboardImageTempFile(allocator: std.mem.Allocator, png: []const u8, session_id: usize, now: i64) ![]u8 {
+    const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const name = try std.fmt.allocPrint(allocator, "architect-paste-{d}-{d}.png", .{ now, session_id });
+    defer allocator.free(name);
+    const path = try std.fs.path.join(allocator, &.{ tmp_dir, name });
+    errdefer allocator.free(path);
+
+    const file = try std.fs.createFileAbsolute(path, .{});
+    defer file.close();
+    try file.writeAll(png);
+
+    return path;
 }
 
 pub fn clearTerminal(session: *SessionState) void {

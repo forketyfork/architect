@@ -75,9 +75,9 @@ pub const UiConfig = struct {
 
 pub const PasteConfig = struct {
     /// When true, pressing Cmd+V while the system clipboard holds an image
-    /// forwards Ctrl+V (0x16) to the focused terminal instead of pasting text,
-    /// so a CLI like Claude Code performs its own inline image paste. Plain
-    /// text paste is unaffected. macOS only. Default false.
+    /// writes the image to a temp PNG and pastes that file path into the focused
+    /// terminal, so a CLI like Claude Code attaches the image. Plain text paste
+    /// is unaffected. macOS only. Default false.
     image_passthrough: bool = false,
 };
 
@@ -842,9 +842,10 @@ pub const Config = struct {
             \\
             \\# Paste options
             \\# [paste]
-            \\# image_passthrough = false  # When true, Cmd+V forwards Ctrl+V to the
-            \\#                            # terminal if the clipboard holds an image,
-            \\#                            # so a CLI (e.g. Claude Code) inlines it.
+            \\# image_passthrough = false  # When true and the clipboard holds an
+            \\#                            # image, Cmd+V writes a temp PNG and pastes
+            \\#                            # its path so a CLI (e.g. Claude Code)
+            \\#                            # attaches the image.
             \\
             \\# Theme colors (hex format)
             \\# [theme]

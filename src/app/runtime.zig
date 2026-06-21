@@ -2037,7 +2037,7 @@ pub fn run() !void {
                         // CLI in the terminal inlines it; otherwise paste text as usual.
                         var handled_paste = false;
                         if (config.paste.image_passthrough) {
-                            handled_paste = terminal_actions.tryPasteImagePassthrough(focused, &ui, now) catch |err| blk: {
+                            handled_paste = terminal_actions.tryPasteImagePassthrough(focused, allocator, &ui, now, session_interaction_component) catch |err| blk: {
                                 std.debug.print("Image paste passthrough failed: {}\n", .{err});
                                 break :blk false;
                             };
