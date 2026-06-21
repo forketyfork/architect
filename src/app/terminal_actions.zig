@@ -3,6 +3,7 @@ const ghostty_vt = @import("ghostty-vt");
 const session_state = @import("../session/state.zig");
 const ui_mod = @import("../ui/mod.zig");
 const c = @import("../c.zig");
+const macos_clipboard = @import("../platform/macos_clipboard.zig");
 
 const SessionState = session_state.SessionState;
 const log = std.log.scoped(.terminal_actions);
@@ -34,6 +35,29 @@ pub fn pasteText(
         if (part.len == 0) continue;
         try session.sendInput(part);
     }
+}
+
+/// Cmd+V image passthrough (opt-in via `[paste] image_passthrough`).
+///
+/// When the system clipboard holds an image, Architect can't paste the image
+/// bytes itself (its paste path is text-only). Instead we forward the Ctrl+V
+/// control byte (0x16) to the focused terminal so a CLI running there (e.g.
+/// Claude Code) performs its own native inline image paste — matching VS Code's
+/// Cmd+V behavior.
+///
+/// Returns true if it handled the event (an image was present and 0x16 was
+/// sent); false means there was no image and the caller should fall back to the
+/// normal text paste. macOS only — `hasClipboardImage` is always false elsewhere.
+pub fn tryPasteImagePassthrough(
+    session: *SessionState,
+    ui: *ui_mod.UiRoot,
+    now: i64,
+) !bool {
+    if (!macos_clipboard.hasClipboardImage()) return false;
+
+    try session.sendInput(&[_]u8{0x16}); // Ctrl+V
+    ui.showToast("Forwarded image paste (⌃V)", now);
+    return true;
 }
 
 pub fn clearTerminal(session: *SessionState) void {

@@ -2033,9 +2033,20 @@ pub fn run() !void {
                         };
                     } else if (key == c.SDLK_V and has_gui and !has_blocking_mod) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘V", now);
-                        terminal_actions.pasteClipboardIntoSession(focused, allocator, &ui, now, session_interaction_component) catch |err| {
-                            std.debug.print("Paste failed: {}\n", .{err});
-                        };
+                        // Opt-in: if the clipboard holds an image, forward Ctrl+V so a
+                        // CLI in the terminal inlines it; otherwise paste text as usual.
+                        var handled_paste = false;
+                        if (config.paste.image_passthrough) {
+                            handled_paste = terminal_actions.tryPasteImagePassthrough(focused, &ui, now) catch |err| blk: {
+                                std.debug.print("Image paste passthrough failed: {}\n", .{err});
+                                break :blk false;
+                            };
+                        }
+                        if (!handled_paste) {
+                            terminal_actions.pasteClipboardIntoSession(focused, allocator, &ui, now, session_interaction_component) catch |err| {
+                                std.debug.print("Paste failed: {}\n", .{err});
+                            };
+                        }
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
                         const delta: c_int = if (direction == .increase) font_step else -font_step;
