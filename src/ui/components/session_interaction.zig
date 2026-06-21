@@ -241,8 +241,8 @@ pub const SessionInteractionComponent = struct {
                                     if (cmd_held) {
                                         if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback, focused.cwd_path)) |uri| {
                                             defer self.allocator.free(uri);
-                                            open_url.openUrl(self.allocator, uri) catch |err| {
-                                                log.err("failed to open URL: {}", .{err});
+                                            open_url.openTarget(self.allocator, uri) catch |err| {
+                                                log.err("failed to open link: {}", .{err});
                                             };
                                         } else {
                                             beginSelection(focused, view, pin);
