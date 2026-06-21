@@ -2611,9 +2611,12 @@ pub fn run() !void {
                 std.debug.print("Expanding session: {d}\n", .{idx});
             },
             .SelectGridSession => |idx| {
-                // Single click in grid view: move the focus/selection highlight
-                // to the clicked pane without spawning a shell or zooming to
-                // full screen. Mirrors the Cmd+Arrow grid-navigation path.
+                // Single click in grid view: instantly move the focus/selection
+                // highlight to the clicked pane. No shell spawn, no zoom, and
+                // deliberately NO nav-wave animation. A mouse click is direct
+                // manipulation, so focus must change instantly (the moved accent
+                // border is the feedback); the wave stays on keyboard nav, where
+                // it answers "where did focus jump to?" (mirrors :focus-visible).
                 if (anim_state.mode != .Grid) continue;
                 if (idx >= sessions.len) continue;
                 if (idx == anim_state.focused_session) continue;
@@ -2621,7 +2624,6 @@ pub fn run() !void {
                 session_interaction_component.clearSelection(anim_state.focused_session);
                 session_interaction_component.clearSelection(idx);
                 anim_state.focused_session = idx;
-                session_interaction_component.triggerNavWave(idx, now);
             },
             .DespawnSession => |idx| {
                 if (idx < sessions.len) {

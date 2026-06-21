@@ -10,7 +10,8 @@ pub const Color = struct {
     g: u8,
     b: u8,
 
-    pub const default_background: Color = .{ .r = 14, .g = 17, .b = 22 };
+    // Cacha dark theme background (#262624) to match the companion app.
+    pub const default_background: Color = .{ .r = 38, .g = 38, .b = 36 };
     pub const default_foreground: Color = .{ .r = 205, .g = 214, .b = 224 };
     pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 };
     pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
@@ -873,7 +874,7 @@ pub const Config = struct {
             \\
             \\# Theme colors (hex format)
             \\# [theme]
-            \\# background = "#0E1116"
+            \\# background = "#262624"
             \\# foreground = "#CDD6E0"
             \\# selection = "#1B2230"
             \\# accent = "#61AFEF"
@@ -1017,9 +1018,9 @@ test "ThemeConfig - default colors" {
     const theme = ThemeConfig{};
 
     const bg = theme.getBackground();
-    try std.testing.expectEqual(@as(u8, 14), bg.r);
-    try std.testing.expectEqual(@as(u8, 17), bg.g);
-    try std.testing.expectEqual(@as(u8, 22), bg.b);
+    try std.testing.expectEqual(@as(u8, 38), bg.r);
+    try std.testing.expectEqual(@as(u8, 38), bg.g);
+    try std.testing.expectEqual(@as(u8, 36), bg.b);
 
     const fg = theme.getForeground();
     try std.testing.expectEqual(@as(u8, 205), fg.r);

@@ -138,10 +138,10 @@ test "colorsEqual" {
 test "Theme.default" {
     const theme = Theme.default();
 
-    // Background should be One Dark background
-    try std.testing.expectEqual(@as(u8, 14), theme.background.r);
-    try std.testing.expectEqual(@as(u8, 17), theme.background.g);
-    try std.testing.expectEqual(@as(u8, 22), theme.background.b);
+    // Background should be the Cacha-matched dark background (#262624)
+    try std.testing.expectEqual(@as(u8, 38), theme.background.r);
+    try std.testing.expectEqual(@as(u8, 38), theme.background.g);
+    try std.testing.expectEqual(@as(u8, 36), theme.background.b);
 
     // Foreground should be One Dark bright white
     try std.testing.expectEqual(@as(u8, 205), theme.foreground.r);

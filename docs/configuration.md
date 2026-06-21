@@ -57,7 +57,7 @@ Note: Runtime window position and size are saved to `persistence.toml` and take 
 
 ```toml
 [theme]
-background = "#0E1116"  # Terminal background color
+background = "#262624"  # Terminal background color
 foreground = "#CDD6E0"  # Default text color
 selection = "#1B2230"   # Selection highlight color
 accent = "#61AFEF"      # Accent color (focused borders, UI elements)
@@ -70,7 +70,7 @@ The configured theme colors are reused across terminal chrome and overlay surfac
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `background` | `#0E1116` | Dark gray background |
+| `background` | `#262624` | Warm dark gray background |
 | `foreground` | `#CDD6E0` | Light gray text |
 | `selection` | `#1B2230` | Darker blue for selections |
 | `accent` | `#61AFEF` | Blue accent for focus indicators |

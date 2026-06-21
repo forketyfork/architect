@@ -1144,10 +1144,6 @@ fn applyTvOverlay(renderer: *c.SDL_Renderer, rect: Rect, is_focused: bool, theme
 
     const radius: c_int = 12;
 
-    const bg = theme.background;
-    _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 60);
-    primitives.fillRoundedRect(renderer, rect, radius);
-
     const border_color = if (is_focused) blk: {
         const acc = theme.accent;
         break :blk c.SDL_Color{ .r = acc.r, .g = acc.g, .b = acc.b, .a = 190 };
