@@ -180,9 +180,14 @@ pub const SessionInteractionComponent = struct {
                     const clicked_session: usize = grid_row_idx * host.grid_cols + grid_col_idx;
                     if (clicked_session >= self.sessions.len) return false;
 
-                    actions.append(.{ .FocusSession = clicked_session }) catch |err| {
-                        log.warn("failed to queue focus action for session {d}: {}", .{ clicked_session, err });
-                    };
+                    // A single click does nothing; only a double-click focuses
+                    // (zooms) the pane. Uses SDL's native click counter, which
+                    // respects the OS double-click speed.
+                    if (event.button.clicks >= 2) {
+                        actions.append(.{ .FocusSession = clicked_session }) catch |err| {
+                            log.warn("failed to queue focus action for session {d}: {}", .{ clicked_session, err });
+                        };
+                    }
                     return true;
                 }
 
@@ -208,6 +213,18 @@ pub const SessionInteractionComponent = struct {
                                     return true;
                                 }
                             }
+                        }
+
+                        // Double-click in a focused pane returns to grid. We
+                        // only reach here when the program is NOT capturing the
+                        // mouse (the mouse-tracking branch above returned for
+                        // those), so Claude/vim/etc. keep their own click
+                        // behaviour; Cmd+Esc is the universal "back to grid".
+                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 2) {
+                            actions.append(.RequestCollapseFocused) catch |err| {
+                                log.warn("failed to queue collapse action: {}", .{err});
+                            };
+                            return true;
                         }
 
                         if (event.button.button == c.SDL_BUTTON_LEFT) {

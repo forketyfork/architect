@@ -110,6 +110,8 @@ pub fn render(
     ui_scale: f32,
     grid_font_scale: f32,
     grid: ?*const GridLayout,
+    window_focused: bool,
+    inactive_overlay_alpha: u8,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -318,6 +320,30 @@ pub fn render(
                 renderSessionOverlays(renderer, session, &views[i], cell_rect, i == anim_state.focused_session, true, current_time, true, theme, ui_scale);
             }
         },
+    }
+
+    // App-focus indicator: when the Architect window is NOT the frontmost app,
+    // wash ONLY the focused/selected pane in the accent colour, so you can tell
+    // which pane is active and that the app is in the background. When the
+    // window is focused, that pane shows only its border (no fill).
+    if (!window_focused and inactive_overlay_alpha > 0) {
+        const focused_rect = switch (anim_state.mode) {
+            .Grid, .GridResizing => Rect{
+                .x = @as(c_int, @intCast(anim_state.focused_session % grid_cols)) * cell_width_pixels,
+                .y = @as(c_int, @intCast(anim_state.focused_session / grid_cols)) * cell_height_pixels,
+                .w = cell_width_pixels,
+                .h = cell_height_pixels,
+            },
+            else => Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height },
+        };
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, inactive_overlay_alpha);
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(focused_rect.x),
+            .y = @floatFromInt(focused_rect.y),
+            .w = @floatFromInt(focused_rect.w),
+            .h = @floatFromInt(focused_rect.h),
+        });
     }
 }
 
@@ -707,7 +733,10 @@ fn renderSessionOverlays(
         }
 
         if (is_focused) {
-            const focus_blue = theme.palette[12];
+            // Selected pane: accent-coloured border ONLY (no fill). The accent
+            // fill that signals "window not focused" is drawn over just this
+            // pane in render(); when focused, the pane shows only this border.
+            const focus_accent = theme.accent;
             const inset: c_int = if (has_attention) border_thickness else 0;
             var focus_rect = rect;
             focus_rect.x += inset;
@@ -715,17 +744,7 @@ fn renderSessionOverlays(
             focus_rect.w -= inset * 2;
             focus_rect.h -= inset * 2;
             if (focus_rect.w > 0 and focus_rect.h > 0) {
-                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                if (!has_attention) {
-                    _ = c.SDL_SetRenderDrawColor(renderer, focus_blue.r, focus_blue.g, focus_blue.b, 38);
-                    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                        .x = @floatFromInt(focus_rect.x),
-                        .y = @floatFromInt(focus_rect.y),
-                        .w = @floatFromInt(focus_rect.w),
-                        .h = @floatFromInt(focus_rect.h),
-                    });
-                }
-                primitives.drawThickBorder(renderer, focus_rect, border_thickness, border_radius, focus_blue);
+                primitives.drawThickBorder(renderer, focus_rect, border_thickness, border_radius, focus_accent);
             }
         }
     }

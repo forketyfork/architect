@@ -11,16 +11,18 @@ const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
 const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
-    .{ .key = "Click terminal", .desc = "Expand to full screen" },
-    .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
+    .{ .key = "Double-click pane", .desc = "Focus it (full screen)" },
+    .{ .key = "⌘ESC", .desc = "Collapse to grid view" },
+    .{ .key = "⇧↑/↓/←/→", .desc = "Move grid selection" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
-    .{ .key = "⌘↵", .desc = "Expand focused terminal" },
+    .{ .key = "⌘↵", .desc = "Focus selected pane" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
-    .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
+    .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Focused font size" },
+    .{ .key = "⌘⌥+ / ⌘⌥-", .desc = "Grid font size" },
     .{ .key = "⌘D", .desc = "Show git diff" },
     .{ .key = "⌘R", .desc = "Open reader mode" },
     .{ .key = "⌘K", .desc = "Clear terminal" },

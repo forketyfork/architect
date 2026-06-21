@@ -1246,6 +1246,14 @@ pub fn run() !void {
     errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
+    // Seed the live grid font scale: a persisted value (from a previous
+    // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then
+    // mirror it back so future persistence saves keep it in sync.
+    if (persistence.grid_font_scale != 0) {
+        config.grid.font_scale = std.math.clamp(persistence.grid_font_scale, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
+    }
+    persistence.grid_font_scale = config.grid.font_scale;
+
     // Initialize recent folders with home directory if empty
     if (persistence.recent_folders.items.len == 0) {
         if (std.posix.getenv("HOME")) |home| {
@@ -1332,6 +1340,9 @@ pub fn run() !void {
     const renderer = sdl.renderer;
 
     var font_size: c_int = persistence.font_size;
+    // Whether the Architect window is the frontmost app (drives the accent
+    // overlay). Assume focused at launch; updated by SDL focus events.
+    var window_focused: bool = true;
     var window_width_points: c_int = sdl.window_w;
     var window_height_points: c_int = sdl.window_h;
     var render_width: c_int = sdl.render_w;
@@ -1552,8 +1563,10 @@ pub fn run() !void {
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
     ui.toast_component = toast_component;
-    const escape_component = try ui_mod.escape_hold.EscapeHoldComponent.init(allocator, &ui_font);
-    try ui.register(escape_component.asComponent());
+    // Escape-hold-to-collapse is intentionally disabled: return-to-grid is now
+    // Cmd+Esc, and single/double Esc must pass straight through to the focused
+    // program (e.g. Claude Code's Esc-Esc rewind, vim's Esc). Leaving the
+    // EscapeHoldComponent unregistered keeps Escape a plain passthrough key.
     const hotkey_component = try ui_mod.hotkey_indicator.HotkeyIndicatorComponent.init(allocator, &ui_font);
     try ui.register(hotkey_component.asComponent());
     ui.hotkey_component = hotkey_component;
@@ -1733,6 +1746,7 @@ pub fn run() !void {
                     savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                    window_focused = false;
                     if (builtin.os.tag == .macos) {
                         if (text_input_active) {
                             platform.stopTextInput(sdl.window);
@@ -1742,6 +1756,7 @@ pub fn run() !void {
                     ime_composition.reset();
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                    window_focused = true;
                     if (builtin.os.tag == .macos) {
                         input_source_tracker.restore() catch |err| {
                             log.warn("Failed to restore input source: {}", .{err});
@@ -1837,6 +1852,30 @@ pub fn run() !void {
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
                             if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
                                 running = false;
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (has_gui and !has_blocking_mod and key == c.SDLK_ESCAPE) {
+                        // Cmd+Esc: collapse the focused pane back to the grid.
+                        // (Plain Esc still passes through to the program.)
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⎋", now);
+                        if (anim_state.mode == .Full and countSpawnedSessions(sessions) > 1) {
+                            if (animations_enabled) {
+                                grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
+                            } else {
+                                const grid_row: c_int = @intCast(anim_state.focused_session / grid.cols);
+                                const grid_col: c_int = @intCast(anim_state.focused_session % grid.cols);
+                                anim_state.mode = .Grid;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                                anim_state.target_rect = Rect{
+                                    .x = grid_col * cell_width_pixels,
+                                    .y = grid_row * cell_height_pixels,
+                                    .w = cell_width_pixels,
+                                    .h = cell_height_pixels,
+                                };
                             }
                         }
                         continue;
@@ -2081,6 +2120,26 @@ pub fn run() !void {
                             break :blk "Font size changed";
                         };
                         ui.showToast(notification_msg, now);
+                    } else if (input.gridFontSizeShortcut(key, mod)) |direction| {
+                        // Cmd+Opt +/- adjusts the grid-pane font scale and persists
+                        // it (mirrors Cmd[+Shift] +/- for the focused/full size).
+                        const grid_scale_step: f32 = 0.1;
+                        const delta: f32 = if (direction == .increase) grid_scale_step else -grid_scale_step;
+                        const target_scale = std.math.clamp(config.grid.font_scale + delta, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘⌥+" else "⌘⌥-", now);
+                        if (target_scale != config.grid.font_scale) {
+                            config.grid.font_scale = target_scale;
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            persistence.grid_font_scale = config.grid.font_scale;
+                            persistence_dirty = true;
+                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                        }
+                        var grid_scale_buf: [64]u8 = undefined;
+                        const grid_scale_msg = std.fmt.bufPrint(&grid_scale_buf, "Grid font: {d:.0}%", .{config.grid.font_scale * 100.0}) catch |err| blk: {
+                            log.warn("failed to format grid scale toast: {}", .{err});
+                            break :blk "Grid font changed";
+                        };
+                        ui.showToast(grid_scale_msg, now);
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
 
@@ -2223,6 +2282,26 @@ pub fn run() !void {
                             const notification_msg = try grid_nav.formatGridNotification(notification_buf, idx, grid.cols, grid.rows);
                             ui.showToast(notification_msg, now);
                             std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
+                        }
+                    } else if (input.gridSelectShortcut(key, mod)) |direction| {
+                        // Shift+Arrow: move the grid selection. Pure navigation
+                        // in Grid; passes through to the program elsewhere.
+                        if (anim_state.mode == .Grid) {
+                            if (config.ui.show_hotkey_feedback) {
+                                const arrow = switch (direction) {
+                                    .up => "⇧↑",
+                                    .down => "⇧↓",
+                                    .left => "⇧←",
+                                    .right => "⇧→",
+                                };
+                                ui.showHotkey(arrow, now);
+                            }
+                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
+                            const new_session = anim_state.focused_session;
+                            session_interaction_component.triggerNavWave(new_session, now);
+                        } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
+                            session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
+                            try input_keys.handleKeyInput(focused, key, mod);
                         }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
@@ -3098,6 +3177,8 @@ pub fn run() !void {
                 ui_scale,
                 config.grid.font_scale,
                 &grid,
+                window_focused,
+                @intCast(config.ui.inactive_overlay_alpha),
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;

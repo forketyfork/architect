@@ -34,7 +34,14 @@ pub const Color = struct {
 };
 
 pub const FontConfig = struct {
+    /// Font size (points) used in focused/full view. Also the base size the
+    /// dynamic grid scaling is derived from. Adjustable at runtime via Cmd+±.
     size: i32 = 14,
+    /// Grid-mode text-size multiplier. 0 = "unset" -> fall back to
+    /// [grid] font_scale (which itself defaults to 1.0). Larger = bigger text
+    /// in the small grid panes (and proportionally fewer cols/rows per pane).
+    /// Clamped to [min_grid_font_scale, max_grid_font_scale] on load.
+    grid_scale: f32 = 0,
     family: ?[]const u8 = null,
     family_owned: bool = false,
 
@@ -51,6 +58,7 @@ pub const FontConfig = struct {
     pub fn duplicate(self: FontConfig, allocator: std.mem.Allocator) !FontConfig {
         return FontConfig{
             .size = self.size,
+            .grid_scale = self.grid_scale,
             .family = if (self.family) |f| try allocator.dupe(u8, f) else null,
             .family_owned = self.family != null,
         };
@@ -71,6 +79,10 @@ pub const GridConfig = struct {
 pub const UiConfig = struct {
     show_hotkey_feedback: bool = true,
     enable_animations: bool = true,
+    /// Alpha (0-255) of the accent overlay drawn over every pane when the
+    /// Architect window is NOT the frontmost app. 0 disables the overlay.
+    /// Higher = panes look more clearly "inactive" when you tab away.
+    inactive_overlay_alpha: i32 = 130,
 };
 
 pub const PaletteConfig = struct {
@@ -330,6 +342,9 @@ pub const Persistence = struct {
     /// active/zoomed pane is restored on relaunch instead of defaulting to the first.
     focused_session: usize = 0,
     zoomed: bool = false,
+    /// Live grid-pane font-scale multiplier (Cmd+Opt +/-), persisted so it
+    /// survives relaunch. 0 = unset -> fall back to [font]/[grid] config.
+    grid_font_scale: f32 = 0,
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
@@ -340,6 +355,7 @@ pub const Persistence = struct {
         recent_folders: ?toml.HashMap(u32) = null,
         focused_session: usize = 0,
         zoomed: bool = false,
+        grid_font_scale: f32 = 0,
     };
 
     const TomlPersistenceV2 = struct {
@@ -394,6 +410,7 @@ pub const Persistence = struct {
             persistence.font_size = result.value.font_size;
             persistence.focused_session = result.value.focused_session;
             persistence.zoomed = result.value.zoomed;
+            persistence.grid_font_scale = result.value.grid_font_scale;
 
             if (result.value.terminals) |paths| {
                 for (paths, 0..) |path, idx| {
@@ -489,6 +506,7 @@ pub const Persistence = struct {
         try writer.print("font_size = {d}\n", .{self.font_size});
         try writer.print("focused_session = {d}\n", .{self.focused_session});
         try writer.print("zoomed = {}\n", .{self.zoomed});
+        try writer.print("grid_font_scale = {d:.3}\n", .{self.grid_font_scale});
 
         // Write terminal path and agent arrays before any sections
         if (self.terminal_entries.items.len > 0) {
@@ -827,10 +845,21 @@ pub const Config = struct {
             \\# Font options
             \\# [font]
             \\# family = "SFNSMono"
+            \\# size = 14         # focused/full-view font size (points); Cmd+Shift+= / Cmd+- at runtime
+            \\# grid_scale = 1.0  # grid-pane text size multiplier (0.5-3.0). Cmd+Opt+= / Cmd+Opt+-
+            \\#                   # adjusts it live and remembers it across launches.
             \\
             \\# Grid options (grid size is dynamic based on terminal count)
             \\# [grid]
-            \\# font_scale = 1.0
+            \\# font_scale = 1.0  # legacy alias of [font] grid_scale
+            \\
+            \\# Keybindings (not configurable):
+            \\#   Move grid selection:  Shift+Arrow or Cmd+Arrow
+            \\#   Focus a pane:         double-click it, or Cmd+Return on the selection
+            \\#   Back to grid:         Cmd+Esc (single/double Esc pass through to the program)
+            \\#   Typing:               keys/Enter type into the selected grid pane as usual
+            \\#   Focused font size:    Cmd+Shift+= / Cmd+-   (persisted)
+            \\#   Grid font size:       Cmd+Opt+= / Cmd+Opt+- (persisted)
             \\
             \\# Rendering options
             \\# [rendering]
@@ -840,6 +869,7 @@ pub const Config = struct {
             \\# [ui]
             \\# show_hotkey_feedback = true
             \\# enable_animations = true
+            \\# inactive_overlay_alpha = 130  # 0-255 accent dim over panes when app is not frontmost (0 = off)
             \\
             \\# Theme colors (hex format)
             \\# [theme]
@@ -906,7 +936,16 @@ pub const Config = struct {
 
         var config = result.value;
 
+        // [font] grid_scale (if set, sentinel != 0) takes precedence over the
+        // legacy [grid] font_scale knob; otherwise keep whatever grid set.
+        if (config.font.grid_scale != 0) {
+            config.grid.font_scale = config.font.grid_scale;
+        }
         config.grid.font_scale = std.math.clamp(config.grid.font_scale, min_grid_font_scale, max_grid_font_scale);
+
+        // Keep the overlay alpha in range so a bad value in the TOML can never
+        // hide the panes entirely.
+        config.ui.inactive_overlay_alpha = std.math.clamp(config.ui.inactive_overlay_alpha, 0, 255);
 
         config.font = try config.font.duplicate(allocator);
         config.theme = try config.theme.duplicate(allocator);
@@ -1003,6 +1042,41 @@ test "ThemeConfig - custom colors" {
     try std.testing.expectEqual(@as(u8, 0), fg.r);
     try std.testing.expectEqual(@as(u8, 255), fg.g);
     try std.testing.expectEqual(@as(u8, 0), fg.b);
+}
+
+test "font grid_scale / inactive overlay - defaults and parsing" {
+    const allocator = std.testing.allocator;
+
+    // Defaults when omitted.
+    {
+        var parser = toml.Parser(Config).init(allocator);
+        defer parser.deinit();
+        var result = try parser.parseString("[font]\nsize = 14\n");
+        defer result.deinit();
+        const config = result.value;
+        try std.testing.expectEqual(@as(f32, 0), config.font.grid_scale);
+        try std.testing.expectEqual(@as(i32, 130), config.ui.inactive_overlay_alpha);
+    }
+
+    // Explicit values parse into the expected fields.
+    {
+        const content =
+            \\[font]
+            \\size = 15
+            \\grid_scale = 1.5
+            \\
+            \\[ui]
+            \\inactive_overlay_alpha = 90
+            \\
+        ;
+        var parser = toml.Parser(Config).init(allocator);
+        defer parser.deinit();
+        var result = try parser.parseString(content);
+        defer result.deinit();
+        const config = result.value;
+        try std.testing.expectApproxEqAbs(@as(f32, 1.5), config.font.grid_scale, 0.0001);
+        try std.testing.expectEqual(@as(i32, 90), config.ui.inactive_overlay_alpha);
+    }
 }
 
 test "Config - decode sectioned toml" {
@@ -1190,6 +1264,7 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.x = 100;
     original.window.y = 200;
     original.font_size = 16;
+    original.grid_font_scale = 1.5;
     try original.appendTerminalEntry(allocator, "/home/user/project1", null, null);
     try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def");
     try original.appendTerminalEntry(allocator, "/tmp/test", null, null);
@@ -1212,6 +1287,7 @@ test "Persistence save/load round-trip preserves all fields" {
 
     loaded.window = result.value.window;
     loaded.font_size = result.value.font_size;
+    loaded.grid_font_scale = result.value.grid_font_scale;
 
     if (result.value.terminals) |paths| {
         for (paths, 0..) |path, idx| {
@@ -1232,6 +1308,7 @@ test "Persistence save/load round-trip preserves all fields" {
     try std.testing.expectEqual(original.window.x, loaded.window.x);
     try std.testing.expectEqual(original.window.y, loaded.window.y);
     try std.testing.expectEqual(original.font_size, loaded.font_size);
+    try std.testing.expectApproxEqAbs(original.grid_font_scale, loaded.grid_font_scale, 0.001);
     try std.testing.expectEqual(original.terminal_entries.items.len, loaded.terminal_entries.items.len);
 
     for (original.terminal_entries.items, loaded.terminal_entries.items) |orig, loaded_entry| {
