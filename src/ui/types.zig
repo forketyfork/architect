@@ -45,6 +45,9 @@ pub const UiHost = struct {
 pub const UiAction = union(enum) {
     RestartSession: usize,
     FocusSession: usize,
+    /// Move the grid's focus/selection highlight to this pane without zooming
+    /// it to full screen or spawning a shell. Mirrors Cmd+Arrow grid nav.
+    SelectGridSession: usize,
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,

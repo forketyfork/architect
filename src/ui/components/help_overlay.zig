@@ -11,9 +11,9 @@ const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
 const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
-    .{ .key = "Double-click pane", .desc = "Focus it (full screen)" },
+    .{ .key = "Click pane", .desc = "Move focus (grid view)" },
+    .{ .key = "Double-click pane", .desc = "Expand to full screen" },
     .{ .key = "⌘ESC", .desc = "Collapse to grid view" },
-    .{ .key = "⇧↑/↓/←/→", .desc = "Move grid selection" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Navigate grid" },
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Focus selected pane" },

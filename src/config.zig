@@ -855,7 +855,7 @@ pub const Config = struct {
             \\# font_scale = 1.0  # legacy alias of [font] grid_scale
             \\
             \\# Keybindings (not configurable):
-            \\#   Move grid selection:  Shift+Arrow or Cmd+Arrow
+            \\#   Move grid selection:  Cmd+Arrow, or single-click a pane
             \\#   Focus a pane:         double-click it, or Cmd+Return on the selection
             \\#   Back to grid:         Cmd+Esc (single/double Esc pass through to the program)
             \\#   Typing:               keys/Enter type into the selected grid pane as usual

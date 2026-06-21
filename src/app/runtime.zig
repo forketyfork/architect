@@ -2289,26 +2289,6 @@ pub fn run() !void {
                             ui.showToast(notification_msg, now);
                             std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
                         }
-                    } else if (input.gridSelectShortcut(key, mod)) |direction| {
-                        // Shift+Arrow: move the grid selection. Pure navigation
-                        // in Grid; passes through to the program elsewhere.
-                        if (anim_state.mode == .Grid) {
-                            if (config.ui.show_hotkey_feedback) {
-                                const arrow = switch (direction) {
-                                    .up => "⇧↑",
-                                    .down => "⇧↓",
-                                    .left => "⇧←",
-                                    .right => "⇧→",
-                                };
-                                ui.showHotkey(arrow, now);
-                            }
-                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
-                            const new_session = anim_state.focused_session;
-                            session_interaction_component.triggerNavWave(new_session, now);
-                        } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
-                            session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
-                            try input_keys.handleKeyInput(focused, key, mod);
-                        }
                     } else if (input.gridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
                             if (config.ui.show_hotkey_feedback) {
@@ -2629,6 +2609,19 @@ pub fn run() !void {
                     anim_state.previous_session = idx;
                 }
                 std.debug.print("Expanding session: {d}\n", .{idx});
+            },
+            .SelectGridSession => |idx| {
+                // Single click in grid view: move the focus/selection highlight
+                // to the clicked pane without spawning a shell or zooming to
+                // full screen. Mirrors the Cmd+Arrow grid-navigation path.
+                if (anim_state.mode != .Grid) continue;
+                if (idx >= sessions.len) continue;
+                if (idx == anim_state.focused_session) continue;
+
+                session_interaction_component.clearSelection(anim_state.focused_session);
+                session_interaction_component.clearSelection(idx);
+                anim_state.focused_session = idx;
+                session_interaction_component.triggerNavWave(idx, now);
             },
             .DespawnSession => |idx| {
                 if (idx < sessions.len) {

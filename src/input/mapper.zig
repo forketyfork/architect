@@ -27,22 +27,6 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
     };
 }
 
-/// Shift+Arrow moves the grid selection. Distinct from gridNavShortcut
-/// (Cmd+Arrow) so that Shift+Arrow can be a pure grid-navigation chord while
-/// Cmd+Arrow keeps its dual role (grid nav + Full-mode panning). Requires
-/// Shift and rejects Cmd/Ctrl/Alt so it never collides with other shortcuts.
-pub fn gridSelectShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
-    if ((mod & c.SDL_KMOD_SHIFT) == 0) return null;
-    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
-    return switch (key) {
-        c.SDLK_UP => .up,
-        c.SDLK_DOWN => .down,
-        c.SDLK_LEFT => .left,
-        c.SDLK_RIGHT => .right,
-        else => null,
-    };
-}
-
 pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
     return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
 }
@@ -378,18 +362,6 @@ test "encodeKeyWithMod - unknown key" {
     var buf: [16]u8 = undefined;
     const n = encodeKeyWithMod(0, 0, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 0), n);
-}
-
-test "gridSelectShortcut - shift+arrow only" {
-    try std.testing.expectEqual(GridNavDirection.up, gridSelectShortcut(c.SDLK_UP, c.SDL_KMOD_SHIFT).?);
-    try std.testing.expectEqual(GridNavDirection.right, gridSelectShortcut(c.SDLK_RIGHT, c.SDL_KMOD_SHIFT).?);
-    // No Shift -> not a select chord.
-    try std.testing.expect(gridSelectShortcut(c.SDLK_UP, 0) == null);
-    // Shift + Cmd/Ctrl/Alt -> rejected (avoids collisions).
-    try std.testing.expect(gridSelectShortcut(c.SDLK_UP, c.SDL_KMOD_SHIFT | c.SDL_KMOD_GUI) == null);
-    try std.testing.expect(gridSelectShortcut(c.SDLK_UP, c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL) == null);
-    // Non-arrow -> null.
-    try std.testing.expect(gridSelectShortcut(c.SDLK_A, c.SDL_KMOD_SHIFT) == null);
 }
 
 test "fontSizeShortcut - plus/minus variants" {
