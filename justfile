@@ -23,6 +23,10 @@ run:
 run-release:
     zig build run -Doptimize=ReleaseFast
 
+# Rebuild from the current worktree, then quit and relaunch the installed app.
+reload:
+    ./scripts/dev-reload.sh
+
 lint:
     #!/usr/bin/env bash
     set -euo pipefail

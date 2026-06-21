@@ -58,6 +58,18 @@ just run
 zig build run
 ```
 
+Reload the installed app with your in-progress changes:
+```bash
+just reload
+# or
+./scripts/dev-reload.sh
+```
+This rebuilds from the current worktree (committed + uncommitted changes), quits the
+running Architect, swaps the fresh build into `/Applications/Architect.app`, and
+relaunches it. Use it to avoid restarting a stale binary after editing source — relaunching
+the installed app alone never picks up source changes. The Claude Code skill
+`/reload-architect` runs the same script.
+
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).
