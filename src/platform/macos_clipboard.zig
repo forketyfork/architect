@@ -22,21 +22,37 @@ const Impl = if (is_macos) struct {
 
     // objc_msgSend has no single C prototype; cast it per call signature.
     const MsgSend = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
-    const MsgSendBoolArg = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) u8;
+    const MsgSendIdArg = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
+    const MsgSendBool2Arg = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) u8;
 
     fn hasClipboardImage() bool {
         const ns_pasteboard = c.objc_getClass("NSPasteboard") orelse return false;
         const ns_image = c.objc_getClass("NSImage") orelse return false;
+        const ns_array = c.objc_getClass("NSArray") orelse return false;
         const sel_general = c.sel_registerName("generalPasteboard") orelse return false;
-        const sel_can = c.sel_registerName("canInitWithPasteboard:") orelse return false;
+        const sel_array_with = c.sel_registerName("arrayWithObject:") orelse return false;
+        const sel_can_read = c.sel_registerName("canReadObjectForClasses:options:") orelse return false;
+
+        const msg_send = @as(MsgSend, @ptrCast(&c.objc_msgSend));
+        const msg_send_id = @as(MsgSendIdArg, @ptrCast(&c.objc_msgSend));
+        const msg_send_bool2 = @as(MsgSendBool2Arg, @ptrCast(&c.objc_msgSend));
 
         // [NSPasteboard generalPasteboard] -> shared pasteboard (not owned by us).
-        const msg_send = @as(MsgSend, @ptrCast(&c.objc_msgSend));
         const pasteboard = msg_send(ns_pasteboard, sel_general) orelse return false;
 
-        // +[NSImage canInitWithPasteboard:pasteboard] -> BOOL.
-        const msg_send_bool = @as(MsgSendBoolArg, @ptrCast(&c.objc_msgSend));
-        return msg_send_bool(ns_image, sel_can, pasteboard) != 0;
+        // classes = [NSArray arrayWithObject:[NSImage class]]. A Class doubles as
+        // the `id` element; canReadObjectForClasses: wants NSPasteboardReading
+        // classes, and NSImage conforms.
+        const classes = msg_send_id(ns_array, sel_array_with, ns_image) orelse return false;
+
+        // [pasteboard canReadObjectForClasses:classes options:nil] -> BOOL.
+        // Unlike +[NSImage canInitWithPasteboard:] (which only matches the legacy
+        // NeXT pasteboard type set), this is UTI-aware: it matches any
+        // public.image-conforming type, including Universal Clipboard / iPhone
+        // screenshots that declare modern UTIs, and image file URLs, while
+        // rejecting non-image file URLs. It inspects declared types only, so it
+        // does not pull promised (lazily transferred) Universal Clipboard bytes.
+        return msg_send_bool2(pasteboard, sel_can_read, classes, null) != 0;
     }
 } else struct {
     fn hasClipboardImage() bool {
@@ -45,7 +61,9 @@ const Impl = if (is_macos) struct {
 };
 
 /// Returns true if the macOS general pasteboard currently holds image data
-/// (PNG/TIFF/PDF) that NSImage could read. Always false on non-macOS targets.
+/// NSImage can read — PNG/TIFF/JPEG/HEIC/PDF, including Universal Clipboard /
+/// iPhone screenshots (modern UTIs) and image file URLs, while rejecting
+/// non-image file URLs. Always false on non-macOS targets.
 pub fn hasClipboardImage() bool {
     return Impl.hasClipboardImage();
 }
