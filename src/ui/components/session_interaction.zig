@@ -8,6 +8,7 @@ const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const session_state = @import("../../session/state.zig");
 const url_matcher = @import("../../url_matcher.zig");
+const path_matcher = @import("../../path_matcher.zig");
 const font_mod = @import("../../font.zig");
 const app_state = @import("../../app/app_state.zig");
 const types = @import("../types.zig");
@@ -238,7 +239,7 @@ pub const SessionInteractionComponent = struct {
                                     const mod = c.SDL_GetModState();
                                     const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
                                     if (cmd_held) {
-                                        if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
+                                        if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback, focused.cwd_path)) |uri| {
                                             defer self.allocator.free(uri);
                                             open_url.openUrl(self.allocator, uri) catch |err| {
                                                 log.err("failed to open URL: {}", .{err});
@@ -370,7 +371,7 @@ pub const SessionInteractionComponent = struct {
                             const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
 
                             if (cmd_held) {
-                                if (getLinkMatchAtPin(self.allocator, &focused.terminal.?, pin.?, view.is_viewing_scrollback)) |link_match| {
+                                if (getLinkMatchAtPin(self.allocator, &focused.terminal.?, pin.?, view.is_viewing_scrollback, focused.cwd_path)) |link_match| {
                                     desired_cursor = .pointer;
                                     view.hovered_link_start = link_match.start_pin;
                                     view.hovered_link_end = link_match.end_pin;
@@ -927,7 +928,7 @@ const LinkMatch = struct {
     end_pin: ghostty_vt.Pin,
 };
 
-fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) ?LinkMatch {
+fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool, cwd: ?[]const u8) ?LinkMatch {
     const page = &pin.node.data;
     const row_and_cell = pin.rowAndCell();
     const cell = row_and_cell.cell;
@@ -1049,11 +1050,27 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     if (click_cell_idx >= cell_to_byte.items.len) return null;
     const click_byte_pos = cell_to_byte.items[click_cell_idx];
 
-    const url_match = url_matcher.findUrlMatchAtPosition(row_text, click_byte_pos) orelse return null;
+    // Match a scheme URL first (http://, file://, ...); if none, fall back to a
+    // bare filesystem path that exists relative to the pane's working directory.
+    var match_start: usize = undefined;
+    var match_end: usize = undefined;
+    var url_slice: ?[]const u8 = null;
+    var path_token: ?[]const u8 = null;
+    if (url_matcher.findUrlMatchAtPosition(row_text, click_byte_pos)) |m| {
+        match_start = m.start;
+        match_end = m.end;
+        url_slice = m.url;
+    } else if (path_matcher.findPathMatchAtPosition(row_text, click_byte_pos)) |m| {
+        match_start = m.start;
+        match_end = m.end;
+        path_token = m.path;
+    } else {
+        return null;
+    }
 
     var start_cell_idx: usize = 0;
     for (cell_to_byte.items, 0..) |byte, idx| {
-        if (byte >= url_match.start) {
+        if (byte >= match_start) {
             start_cell_idx = idx;
             break;
         }
@@ -1061,7 +1078,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
     var end_cell_idx: usize = cell_to_byte.items.len - 1;
     for (cell_to_byte.items, 0..) |byte, idx| {
-        if (byte >= url_match.end) {
+        if (byte >= match_end) {
             end_cell_idx = if (idx > 0) idx - 1 else 0;
             break;
         }
@@ -1083,7 +1100,12 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     const link_start_pin = terminal.screens.active.pages.pin(link_start_point) orelse return null;
     const link_end_pin = terminal.screens.active.pages.pin(link_end_point) orelse return null;
 
-    const url = allocator.dupe(u8, url_match.url) catch return null;
+    // Build the owned target string. URLs are duped from the row text; bare
+    // paths are resolved to an absolute path and must exist on disk.
+    const url = if (url_slice) |s|
+        allocator.dupe(u8, s) catch return null
+    else
+        resolveExistingPath(allocator, cwd, path_token.?) orelse return null;
 
     return LinkMatch{
         .url = url,
@@ -1092,8 +1114,61 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     };
 }
 
-fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) ?[]u8 {
-    if (getLinkMatchAtPin(allocator, terminal, pin, is_viewing_scrollback)) |match| {
+/// Resolve a path token against the pane's working directory and return an
+/// owned absolute path IFF it exists on disk. The existence check is what keeps
+/// arbitrary path-ish text from being treated as an openable link. Relative
+/// tokens need `cwd`; `~` expands to $HOME. Caller owns/frees the result.
+fn resolveExistingPath(allocator: std.mem.Allocator, cwd: ?[]const u8, token: []const u8) ?[]u8 {
+    if (token.len == 0) return null;
+
+    const candidate: []u8 = if (token[0] == '/')
+        (allocator.dupe(u8, token) catch return null)
+    else if (token[0] == '~') blk: {
+        const home = std.posix.getenv("HOME") orelse return null;
+        if (token.len == 1) break :blk (allocator.dupe(u8, home) catch return null);
+        const rest = if (token[1] == '/') token[2..] else token[1..];
+        if (rest.len == 0) break :blk (allocator.dupe(u8, home) catch return null);
+        break :blk std.fs.path.join(allocator, &.{ home, rest }) catch return null;
+    } else blk: {
+        const base = cwd orelse return null;
+        break :blk std.fs.path.join(allocator, &.{ base, token }) catch return null;
+    };
+
+    // Absolute candidate; cwd().access handles absolute paths without asserting.
+    std.fs.cwd().access(candidate, .{}) catch {
+        allocator.free(candidate);
+        return null;
+    };
+    return candidate;
+}
+
+test "resolveExistingPath - relative resolves against cwd; missing returns null" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "hello.txt", .data = "hi" });
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    // Existing relative path -> resolved absolute path.
+    const ok = resolveExistingPath(allocator, dir_path, "hello.txt") orelse return error.TestExpectedMatch;
+    defer allocator.free(ok);
+    try std.testing.expect(std.mem.endsWith(u8, ok, "hello.txt"));
+
+    // Non-existent file -> null (the existence filter).
+    try std.testing.expect(resolveExistingPath(allocator, dir_path, "nope.txt") == null);
+
+    // A relative token with no cwd cannot resolve.
+    try std.testing.expect(resolveExistingPath(allocator, null, "hello.txt") == null);
+
+    // An absolute path that exists resolves even without a cwd.
+    const abs = resolveExistingPath(allocator, null, ok) orelse return error.TestExpectedMatch;
+    defer allocator.free(abs);
+    try std.testing.expectEqualStrings(ok, abs);
+}
+
+fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool, cwd: ?[]const u8) ?[]u8 {
+    if (getLinkMatchAtPin(allocator, terminal, pin, is_viewing_scrollback, cwd)) |match| {
         return match.url;
     }
     return null;
