@@ -7,25 +7,9 @@ pub const GridNavDirection = enum { up, down, left, right };
 
 pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
     if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    // Cmd+Opt +/- is reserved for the grid scale (gridFontSizeShortcut).
-    if ((mod & c.SDL_KMOD_ALT) != 0) return null;
 
     return switch (key) {
         c.SDLK_EQUALS, c.SDLK_KP_PLUS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
-        c.SDLK_MINUS, c.SDLK_KP_MINUS => .decrease,
-        else => null,
-    };
-}
-
-/// Cmd+Option +/- adjusts the grid-pane font scale (distinct from Cmd[+Shift]
-/// +/- which adjusts the focused/full font size). Requires Cmd+Alt; rejects
-/// Ctrl. Accepts the '=' key with or without Shift for "increase".
-pub fn gridFontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirection {
-    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    if ((mod & c.SDL_KMOD_ALT) == 0) return null;
-    if ((mod & c.SDL_KMOD_CTRL) != 0) return null;
-    return switch (key) {
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => .increase,
         c.SDLK_MINUS, c.SDLK_KP_MINUS => .decrease,
         else => null,
     };
@@ -414,15 +398,6 @@ test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
     try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
-}
-
-test "gridFontSizeShortcut - cmd+opt only; focused ignores opt" {
-    try std.testing.expectEqual(FontSizeDirection.increase, gridFontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT).?);
-    try std.testing.expectEqual(FontSizeDirection.decrease, gridFontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT).?);
-    // Without Opt it is not a grid shortcut.
-    try std.testing.expect(gridFontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI) == null);
-    // The focused shortcut must NOT fire when Opt is held (no collision).
-    try std.testing.expect(fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT) == null);
 }
 
 test "encodeKeyWithMod - shift+tab legacy mode" {

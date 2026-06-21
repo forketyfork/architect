@@ -2095,51 +2095,57 @@ pub fn run() !void {
                             std.debug.print("Paste failed: {}\n", .{err});
                         };
                     } else if (input.fontSizeShortcut(key, mod)) |direction| {
+                        // Zoom is context-aware: in grid view it changes the GRID
+                        // font size; in focus view it changes the FOCUS font size.
+                        // The two are persisted independently and don't bleed into
+                        // each other.
                         if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘+" else "⌘-", now);
-                        const delta: c_int = if (direction == .increase) font_step else -font_step;
-                        const target_size = std.math.clamp(font_size + delta, min_font_size, max_font_size);
+                        if (anim_state.mode == .Grid or anim_state.mode == .GridResizing) {
+                            const grid_scale_step: f32 = 0.1;
+                            const delta: f32 = if (direction == .increase) grid_scale_step else -grid_scale_step;
+                            const target_scale = std.math.clamp(config.grid.font_scale + delta, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
+                            if (target_scale != config.grid.font_scale) {
+                                config.grid.font_scale = target_scale;
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                persistence.grid_font_scale = config.grid.font_scale;
+                                persistence_dirty = true;
+                                savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                            }
+                            var grid_scale_buf: [64]u8 = undefined;
+                            const grid_scale_msg = std.fmt.bufPrint(&grid_scale_buf, "Grid font: {d:.0}%", .{config.grid.font_scale * 100.0}) catch |err| blk: {
+                                log.warn("failed to format grid scale toast: {}", .{err});
+                                break :blk "Grid font changed";
+                            };
+                            ui.showToast(grid_scale_msg, now);
+                        } else {
+                            const delta: c_int = if (direction == .increase) font_step else -font_step;
+                            const target_size = std.math.clamp(font_size + delta, min_font_size, max_font_size);
+                            if (target_size != font_size) {
+                                const new_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(target_size, ui_scale));
+                                font.deinit();
+                                font = new_font;
+                                font.metrics = metrics_ptr;
+                                // Grid text size scales with the focus font size, so
+                                // compensate the grid scale to hold the grid steady.
+                                const comp = @as(f32, @floatFromInt(font_size)) / @as(f32, @floatFromInt(target_size));
+                                config.grid.font_scale = std.math.clamp(config.grid.font_scale * comp, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
+                                font_size = target_size;
 
-                        if (target_size != font_size) {
-                            const new_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(target_size, ui_scale));
-                            font.deinit();
-                            font = new_font;
-                            font.metrics = metrics_ptr;
-                            font_size = target_size;
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-                            std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
-
-                            persistence.font_size = font_size;
-                            persistence_dirty = true;
-                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                                persistence.font_size = font_size;
+                                persistence.grid_font_scale = config.grid.font_scale;
+                                persistence_dirty = true;
+                                savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                            }
+                            var notification_buf: [64]u8 = undefined;
+                            const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch |err| blk: {
+                                log.warn("failed to format font size toast: {}", .{err});
+                                break :blk "Font size changed";
+                            };
+                            ui.showToast(notification_msg, now);
                         }
-
-                        var notification_buf: [64]u8 = undefined;
-                        const notification_msg = std.fmt.bufPrint(&notification_buf, "Font size: {d}pt", .{font_size}) catch |err| blk: {
-                            log.warn("failed to format font size toast: {}", .{err});
-                            break :blk "Font size changed";
-                        };
-                        ui.showToast(notification_msg, now);
-                    } else if (input.gridFontSizeShortcut(key, mod)) |direction| {
-                        // Cmd+Opt +/- adjusts the grid-pane font scale and persists
-                        // it (mirrors Cmd[+Shift] +/- for the focused/full size).
-                        const grid_scale_step: f32 = 0.1;
-                        const delta: f32 = if (direction == .increase) grid_scale_step else -grid_scale_step;
-                        const target_scale = std.math.clamp(config.grid.font_scale + delta, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey(if (direction == .increase) "⌘⌥+" else "⌘⌥-", now);
-                        if (target_scale != config.grid.font_scale) {
-                            config.grid.font_scale = target_scale;
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-                            persistence.grid_font_scale = config.grid.font_scale;
-                            persistence_dirty = true;
-                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
-                        }
-                        var grid_scale_buf: [64]u8 = undefined;
-                        const grid_scale_msg = std.fmt.bufPrint(&grid_scale_buf, "Grid font: {d:.0}%", .{config.grid.font_scale * 100.0}) catch |err| blk: {
-                            log.warn("failed to format grid scale toast: {}", .{err});
-                            break :blk "Grid font changed";
-                        };
-                        ui.showToast(grid_scale_msg, now);
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
 

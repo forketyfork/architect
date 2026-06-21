@@ -845,9 +845,10 @@ pub const Config = struct {
             \\# Font options
             \\# [font]
             \\# family = "SFNSMono"
-            \\# size = 14         # focused/full-view font size (points); Cmd+Shift+= / Cmd+- at runtime
-            \\# grid_scale = 1.0  # grid-pane text size multiplier (0.5-3.0). Cmd+Opt+= / Cmd+Opt+-
-            \\#                   # adjusts it live and remembers it across launches.
+            \\# size = 14         # focused-view font size (points)
+            \\# grid_scale = 1.0  # grid-view text size multiplier (0.5-3.0)
+            \\#                   # Cmd +/- zooms whichever view you're in (grid vs focus);
+            \\#                   # the two sizes are independent and remembered across launches.
             \\
             \\# Grid options (grid size is dynamic based on terminal count)
             \\# [grid]
@@ -858,8 +859,7 @@ pub const Config = struct {
             \\#   Focus a pane:         double-click it, or Cmd+Return on the selection
             \\#   Back to grid:         Cmd+Esc (single/double Esc pass through to the program)
             \\#   Typing:               keys/Enter type into the selected grid pane as usual
-            \\#   Focused font size:    Cmd+Shift+= / Cmd+-   (persisted)
-            \\#   Grid font size:       Cmd+Opt+= / Cmd+Opt+- (persisted)
+            \\#   Zoom a view:          Cmd +/-  (grid size in grid view, focus size in focus view; both persisted)
             \\
             \\# Rendering options
             \\# [rendering]
