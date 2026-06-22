@@ -36,7 +36,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
-- **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
+- **MCP session control** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory (`spawn_session`) or close one and reclaim its slot (`close_session`)
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
@@ -129,7 +129,7 @@ architect hook gemini
 
 ## MCP
 
-`architect-mcp` is a stdio MCP server for local clients. It exposes one tool, `spawn_session`, which forwards the request to the running Architect app. It does not launch Architect by itself.
+`architect-mcp` is a stdio MCP server for local clients. It exposes two tools, `spawn_session` and `close_session`, which forward the request to the running Architect app. It does not launch Architect by itself.
 
 `spawn_session` arguments:
 ```json
@@ -141,6 +141,12 @@ architect hook gemini
 ```
 
 `cwd` is required. `command` and `display_name` are optional. On success, the tool returns structured content with `status`, `session_id`, and `slot_index`. If Architect is not running, the grid is full, `cwd` is invalid, or spawning fails, the tool returns an MCP tool error with a stable `code` and `message`.
+
+`close_session` is the inverse: it closes a terminal session and reclaims its grid slot (the same path as the close-pane keybinding, so the pane is removed rather than left dead). Pass exactly one identifier — the `session_id` returned by `spawn_session`, or a `slot_index`:
+```json
+{ "session_id": 12 }
+```
+On success it returns structured content with `status: "closed"` and the `session_id`. An unknown identifier returns an MCP tool error with code `not_found`.
 
 For release downloads, use:
 ```bash

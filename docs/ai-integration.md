@@ -2,7 +2,7 @@
 
 Architect exposes a Unix domain socket to let external tools (Claude Code, Codex, Gemini CLI, etc.) signal UI states.
 
-Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions.
+Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions and close existing ones.
 
 ## Socket Protocol
 
@@ -17,9 +17,12 @@ Examples:
 {"session": 0, "state": "done"}
 ```
 
+## MCP tools
+
+`architect-mcp` is launched by an MCP client as a stdio server. It exposes two tools, `spawn_session` and `close_session`, and forwards each call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running.
+
 ## MCP `spawn_session`
 
-`architect-mcp` is launched by an MCP client as a stdio server. It exposes exactly one tool, `spawn_session`, and forwards each call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running.
 
 The running app writes a per-instance discovery file named `architect_control_<uid>_<pid>.json` under `XDG_RUNTIME_DIR` when that is set. Otherwise it uses a stable per-user runtime directory: `~/Library/Caches/Architect/runtime` on macOS, or `~/.cache/architect/runtime` on other platforms. The app logs the full discovery file path together with the socket path. When several Architect instances are running, `architect-mcp` tries the newest reachable discovery entry.
 
@@ -80,6 +83,50 @@ Tool errors use stable codes:
 - `full_grid`: every Architect terminal slot is already in use
 - `invalid_cwd`: `cwd` is not an absolute existing directory
 - `spawn_failed`: Architect accepted the request but could not create or initialize the terminal session
+
+## MCP `close_session`
+
+The inverse of `spawn_session`: it asks the running app to close a terminal session and reclaim its grid slot, driving the same close/relayout path as the close-pane keybinding (the shell is terminated and the pane is removed — not left as a dead, unresponsive pane). Provide exactly one identifier.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session_id": {
+      "type": "integer",
+      "description": "The session id returned by spawn_session. Provide this or slot_index."
+    },
+    "slot_index": {
+      "type": "integer",
+      "description": "The grid slot index to close. Provide this or session_id."
+    }
+  }
+}
+```
+
+Example tool arguments:
+
+```json
+{ "session_id": 12 }
+```
+
+Successful calls return MCP structured content like:
+
+```json
+{
+  "status": "closed",
+  "session_id": 12
+}
+```
+
+Tool errors use the same stable codes, plus:
+
+- `invalid_request`: the MCP arguments do not match the schema (e.g. no identifier was provided)
+- `not_found`: no session matches the requested `session_id` / `slot_index`
+- `app_not_running`: no running Architect app accepted the local control request
 
 ## Built-in Command (inside Architect terminals)
 

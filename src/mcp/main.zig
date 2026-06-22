@@ -6,6 +6,7 @@ const protocol_version = "2025-11-25";
 const server_name = "architect-mcp";
 const server_version = "0.1.0";
 const tool_name = "spawn_session";
+const close_tool_name = "close_session";
 
 const JsonRpcErrorCode = enum(i32) {
     parse_error = -32700,
@@ -128,12 +129,27 @@ fn handleToolsCall(
         try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "tool name is required");
         return;
     };
-    if (name_value != .string or !std.mem.eql(u8, name_value.string, tool_name)) {
+    if (name_value != .string) {
         try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "unknown tool");
         return;
     }
 
-    const arguments = params.object.get("arguments") orelse {
+    if (std.mem.eql(u8, name_value.string, tool_name)) {
+        try handleSpawnToolCall(allocator, stdout_file, id_value, params.object.get("arguments"));
+    } else if (std.mem.eql(u8, name_value.string, close_tool_name)) {
+        try handleCloseToolCall(allocator, stdout_file, id_value, params.object.get("arguments"));
+    } else {
+        try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "unknown tool");
+    }
+}
+
+fn handleSpawnToolCall(
+    allocator: std.mem.Allocator,
+    stdout_file: std.fs.File,
+    id_value: ?std.json.Value,
+    arguments_value: ?std.json.Value,
+) !void {
+    const arguments = arguments_value orelse {
         try writeToolFailure(allocator, stdout_file, id_value, .invalid_request, "cwd is required");
         return;
     };
@@ -162,6 +178,44 @@ fn handleToolsCall(
 
     switch (response.response) {
         .success => |success| try writeToolSuccess(allocator, stdout_file, id_value, success),
+        .failure => |failure| try writeToolFailure(allocator, stdout_file, id_value, failure.code, failure.message),
+    }
+}
+
+fn handleCloseToolCall(
+    allocator: std.mem.Allocator,
+    stdout_file: std.fs.File,
+    id_value: ?std.json.Value,
+    arguments_value: ?std.json.Value,
+) !void {
+    const arguments = arguments_value orelse {
+        try writeToolFailure(allocator, stdout_file, id_value, .invalid_request, "session_id or slot_index is required");
+        return;
+    };
+    const request = control.parseCloseRequestFromValue(arguments) catch |err| {
+        try writeToolFailure(
+            allocator,
+            stdout_file,
+            id_value,
+            .invalid_request,
+            control.parseCloseErrorMessage(err),
+        );
+        return;
+    };
+
+    var response = control.connectAndSendCloseRequest(allocator, request) catch |err| {
+        var message_buf: [160]u8 = undefined;
+        const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
+            log.debug("failed to format Architect contact error: {}", .{fmt_err});
+            break :blk "failed to contact Architect";
+        };
+        try writeToolFailure(allocator, stdout_file, id_value, .app_not_running, message);
+        return;
+    };
+    defer response.deinit(allocator);
+
+    switch (response.response) {
+        .success => |success| try writeCloseToolSuccess(allocator, stdout_file, id_value, success),
         .failure => |failure| try writeToolFailure(allocator, stdout_file, id_value, failure.code, failure.message),
     }
 }
@@ -224,6 +278,7 @@ fn writeToolsListResult(
     try json.objectField("tools");
     try json.beginArray();
     try writeSpawnSessionTool(&json);
+    try writeCloseSessionTool(&json);
     try json.endArray();
     try endRpcResult(&json);
 
@@ -329,6 +384,87 @@ fn writeSpawnOutputSchema(json: *std.json.Stringify) !void {
     try json.endObject();
 }
 
+fn writeCloseSessionTool(json: *std.json.Stringify) !void {
+    try json.beginObject();
+    try json.objectField("name");
+    try json.write(close_tool_name);
+    try json.objectField("description");
+    try json.write("Ask the running Architect app to close a terminal session and reclaim its grid slot.");
+    try json.objectField("inputSchema");
+    try writeCloseInputSchema(json);
+    try json.objectField("outputSchema");
+    try writeCloseOutputSchema(json);
+    try json.endObject();
+}
+
+fn writeCloseInputSchema(json: *std.json.Stringify) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("object");
+    try json.objectField("additionalProperties");
+    try json.write(false);
+    try json.objectField("properties");
+    try json.beginObject();
+
+    try json.objectField("session_id");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("integer");
+    try json.objectField("description");
+    try json.write("The session id returned by spawn_session. Provide this or slot_index.");
+    try json.endObject();
+
+    try json.objectField("slot_index");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("integer");
+    try json.objectField("description");
+    try json.write("The grid slot index to close. Provide this or session_id.");
+    try json.endObject();
+
+    try json.endObject();
+    try json.endObject();
+}
+
+fn writeCloseOutputSchema(json: *std.json.Stringify) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("object");
+    try json.objectField("required");
+    try json.beginArray();
+    try json.write("status");
+    try json.endArray();
+    try json.objectField("properties");
+    try json.beginObject();
+
+    try json.objectField("status");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("string");
+    try json.endObject();
+
+    try json.objectField("session_id");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("integer");
+    try json.endObject();
+
+    try json.objectField("code");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("string");
+    try json.endObject();
+
+    try json.objectField("message");
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("string");
+    try json.endObject();
+
+    try json.endObject();
+    try json.endObject();
+}
+
 fn writeToolSuccess(
     allocator: std.mem.Allocator,
     stdout_file: std.fs.File,
@@ -357,6 +493,40 @@ fn writeToolSuccess(
     try json.write(success.session_id);
     try json.objectField("slot_index");
     try json.write(success.slot_index);
+    try json.endObject();
+    try json.objectField("isError");
+    try json.write(false);
+    try endRpcResult(&json);
+
+    try writeJsonLine(stdout_file, out.written());
+}
+
+fn writeCloseToolSuccess(
+    allocator: std.mem.Allocator,
+    stdout_file: std.fs.File,
+    id_value: ?std.json.Value,
+    success: control.CloseSuccess,
+) !void {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var json: std.json.Stringify = .{ .writer = &out.writer };
+
+    try beginRpcResult(&json, id_value);
+    try json.objectField("content");
+    try json.beginArray();
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("text");
+    try json.objectField("text");
+    try json.print("\"Closed Architect session {d}.\"", .{success.session_id});
+    try json.endObject();
+    try json.endArray();
+    try json.objectField("structuredContent");
+    try json.beginObject();
+    try json.objectField("status");
+    try json.write("closed");
+    try json.objectField("session_id");
+    try json.write(success.session_id);
     try json.endObject();
     try json.objectField("isError");
     try json.write(false);
@@ -458,7 +628,7 @@ fn writeJsonLine(stdout_file: std.fs.File, bytes: []const u8) !void {
     try stdout_file.writeAll("\n");
 }
 
-test "tools/list exposes exactly spawn_session" {
+test "tools/list exposes spawn_session and close_session" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -478,9 +648,38 @@ test "tools/list exposes exactly spawn_session" {
     const result_value = parsed.value.object.get("result") orelse return error.TestUnexpectedResult;
     const tools_value = result_value.object.get("tools") orelse return error.TestUnexpectedResult;
     const tools = tools_value.array;
-    try std.testing.expectEqual(@as(usize, 1), tools.items.len);
-    const name_value = tools.items[0].object.get("name") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(tool_name, name_value.string);
+    try std.testing.expectEqual(@as(usize, 2), tools.items.len);
+    const first_name = tools.items[0].object.get("name") orelse return error.TestUnexpectedResult;
+    const second_name = tools.items[1].object.get("name") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(tool_name, first_name.string);
+    try std.testing.expectEqualStrings(close_tool_name, second_name.string);
+}
+
+test "close tool success response carries status closed and session_id" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var out = try tmp.dir.createFile("close-success.jsonl", .{ .truncate = true });
+
+    const id = std.json.Value{ .integer = 3 };
+    try writeCloseToolSuccess(allocator, out, id, .{ .session_id = 8 });
+    out.close();
+
+    const input = try tmp.dir.readFileAlloc(allocator, "close-success.jsonl", 16 * 1024);
+    defer allocator.free(input);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, input, "\n"), .{});
+    defer parsed.deinit();
+
+    const result = (parsed.value.object.get("result") orelse return error.TestUnexpectedResult).object;
+    const is_error = result.get("isError") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!is_error.bool);
+    const structured = (result.get("structuredContent") orelse return error.TestUnexpectedResult).object;
+    const status = structured.get("status") orelse return error.TestUnexpectedResult;
+    const session_id = structured.get("session_id") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("closed", status.string);
+    try std.testing.expectEqual(@as(i64, 8), session_id.integer);
 }
 
 test "tool failure response is an MCP tool error result" {

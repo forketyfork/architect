@@ -18,6 +18,7 @@ pub const SpawnErrorCode = enum {
     full_grid,
     invalid_cwd,
     spawn_failed,
+    not_found, // ponytail: shared error enum across spawn + close; only close uses this one.
 
     pub fn jsonString(self: SpawnErrorCode) []const u8 {
         return switch (self) {
@@ -26,6 +27,7 @@ pub const SpawnErrorCode = enum {
             .full_grid => "full_grid",
             .invalid_cwd => "invalid_cwd",
             .spawn_failed => "spawn_failed",
+            .not_found => "not_found",
         };
     }
 
@@ -35,6 +37,7 @@ pub const SpawnErrorCode = enum {
         if (std.mem.eql(u8, value, "full_grid")) return .full_grid;
         if (std.mem.eql(u8, value, "invalid_cwd")) return .invalid_cwd;
         if (std.mem.eql(u8, value, "spawn_failed")) return .spawn_failed;
+        if (std.mem.eql(u8, value, "not_found")) return .not_found;
         return null;
     }
 };
@@ -134,6 +137,88 @@ pub const SpawnQueue = struct {
     }
 
     pub fn drainAll(self: *SpawnQueue) std.ArrayListUnmanaged(PendingSpawn) {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const items = self.items;
+        self.items = .empty;
+        return items;
+    }
+};
+
+pub const CloseRequest = struct {
+    session_id: ?usize = null,
+    slot_index: ?usize = null,
+};
+
+pub const CloseSuccess = struct {
+    session_id: usize,
+};
+
+pub const CloseResponse = union(enum) {
+    success: CloseSuccess,
+    failure: SpawnFailure,
+};
+
+pub const OwnedCloseResponse = struct {
+    response: CloseResponse,
+    owned_message: ?[]const u8 = null,
+
+    pub fn deinit(self: *OwnedCloseResponse, allocator: std.mem.Allocator) void {
+        if (self.owned_message) |message| {
+            allocator.free(message);
+            self.owned_message = null;
+        }
+    }
+};
+
+// ponytail: deliberately parallel to SpawnCompletion/SpawnQueue rather than a
+// generic Completion(T)/Queue(T) — the lint pass rejects type-returning fns.
+pub const CloseCompletion = struct {
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+    completed: bool = false,
+    response: CloseResponse = undefined,
+
+    pub fn complete(self: *CloseCompletion, response: CloseResponse) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.response = response;
+        self.completed = true;
+        self.condition.signal();
+    }
+
+    pub fn wait(self: *CloseCompletion) CloseResponse {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while (!self.completed) {
+            self.condition.wait(&self.mutex);
+        }
+        return self.response;
+    }
+};
+
+pub const PendingClose = struct {
+    request: CloseRequest,
+    completion: *CloseCompletion,
+};
+
+pub const CloseQueue = struct {
+    mutex: std.Thread.Mutex = .{},
+    items: std.ArrayListUnmanaged(PendingClose) = .empty,
+
+    pub fn deinit(self: *CloseQueue, allocator: std.mem.Allocator) void {
+        self.items.deinit(allocator);
+    }
+
+    pub fn push(self: *CloseQueue, allocator: std.mem.Allocator, item: PendingClose) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.items.append(allocator, item);
+    }
+
+    pub fn drainAll(self: *CloseQueue) std.ArrayListUnmanaged(PendingClose) {
         self.mutex.lock();
         defer self.mutex.unlock();
         const items = self.items;
@@ -326,7 +411,8 @@ const ControlContext = struct {
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
-    queue: *SpawnQueue,
+    spawn_queue: *SpawnQueue,
+    close_queue: *CloseQueue,
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 };
@@ -335,7 +421,8 @@ pub fn startControlThread(
     allocator: std.mem.Allocator,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
-    queue: *SpawnQueue,
+    spawn_queue: *SpawnQueue,
+    close_queue: *CloseQueue,
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) std.Thread.SpawnError!std.Thread {
@@ -348,7 +435,8 @@ pub fn startControlThread(
         .allocator = allocator,
         .socket_path = socket_path,
         .discovery_path = discovery_path,
-        .queue = queue,
+        .spawn_queue = spawn_queue,
+        .close_queue = close_queue,
         .stop = stop,
         .runtime_wake = runtime_wake,
     };
@@ -377,6 +465,19 @@ pub fn failPending(
     for (pending.items) |*item| {
         item.completion.complete(.{ .failure = .{ .code = code, .message = message } });
         item.request.deinit(allocator);
+    }
+}
+
+pub fn failPendingClose(
+    queue: *CloseQueue,
+    allocator: std.mem.Allocator,
+    code: SpawnErrorCode,
+    message: []const u8,
+) void {
+    var pending = queue.drainAll();
+    defer pending.deinit(allocator);
+    for (pending.items) |*item| {
+        item.completion.complete(.{ .failure = .{ .code = code, .message = message } });
     }
 }
 
@@ -410,7 +511,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
             },
         };
         setFdNonBlocking(conn_fd, "control connection");
-        handleControlConnection(ctx.allocator, conn_fd, ctx.queue, ctx.runtime_wake);
+        handleControlConnection(ctx.allocator, conn_fd, ctx.spawn_queue, ctx.close_queue, ctx.runtime_wake);
         posix.close(conn_fd);
     }
 }
@@ -428,10 +529,18 @@ fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
     }
 }
 
+/// True when the parsed request carries `op:"close"`; spawn requests never do.
+fn isCloseRequest(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const op_value = value.object.get("op") orelse return false;
+    return op_value == .string and std.mem.eql(u8, op_value.string, "close");
+}
+
 fn handleControlConnection(
     allocator: std.mem.Allocator,
     conn_fd: posix.fd_t,
-    queue: *SpawnQueue,
+    spawn_queue: *SpawnQueue,
+    close_queue: *CloseQueue,
     runtime_wake: ?RuntimeWake,
 ) void {
     const bytes = readLineFromFdWithTimeout(allocator, conn_fd, max_message_bytes, control_request_read_timeout_ms) catch |err| {
@@ -457,6 +566,11 @@ fn handleControlConnection(
     };
     defer parsed.deinit();
 
+    if (isCloseRequest(parsed.value)) {
+        handleCloseConnection(allocator, conn_fd, parsed.value, close_queue, runtime_wake);
+        return;
+    }
+
     var request = parseSpawnRequestFromValue(allocator, parsed.value) catch |err| {
         writeControlResponse(conn_fd, .{ .failure = .{
             .code = .invalid_request,
@@ -469,7 +583,7 @@ fn handleControlConnection(
     errdefer request.deinit(allocator);
 
     var completion = SpawnCompletion{};
-    queue.push(allocator, .{
+    spawn_queue.push(allocator, .{
         .request = request,
         .completion = &completion,
     }) catch |err| {
@@ -494,6 +608,48 @@ fn handleControlConnection(
     };
 }
 
+fn handleCloseConnection(
+    allocator: std.mem.Allocator,
+    conn_fd: posix.fd_t,
+    value: std.json.Value,
+    close_queue: *CloseQueue,
+    runtime_wake: ?RuntimeWake,
+) void {
+    const request = parseCloseRequestFromValue(value) catch |err| {
+        writeControlCloseResponse(conn_fd, .{ .failure = .{
+            .code = .invalid_request,
+            .message = parseCloseErrorMessage(err),
+        } }) catch |write_err| {
+            log.debug("failed to write invalid close request response: {}", .{write_err});
+        };
+        return;
+    };
+
+    var completion = CloseCompletion{};
+    close_queue.push(allocator, .{
+        .request = request,
+        .completion = &completion,
+    }) catch |err| {
+        log.warn("failed to queue close request: {}", .{err});
+        writeControlCloseResponse(conn_fd, .{ .failure = .{
+            .code = .spawn_failed,
+            .message = "failed to queue close request",
+        } }) catch |write_err| {
+            log.debug("failed to write close queue failure response: {}", .{write_err});
+        };
+        return;
+    };
+
+    if (runtime_wake) |waker| {
+        waker.notify();
+    }
+
+    const response = completion.wait();
+    writeControlCloseResponse(conn_fd, response) catch |err| {
+        log.debug("failed to write close control response: {}", .{err});
+    };
+}
+
 pub fn parseErrorMessage(err: ParseSpawnRequestError) []const u8 {
     return switch (err) {
         error.ExpectedObject => "spawn_session arguments must be an object",
@@ -503,6 +659,68 @@ pub fn parseErrorMessage(err: ParseSpawnRequestError) []const u8 {
         error.InvalidDisplayName => "display_name must be a non-empty string when provided",
         error.UnknownField => "spawn_session contains an unsupported field",
         error.OutOfMemory => "out of memory while parsing spawn_session arguments",
+    };
+}
+
+pub const ParseCloseRequestError = error{
+    ExpectedObject,
+    MissingIdentifier,
+    InvalidSessionId,
+    InvalidSlotIndex,
+    InvalidOp,
+    UnknownField,
+};
+
+/// Parses close_session arguments. Accepts an optional `op:"close"` so the same
+/// parser handles both the MCP tool arguments and the on-wire control request.
+pub fn parseCloseRequestFromValue(value: std.json.Value) ParseCloseRequestError!CloseRequest {
+    if (value != .object) return error.ExpectedObject;
+
+    var request = CloseRequest{};
+    var have_session = false;
+    var have_slot = false;
+
+    var iter = value.object.iterator();
+    while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const field_value = entry.value_ptr.*;
+
+        if (std.mem.eql(u8, key, "session_id")) {
+            if (have_session) return error.InvalidSessionId;
+            if (field_value != .integer or field_value.integer < 0) return error.InvalidSessionId;
+            request.session_id = @intCast(field_value.integer);
+            have_session = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "slot_index")) {
+            if (have_slot) return error.InvalidSlotIndex;
+            if (field_value != .integer or field_value.integer < 0) return error.InvalidSlotIndex;
+            request.slot_index = @intCast(field_value.integer);
+            have_slot = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "op")) {
+            if (field_value != .string or !std.mem.eql(u8, field_value.string, "close")) return error.InvalidOp;
+            continue;
+        }
+
+        return error.UnknownField;
+    }
+
+    if (!have_session and !have_slot) return error.MissingIdentifier;
+    return request;
+}
+
+pub fn parseCloseErrorMessage(err: ParseCloseRequestError) []const u8 {
+    return switch (err) {
+        error.ExpectedObject => "close_session arguments must be an object",
+        error.MissingIdentifier => "session_id or slot_index is required",
+        error.InvalidSessionId => "session_id must be a non-negative integer",
+        error.InvalidSlotIndex => "slot_index must be a non-negative integer",
+        error.InvalidOp => "op must be \"close\"",
+        error.UnknownField => "close_session contains an unsupported field",
     };
 }
 
@@ -632,6 +850,14 @@ fn writeControlResponse(fd: posix.fd_t, response: SpawnResponse) !void {
     try writeAllFd(fd, payload);
 }
 
+fn writeControlCloseResponse(fd: posix.fd_t, response: CloseResponse) !void {
+    var buffer: [512]u8 = undefined;
+    var fbs = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fbs.allocator();
+    const payload = try controlCloseResponseAlloc(allocator, response);
+    try writeAllFd(fd, payload);
+}
+
 pub fn controlRequestAlloc(allocator: std.mem.Allocator, request: SpawnRequest) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -684,6 +910,56 @@ pub fn controlResponseAlloc(allocator: std.mem.Allocator, response: SpawnRespons
     return try allocator.dupe(u8, out.written());
 }
 
+pub fn controlCloseRequestAlloc(allocator: std.mem.Allocator, request: CloseRequest) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var json: std.json.Stringify = .{ .writer = &out.writer };
+
+    try json.beginObject();
+    try json.objectField("op");
+    try json.write("close");
+    if (request.session_id) |session_id| {
+        try json.objectField("session_id");
+        try json.write(session_id);
+    }
+    if (request.slot_index) |slot_index| {
+        try json.objectField("slot_index");
+        try json.write(slot_index);
+    }
+    try json.endObject();
+    try out.writer.writeByte('\n');
+
+    return try allocator.dupe(u8, out.written());
+}
+
+pub fn controlCloseResponseAlloc(allocator: std.mem.Allocator, response: CloseResponse) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var json: std.json.Stringify = .{ .writer = &out.writer };
+
+    try json.beginObject();
+    switch (response) {
+        .success => |success| {
+            try json.objectField("ok");
+            try json.write(true);
+            try json.objectField("session_id");
+            try json.write(success.session_id);
+        },
+        .failure => |failure| {
+            try json.objectField("ok");
+            try json.write(false);
+            try json.objectField("code");
+            try json.write(failure.code.jsonString());
+            try json.objectField("message");
+            try json.write(failure.message);
+        },
+    }
+    try json.endObject();
+    try out.writer.writeByte('\n');
+
+    return try allocator.dupe(u8, out.written());
+}
+
 pub fn connectAndSendSpawnRequest(
     allocator: std.mem.Allocator,
     request: SpawnRequest,
@@ -702,6 +978,26 @@ pub fn connectAndSendSpawnRequest(
     const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
     defer allocator.free(response_bytes);
     return try parseControlResponse(allocator, response_bytes);
+}
+
+pub fn connectAndSendCloseRequest(
+    allocator: std.mem.Allocator,
+    request: CloseRequest,
+) !OwnedCloseResponse {
+    var connection = connectToNewestControlSocket(allocator) catch |err| switch (err) {
+        error.NoControlDiscoveryFile => return staticCloseFailure(.app_not_running, "Architect is not running"),
+        error.NoLiveControlSocket => return staticCloseFailure(.app_not_running, "Architect is not accepting control requests"),
+        else => return err,
+    };
+    defer connection.deinit(allocator);
+
+    const payload = try controlCloseRequestAlloc(allocator, request);
+    defer allocator.free(payload);
+    try writeAllFd(connection.fd, payload);
+
+    const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
+    defer allocator.free(response_bytes);
+    return try parseControlCloseResponse(allocator, response_bytes);
 }
 
 const ControlConnection = struct {
@@ -829,6 +1125,12 @@ fn staticFailure(code: SpawnErrorCode, message: []const u8) OwnedSpawnResponse {
     };
 }
 
+fn staticCloseFailure(code: SpawnErrorCode, message: []const u8) OwnedCloseResponse {
+    return .{
+        .response = .{ .failure = .{ .code = code, .message = message } },
+    };
+}
+
 fn parseDiscoverySocketPath(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
     defer parsed.deinit();
@@ -856,6 +1158,34 @@ fn parseControlResponse(allocator: std.mem.Allocator, bytes: []const u8) !OwnedS
         return .{ .response = .{ .success = .{
             .session_id = @intCast(session_id_value.integer),
             .slot_index = @intCast(slot_index_value.integer),
+        } } };
+    }
+
+    const code_value = object.get("code") orelse return error.InvalidControlResponse;
+    const message_value = object.get("message") orelse return error.InvalidControlResponse;
+    if (code_value != .string or message_value != .string) return error.InvalidControlResponse;
+    const code = SpawnErrorCode.fromString(code_value.string) orelse return error.InvalidControlResponse;
+    const message = try allocator.dupe(u8, message_value.string);
+    return .{
+        .response = .{ .failure = .{ .code = code, .message = message } },
+        .owned_message = message,
+    };
+}
+
+fn parseControlCloseResponse(allocator: std.mem.Allocator, bytes: []const u8) !OwnedCloseResponse {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidControlResponse;
+    const object = parsed.value.object;
+    const ok_value = object.get("ok") orelse return error.InvalidControlResponse;
+    if (ok_value != .bool) return error.InvalidControlResponse;
+
+    if (ok_value.bool) {
+        const session_id_value = object.get("session_id") orelse return error.InvalidControlResponse;
+        if (session_id_value != .integer or session_id_value.integer < 0) return error.InvalidControlResponse;
+        return .{ .response = .{ .success = .{
+            .session_id = @intCast(session_id_value.integer),
         } } };
     }
 
@@ -993,4 +1323,93 @@ test "SpawnQueue drains queued requests" {
     var empty = queue.drainAll();
     defer empty.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), empty.items.len);
+}
+
+test "parseCloseRequestFromValue accepts session_id, slot_index, and op" {
+    const allocator = std.testing.allocator;
+
+    {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"session_id\":7}", .{});
+        defer parsed.deinit();
+        const request = try parseCloseRequestFromValue(parsed.value);
+        try std.testing.expectEqual(@as(?usize, 7), request.session_id);
+        try std.testing.expectEqual(@as(?usize, null), request.slot_index);
+    }
+    {
+        // Wire form carries op:"close" alongside the identifier.
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"op\":\"close\",\"slot_index\":2}", .{});
+        defer parsed.deinit();
+        const request = try parseCloseRequestFromValue(parsed.value);
+        try std.testing.expectEqual(@as(?usize, null), request.session_id);
+        try std.testing.expectEqual(@as(?usize, 2), request.slot_index);
+    }
+}
+
+test "parseCloseRequestFromValue rejects invalid shapes" {
+    const allocator = std.testing.allocator;
+
+    const cases = [_][]const u8{
+        "{}", // no identifier
+        "{\"op\":\"close\"}", // op alone is not an identifier
+        "{\"session_id\":-1}",
+        "{\"session_id\":\"3\"}",
+        "{\"slot_index\":1.5}",
+        "{\"op\":\"spawn\",\"session_id\":1}",
+        "{\"session_id\":1,\"extra\":true}",
+    };
+
+    for (cases) |case| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case, .{});
+        defer parsed.deinit();
+        if (parseCloseRequestFromValue(parsed.value)) |_| {
+            try std.testing.expect(false);
+        } else |_| {}
+    }
+}
+
+test "close control response round-trips success and failure" {
+    const allocator = std.testing.allocator;
+
+    const success_payload = try controlCloseResponseAlloc(allocator, .{ .success = .{ .session_id = 12 } });
+    defer allocator.free(success_payload);
+
+    var success = try parseControlCloseResponse(allocator, success_payload);
+    defer success.deinit(allocator);
+    switch (success.response) {
+        .success => |result| try std.testing.expectEqual(@as(usize, 12), result.session_id),
+        .failure => try std.testing.expect(false),
+    }
+
+    const failure_payload = try controlCloseResponseAlloc(allocator, .{ .failure = .{
+        .code = .not_found,
+        .message = "no session matches that id",
+    } });
+    defer allocator.free(failure_payload);
+
+    var failure = try parseControlCloseResponse(allocator, failure_payload);
+    defer failure.deinit(allocator);
+    switch (failure.response) {
+        .failure => |result| {
+            try std.testing.expectEqual(SpawnErrorCode.not_found, result.code);
+            try std.testing.expectEqualStrings("no session matches that id", result.message);
+        },
+        .success => try std.testing.expect(false),
+    }
+}
+
+test "controlCloseRequestAlloc emits op close and identifier" {
+    const allocator = std.testing.allocator;
+
+    const payload = try controlCloseRequestAlloc(allocator, .{ .session_id = 5 });
+    defer allocator.free(payload);
+
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"op\":\"close\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"session_id\":5") != null);
+
+    // Round-trips back through the parser the control thread uses.
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, payload, "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expect(isCloseRequest(parsed.value));
+    const request = try parseCloseRequestFromValue(parsed.value);
+    try std.testing.expectEqual(@as(?usize, 5), request.session_id);
 }
