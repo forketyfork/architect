@@ -98,41 +98,33 @@ fi
 # Hand the swap+relaunch to a detached process. It outlives this shell, so the
 # new Architect comes up even if quitting the old one tears down our terminal.
 echo "==> Quitting Architect (waiting for agents to shut down + flush) and relaunching..."
+old_pid="$(pgrep -x architect | head -1 || true)"
 # Variables below are for the inner shell, not this one (intentional single quotes).
 # shellcheck disable=SC2016
 nohup bash -c '
     set -e
     staging="$1"
-    # Quit gracefully and WAIT for Architect to exit on its own. This is critical
-    # for the agent-resume feature: on quit, Architect Ctrl+Cs each running
-    # agent so Claude flushes its session to disk before exiting. Force-killing
-    # here kills the agents abruptly mid-turn — their most recent turns never
-    # reach disk, so the next `claude --resume` reloads a rewound transcript.
-    # So do NOT force-kill on a short timeout; give the teardown all the time it
-    # needs (busy/looping agents can take tens of seconds). Re-send the quit
-    # periodically in case a saturated app missed the first one. Only escalate as
-    # an absolute last resort after ~5 minutes, which means the app truly hung.
+    old_pid="$2"
+    # Quit gracefully, then block until the old process exits. This matters for
+    # agent resume: on quit, Architect Ctrl+Cs each running agent so Claude
+    # flushes its session to disk before exiting. Force-killing instead kills the
+    # agents mid-turn, so the next `claude --resume` reloads a rewound transcript.
+    # caffeinate -w waits on the process-exit event (no polling, no re-sending the
+    # quit). A watchdog force-kills ONLY if the teardown truly hangs (~5 min),
+    # which loses agent state.
     osascript -e "quit app \"Architect\"" 2>/dev/null || true
-    waited=0
-    while pgrep -x architect >/dev/null 2>&1 && [ "$waited" -lt 1200 ]; do
-        sleep 0.25
-        waited=$((waited + 1))
-        if [ $((waited % 120)) -eq 0 ]; then
-            osascript -e "quit app \"Architect\"" 2>/dev/null || true
-        fi
-    done
-    if pgrep -x architect >/dev/null 2>&1; then
-        # Teardown never finished after 5 min — last resort, this loses agent state.
-        pkill -x architect 2>/dev/null || true
-        sleep 2
-        pkill -9 -x architect 2>/dev/null || true
-        sleep 1
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        ( sleep 300; kill -TERM "$old_pid" 2>/dev/null; sleep 2; kill -KILL "$old_pid" 2>/dev/null ) &
+        watchdog=$!
+        caffeinate -w "$old_pid" 2>/dev/null || true
+        kill "$watchdog" 2>/dev/null || true
+        wait "$watchdog" 2>/dev/null || true
     fi
     rm -rf "/Applications/Architect.app"
     mv "$staging/Architect.app" "/Applications/Architect.app"
     rmdir "$staging" 2>/dev/null || true
     open "/Applications/Architect.app"
-' _ "$staging" >/dev/null 2>&1 &
+' _ "$staging" "$old_pid" >/dev/null 2>&1 &
 disown
 
 # The detached job owns the staging dir now; do not let our EXIT trap delete it.
