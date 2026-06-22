@@ -97,31 +97,36 @@ fi
 
 # Hand the swap+relaunch to a detached process. It outlives this shell, so the
 # new Architect comes up even if quitting the old one tears down our terminal.
-echo "==> Quitting the running Architect and relaunching the fresh build..."
+echo "==> Quitting Architect (waiting for agents to shut down + flush) and relaunching..."
 # Variables below are for the inner shell, not this one (intentional single quotes).
 # shellcheck disable=SC2016
 nohup bash -c '
     set -e
     staging="$1"
-    # Graceful quit first so Architect saves state (terminals restore on relaunch)
-    # and tears down agents. Give it up to ~30s — a busy app can be slow here.
+    # Quit gracefully and WAIT for Architect to exit on its own. This is critical
+    # for the agent-resume feature: on quit, Architect Ctrl+Cs each running
+    # agent so Claude flushes its session to disk before exiting. Force-killing
+    # here kills the agents abruptly mid-turn — their most recent turns never
+    # reach disk, so the next `claude --resume` reloads a rewound transcript.
+    # So do NOT force-kill on a short timeout; give the teardown all the time it
+    # needs (busy/looping agents can take tens of seconds). Re-send the quit
+    # periodically in case a saturated app missed the first one. Only escalate as
+    # an absolute last resort after ~5 minutes, which means the app truly hung.
     osascript -e "quit app \"Architect\"" 2>/dev/null || true
-    tries=0
-    while pgrep -x architect >/dev/null 2>&1 && [ "$tries" -lt 150 ]; do
-        sleep 0.2
-        tries=$((tries + 1))
+    waited=0
+    while pgrep -x architect >/dev/null 2>&1 && [ "$waited" -lt 1200 ]; do
+        sleep 0.25
+        waited=$((waited + 1))
+        if [ $((waited % 120)) -eq 0 ]; then
+            osascript -e "quit app \"Architect\"" 2>/dev/null || true
+        fi
     done
-    # Escalate if it is still alive, and crucially WAIT until it is truly gone
-    # before launching — otherwise `open` just re-activates the dying instance.
     if pgrep -x architect >/dev/null 2>&1; then
+        # Teardown never finished after 5 min — last resort, this loses agent state.
         pkill -x architect 2>/dev/null || true
-        tries=0
-        while pgrep -x architect >/dev/null 2>&1 && [ "$tries" -lt 100 ]; do
-            sleep 0.2
-            tries=$((tries + 1))
-        done
+        sleep 2
         pkill -9 -x architect 2>/dev/null || true
-        sleep 0.5
+        sleep 1
     fi
     rm -rf "/Applications/Architect.app"
     mv "$staging/Architect.app" "/Applications/Architect.app"
