@@ -710,6 +710,34 @@ test "tool failure response is an MCP tool error result" {
     try std.testing.expectEqualStrings("invalid_cwd", code.string);
 }
 
+test "close not_found failure surfaces the not_found code" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var out = try tmp.dir.createFile("close-not-found.jsonl", .{ .truncate = true });
+
+    const id = std.json.Value{ .integer = 12 };
+    // not_found is the close-only error code; a missing session_id/slot_index maps here.
+    try writeToolFailure(allocator, out, id, .not_found, "no Architect session matches the requested identifier");
+    out.close();
+
+    const input = try tmp.dir.readFileAlloc(allocator, "close-not-found.jsonl", 16 * 1024);
+    defer allocator.free(input);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, input, "\n"), .{});
+    defer parsed.deinit();
+
+    const result = (parsed.value.object.get("result") orelse return error.TestUnexpectedResult).object;
+    const is_error = result.get("isError") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(is_error.bool);
+    const structured = (result.get("structuredContent") orelse return error.TestUnexpectedResult).object;
+    const status = structured.get("status") orelse return error.TestUnexpectedResult;
+    const code = structured.get("code") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("error", status.string);
+    try std.testing.expectEqualStrings("not_found", code.string);
+}
+
 test "run discards the rest of an oversized line" {
     const allocator = std.testing.allocator;
 
