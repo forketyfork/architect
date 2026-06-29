@@ -326,6 +326,10 @@ pub const Persistence = struct {
     terminal_entries: std.ArrayListUnmanaged(TerminalEntry) = .{},
     recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
     visit_counter: u32 = 0,
+    /// Focused pane index and whether it was zoomed (Full mode) at save time, so the
+    /// active/zoomed pane is restored on relaunch instead of defaulting to the first.
+    focused_session: usize = 0,
+    zoomed: bool = false,
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
@@ -334,6 +338,8 @@ pub const Persistence = struct {
         terminal_agent_types: ?[]const []const u8 = null,
         terminal_session_ids: ?[]const []const u8 = null,
         recent_folders: ?toml.HashMap(u32) = null,
+        focused_session: usize = 0,
+        zoomed: bool = false,
     };
 
     const TomlPersistenceV2 = struct {
@@ -386,6 +392,8 @@ pub const Persistence = struct {
             defer result.deinit();
             persistence.window = result.value.window;
             persistence.font_size = result.value.font_size;
+            persistence.focused_session = result.value.focused_session;
+            persistence.zoomed = result.value.zoomed;
 
             if (result.value.terminals) |paths| {
                 for (paths, 0..) |path, idx| {
@@ -477,8 +485,10 @@ pub const Persistence = struct {
     }
 
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
-        // Write font_size first (top-level scalar)
+        // Write top-level scalars first (must precede any [section] in TOML).
         try writer.print("font_size = {d}\n", .{self.font_size});
+        try writer.print("focused_session = {d}\n", .{self.focused_session});
+        try writer.print("zoomed = {}\n", .{self.zoomed});
 
         // Write terminal path and agent arrays before any sections
         if (self.terminal_entries.items.len > 0) {

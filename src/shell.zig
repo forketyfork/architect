@@ -68,7 +68,9 @@ const architect_command_script =
     \\
     \\CLAUDE_DONE = "architect notify done || true"
     \\CLAUDE_APPROVAL = "architect notify awaiting_approval || true"
+    \\CLAUDE_SESSION = "architect agent-session || true"
     \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
+    \\CLAUDE_SESSION_NEEDLES = ("architect agent-session",)
     \\
     \\GEMINI_DONE = "python3 ~/.gemini/architect_hook.py done"
     \\GEMINI_APPROVAL = "python3 ~/.gemini/architect_hook.py awaiting_approval"
@@ -95,6 +97,44 @@ const architect_command_script =
     \\        sock.close()
     \\    except Exception:
     \\        pass
+    \\
+    \\def send_agent_session(session_id: str) -> None:
+    \\    slot = os.environ.get("ARCHITECT_SESSION_ID")
+    \\    sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\    if not slot or not sock_path or not session_id:
+    \\        return
+    \\    try:
+    \\        message = json.dumps({
+    \\            "session": int(slot),
+    \\            "type": "agent_session",
+    \\            "agent": "claude",
+    \\            "session_id": session_id,
+    \\        }) + "\n"
+    \\        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    \\        sock.connect(sock_path)
+    \\        sock.sendall(message.encode())
+    \\        sock.close()
+    \\    except Exception:
+    \\        pass
+    \\
+    \\def cmd_agent_session() -> int:
+    \\    # Invoked as a Claude Code SessionStart hook. Claude pipes the hook event
+    \\    # JSON (which carries "session_id") to stdin; forward that id to Architect.
+    \\    try:
+    \\        raw = sys.stdin.read()
+    \\    except Exception:
+    \\        return 0
+    \\    if not raw.strip():
+    \\        return 0
+    \\    try:
+    \\        payload = json.loads(raw)
+    \\    except Exception:
+    \\        return 0
+    \\    if isinstance(payload, dict):
+    \\        session_id = payload.get("session_id")
+    \\        if isinstance(session_id, str) and session_id:
+    \\            send_agent_session(session_id)
+    \\    return 0
     \\
     \\def state_from_notification(raw: str) -> str | None:
     \\    raw = raw.strip()
@@ -310,6 +350,13 @@ const architect_command_script =
     \\        group["hooks"].append({"type": "command", "command": CLAUDE_APPROVAL})
     \\        changed = True
     \\
+    \\    session_groups = hooks.setdefault("SessionStart", [])
+    \\    if not hooks_have_needles(session_groups, CLAUDE_SESSION_NEEDLES):
+    \\        # Append a fresh matcher-less group so it runs on every session start
+    \\        # (startup/resume/clear/compact), independent of any existing groups.
+    \\        session_groups.append({"hooks": [{"type": "command", "command": CLAUDE_SESSION}]})
+    \\        changed = True
+    \\
     \\    return changed
     \\
     \\def ensure_gemini_hooks(data: dict) -> bool:
@@ -447,6 +494,8 @@ const architect_command_script =
     \\            return 0
     \\        notify_architect(state)
     \\        return 0
+    \\    if cmd == "agent-session":
+    \\        return cmd_agent_session()
     \\    if cmd == "hook":
     \\        if len(sys.argv) < 3:
     \\            print_usage()
@@ -607,6 +656,17 @@ const architect_zsh_rc_script =
     \\unset orig
     \\unset wrapper
     \\unset source_dir
+    \\# Architect: run the restore/resume command ONCE, after the user's rc has
+    \\# finished loading (so `claude`/PATH are ready) and stdin is the live tty.
+    \\# It is executed, never typed into the PTY, so a startup prompt (e.g. an
+    \\# oh-my-zsh update [Y/n]) cannot swallow it. Unset first so the launched
+    \\# program and any nested shells do not re-run it.
+    \\if [ -n "${ARCHITECT_RESUME_CMD:-}" ]; then
+    \\  architect__resume_cmd="$ARCHITECT_RESUME_CMD"
+    \\  unset ARCHITECT_RESUME_CMD
+    \\  eval "$architect__resume_cmd"
+    \\  unset architect__resume_cmd
+    \\fi
     \\
 ;
 
@@ -1020,8 +1080,9 @@ pub const Shell = struct {
 
     const name_session: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
     const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
+    const name_resume: [:0]const u8 = "ARCHITECT_RESUME_CMD\x00";
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
+    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8, resume_cmd: ?[]const u8) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
         ensureTerminfoSetup();
         ensureArchitectCommandSetup();
@@ -1051,6 +1112,18 @@ pub const Shell = struct {
             }
             if (libc.setenv(name_sock.ptr, notify_sock, 1) != 0) {
                 std.c._exit(1);
+            }
+            if (resume_cmd) |rc| {
+                // Null-terminate on the stack (no sentinel heap alloc) for setenv.
+                var rbuf: [512]u8 = undefined;
+                if (rc.len < rbuf.len) {
+                    @memcpy(rbuf[0..rc.len], rc);
+                    rbuf[rc.len] = 0;
+                    const rc_z = rbuf[0..rc.len :0];
+                    if (libc.setenv(name_resume.ptr, rc_z, 1) != 0) {
+                        std.c._exit(1);
+                    }
+                }
             }
 
             // Finder launches provide a nearly empty environment; seed common

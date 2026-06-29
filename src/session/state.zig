@@ -122,6 +122,11 @@ pub const SessionState = struct {
     /// True only when agent_kind/agent_session_id were captured during the current run's quit flow.
     /// Restored metadata is used for startup resume injection, but must not be re-persisted as fresh data.
     agent_metadata_captured: bool = false,
+    /// Resume command (e.g. "claude --resume <id>") injected as ARCHITECT_RESUME_CMD into the
+    /// next spawn's environment. The wrapper rc runs it ONCE after the user's shell rc finishes
+    /// loading — so it never races stdin and can't be eaten by a startup prompt. Owned; freed in
+    /// teardown. Null for normal (non-restored) panes.
+    resume_cmd: ?[]u8 = null,
     /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
     /// stale UUIDs from earlier scrollback.
     quit_capture: std.ArrayListUnmanaged(u8) = .empty,
@@ -207,6 +212,7 @@ pub const SessionState = struct {
             &self.session_id_z,
             self.notify_sock_z,
             working_dir,
+            self.resume_cmd,
         );
         errdefer {
             var s = shell;
@@ -305,6 +311,11 @@ pub const SessionState = struct {
         }
         self.agent_kind = null;
         self.agent_metadata_captured = false;
+
+        if (self.resume_cmd) |cmd| {
+            allocator.free(cmd);
+            self.resume_cmd = null;
+        }
 
         if (self.cwd_path) |path| {
             allocator.free(path);

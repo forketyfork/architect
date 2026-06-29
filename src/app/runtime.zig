@@ -221,6 +221,26 @@ fn persistedAgentSessionId(session: *const SessionState, agent_type: ?[]const u8
     return session.agent_session_id;
 }
 
+/// Build "claude --resume <id>" (etc.) from a restored entry and stash it on the session as
+/// `resume_cmd`, to be injected as ARCHITECT_RESUME_CMD at spawn time. Must be called BEFORE
+/// the session is spawned. No-op for entries without a captured agent session.
+fn setResumeCommandFromEntry(
+    session: *SessionState,
+    entry: config_mod.Persistence.TerminalEntry,
+    allocator: std.mem.Allocator,
+) void {
+    const agent_type_str = entry.agent_type orelse return;
+    const session_id = entry.agent_session_id orelse return;
+    if (session_id.len == 0) return;
+    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
+    const cmd = terminal_history.buildResumeCommand(allocator, agent_kind, session_id) catch |err| {
+        log.warn("failed to build resume command for slot {d}: {}", .{ session.slot_index, err });
+        return;
+    };
+    if (session.resume_cmd) |old| allocator.free(old);
+    session.resume_cmd = cmd;
+}
+
 fn seedSessionAgentMetadataFromEntry(
     session: *SessionState,
     entry: config_mod.Persistence.TerminalEntry,
@@ -1431,28 +1451,17 @@ pub fn run() !void {
         defer if (dir_buf) |buf| allocator.free(buf);
         if (dir_buf) |buf| {
             const dir: [:0]const u8 = buf[0..entry.path.len :0];
+
+            // Build the resume command BEFORE spawning: it is injected as
+            // ARCHITECT_RESUME_CMD into the shell env and run once by the wrapper rc
+            // after the user's rc loads — no stdin race, can't be eaten by a startup prompt.
+            setResumeCommandFromEntry(sessions[new_idx], entry, allocator);
+
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
             if (sessions[new_idx].spawned) {
                 seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
-            }
-
-            queueResumeCommand: {
-                if (!sessions[new_idx].spawned) break :queueResumeCommand;
-                const agent_type_str = entry.agent_type orelse break :queueResumeCommand;
-                const session_id = entry.agent_session_id orelse break :queueResumeCommand;
-                if (session_id.len == 0) break :queueResumeCommand;
-                const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse break :queueResumeCommand;
-                const resume_cmd = terminal_history.buildResumeCommand(allocator, agent_kind, session_id) catch |err| {
-                    log.warn("failed to build resume command for session {d}: {}", .{ new_idx, err });
-                    break :queueResumeCommand;
-                };
-                defer allocator.free(resume_cmd);
-                // Write to pending_write; PTY input queues until the shell reads it after startup.
-                sessions[new_idx].pending_write.appendSlice(allocator, resume_cmd) catch |err| {
-                    log.warn("failed to queue resume command for session {d}: {}", .{ new_idx, err });
-                };
             }
         }
     }
@@ -1475,11 +1484,21 @@ pub fn run() !void {
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
-    const initial_mode = initial_view_mode;
+    // Restore focus + zoom from persistence (2c): clamp the focused pane to the restored
+    // count, and only honor zoom when there is a pane to zoom into. The renderer computes
+    // the Full rect from the window each frame, so setting .Full directly is sufficient.
+    const restored_focus: usize = if (persistence.focused_session < initial_terminal_count)
+        persistence.focused_session
+    else
+        0;
+    const initial_mode: app_state.ViewMode = if (persistence.zoomed and initial_terminal_count >= 1)
+        .Full
+    else
+        initial_view_mode;
     var anim_state = AnimationState{
         .mode = initial_mode,
-        .focused_session = 0,
-        .previous_session = 0,
+        .focused_session = restored_focus,
+        .previous_session = restored_focus,
         .start_time = 0,
         .start_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .target_rect = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -2356,6 +2375,13 @@ pub fn run() !void {
         if (terminal_entries_changed) {
             persistence_dirty = true;
         }
+        // Persist focus + zoom so the active/zoomed pane is restored on relaunch (2c).
+        const cur_zoomed = anim_state.mode == .Full;
+        if (persistence.focused_session != anim_state.focused_session or persistence.zoomed != cur_zoomed) {
+            persistence.focused_session = anim_state.focused_session;
+            persistence.zoomed = cur_zoomed;
+            persistence_dirty = true;
+        }
         savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
 
         if (quit_teardown.isFinished()) {
@@ -2411,6 +2437,33 @@ pub fn run() !void {
                         ui.showToast("Failed to open story file", now);
                     }
                     allocator.free(s.path);
+                },
+                .agent_session => |s| {
+                    // Live session-id capture from the agent's SessionStart hook.
+                    // Free the heap strings on every exit path.
+                    defer {
+                        allocator.free(s.agent);
+                        allocator.free(s.session_id);
+                    }
+                    const session_idx = findSessionIndexById(sessions, s.session) orelse continue;
+                    const agent_kind = session_state.AgentKind.fromString(s.agent) orelse continue;
+                    const session = sessions[session_idx];
+                    // Skip if nothing changed, to avoid needless persistence churn.
+                    const unchanged = session.agent_metadata_captured and
+                        session.agent_kind == agent_kind and
+                        session.agent_session_id != null and
+                        std.mem.eql(u8, session.agent_session_id.?, s.session_id);
+                    if (unchanged) continue;
+                    const id_dupe = allocator.dupe(u8, s.session_id) catch |err| {
+                        log.warn("failed to store agent session id for slot {d}: {}", .{ session_idx, err });
+                        continue;
+                    };
+                    if (session.agent_session_id) |old| allocator.free(old);
+                    session.agent_kind = agent_kind;
+                    session.agent_session_id = id_dupe;
+                    session.agent_metadata_captured = true;
+                    persistence_dirty = true;
+                    log.info("captured agent session: slot {d} {s} {s}", .{ session_idx, s.agent, s.session_id });
                 },
             }
         }
@@ -3086,26 +3139,25 @@ pub fn run() !void {
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
                 const session = sessions[task.session_idx];
                 session.stopQuitCapture();
-                if (session.agent_session_id) |sid| {
-                    allocator.free(sid);
-                    session.agent_session_id = null;
-                }
-                session.agent_kind = null;
-                session.agent_metadata_captured = false;
                 const text = session.quitCaptureBytes();
                 log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
                 if (terminal_history.extractLastUuid(text)) |uuid| {
-                    log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
-                    session.agent_kind = task.agent_kind;
-                    session.agent_session_id = allocator.dupe(u8, uuid) catch |err| blk: {
-                        log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
-                        break :blk null;
-                    };
-                    if (session.agent_session_id != null) {
+                    // Scrape succeeded: overwrite with the freshest id from the farewell banner.
+                    // Dup first so a failed alloc keeps the existing (hook-captured) id intact.
+                    if (allocator.dupe(u8, uuid)) |new_id| {
+                        if (session.agent_session_id) |sid| allocator.free(sid);
+                        session.agent_session_id = new_id;
+                        session.agent_kind = task.agent_kind;
                         session.agent_metadata_captured = true;
+                        log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
+                    } else |err| {
+                        log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
                     }
                 } else {
-                    log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ task.session_idx, task.agent_kind.name() });
+                    // Scrape failed: KEEP whatever the SessionStart hook captured this run instead
+                    // of wiping it. The live hook is the reliable source of the resume id; the quit
+                    // scrape is only a best-effort fallback for agents without the hook.
+                    log.warn("quit teardown: session {d} agent {s} exited; no id in farewell output, keeping live-captured id (captured={})", .{ task.session_idx, task.agent_kind.name(), session.agent_metadata_captured });
                 }
             }
         }

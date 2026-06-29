@@ -8,6 +8,7 @@ const log = std.log.scoped(.notify);
 pub const Notification = union(enum) {
     status: StatusNotification,
     story: StoryNotification,
+    agent_session: AgentSessionNotification,
 };
 
 pub const StatusNotification = struct {
@@ -19,6 +20,17 @@ pub const StoryNotification = struct {
     session: usize,
     /// Heap-allocated path; caller must free after processing.
     path: []const u8,
+};
+
+/// Reports the live agent (e.g. Claude Code) session id for a pane, sent by the
+/// agent's SessionStart hook. Lets Architect capture the resume id reliably the
+/// moment a session starts — instead of scraping it during quit teardown.
+pub const AgentSessionNotification = struct {
+    session: usize,
+    /// Heap-allocated agent name (e.g. "claude"); caller must free.
+    agent: []const u8,
+    /// Heap-allocated session id (UUID); caller must free.
+    session_id: []const u8,
 };
 
 pub const NotificationQueue = struct {
@@ -75,12 +87,17 @@ fn notificationSessionId(note: Notification) usize {
     return switch (note) {
         .status => |s| s.session,
         .story => |s| s.session,
+        .agent_session => |s| s.session,
     };
 }
 
 fn releaseNotification(allocator: std.mem.Allocator, note: Notification) void {
     switch (note) {
         .story => |s| allocator.free(s.path),
+        .agent_session => |s| {
+            allocator.free(s.agent);
+            allocator.free(s.session_id);
+        },
         .status => {},
     }
 }
@@ -148,6 +165,27 @@ pub fn startNotifyThread(
                     return Notification{ .story = .{
                         .session = session_idx,
                         .path = path_dupe,
+                    } };
+                }
+                if (tv == .string and std.mem.eql(u8, tv.string, "agent_session")) {
+                    const agent_val = obj.get("agent") orelse return null;
+                    const session_id_val = obj.get("session_id") orelse return null;
+                    if (agent_val != .string or session_id_val != .string) return null;
+                    if (session_id_val.string.len == 0) return null;
+                    // Allocate with persistent allocator so they survive arena cleanup.
+                    const agent_dupe = persistent_alloc.dupe(u8, agent_val.string) catch |err| {
+                        log.err("failed to duplicate agent name for session {d}: {}", .{ session_idx, err });
+                        return null;
+                    };
+                    const session_id_dupe = persistent_alloc.dupe(u8, session_id_val.string) catch |err| {
+                        log.err("failed to duplicate agent session id for session {d}: {}", .{ session_idx, err });
+                        persistent_alloc.free(agent_dupe);
+                        return null;
+                    };
+                    return Notification{ .agent_session = .{
+                        .session = session_idx,
+                        .agent = agent_dupe,
+                        .session_id = session_id_dupe,
                     } };
                 }
             }

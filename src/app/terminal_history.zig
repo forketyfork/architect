@@ -153,13 +153,15 @@ fn matchUuidAt(text: []const u8, start: usize) ?[]const u8 {
     return text[start..pos];
 }
 
-/// Builds the shell command to resume an agent session, including a trailing newline.
-/// Caller owns the returned slice and must free it.
+/// Builds the shell command to resume an agent session (no trailing newline). It is injected
+/// as ARCHITECT_RESUME_CMD and `eval`'d by the wrapper rc after the user's shell rc loads —
+/// not typed into the PTY — so it can't be eaten by a startup prompt. Caller owns the
+/// returned slice and must free it.
 pub fn buildResumeCommand(allocator: std.mem.Allocator, agent_kind: AgentKind, session_id: []const u8) ![]u8 {
     return switch (agent_kind) {
-        .claude => std.fmt.allocPrint(allocator, "claude --resume {s}\n", .{session_id}),
-        .codex => std.fmt.allocPrint(allocator, "codex resume {s}\n", .{session_id}),
-        .gemini => std.fmt.allocPrint(allocator, "gemini --resume {s}\n", .{session_id}),
+        .claude => std.fmt.allocPrint(allocator, "claude --resume {s}", .{session_id}),
+        .codex => std.fmt.allocPrint(allocator, "codex resume {s}", .{session_id}),
+        .gemini => std.fmt.allocPrint(allocator, "gemini --resume {s}", .{session_id}),
     };
 }
 
