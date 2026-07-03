@@ -897,8 +897,9 @@ test "parseSpawnRequestFromValue rejects invalid shapes" {
     for (cases) |case| {
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case, .{});
         defer parsed.deinit();
-        if (parseSpawnRequestFromValue(allocator, parsed.value)) |*request| {
-            request.deinit(allocator);
+        if (parseSpawnRequestFromValue(allocator, parsed.value)) |request| {
+            var owned = request;
+            owned.deinit(allocator);
             try std.testing.expect(false);
         } else |_| {}
     }
@@ -960,7 +961,9 @@ test "fallback control runtime directory does not use TMPDIR" {
     const path = try fallbackControlRuntimeDirAlloc(allocator);
     defer allocator.free(path);
 
-    try std.testing.expect(std.mem.indexOf(u8, path, "architect") != null);
+    // The macOS fallback is ~/Library/Caches/Architect/runtime (capitalized),
+    // the Linux one ~/.cache/architect/runtime, so match case-insensitively.
+    try std.testing.expect(std.ascii.indexOfIgnoreCase(path, "architect") != null);
     try std.testing.expect(std.mem.indexOf(u8, path, "nix-shell.") == null);
 }
 
