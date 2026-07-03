@@ -104,7 +104,10 @@ fn trimUrlEnd(url: []const u8) []const u8 {
                 end -= 1;
             },
             ')' => {
-                if (!hasUnmatchedOpenParen(url[0..end])) {
+                // Balance is checked against the text before this closing
+                // paren: an unmatched '(' earlier in the URL means this ')'
+                // closes it and belongs to the URL (e.g. Wikipedia paths).
+                if (!hasUnmatchedOpenParen(url[0 .. end - 1])) {
                     end -= 1;
                 } else {
                     break;

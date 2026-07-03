@@ -1163,7 +1163,7 @@ test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
 test "Persistence save/load round-trip preserves all fields" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");

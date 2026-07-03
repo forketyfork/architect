@@ -418,6 +418,19 @@ fn renderSessionContent(
 
     const active_selection = screen.selection;
 
+    // Resolve the pin for the first visible row once, then step it down a
+    // row at a time. A fresh `pages.pin(...)` call walks from the top-left
+    // anchor every time it's invoked (O(rows) per call), so calling it once
+    // per cell made a full repaint quadratic in the row count. `Pin.down(1)`
+    // advances to the next row (crossing page-node boundaries as needed) in
+    // amortized O(1), and a `Pin` copy with an updated `.x` is free, so it
+    // replaces the extra per-cell `pages.pin(...)` calls used for selection
+    // and hovered-link highlighting below.
+    var row_pin = pages.pin(if (view.is_viewing_scrollback)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = 0 } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = @intCast(active_row_offset) } });
+
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
         const eff_cw = cell_width_actual;
@@ -438,15 +451,16 @@ fn renderSessionContent(
         var underline_count: usize = 0;
         var underline_segments: [256]struct { x_start: f32, x_end: f32, y_pos: f32, color: c.SDL_Color } = undefined;
 
+        const current_row_pin = row_pin orelse continue;
+        row_pin = current_row_pin.down(1);
+        const row_cells = current_row_pin.node.data.getCells(current_row_pin.rowAndCell().row);
+
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
             const source_row = row + active_row_offset;
-            const list_cell = pages.getCell(if (view.is_viewing_scrollback)
-                .{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-            else
-                .{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } }) orelse continue;
-
-            const cell = list_cell.cell;
+            const cell = &row_cells[col];
+            var cell_pin = current_row_pin;
+            cell_pin.x = @intCast(col);
             const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint else 0;
             const glyph_width_cells: c_int = switch (cell.wide) {
                 .wide => 2,
@@ -461,9 +475,9 @@ fn renderSessionContent(
 
             const on_cursor = should_render_cursor and cursor_col == col and cursor_row == source_row;
 
-            const style = list_cell.style();
+            const style = current_row_pin.style(cell);
             var fg_color = getCellColor(style.fg_color, session_fg_color, &terminal.colors.palette.current);
-            var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
+            var bg_color = if (style.bg(cell, &terminal.colors.palette.current)) |rgb|
                 c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
             else
                 session_bg_color;
@@ -496,35 +510,24 @@ fn renderSessionContent(
             }
 
             if (active_selection) |sel| {
-                const point_tag = if (view.is_viewing_scrollback)
-                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                if (pages.pin(point_tag)) |pin| {
-                    if (sel.contains(screen, pin)) {
-                        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
-                        const sel_rect = c.SDL_FRect{
-                            .x = @floatFromInt(x),
-                            .y = @floatFromInt(y),
-                            .w = @floatFromInt(eff_cw * glyph_width_cells),
-                            .h = @floatFromInt(eff_ch),
-                        };
-                        _ = c.SDL_RenderFillRect(renderer, &sel_rect);
-                    }
+                if (sel.contains(screen, cell_pin)) {
+                    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                    _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
+                    const sel_rect = c.SDL_FRect{
+                        .x = @floatFromInt(x),
+                        .y = @floatFromInt(y),
+                        .w = @floatFromInt(eff_cw * glyph_width_cells),
+                        .h = @floatFromInt(eff_ch),
+                    };
+                    _ = c.SDL_RenderFillRect(renderer, &sel_rect);
                 }
             }
 
             const has_hover_underline = blk: {
                 const link_start = view.hovered_link_start orelse break :blk false;
                 const link_end = view.hovered_link_end orelse break :blk false;
-                const point_for_link = if (view.is_viewing_scrollback)
-                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                const link_pin = pages.pin(point_for_link) orelse break :blk false;
                 const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
-                break :blk link_sel.contains(screen, link_pin);
+                break :blk link_sel.contains(screen, cell_pin);
             };
 
             if ((style.flags.underline != .none or has_hover_underline) and underline_count < underline_segments.len) {
@@ -566,7 +569,7 @@ fn renderSessionContent(
                 cluster_len += 1;
 
                 if (cell.hasGrapheme()) {
-                    if (list_cell.node.data.lookupGrapheme(list_cell.cell)) |extra| {
+                    if (current_row_pin.node.data.lookupGrapheme(cell)) |extra| {
                         for (extra) |gcp| {
                             if (cluster_len >= cluster_buf.len) break;
                             cluster_buf[cluster_len] = gcp;
@@ -1180,6 +1183,50 @@ test "getCellColor uses the live terminal palette for indexed colors" {
     try std.testing.expectEqual(@as(u8, 0x34), color.g);
     try std.testing.expectEqual(@as(u8, 0x56), color.b);
     try std.testing.expectEqual(@as(u8, 255), color.a);
+}
+
+test "row pin stepping matches per-cell getCell for content, wide flag, and style" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 4,
+        .max_scrollback = 0,
+    });
+    defer terminal.deinit(allocator);
+
+    try terminal.printString("Hi\n\xe4\xbd\xa0\xe5\xa5\xbd\nABCDEFGHIJ\nZ");
+
+    const pages = terminal.screens.active.pages;
+
+    var row_pin = pages.pin(.{ .active = .{ .x = 0, .y = 0 } }) orelse return error.TestUnexpectedResult;
+
+    var row: usize = 0;
+    while (row < @as(usize, terminal.rows)) : (row += 1) {
+        const row_rac = row_pin.rowAndCell();
+        const row_cells = row_pin.node.data.getCells(row_rac.row);
+
+        var col: usize = 0;
+        while (col < @as(usize, terminal.cols)) : (col += 1) {
+            const walked_cell = &row_cells[col];
+            const reference = pages.getCell(.{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse
+                return error.TestUnexpectedResult;
+
+            try std.testing.expectEqual(reference.cell.content_tag, walked_cell.content_tag);
+            try std.testing.expectEqual(reference.cell.wide, walked_cell.wide);
+            if (reference.cell.content_tag == .codepoint or reference.cell.content_tag == .codepoint_grapheme) {
+                try std.testing.expectEqual(reference.cell.content.codepoint, walked_cell.content.codepoint);
+            }
+
+            const reference_style = reference.style();
+            const walked_style = row_pin.style(walked_cell);
+            try std.testing.expectEqual(reference_style.flags, walked_style.flags);
+        }
+
+        if (row + 1 < @as(usize, terminal.rows)) {
+            row_pin = row_pin.down(1) orelse return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "cache refresh predicate stays clean for an unchanged content-only texture" {

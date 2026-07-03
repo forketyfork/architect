@@ -34,7 +34,6 @@ pub const Faces = struct {
 
 const GlyphKey = struct {
     hash: u64,
-    color: u32,
     fallback: Fallback,
     variant: Variant,
     // Cluster length in codepoints. Using u16 provides generous headroom
@@ -43,6 +42,19 @@ const GlyphKey = struct {
 };
 
 const white: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+
+/// Bitmask of which font faces contain a given codepoint's glyph, memoized
+/// per codepoint in `Font.face_mask_cache` so repeated lookups (which happen
+/// every frame for every visible cell) skip the `TTF_FontHasGlyph` FFI call.
+const FaceMask = struct {
+    const primary: u8 = 1 << 0;
+    const bold: u8 = 1 << 1;
+    const italic: u8 = 1 << 2;
+    const bold_italic: u8 = 1 << 3;
+    const symbol_embedded: u8 = 1 << 4;
+    const symbol: u8 = 1 << 5;
+    const symbol_secondary: u8 = 1 << 6;
+};
 
 const FontMetrics = struct {
     ascent: f32,
@@ -74,6 +86,7 @@ pub const Font = struct {
     symbol_secondary_metrics: ?FontMetrics,
     renderer: *c.SDL_Renderer,
     glyph_cache: std.AutoHashMap(GlyphKey, CacheEntry),
+    face_mask_cache: std.AutoHashMap(u21, u8),
     cache_tick: u64 = 0,
     allocator: std.mem.Allocator,
     cell_width: c_int,
@@ -83,6 +96,19 @@ pub const Font = struct {
 
     /// Limit cached glyph textures to avoid unbounded GPU/heap growth.
     const max_glyph_cache_entries: usize = 4096;
+
+    /// Number of entries evicted in one batch once the glyph cache is full.
+    /// Selecting a whole batch per O(n) hashmap pass (see
+    /// `selectEvictionVictims`) amortizes eviction cost across many inserts
+    /// instead of paying a full scan on every single insert.
+    const eviction_batch_size: usize = 256;
+
+    /// Bound on the per-codepoint face mask memo. The memo is keyed by
+    /// codepoint, so its size is bounded by the distinct codepoints actually
+    /// seen rather than by rendered text volume. 64k comfortably covers real
+    /// terminal usage (BMP plus common emoji); if ever exceeded, the memo is
+    /// cleared and rebuilt lazily rather than growing unbounded.
+    const max_face_mask_entries: usize = 65536;
 
     /// Maximum byte length for a single glyph string to prevent abuse from
     /// malicious or malformed terminal output. 256 bytes allows for reasonable
@@ -289,6 +315,7 @@ pub const Font = struct {
             .symbol_secondary_metrics = if (symbol_fallback_secondary) |f| fontMetrics(f) else null,
             .renderer = renderer,
             .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
+            .face_mask_cache = std.AutoHashMap(u21, u8).init(allocator),
             .allocator = allocator,
             .cell_width = cell_width,
             .cell_height = cell_height,
@@ -302,6 +329,7 @@ pub const Font = struct {
             c.SDL_DestroyTexture(entry.texture);
         }
         self.glyph_cache.deinit();
+        self.face_mask_cache.deinit();
         if (self.owns_fonts) {
             c.TTF_CloseFont(self.font);
             if (self.bold_font) |f| c.TTF_CloseFont(f);
@@ -345,6 +373,7 @@ pub const Font = struct {
             .symbol_secondary_metrics = if (faces.symbol_secondary) |f| fontMetrics(f) else null,
             .renderer = renderer,
             .glyph_cache = std.AutoHashMap(GlyphKey, CacheEntry).init(allocator),
+            .face_mask_cache = std.AutoHashMap(u21, u8).init(allocator),
             .allocator = allocator,
             .cell_width = cell_width,
             .cell_height = cell_height,
@@ -423,10 +452,11 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(cluster);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
+        applyColorMod(texture, fallback_choice, fg_color);
 
         var tex_w: f32 = 0;
         var tex_h: f32 = 0;
@@ -540,10 +570,11 @@ pub const Font = struct {
         }
 
         const fallback_choice = self.classifyFallback(cluster);
-        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fg_color, fallback_choice, effective_variant) catch |err| {
+        const texture = self.getGlyphTexture(utf8_slice[0..utf8_len], fallback_choice, effective_variant) catch |err| {
             if (err == error.GlyphRenderFailed) return;
             return err;
         };
+        applyColorMod(texture, fallback_choice, fg_color);
 
         var tex_w: f32 = 0;
         var tex_h: f32 = 0;
@@ -562,69 +593,112 @@ pub const Font = struct {
     }
 
     pub fn classifyFallback(self: *Font, codepoints: []const u21) Fallback {
-        const has_all = blk: {
-            for (codepoints) |cp| {
-                if (!c.TTF_FontHasGlyph(self.font, @intCast(cp))) {
-                    break :blk false;
-                }
+        var mask_buf: [max_cluster_size]u8 = undefined;
+        const n = @min(codepoints.len, max_cluster_size);
+        for (codepoints[0..n], 0..) |cp, i| {
+            mask_buf[i] = self.faceMask(cp);
+        }
+
+        var has_emoji_range = false;
+        for (codepoints) |cp| {
+            if (cp >= 0x1F000) {
+                has_emoji_range = true;
+                break;
             }
-            break :blk true;
-        };
-        if (has_all) return .primary;
-
-        const has_emoji = blk: {
-            for (codepoints) |cp| {
-                if (cp >= 0x1F000) break :blk true;
-            }
-            break :blk false;
-        };
-
-        if (has_emoji and self.emoji_fallback != null) {
-            return .emoji;
         }
 
-        if (self.symbol_fallback_embedded) |fallback_font| {
-            const has_in_symbol = blk: {
-                for (codepoints) |cp| {
-                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
-                        break :blk false;
-                    }
-                }
-                break :blk true;
-            };
-            if (has_in_symbol) return .symbol_embedded;
+        return classifyFromMasks(
+            mask_buf[0..n],
+            has_emoji_range,
+            self.symbol_fallback_embedded != null,
+            self.symbol_fallback != null,
+            self.symbol_fallback_secondary != null,
+            self.emoji_fallback != null,
+        );
+    }
+
+    /// Pure decision logic shared by `classifyFallback`: given the per-codepoint
+    /// face masks for a cluster and which fallback fonts are configured, picks
+    /// the fallback tier. Kept free of FFI/self so it can be unit tested directly.
+    fn classifyFromMasks(
+        masks: []const u8,
+        has_emoji_range: bool,
+        has_symbol_embedded_font: bool,
+        has_symbol_font: bool,
+        has_symbol_secondary_font: bool,
+        has_emoji_font: bool,
+    ) Fallback {
+        var all_primary = true;
+        var all_symbol_embedded = true;
+        var all_symbol = true;
+        var all_symbol_secondary = true;
+        for (masks) |mask| {
+            if (mask & FaceMask.primary == 0) all_primary = false;
+            if (mask & FaceMask.symbol_embedded == 0) all_symbol_embedded = false;
+            if (mask & FaceMask.symbol == 0) all_symbol = false;
+            if (mask & FaceMask.symbol_secondary == 0) all_symbol_secondary = false;
         }
 
-        if (self.symbol_fallback) |fallback_font| {
-            const has_in_symbol = blk: {
-                for (codepoints) |cp| {
-                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
-                        break :blk false;
-                    }
-                }
-                break :blk true;
-            };
-            if (has_in_symbol) return .symbol;
-        }
-
-        if (self.symbol_fallback_secondary) |fallback_font| {
-            const has_in_symbol = blk: {
-                for (codepoints) |cp| {
-                    if (!c.TTF_FontHasGlyph(fallback_font, @intCast(cp))) {
-                        break :blk false;
-                    }
-                }
-                break :blk true;
-            };
-            if (has_in_symbol) return .symbol_secondary;
-        }
-
-        if (self.emoji_fallback != null) return .emoji;
-
+        if (all_primary) return .primary;
+        if (has_emoji_range and has_emoji_font) return .emoji;
+        if (has_symbol_embedded_font and all_symbol_embedded) return .symbol_embedded;
+        if (has_symbol_font and all_symbol) return .symbol;
+        if (has_symbol_secondary_font and all_symbol_secondary) return .symbol_secondary;
+        if (has_emoji_font) return .emoji;
         return .primary;
     }
 
-    fn getGlyphTexture(self: *Font, utf8: []const u8, fg_color: c.SDL_Color, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
+    /// Returns the bitmask of faces containing `cp`'s glyph, consulting and
+    /// filling `face_mask_cache` so the `TTF_FontHasGlyph` FFI calls happen at
+    /// most once per codepoint per `Font` instance instead of once per cell
+    /// per frame.
+    fn faceMask(self: *Font, cp: u21) u8 {
+        if (self.face_mask_cache.get(cp)) |cached| return cached;
+
+        var mask: u8 = 0;
+        if (c.TTF_FontHasGlyph(self.font, @intCast(cp))) mask |= FaceMask.primary;
+        if (self.bold_font) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.bold;
+        }
+        if (self.italic_font) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.italic;
+        }
+        if (self.bold_italic_font) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.bold_italic;
+        }
+        if (self.symbol_fallback_embedded) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.symbol_embedded;
+        }
+        if (self.symbol_fallback) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.symbol;
+        }
+        if (self.symbol_fallback_secondary) |f| {
+            if (c.TTF_FontHasGlyph(f, @intCast(cp))) mask |= FaceMask.symbol_secondary;
+        }
+
+        if (self.face_mask_cache.count() >= max_face_mask_entries) {
+            self.face_mask_cache.clearRetainingCapacity();
+        }
+        self.face_mask_cache.put(cp, mask) catch |err| {
+            log.warn("failed to cache glyph face mask for U+{X}: {}", .{ cp, err });
+        };
+        return mask;
+    }
+
+    /// Sets the texture color modulation used to tint the shared white glyph
+    /// texture at draw time. Non-emoji glyphs are rasterized in white once and
+    /// tinted per draw via color mod; emoji glyphs are already full-color, so
+    /// their mod is explicitly reset to white to avoid inheriting a stale tint
+    /// left on the texture object from a prior draw.
+    fn applyColorMod(texture: *c.SDL_Texture, fallback: Fallback, fg_color: c.SDL_Color) void {
+        if (fallback == .emoji) {
+            _ = c.SDL_SetTextureColorMod(texture, white.r, white.g, white.b);
+        } else {
+            _ = c.SDL_SetTextureColorMod(texture, fg_color.r, fg_color.g, fg_color.b);
+        }
+    }
+
+    fn getGlyphTexture(self: *Font, utf8: []const u8, fallback: Fallback, variant: Variant) RenderGlyphError!*c.SDL_Texture {
         if (utf8.len > max_glyph_byte_length) {
             log.warn("Refusing to render excessively long glyph string: {d} bytes", .{utf8.len});
             return error.GlyphRenderFailed;
@@ -632,7 +706,6 @@ pub const Font = struct {
 
         const key = GlyphKey{
             .hash = std.hash.Wyhash.hash(0, utf8),
-            .color = packColor(if (fallback == .emoji) white else fg_color),
             .fallback = fallback,
             .variant = variant,
             .len = @intCast(utf8.len),
@@ -651,9 +724,11 @@ pub const Font = struct {
             .symbol_secondary => self.symbol_fallback_secondary orelse self.symbol_fallback orelse self.font,
             .emoji => self.emoji_fallback orelse self.font,
         };
-        const render_color = if (fallback == .emoji) white else fg_color;
 
-        const surface = c.TTF_RenderText_Blended(render_font, @ptrCast(utf8.ptr), @intCast(utf8.len), render_color) orelse {
+        // Every glyph texture is rasterized in white regardless of fallback tier
+        // (the cache key no longer includes color) so the same texture can be
+        // reused across differently-colored draws via SDL_SetTextureColorMod.
+        const surface = c.TTF_RenderText_Blended(render_font, @ptrCast(utf8.ptr), @intCast(utf8.len), white) orelse {
             log.debug("TTF_RenderText_Blended failed: {s}", .{c.SDL_GetError()});
             return error.GlyphRenderFailed;
         };
@@ -689,37 +764,74 @@ pub const Font = struct {
         return self.cache_tick;
     }
 
+    const KeySeq = struct {
+        key: GlyphKey,
+        seq: u64,
+    };
+
+    // Batch eviction: once the cache exceeds its limit, evict a whole batch of
+    // the oldest entries in a single O(n log batch_size) pass rather than
+    // rescanning all n entries on every single insert. Key selection
+    // (`selectEvictionVictims`) is a pure function over seq numbers so it can
+    // be unit tested without touching SDL textures; only this function
+    // performs the actual (SDL-destroying) removal.
     fn evictIfNeeded(self: *Font) void {
         if (self.glyph_cache.count() <= max_glyph_cache_entries) return;
 
-        if (findOldestKey(&self.glyph_cache)) |victim| {
-            if (self.glyph_cache.fetchRemove(victim)) |removed| {
+        var victim_buf: [eviction_batch_size]KeySeq = undefined;
+        const victims = selectEvictionVictims(&self.glyph_cache, &victim_buf);
+        for (victims) |victim| {
+            if (self.glyph_cache.fetchRemove(victim.key)) |removed| {
                 c.SDL_DestroyTexture(removed.value.texture);
                 if (self.metrics) |m| m.increment(.glyph_cache_evictions);
             }
         }
     }
 
-    // O(n) linear scan to find the oldest entry. A proper LRU list would give O(1) eviction,
-    // but in practice the 4096-entry cache is large enough that evictions are rare during
-    // normal terminal usage—even with diverse Unicode, emoji, and multiple font sizes.
-    // The simplicity of a flat hashmap outweighs the cost of occasional linear scans.
-    fn findOldestKey(map: *std.AutoHashMap(GlyphKey, CacheEntry)) ?GlyphKey {
+    /// Selects up to `buf.len` entries with the lowest `seq` (i.e. the oldest)
+    /// in one O(n log buf.len) pass over the map, using `buf` as a bounded
+    /// max-heap: the root always holds the largest seq among the current
+    /// candidates, so a full heap can reject or evict its root in O(log
+    /// buf.len) as better (older) candidates are found.
+    fn selectEvictionVictims(map: *std.AutoHashMap(GlyphKey, CacheEntry), buf: []KeySeq) []KeySeq {
+        var filled: usize = 0;
         var it = map.iterator();
-        var oldest_key: ?GlyphKey = null;
-        var oldest_seq: u64 = std.math.maxInt(u64);
         while (it.next()) |entry| {
             const seq = entry.value_ptr.seq;
-            if (oldest_key == null or seq < oldest_seq) {
-                oldest_key = entry.key_ptr.*;
-                oldest_seq = seq;
+            if (filled < buf.len) {
+                buf[filled] = .{ .key = entry.key_ptr.*, .seq = seq };
+                heapSiftUp(buf[0 .. filled + 1], filled);
+                filled += 1;
+            } else if (seq < buf[0].seq) {
+                buf[0] = .{ .key = entry.key_ptr.*, .seq = seq };
+                heapSiftDown(buf[0..filled], 0);
             }
         }
-        return oldest_key;
+        return buf[0..filled];
     }
 
-    fn packColor(color: c.SDL_Color) u32 {
-        return (@as(u32, color.r)) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16) | (@as(u32, color.a) << 24);
+    fn heapSiftUp(heap: []KeySeq, start: usize) void {
+        var i = start;
+        while (i > 0) {
+            const parent = (i - 1) / 2;
+            if (heap[parent].seq >= heap[i].seq) break;
+            std.mem.swap(KeySeq, &heap[i], &heap[parent]);
+            i = parent;
+        }
+    }
+
+    fn heapSiftDown(heap: []KeySeq, start: usize) void {
+        var i = start;
+        while (true) {
+            const left = 2 * i + 1;
+            const right = 2 * i + 2;
+            var largest = i;
+            if (left < heap.len and heap[left].seq > heap[largest].seq) largest = left;
+            if (right < heap.len and heap[right].seq > heap[largest].seq) largest = right;
+            if (largest == i) break;
+            std.mem.swap(KeySeq, &heap[i], &heap[largest]);
+            i = largest;
+        }
     }
 
     fn variantFont(self: *Font, variant: Variant) *c.TTF_Font {
@@ -738,31 +850,109 @@ pub const Font = struct {
     }
 
     fn variantHasGlyphs(self: *Font, variant: Variant, codepoints: []const u21) bool {
-        const font_ptr = switch (variant) {
+        // Bit is only ever set by `faceMask` when the corresponding font
+        // pointer is non-null, so a missing font naturally yields `false`
+        // here without a separate null check.
+        const bit: u8 = switch (variant) {
             .regular => return true,
-            .bold => self.bold_font,
-            .italic => self.italic_font,
-            .bold_italic => self.bold_italic_font,
-        } orelse return false;
+            .bold => FaceMask.bold,
+            .italic => FaceMask.italic,
+            .bold_italic => FaceMask.bold_italic,
+        };
         for (codepoints) |cp| {
-            if (!c.TTF_FontHasGlyph(font_ptr, @intCast(cp))) {
-                return false;
-            }
+            if (self.faceMask(cp) & bit == 0) return false;
         }
         return true;
     }
 };
 
-test "findOldestKey picks lowest seq" {
+test "selectEvictionVictims picks the lowest seq when under batch size" {
     const allocator = std.testing.allocator;
     var map = std.AutoHashMap(GlyphKey, Font.CacheEntry).init(allocator);
     defer map.deinit();
 
-    const k1 = GlyphKey{ .hash = 1, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
-    const k2 = GlyphKey{ .hash = 2, .color = 0, .fallback = .primary, .variant = .regular, .len = 1 };
+    const k1 = GlyphKey{ .hash = 1, .fallback = .primary, .variant = .regular, .len = 1 };
+    const k2 = GlyphKey{ .hash = 2, .fallback = .primary, .variant = .regular, .len = 1 };
+    // Textures are left undefined because selection never reads them: it only
+    // inspects `seq`. Only `evictIfNeeded` touches (and destroys) textures.
     try map.put(k1, .{ .texture = undefined, .seq = 10 });
     try map.put(k2, .{ .texture = undefined, .seq = 5 });
 
-    const oldest = Font.findOldestKey(&map) orelse return error.TestExpectedResult;
-    try std.testing.expect(std.meta.eql(oldest, k2));
+    var buf: [4]Font.KeySeq = undefined;
+    const victims = Font.selectEvictionVictims(&map, &buf);
+
+    try std.testing.expectEqual(@as(usize, 2), victims.len);
+    var saw_k2_first = false;
+    for (victims) |v| {
+        if (std.meta.eql(v.key, k2)) saw_k2_first = true;
+    }
+    try std.testing.expect(saw_k2_first);
+}
+
+test "selectEvictionVictims returns exactly the batch-size oldest entries" {
+    const allocator = std.testing.allocator;
+    var map = std.AutoHashMap(GlyphKey, Font.CacheEntry).init(allocator);
+    defer map.deinit();
+
+    // Seeded, shuffled-looking sequence so the heap has to evict its root
+    // (i.e. discard newer candidates) multiple times during the scan.
+    const seqs = [_]u64{ 50, 10, 90, 5, 70, 1, 60, 30, 2, 80, 20, 3 };
+    for (seqs, 0..) |seq, i| {
+        const key = GlyphKey{ .hash = @intCast(i), .fallback = .primary, .variant = .regular, .len = 1 };
+        try map.put(key, .{ .texture = undefined, .seq = seq });
+    }
+
+    const batch_size = 4;
+    var buf: [batch_size]Font.KeySeq = undefined;
+    const victims = Font.selectEvictionVictims(&map, &buf);
+    try std.testing.expectEqual(@as(usize, batch_size), victims.len);
+
+    var got: [batch_size]u64 = undefined;
+    for (victims, 0..) |v, i| got[i] = v.seq;
+    std.mem.sort(u64, &got, {}, std.sort.asc(u64));
+    try std.testing.expectEqualSlices(u64, &[_]u64{ 1, 2, 3, 5 }, &got);
+}
+
+test "classifyFromMasks prefers primary when all codepoints resolve there" {
+    const masks = [_]u8{ FaceMask.primary, FaceMask.primary | FaceMask.symbol };
+    const choice = Font.classifyFromMasks(&masks, false, true, true, true, true);
+    try std.testing.expectEqual(Fallback.primary, choice);
+}
+
+test "classifyFromMasks falls back to emoji for emoji-range codepoints" {
+    const masks = [_]u8{FaceMask.symbol_secondary};
+    const choice = Font.classifyFromMasks(&masks, true, true, true, true, true);
+    try std.testing.expectEqual(Fallback.emoji, choice);
+}
+
+test "classifyFromMasks walks symbol tiers in order" {
+    const embedded_masks = [_]u8{FaceMask.symbol_embedded};
+    try std.testing.expectEqual(
+        Fallback.symbol_embedded,
+        Font.classifyFromMasks(&embedded_masks, false, true, true, true, true),
+    );
+
+    const symbol_masks = [_]u8{FaceMask.symbol};
+    try std.testing.expectEqual(
+        Fallback.symbol,
+        Font.classifyFromMasks(&symbol_masks, false, false, true, true, true),
+    );
+
+    const secondary_masks = [_]u8{FaceMask.symbol_secondary};
+    try std.testing.expectEqual(
+        Fallback.symbol_secondary,
+        Font.classifyFromMasks(&secondary_masks, false, false, false, true, true),
+    );
+}
+
+test "classifyFromMasks falls back to emoji font, then primary, when no tier matches" {
+    const masks = [_]u8{0};
+    try std.testing.expectEqual(
+        Fallback.emoji,
+        Font.classifyFromMasks(&masks, false, false, false, false, true),
+    );
+    try std.testing.expectEqual(
+        Fallback.primary,
+        Font.classifyFromMasks(&masks, false, false, false, false, false),
+    );
 }

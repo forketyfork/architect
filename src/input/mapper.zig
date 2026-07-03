@@ -9,7 +9,10 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
     if ((mod & c.SDL_KMOD_GUI) == 0) return null;
 
     return switch (key) {
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
+        // The keypad plus key produces a plus on its own; only the main-row
+        // equals key needs Shift to become a plus.
+        c.SDLK_KP_PLUS => .increase,
+        c.SDLK_EQUALS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
         c.SDLK_MINUS, c.SDLK_KP_MINUS => .decrease,
         else => null,
     };
@@ -106,6 +109,25 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool
         if (ctrl_result > 0) return ctrl_result;
     }
 
+    // Modified Tab/Enter/Backspace: when the app enabled the kitty keyboard
+    // protocol, CSI-u encoding takes priority over the legacy Cmd/Alt
+    // mappings below, which would otherwise swallow these key combinations.
+    const special_keycode: ?u8 = switch (key) {
+        c.SDLK_TAB => 9,
+        c.SDLK_RETURN => 13,
+        c.SDLK_BACKSPACE => 127,
+        else => null,
+    };
+    const has_special_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
+    if (kitty_enabled and has_special_modifier) {
+        if (special_keycode) |kc| {
+            // Full CSI-u encoding with all modifier bits: ESC [ keycode ; modifier+1 u
+            const csi_mod = computeCsiModifier(mod);
+            const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, csi_mod }) catch return 0;
+            return result.len;
+        }
+    }
+
     if (mod & c.SDL_KMOD_GUI != 0) {
         return switch (key) {
             c.SDLK_LEFT => blk: {
@@ -142,40 +164,23 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool
         };
     }
 
-    // Modified special keys: Tab, Enter, Backspace
-    // When kitty enabled: any modifier combo emits CSI-u
-    // When kitty disabled: only Shift+Tab has special encoding, others fall through to legacy
-    const special_keycode: ?u8 = switch (key) {
-        c.SDLK_TAB => 9,
-        c.SDLK_RETURN => 13,
-        c.SDLK_BACKSPACE => 127,
-        else => null,
-    };
-    if (special_keycode) |kc| {
-        const has_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
-        if (kitty_enabled and has_modifier) {
-            // Full CSI-u encoding with all modifier bits: ESC [ keycode ; modifier+1 u
-            const csi_mod = computeCsiModifier(mod);
-            const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, csi_mod }) catch return 0;
-            return result.len;
-        } else if (!kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
-            // Legacy encoding for Shift-modified keys
-            return switch (key) {
-                c.SDLK_TAB => blk: {
-                    @memcpy(buf[0..3], "\x1b[Z");
-                    break :blk 3;
-                },
-                c.SDLK_RETURN => blk: {
-                    buf[0] = '\r';
-                    break :blk 1;
-                },
-                c.SDLK_BACKSPACE => blk: {
-                    buf[0] = 127;
-                    break :blk 1;
-                },
-                else => 0,
-            };
-        }
+    // Legacy encoding for Shift-modified special keys when kitty is disabled.
+    if (special_keycode != null and !kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
+        return switch (key) {
+            c.SDLK_TAB => blk: {
+                @memcpy(buf[0..3], "\x1b[Z");
+                break :blk 3;
+            },
+            c.SDLK_RETURN => blk: {
+                buf[0] = '\r';
+                break :blk 1;
+            },
+            c.SDLK_BACKSPACE => blk: {
+                buf[0] = 127;
+                break :blk 1;
+            },
+            else => 0,
+        };
     }
 
     return switch (key) {
