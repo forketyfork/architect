@@ -111,6 +111,7 @@ pub const SDL_SCANCODE_AC_END = c_import.SDL_SCANCODE_AC_END;
 
 pub const SDL_SetTextureScaleMode = c_import.SDL_SetTextureScaleMode;
 pub const SDL_SCALEMODE_LINEAR = c_import.SDL_SCALEMODE_LINEAR;
+pub const SDL_SetTextureColorMod = c_import.SDL_SetTextureColorMod;
 
 pub const SDLK_ESCAPE = c_import.SDLK_ESCAPE;
 pub const SDLK_RETURN = c_import.SDLK_RETURN;

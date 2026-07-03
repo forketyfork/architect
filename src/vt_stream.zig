@@ -41,7 +41,7 @@ pub const Handler = struct {
             .request_mode => try self.handleRequestMode(value.mode),
             .request_mode_unknown => try self.handleRequestModeUnknown(value.mode, value.ansi),
             .set_mode => {
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 // DEC mode 2048 (in-band size reports): apps that enable this
                 // expect a size report whenever the terminal is resized AND an
                 // initial report when the mode is first enabled. Matches
@@ -52,31 +52,78 @@ pub const Handler = struct {
             },
             .kitty_keyboard_push => {
                 log.debug("kitty_keyboard_push: flags={d}", .{value.flags.int()});
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_pop => {
                 log.debug("kitty_keyboard_pop: n={d}", .{value});
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set => {
                 log.debug("kitty_keyboard_set: flags={d}", .{value.flags.int()});
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set_or => {
                 log.debug("kitty_keyboard_set_or: flags={d}", .{value.flags.int()});
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set_not => {
                 log.debug("kitty_keyboard_set_not: flags={d}", .{value.flags.int()});
-                try self.readonly.vt(action, value);
+                try self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
-            else => try self.readonly.vt(action, value),
+            else => try self.delegateVt(action, value),
         }
+    }
+
+    /// Errors the built-in readonly handler can surface, other than the OSC 8
+    /// hyperlink capacity errors that delegateVt always contains. Declared
+    /// explicitly (rather than inferred) because `vt` is comptime-generic over
+    /// the action tag: each action instantiates a differently-shaped inferred
+    /// error union, and only some of them actually include the hyperlink
+    /// errors. An inferred return type here would force every switch arm in
+    /// `vt` below to reference literals that are members of the local error
+    /// union, which fails to compile for actions that can't produce them.
+    const DelegateVtError = error{
+        DivisionByZero,
+        GraphemeAllocOutOfMemory,
+        GraphemeMapOutOfMemory,
+        NeedsRehash,
+        OutOfMemory,
+        OutOfSpace,
+        StringAllocOutOfMemory,
+        StyleSetNeedsRehash,
+        StyleSetOutOfMemory,
+    };
+
+    /// Delegates to the built-in readonly handler, containing OSC 8 hyperlink
+    /// capacity errors so a single exhausted hyperlink table doesn't abort
+    /// parsing of the rest of the PTY output. All other errors propagate.
+    fn delegateVt(
+        self: *Handler,
+        comptime action: ghostty_vt.StreamAction.Tag,
+        value: ghostty_vt.StreamAction.Value(action),
+    ) DelegateVtError!void {
+        self.readonly.vt(action, value) catch |err| {
+            // Match against anyerror since the hyperlink error names aren't
+            // members of every action's own inferred error set.
+            switch (@as(anyerror, err)) {
+                error.HyperlinkSetOutOfMemory,
+                error.HyperlinkSetNeedsRehash,
+                error.HyperlinkMapOutOfMemory,
+                => {
+                    log.warn("OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{err});
+                    return;
+                },
+                else => {},
+            }
+            // Safe: the hyperlink errors were already handled above, so err
+            // is guaranteed to be a member of DelegateVtError here.
+            return @errorCast(err);
+        };
     }
 
     fn handleDeviceAttributes(self: *Handler, req: ghostty_vt.DeviceAttributeReq) !void {
@@ -491,6 +538,38 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
     try stream.nextSlice("\x1b]4;17;?\x07");
     const len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b]4;17;rgb:1212/3434/5656\x07", buf[0..len]);
+}
+
+test "stream processes OSC 8 hyperlinks via nextSlice without error" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    defer terminal.deinit(allocator);
+
+    const pipe_fds = try std.posix.pipe();
+    defer std.posix.close(pipe_fds[0]);
+    defer std.posix.close(pipe_fds[1]);
+
+    var shell = shell_mod.Shell{
+        .pty = .{
+            .master = pipe_fds[1],
+            .slave = pipe_fds[0],
+        },
+        .child_pid = 0,
+    };
+
+    var stream = initStream(allocator, &terminal, &shell);
+    defer stream.deinit();
+
+    // Delegated (non-explicit) VT actions such as hyperlink start/end and
+    // print route through Handler.delegateVt; this exercises that path end
+    // to end via the SIMD-capable nextSlice entry point.
+    try stream.nextSlice("\x1b]8;;http://example.com\x1b\\link text\x1b]8;;\x1b\\");
+
+    try std.testing.expectEqual(@as(usize, 9), terminal.screens.active.cursor.x);
 }
 
 pub const StreamType = ghostty_vt.Stream(Handler);

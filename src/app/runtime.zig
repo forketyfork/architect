@@ -15,6 +15,7 @@ const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
+const pty_watcher = @import("../session/pty_watcher.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
@@ -60,8 +61,7 @@ const SessionMove = grid_layout.SessionMove;
 
 const FrameWaitDecision = union(enum) {
     none,
-    idle_wait_ms: c_int,
-    active_sleep_ns: u64,
+    wait_ms: c_int,
 };
 
 const ForegroundProcessCache = struct {
@@ -119,22 +119,22 @@ fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
 fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
     if (is_idle) {
         const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
-        return if (timeout_ms > 0) .{ .idle_wait_ms = timeout_ms } else .none;
+        return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
     }
     if (vsync_enabled) return .none;
 
-    const sleep_ns = remainingFrameBudgetNs(active_frame_ns, frame_ns);
-    return if (sleep_ns > 0) .{ .active_sleep_ns = sleep_ns } else .none;
+    const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(active_frame_ns, frame_ns));
+    return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
 }
 
+/// Waits for the next frame using the same interruptible SDL wait mechanism
+/// for both idle and active pacing, so a key press or PTY-watcher wake event
+/// during active-frame pacing is observed immediately instead of waiting out
+/// a fixed, uninterruptible sleep.
 fn waitForNextFrame(wait_decision: FrameWaitDecision) ?c.SDL_Event {
     return switch (wait_decision) {
         .none => null,
-        .idle_wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
-        .active_sleep_ns => |sleep_ns| blk: {
-            std.Thread.sleep(sleep_ns);
-            break :blk null;
-        },
+        .wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
     };
 }
 
@@ -287,17 +287,43 @@ fn syncPersistenceTerminalEntriesFromSessions(
     return true;
 }
 
+const persistence_save_debounce_ms: i64 = 500;
+
+/// Marks persistence dirty and records when it first became dirty.
+/// `dirty_since_ms` is only set on the false->true transition, so repeated
+/// calls during a burst of events (e.g. every tick of a window drag) keep the
+/// oldest timestamp rather than pushing the debounce window forward. This
+/// guarantees a save happens within `persistence_save_debounce_ms` of the
+/// first change even under continuous activity.
+fn markPersistenceDirty(dirty: *bool, dirty_since_ms: *i64, now_ms: i64) void {
+    if (dirty.*) return;
+    dirty.* = true;
+    dirty_since_ms.* = now_ms;
+}
+
+/// Pure debounce decision: a dirty persistence state is due for saving once
+/// it has been dirty for at least `persistence_save_debounce_ms`. Guards
+/// against a backwards clock jump stalling the save indefinitely.
+fn shouldSavePersistenceNow(dirty: bool, dirty_since_ms: i64, now_ms: i64) bool {
+    if (!dirty) return false;
+    if (now_ms < dirty_since_ms) return true;
+    return now_ms - dirty_since_ms >= persistence_save_debounce_ms;
+}
+
 fn savePersistenceIfDirty(
     persistence: *config_mod.Persistence,
     allocator: std.mem.Allocator,
     dirty: *bool,
+    dirty_since_ms: *i64,
+    now_ms: i64,
 ) void {
-    if (!dirty.*) return;
+    if (!shouldSavePersistenceNow(dirty.*, dirty_since_ms.*, now_ms)) return;
     persistence.save(allocator) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
         return;
     };
     dirty.* = false;
+    dirty_since_ms.* = 0;
 }
 
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
@@ -1175,6 +1201,9 @@ pub fn run() !void {
 
     var notify_stop = std.atomic.Value(bool).init(false);
     var control_stop = std.atomic.Value(bool).init(false);
+    var pty_watcher_stop = std.atomic.Value(bool).init(false);
+    var pty_wake_pending = std.atomic.Value(bool).init(false);
+    var pty_watcher_state = pty_watcher.PtyWatcher{};
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1299,6 +1328,19 @@ pub fn run() !void {
         control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
+    }
+    const pty_watcher_thread = try pty_watcher.start(
+        &pty_watcher_state,
+        &pty_watcher_stop,
+        &pty_wake_pending,
+        .{
+            .context = &sdl,
+            .callback = platform.pushWakeEventFromOpaque,
+        },
+    );
+    defer {
+        pty_watcher_stop.store(true, .seq_cst);
+        pty_watcher_thread.join();
     }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
@@ -1472,6 +1514,7 @@ pub fn run() !void {
 
     var running = true;
     var persistence_dirty = false;
+    var persistence_dirty_since_ms: i64 = 0;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -1664,8 +1707,7 @@ pub fn run() !void {
 
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -1710,8 +1752,7 @@ pub fn run() !void {
                     persistence.window.height = window_height_points;
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
@@ -2052,8 +2093,7 @@ pub fn run() !void {
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
-                            persistence_dirty = true;
-                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                            markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                         }
 
                         var notification_buf: [64]u8 = undefined;
@@ -2315,6 +2355,16 @@ pub fn run() !void {
             log.info("frame trace after xev run", .{});
         }
 
+        pty_wake_pending.store(false, .seq_cst);
+        var pty_fds: [grid_layout.max_terminals]posix.fd_t = undefined;
+        var pty_fd_count: usize = 0;
+        for (sessions) |session| {
+            const pty_fd = session.ptyMasterFd() orelse continue;
+            pty_fds[pty_fd_count] = pty_fd;
+            pty_fd_count += 1;
+        }
+        pty_watcher_state.updateFds(pty_fds[0..pty_fd_count]);
+
         for (sessions) |session| {
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace before process session idx={d} id={d}", .{ session.slot_index, session.id });
@@ -2341,7 +2391,7 @@ pub fn run() !void {
                         log.warn("failed to update recent folders: {}", .{err});
                     };
                     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
-                    persistence_dirty = true;
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 }
             }
             if (relaunch_trace_frames > 0 and session.spawned) {
@@ -2354,9 +2404,9 @@ pub fn run() !void {
             break :blk false;
         };
         if (terminal_entries_changed) {
-            persistence_dirty = true;
+            markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
         }
-        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, &persistence_dirty_since_ms, now);
 
         if (quit_teardown.isFinished()) {
             running = false;
@@ -3205,18 +3255,44 @@ test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
     try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
 }
 
+test "markPersistenceDirty keeps the oldest dirty timestamp" {
+    var dirty = false;
+    var dirty_since_ms: i64 = 0;
+
+    markPersistenceDirty(&dirty, &dirty_since_ms, 1_000);
+    try std.testing.expect(dirty);
+    try std.testing.expectEqual(@as(i64, 1_000), dirty_since_ms);
+
+    // A later mark while still dirty must not push the timestamp forward,
+    // otherwise continuous events (e.g. a window drag) would starve the save.
+    markPersistenceDirty(&dirty, &dirty_since_ms, 1_400);
+    try std.testing.expectEqual(@as(i64, 1_000), dirty_since_ms);
+}
+
+test "shouldSavePersistenceNow waits for the debounce window then fires" {
+    try std.testing.expect(!shouldSavePersistenceNow(false, 0, 10_000));
+    try std.testing.expect(!shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms - 1));
+    try std.testing.expect(shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms));
+    try std.testing.expect(shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms + 500));
+}
+
+test "shouldSavePersistenceNow does not stall forever if the clock moves backwards" {
+    try std.testing.expect(shouldSavePersistenceNow(true, 5_000, 4_000));
+}
+
 test "computeFrameWaitDecision returns idle wait while idle" {
     const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
     switch (decision) {
-        .idle_wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
+        .wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
         else => try std.testing.expect(false),
     }
 }
 
-test "computeFrameWaitDecision keeps active pacing without vsync" {
+test "computeFrameWaitDecision keeps active pacing without vsync, rounded up to whole ms" {
     const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
+    const expected_ms = waitTimeoutMsFromNs(@intCast(active_frame_ns - (5 * std.time.ns_per_ms)));
     switch (decision) {
-        .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
+        .wait_ms => |timeout_ms| try std.testing.expectEqual(expected_ms, timeout_ms),
         else => try std.testing.expect(false),
     }
 }

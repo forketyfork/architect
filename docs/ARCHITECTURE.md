@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
+Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, a PTY-readability watcher, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: both idle and active-frame pacing block in SDL until either a wake-worthy event arrives or the relevant deadline expires, so PTY output, keystrokes, notification/control socket activity, and window events all interrupt the wait immediately instead of waiting out a fixed timeout. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
 
 ## Component Diagram
 
@@ -28,6 +28,7 @@ graph TD
     subgraph Session Layer
         SS["session/state.zig<br/><i>PTY, ghostty-vt, process watcher</i>"]
         SN["session/notify.zig<br/><i>Background socket thread</i>"]
+        PW["session/pty_watcher.zig<br/><i>Background PTY-readability poll thread</i>"]
         SESSION_MODS["shell, pty, vt_stream, cwd"]
     end
 
@@ -58,6 +59,7 @@ graph TD
     SS --> SESSION_MODS
     SN -.->|"thread-safe queue"| RT
     CTRL -.->|"thread-safe queue"| RT
+    PW -.->|"wake event + fd list"| RT
     REN --> FONT
     REN --> GFX
     UR --> UI_CORE
@@ -89,10 +91,10 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- Background threads are intentionally limited to three cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification and control listeners also post a custom SDL wake event after queueing work so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
+- Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY-readability watcher (`session/pty_watcher.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification listener, control listener, and PTY watcher also post a custom SDL wake event after queueing work (or observing readable/hung-up PTY fds) so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY watcher polls the master fds of all spawned sessions with a ~100ms timeout; the runtime refreshes its fd list once per frame (cheap `ptyMasterFd()` scan over all slots) and clears a shared `wake_pending` flag right before draining session output. While `wake_pending` is set the watcher backs off with short sleeps instead of re-polling and re-pushing wakes, so a burst of PTY output cannot spin the watcher thread ahead of the main thread's drain.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
-- Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
+- Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins. Every change site only marks a dirty flag and records the time it first became dirty (`markPersistenceDirty`); the actual TOML write happens at most once per frame and only once the dirty state is at least 500ms old (`shouldSavePersistenceNow`), so a window drag or resize does not trigger a synchronous file write per mouse tick. The dirty timestamp is set once per dirty period (not refreshed by later changes), which caps the deferral at the debounce window even under continuous events.
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
 - Terminal resizes use Ghostty's minimal flow: a single `ioctl(master, TIOCSWINSZ)` on the PTY master, which the kernel pairs with a SIGWINCH to the foreground process group of the slave's controlling terminal. Each session is sized independently. The focused session in `.Full`/`.Expanding`/`.Collapsing` mode (and additionally the previous session during a panning transition) is sized to the full-window cell count; every other session stays at grid-cell size. Grid↔full view toggle therefore reflows exactly one session — the one the user actually zoomed — instead of every session in the workspace. Window resize, font size change, and grid layout change all flow through the same per-session dispatch (`fullSetForMode` in `app/runtime.zig`, `applyTerminalResize` with `Sizes`/`FullSet` in `app/layout.zig`). Grid sizing accounts for the user's grid font scale and the reserved CWD-bar space when computing tile cell count. While DEC mode 2026 (`\e[?2026h`) is active for a session, the renderer reuses the last cached texture for that session via `synchronizedOutputHoldsCache` in `render/renderer.zig` instead of refreshing from the in-progress vt model, so reflows from agents like Codex appear as one atomic frame change rather than a top-to-bottom rescroll. The hold is dropped when the cached composition mismatches the requested one (an overlay or wave needs to bake into the next frame) or when the app sends the closing `\e[?2026l`; the next frame after the close refreshes once and snaps to the final state. A timeout-based safety net in `session/state.zig` force-clears the mode if a session leaves `\e[?2026h` set without ever closing it.
@@ -135,8 +137,9 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 ```
                     +--------------------------------------+
-                    | Optional SDL_WaitEventTimeout()      |
-                    | (idle only; returns early on wake)   |
+                    | SDL_WaitEventTimeout()                |
+                    | (idle: ~50ms budget, active: ~16ms;   |
+                    |  returns early on any wake event)     |
                     +------------------+-------------------+
                                        | event or timeout
                                        v
@@ -176,9 +179,12 @@ These patterns are mandatory for all new code. They are derived from the archite
                                        |
                                        v
                     +--------------------------------------+
+                    |   Refresh PTY watcher fd list,        |
+                    |   clear wake_pending flag             |
                     |   Drain session output -> ghostty-vt  |
                     |   Drain notification queue             |
-                    |   (socket thread can post wake event) |
+                    |   (socket/PTY-watcher threads can     |
+                    |    post a wake event)                 |
                     +------------------+-------------------+
                                        |
                                        v
@@ -405,6 +411,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
 | `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()`, `drainOutputForMs()` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
+| `session/pty_watcher.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and posts a wake event when one becomes readable (or hangs up/errors); mutex-guarded fd list refreshed once per frame by the runtime | `PtyWatcher`, `start()`, `updateFds()` | std (poll, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
