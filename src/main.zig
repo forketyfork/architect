@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const runtime = @import("app/runtime.zig");
 const logging = @import("logging.zig");
 
@@ -25,7 +26,6 @@ test {
     _ = @import("app/terminal_history.zig");
     _ = @import("colors.zig");
     _ = @import("config.zig");
-    _ = @import("cwd.zig");
     _ = @import("font.zig");
     _ = @import("input/mapper.zig");
     _ = @import("logging.zig");
@@ -45,4 +45,10 @@ test {
     _ = @import("ui/components/session_interaction.zig");
     _ = @import("ui/components/worktree_overlay.zig");
     _ = @import("url_matcher.zig");
+
+    // cwd.zig guards itself with a top-level @compileError on non-macOS
+    // platforms, so it can only be referenced where it can compile.
+    if (builtin.os.tag == .macos) {
+        _ = @import("cwd.zig");
+    }
 }
