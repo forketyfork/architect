@@ -588,7 +588,8 @@ pub const SessionState = struct {
 
         var bytes_consumed: usize = 0;
         while (shouldContinueDraining(bytes_consumed, max_process_output_bytes_per_call)) {
-            const n = shell.read(&self.output_buf) catch |err| switch (err) {
+            const read_len = cappedReadLen(self.output_buf.len, bytes_consumed, max_process_output_bytes_per_call);
+            const n = shell.read(self.output_buf[0..read_len]) catch |err| switch (err) {
                 error.WouldBlock => return,
                 // Linux PTYs can report EIO after the slave side closes.
                 // Treat it as terminal EOF so normal dead sessions don't fail the runtime loop.
@@ -630,6 +631,14 @@ pub const SessionState = struct {
     /// the budget exists.
     fn shouldContinueDraining(bytes_consumed: usize, budget: usize) bool {
         return bytes_consumed < budget;
+    }
+
+    /// Length for the next drain read: the full buffer, or the remaining byte
+    /// budget when that is smaller, so the final read of a processOutput call
+    /// cannot overshoot the per-call cap. Callers must ensure
+    /// `bytes_consumed < budget` (the drain loop condition guarantees it).
+    fn cappedReadLen(buf_len: usize, bytes_consumed: usize, budget: usize) usize {
+        return @min(buf_len, budget - bytes_consumed);
     }
 
     /// Mark the session as failed after an unrecoverable output-processing error
@@ -1262,6 +1271,13 @@ test "shouldContinueDraining stops once the byte budget is reached" {
     try std.testing.expect(!SessionState.shouldContinueDraining(1024, 1024));
     try std.testing.expect(!SessionState.shouldContinueDraining(2048, 1024));
     try std.testing.expect(!SessionState.shouldContinueDraining(0, 0));
+}
+
+test "cappedReadLen limits the final read to the remaining byte budget" {
+    try std.testing.expectEqual(@as(usize, 512), SessionState.cappedReadLen(512, 0, 1024));
+    try std.testing.expectEqual(@as(usize, 512), SessionState.cappedReadLen(512, 512, 1024));
+    try std.testing.expectEqual(@as(usize, 100), SessionState.cappedReadLen(512, 924, 1024));
+    try std.testing.expectEqual(@as(usize, 1), SessionState.cappedReadLen(512, 1023, 1024));
 }
 
 test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {
