@@ -206,8 +206,11 @@ pub fn applyTerminalResize(
         const terminal = &(session.terminal orelse continue);
 
         const winsize_changed = !std.meta.eql(session.pty_size, target);
-        const terminal_cells_changed = terminal.cols != target.ws_col or terminal.rows != target.ws_row;
-        const preserve_deccolm_width = !winsize_changed and isDeccolmWidthOverride(terminal, target);
+        const layout_cols_changed = session.pty_size.ws_col != target.ws_col;
+        const preserve_deccolm_width = !layout_cols_changed and isDeccolmWidthOverride(terminal, target);
+        const terminal_cols = if (preserve_deccolm_width) terminal.cols else target.ws_col;
+        const terminal_cells_changed = terminal.cols != terminal_cols or terminal.rows != target.ws_row;
+        const terminal_pixels_changed = terminal.width_px != @as(u32, target.ws_xpixel) or terminal.height_px != @as(u32, target.ws_ypixel);
 
         if (winsize_changed) {
             shell.pty.setSize(target) catch |err| {
@@ -216,9 +219,9 @@ pub fn applyTerminalResize(
             };
         }
 
-        if (terminal_cells_changed and !preserve_deccolm_width) {
-            resizeTerminal(allocator, terminal, target.ws_col, target.ws_row, target) catch |err| {
-                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, target.ws_col, target.ws_row, err });
+        if (terminal_cells_changed) {
+            resizeTerminal(allocator, terminal, terminal_cols, target.ws_row, target) catch |err| {
+                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, terminal_cols, target.ws_row, err });
                 continue;
             };
 
@@ -228,6 +231,8 @@ pub fn applyTerminalResize(
             session.resetSynchronizedOutputTracking();
             session.markDirty();
             terminal_resized = true;
+        } else if (terminal_pixels_changed) {
+            updateTerminalPixelSize(terminal, target);
         }
 
         // DEC 2048 reports carry pixel fields, so apps tracking pixel
@@ -243,7 +248,6 @@ pub fn applyTerminalResize(
 
 fn isDeccolmWidthOverride(terminal: *const ghostty_vt.Terminal, target: pty_mod.winsize) bool {
     if (!terminal.modes.get(.enable_mode_3)) return false;
-    if (terminal.rows != target.ws_row) return false;
     return (terminal.cols == 80 or terminal.cols == 132) and terminal.cols != target.ws_col;
 }
 
@@ -260,6 +264,14 @@ fn resizeTerminal(
     // Spec-allowed by DEC mode 2026: clear synchronized output on resize so the
     // change is shown immediately rather than buffered.
     terminal.modes.set(.synchronized_output, false);
+}
+
+fn updateTerminalPixelSize(
+    terminal: *ghostty_vt.Terminal,
+    size: pty_mod.winsize,
+) void {
+    terminal.width_px = @intCast(size.ws_xpixel);
+    terminal.height_px = @intCast(size.ws_ypixel);
 }
 
 /// Write a DEC mode 2048 in-band size report to the shell. Apps that opt into
@@ -338,6 +350,8 @@ fn initSpawnedTestSession(
         .max_scrollback = 5,
     });
     errdefer terminal.deinit(allocator);
+    terminal.width_px = @intCast(pty_size.ws_xpixel);
+    terminal.height_px = @intCast(pty_size.ws_ypixel);
 
     var session = try SessionState.init(allocator, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default());
     session.shell = .{
@@ -380,6 +394,49 @@ test "applyTerminalResize preserves DECCOLM width while layout target is unchang
     try std.testing.expect(!changed);
     try std.testing.expectEqual(@as(u16, 80), terminal.cols);
     try std.testing.expectEqual(@as(u16, 24), terminal.rows);
+    try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
+}
+
+test "applyTerminalResize preserves DECCOLM width on row-only layout changes" {
+    const allocator = std.testing.allocator;
+    const old_target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, old_target, 80, 24);
+    defer fixture.deinit(allocator);
+
+    const terminal = try testTerminal(&fixture.session);
+    terminal.modes.set(.enable_mode_3, true);
+
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 30), .{ .primary = 0 });
+
+    try std.testing.expect(changed);
+    try std.testing.expectEqual(@as(u16, 80), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 30), terminal.rows);
+    try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
+    try std.testing.expectEqual(@as(u16, 30), fixture.session.pty_size.ws_row);
+}
+
+test "applyTerminalResize preserves DECCOLM width on pixel-only layout changes" {
+    const allocator = std.testing.allocator;
+    const old_target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, old_target, 80, 24);
+    defer fixture.deinit(allocator);
+
+    const terminal = try testTerminal(&fixture.session);
+    terminal.modes.set(.enable_mode_3, true);
+
+    const sizes = Sizes{
+        .grid = .{ .cols = 100, .rows = 24, .width_px = 1200, .height_px = 480 },
+        .full = .{ .cols = 100, .rows = 24, .width_px = 1200, .height_px = 480 },
+    };
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, sizes, .{ .primary = 0 });
+
+    try std.testing.expect(!changed);
+    try std.testing.expectEqual(@as(u16, 80), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 24), terminal.rows);
+    try std.testing.expectEqual(@as(u32, 1200), terminal.width_px);
+    try std.testing.expectEqual(@as(u32, 480), terminal.height_px);
     try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
 }
 
