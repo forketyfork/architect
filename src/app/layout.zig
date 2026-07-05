@@ -9,6 +9,7 @@ const dpi = @import("../dpi.zig");
 const session_state = @import("../session/state.zig");
 const shell_mod = @import("../shell.zig");
 const vt_stream = @import("../vt_stream.zig");
+const colors_mod = @import("../colors.zig");
 
 const log = std.log.scoped(.layout);
 const AnimationState = app_state.AnimationState;
@@ -206,6 +207,7 @@ pub fn applyTerminalResize(
 
         const winsize_changed = !std.meta.eql(session.pty_size, target);
         const terminal_cells_changed = terminal.cols != target.ws_col or terminal.rows != target.ws_row;
+        const preserve_deccolm_width = !winsize_changed and isDeccolmWidthOverride(terminal, target);
 
         if (winsize_changed) {
             shell.pty.setSize(target) catch |err| {
@@ -214,7 +216,7 @@ pub fn applyTerminalResize(
             };
         }
 
-        if (terminal_cells_changed) {
+        if (terminal_cells_changed and !preserve_deccolm_width) {
             resizeTerminal(allocator, terminal, target.ws_col, target.ws_row, target) catch |err| {
                 log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, target.ws_col, target.ws_row, err });
                 continue;
@@ -237,6 +239,12 @@ pub fn applyTerminalResize(
         session.pty_size = target;
     }
     return terminal_resized;
+}
+
+fn isDeccolmWidthOverride(terminal: *const ghostty_vt.Terminal, target: pty_mod.winsize) bool {
+    if (!terminal.modes.get(.enable_mode_3)) return false;
+    if (terminal.rows != target.ws_row) return false;
+    return (terminal.cols == 80 or terminal.cols == 132) and terminal.cols != target.ws_col;
 }
 
 fn resizeTerminal(
@@ -298,6 +306,114 @@ test "FullSet.contains identifies primary and secondary indices" {
     try std.testing.expect(!(FullSet{ .primary = 3 }).contains(2));
     try std.testing.expect((FullSet{ .primary = 3, .secondary = 5 }).contains(5));
     try std.testing.expect(!(FullSet{ .primary = 3, .secondary = 5 }).contains(4));
+}
+
+const TestSessionFixture = struct {
+    session: SessionState,
+    slave_fd: pty_mod.Pty.Fd,
+
+    fn deinit(self: *TestSessionFixture, allocator: std.mem.Allocator) void {
+        self.session.dead = true;
+        self.session.deinit(allocator);
+        std.posix.close(self.slave_fd);
+    }
+};
+
+fn initSpawnedTestSession(
+    allocator: std.mem.Allocator,
+    pty_size: pty_mod.winsize,
+    terminal_cols: u16,
+    terminal_rows: u16,
+) !TestSessionFixture {
+    var pty = try pty_mod.Pty.open(pty_size);
+    const slave_fd = pty.slave;
+    errdefer {
+        pty.deinit();
+        std.posix.close(slave_fd);
+    }
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = terminal_cols,
+        .rows = terminal_rows,
+        .max_scrollback = 5,
+    });
+    errdefer terminal.deinit(allocator);
+
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default());
+    session.shell = .{
+        .pty = pty,
+        .child_pid = 0,
+    };
+    session.terminal = terminal;
+    session.spawned = true;
+
+    return .{
+        .session = session,
+        .slave_fd = slave_fd,
+    };
+}
+
+fn testSizes(cols: u16, rows: u16) Sizes {
+    return .{
+        .grid = .{ .cols = cols, .rows = rows, .width_px = cols * 10, .height_px = rows * 20 },
+        .full = .{ .cols = cols, .rows = rows, .width_px = cols * 10, .height_px = rows * 20 },
+    };
+}
+
+fn testTerminal(session: *SessionState) !*ghostty_vt.Terminal {
+    if (session.terminal) |*terminal| return terminal;
+    return error.TestUnexpectedResult;
+}
+
+test "applyTerminalResize preserves DECCOLM width while layout target is unchanged" {
+    const allocator = std.testing.allocator;
+    const target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, target, 80, 24);
+    defer fixture.deinit(allocator);
+
+    const terminal = try testTerminal(&fixture.session);
+    terminal.modes.set(.enable_mode_3, true);
+
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 });
+
+    try std.testing.expect(!changed);
+    try std.testing.expectEqual(@as(u16, 80), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 24), terminal.rows);
+    try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
+}
+
+test "applyTerminalResize resets DECCOLM width when layout target changes" {
+    const allocator = std.testing.allocator;
+    const old_target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, old_target, 80, 24);
+    defer fixture.deinit(allocator);
+
+    const terminal = try testTerminal(&fixture.session);
+    terminal.modes.set(.enable_mode_3, true);
+
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(120, 24), .{ .primary = 0 });
+
+    try std.testing.expect(changed);
+    try std.testing.expectEqual(@as(u16, 120), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 24), terminal.rows);
+    try std.testing.expectEqual(@as(u16, 120), fixture.session.pty_size.ws_col);
+}
+
+test "applyTerminalResize corrects non-DECCOLM terminal width drift" {
+    const allocator = std.testing.allocator;
+    const target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, target, 80, 24);
+    defer fixture.deinit(allocator);
+
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 });
+
+    try std.testing.expect(changed);
+    const terminal = try testTerminal(&fixture.session);
+    try std.testing.expectEqual(@as(u16, 100), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 24), terminal.rows);
 }
 
 test "terminal resize preserves prompt contents when shell does not redraw" {
