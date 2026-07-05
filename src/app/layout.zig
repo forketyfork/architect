@@ -235,10 +235,11 @@ pub fn applyTerminalResize(
             updateTerminalPixelSize(terminal, target);
         }
 
-        // DEC 2048 reports carry pixel fields, so apps tracking pixel
-        // geometry need them even when the cell count is unchanged.
+        // DEC 2048 reports describe the VT model's logical cells plus pixel
+        // geometry. Under DECCOLM, the logical columns can intentionally differ
+        // from the PTY winsize columns.
         if (winsize_changed and terminal.modes.get(.in_band_size_reports)) {
-            sendInBandSizeReport(shell, target);
+            sendInBandSizeReport(shell, terminal);
         }
 
         session.pty_size = target;
@@ -278,12 +279,16 @@ fn updateTerminalPixelSize(
 /// mode 2048 (nvim does) detect resizes via this report rather than SIGWINCH;
 /// without it, they keep drawing at the pre-resize dimensions. Matches
 /// ghostty's `src/termio/Termio.zig:sizeReportLocked` mode_2048 branch.
-fn sendInBandSizeReport(shell: *shell_mod.Shell, size: pty_mod.winsize) void {
+fn sendInBandSizeReport(shell: *shell_mod.Shell, terminal: *const ghostty_vt.Terminal) void {
     var buf: [64]u8 = undefined;
-    const report = vt_stream.formatInBandSizeReport(&buf, size.ws_row, size.ws_col, size.ws_ypixel, size.ws_xpixel) catch return;
+    const report = formatTerminalInBandSizeReport(&buf, terminal) catch return;
     _ = shell.write(report) catch |err| {
         log.warn("failed to write in-band size report: {}", .{err});
     };
+}
+
+fn formatTerminalInBandSizeReport(buf: []u8, terminal: *const ghostty_vt.Terminal) error{NoSpaceLeft}![]u8 {
+    return vt_stream.formatInBandSizeReport(buf, terminal.rows, terminal.cols, terminal.height_px, terminal.width_px);
 }
 
 test "calculateTerminalSizes returns smaller grid than full and shrinks grid further when font scale shrinks" {
@@ -405,6 +410,7 @@ test "applyTerminalResize preserves DECCOLM width on row-only layout changes" {
 
     const terminal = try testTerminal(&fixture.session);
     terminal.modes.set(.enable_mode_3, true);
+    terminal.modes.set(.in_band_size_reports, true);
 
     var sessions = [_]*SessionState{&fixture.session};
     const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 30), .{ .primary = 0 });
@@ -414,6 +420,10 @@ test "applyTerminalResize preserves DECCOLM width on row-only layout changes" {
     try std.testing.expectEqual(@as(u16, 30), terminal.rows);
     try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
     try std.testing.expectEqual(@as(u16, 30), fixture.session.pty_size.ws_row);
+
+    var report_buf: [64]u8 = undefined;
+    const report = try formatTerminalInBandSizeReport(&report_buf, terminal);
+    try std.testing.expectEqualSlices(u8, "\x1b[48;30;80;600;1000t", report);
 }
 
 test "applyTerminalResize preserves DECCOLM width on pixel-only layout changes" {
@@ -424,6 +434,7 @@ test "applyTerminalResize preserves DECCOLM width on pixel-only layout changes" 
 
     const terminal = try testTerminal(&fixture.session);
     terminal.modes.set(.enable_mode_3, true);
+    terminal.modes.set(.in_band_size_reports, true);
 
     const sizes = Sizes{
         .grid = .{ .cols = 100, .rows = 24, .width_px = 1200, .height_px = 480 },
@@ -438,6 +449,10 @@ test "applyTerminalResize preserves DECCOLM width on pixel-only layout changes" 
     try std.testing.expectEqual(@as(u32, 1200), terminal.width_px);
     try std.testing.expectEqual(@as(u32, 480), terminal.height_px);
     try std.testing.expectEqual(@as(u16, 100), fixture.session.pty_size.ws_col);
+
+    var report_buf: [64]u8 = undefined;
+    const report = try formatTerminalInBandSizeReport(&report_buf, terminal);
+    try std.testing.expectEqualSlices(u8, "\x1b[48;24;80;480;1200t", report);
 }
 
 test "applyTerminalResize resets DECCOLM width when layout target changes" {
