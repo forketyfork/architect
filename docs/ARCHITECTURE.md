@@ -316,7 +316,7 @@ Story notifications  -> StoryOverlay opens with file content
 Renderer draws attention border / story overlay
 ```
 
-### External MCP Spawn Path
+### External MCP Spawn / Close Path
 
 ```
 MCP client
@@ -324,23 +324,25 @@ MCP client
     v
 src/mcp/main.zig
     | JSON-RPC initialize/tools/list/tools/call
-    | validates spawn_session arguments
+    | validates spawn_session / close_session arguments
     v
 app/control.zig
     | scans per-instance discovery files in XDG_RUNTIME_DIR or stable per-user runtime dir
     | connects to architect_control_<pid>.sock
+    | spawn requests omit "op"; close requests carry "op":"close"
     v
 Control socket listener thread in the running app
-    | parses request and queues PendingSpawn
+    | parses request and queues PendingSpawn or PendingClose
     | posts SDL wake event
     v
 app/runtime.zig main loop
-    | validates cwd, chooses or expands a grid slot
-    | calls SessionState.ensureSpawnedWithDir()
-    | queues optional command into pending_write
+    | spawn: validates cwd, chooses or expands a grid slot, ensureSpawnedWithDir()
+    | close: resolves the session by id/slot, then despawnSessionAtIndex()
+    |        (same close + relayout path as the close-pane keybinding)
     v
 Control response
-    | status + session_id + slot_index, or stable error code
+    | spawn: status + session_id + slot_index, or stable error code
+    | close: status + session_id, or stable error code (e.g. not_found)
     v
 architect-mcp MCP tool result
 ```
@@ -370,7 +372,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | SDL event queue | Keyboard, mouse, window events | Primary user interaction |
 | PTY read | Shell process stdout/stderr | Terminal content updates |
 | Unix domain socket | External AI tools | Status notifications (JSON) |
-| Unix domain socket | `architect-mcp` | Local `spawn_session` control requests |
+| Unix domain socket | `architect-mcp` | Local `spawn_session` / `close_session` control requests |
 | Config files | `~/.config/architect/` | Startup configuration and persistence |
 
 ### Storage
@@ -401,9 +403,9 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main()`, `run()` | `app/control` module import, std |
+| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session` and `close_session` tools. | `main()`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
-| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
+| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn/close request schemas, discovery file, Unix socket listener, request queues, and response serialization. Close requests are discriminated on the wire by `"op":"close"`. | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `CloseRequest`, `CloseResponse`, `CloseQueue`, `startControlThread()`, `connectAndSendSpawnRequest()`, `connectAndSendCloseRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
