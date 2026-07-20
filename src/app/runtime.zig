@@ -116,6 +116,17 @@ fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
     return @intCast(@min(timeout_ms, max_timeout_ms));
 }
 
+/// Rendering is suppressed while the window is fully occluded: macOS stops
+/// compositing covered windows and `CAMetalLayer` stops handing out
+/// drawables, so any render attempt blocks the main thread for the full
+/// ~1s `nextDrawable` timeout — freezing input handling and PTY processing
+/// with it. PTY output keeps being consumed while occluded; the
+/// `SDL_EVENT_WINDOW_EXPOSED` event that fires on un-covering counts as a
+/// processed event and triggers an immediate repaint.
+fn shouldRenderFrame(window_occluded: bool, wants_render: bool) bool {
+    return wants_render and !window_occluded;
+}
+
 fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
     if (is_idle) {
         const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
@@ -378,12 +389,13 @@ fn applyTerminalLayout(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    now: i64,
 ) void {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set, now);
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -399,12 +411,13 @@ fn applyTerminalLayoutIfSizeChanged(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    now: i64,
 ) bool {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    return layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    return layout.applyTerminalResize(sessions, allocator, sizes, full_set, now);
 }
 
 /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -772,6 +785,7 @@ fn handleExternalSpawnRequest(
         grid_font_scale,
         full_cols,
         full_rows,
+        now,
     );
 
     pending.completion.complete(.{ .success = .{
@@ -930,6 +944,7 @@ const RuntimeScaleChangeContext = struct {
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    now: i64,
 };
 
 fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Font.InitError!void {
@@ -957,6 +972,7 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
         ctx.allocator,
         sizes,
         full_set,
+        ctx.now,
     );
 }
 
@@ -1733,6 +1749,7 @@ pub fn run() !void {
                         .grid_font_scale = config.grid.font_scale,
                         .full_cols = &full_cols,
                         .full_rows = &full_rows,
+                        .now = now,
                     };
                     try applyScaleChangeAndResize(
                         RuntimeScaleChangeContext,
@@ -1955,7 +1972,7 @@ pub fn run() !void {
                                 cell_width_pixels = render_width;
                                 cell_height_pixels = render_height;
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
                             } else if (remaining_count == 1) {
                                 // Only 1 terminal remains - go directly to Full mode, no resize animation
                                 grid.cols = 1;
@@ -1971,7 +1988,7 @@ pub fn run() !void {
                                     }
                                 }
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2011,7 +2028,7 @@ pub fn run() !void {
 
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
 
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
@@ -2089,7 +2106,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -2153,7 +2170,7 @@ pub fn run() !void {
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(new_idx);
@@ -2383,6 +2400,7 @@ pub fn run() !void {
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
             _ = session.expireSynchronizedOutput(now);
+            session.expireResizeSettleHold(now);
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
@@ -2411,7 +2429,13 @@ pub fn run() !void {
         if (quit_teardown.isFinished()) {
             running = false;
         }
-        var any_session_dirty = render_cache.anyDirty(sessions);
+        var any_session_dirty = render_cache.anyDirty(
+            sessions,
+            anim_state.mode,
+            anim_state.focused_session,
+            anim_state.previous_session,
+            now,
+        );
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
@@ -2588,7 +2612,7 @@ pub fn run() !void {
                         cell_width_pixels = render_width;
                         cell_height_pixels = render_height;
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
                     } else if (remaining_count == 1) {
                         // Only 1 terminal remains - go directly to Full mode, no resize animation
                         grid.cols = 1;
@@ -2604,7 +2628,7 @@ pub fn run() !void {
                             }
                         }
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2643,7 +2667,7 @@ pub fn run() !void {
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, now);
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
@@ -3031,6 +3055,7 @@ pub fn run() !void {
             config.grid.font_scale,
             &full_cols,
             &full_rows,
+            now,
         );
         if (terminal_layout_changed) {
             any_session_dirty = true;
@@ -3069,7 +3094,11 @@ pub fn run() !void {
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const window_occluded = (c.SDL_GetWindowFlags(sdl.window) & c.SDL_WINDOW_OCCLUDED) != 0;
+        const should_render = shouldRenderFrame(
+            window_occluded,
+            animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale,
+        );
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -3286,6 +3315,13 @@ test "computeFrameWaitDecision returns idle wait while idle" {
         .wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
         else => try std.testing.expect(false),
     }
+}
+
+test "shouldRenderFrame suppresses rendering while the window is occluded" {
+    try std.testing.expect(shouldRenderFrame(false, true));
+    try std.testing.expect(!shouldRenderFrame(true, true));
+    try std.testing.expect(!shouldRenderFrame(false, false));
+    try std.testing.expect(!shouldRenderFrame(true, false));
 }
 
 test "computeFrameWaitDecision keeps active pacing without vsync, rounded up to whole ms" {

@@ -16,6 +16,7 @@ const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
 const scrollbar = @import("../ui/components/scrollbar.zig");
 const cwd_bar_metrics = @import("../ui/components/cwd_bar_metrics.zig");
+const shimmer = @import("../gfx/shimmer.zig");
 
 const log = std.log.scoped(.render);
 
@@ -56,6 +57,11 @@ pub const RenderCache = struct {
         presented_epoch: u64 = 0,
         cache_composition: CacheComposition = .content_only,
         cache_render_mode: CacheRenderMode = .full,
+        /// Pre-resize content kept alive for the settle sweep reveal, with
+        /// its original pixel dimensions for proportional slicing.
+        transition_texture: ?*c.SDL_Texture = null,
+        transition_w: c_int = 0,
+        transition_h: c_int = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator, session_count: usize) !RenderCache {
@@ -67,10 +73,11 @@ pub const RenderCache = struct {
     }
 
     pub fn deinit(self: *RenderCache) void {
-        for (self.entries) |cache_entry| {
+        for (self.entries) |*cache_entry| {
             if (cache_entry.texture) |tex| {
                 c.SDL_DestroyTexture(tex);
             }
+            releaseTransitionTextures(cache_entry);
         }
         self.allocator.free(self.entries);
         self.entries = &[_]Entry{};
@@ -80,15 +87,52 @@ pub const RenderCache = struct {
         return &self.entries[idx];
     }
 
-    pub fn anyDirty(self: *RenderCache, sessions: []const *SessionState) bool {
+    /// True when a session at `idx` contributes visible pixels in the given
+    /// view mode. Sessions that are not visible must not trigger renders:
+    /// in Full view, background sessions keep producing output (their
+    /// `render_epoch` advances) but are never presented, so counting them
+    /// would keep the app rendering and presenting full-window frames at the
+    /// maximum rate for content nobody sees.
+    pub fn sessionVisibleInMode(mode: app_state.ViewMode, idx: usize, focused: usize, previous: usize) bool {
+        return switch (mode) {
+            .Grid, .GridResizing, .Expanding, .Collapsing => true,
+            .Full => idx == focused,
+            .PanningLeft, .PanningRight, .PanningUp, .PanningDown => idx == focused or idx == previous,
+        };
+    }
+
+    pub fn anyDirty(
+        self: *RenderCache,
+        sessions: []const *SessionState,
+        mode: app_state.ViewMode,
+        focused: usize,
+        previous: usize,
+        now_ms: i64,
+    ) bool {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
             if (!session.spawned) continue;
+            if (!sessionVisibleInMode(mode, i, focused, previous)) continue;
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
+            // A settle dissolve animates without content changes; keep frames
+            // flowing until it finishes.
+            if (session.resizeSettleTransitionActive(now_ms)) return true;
         }
         return false;
     }
 };
+
+test "sessionVisibleInMode gates background sessions per view mode" {
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Grid, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.GridResizing, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Expanding, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Collapsing, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Full, 2, 2, 0));
+    try std.testing.expect(!RenderCache.sessionVisibleInMode(.Full, 3, 2, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 2, 2, 5));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 5, 2, 5));
+    try std.testing.expect(!RenderCache.sessionVisibleInMode(.PanningLeft, 3, 2, 5));
+}
 
 pub fn render(
     renderer: *c.SDL_Renderer,
@@ -252,7 +296,11 @@ pub fn render(
             const entry = render_cache.entry(anim_state.focused_session);
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
-            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale);
+            if (resizeSettleHoldsCache(focused_session, entry, current_time)) {
+                renderResizeSettleHold(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, true, apply_effects, true, current_time, true, theme, ui_scale);
+            } else {
+                try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale);
+            }
         },
         .GridResizing => {
             // Render session contents first so borders draw on top.
@@ -836,6 +884,18 @@ fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
     cache_entry.cache_render_mode = .full;
 }
 
+/// Deliberately separate from `releaseCacheTexture`: that one runs whenever
+/// the cache is recreated for a new rect size, and the transition textures
+/// hold exactly the pre-resize content the dissolve still needs.
+fn releaseTransitionTextures(cache_entry: *RenderCache.Entry) void {
+    if (cache_entry.transition_texture) |tex| {
+        c.SDL_DestroyTexture(tex);
+        cache_entry.transition_texture = null;
+    }
+    cache_entry.transition_w = 0;
+    cache_entry.transition_h = 0;
+}
+
 /// Returns the session's own VT dimensions, or the passed-in fallback when the
 /// session hasn't been spawned yet (no terminal). Used so each grid tile and
 /// panning rect renders at the session's actual cell count instead of the
@@ -849,6 +909,7 @@ fn releaseNonFocusedCaches(render_cache: *RenderCache, focused_session: usize) v
     for (render_cache.entries, 0..) |*cache_entry, idx| {
         if (idx == focused_session) continue;
         releaseCacheTexture(cache_entry);
+        releaseTransitionTextures(cache_entry);
     }
 }
 
@@ -951,6 +1012,116 @@ fn synchronizedOutputHoldsCache(
     return terminal.modes.get(.synchronized_output);
 }
 
+/// Resize-settle hold: after a terminal resize, agents like codex erase the
+/// scrollback and re-print their transcript tail as a paced multi-second
+/// stream (see `SessionState.startResizeSettleHold`). While the hold is
+/// active the pre-resize cached texture keeps being shown — stretched into
+/// the new rect when the size changed — instead of the in-progress repaint.
+/// The check runs before `ensureCacheTexture` on purpose: recreating the
+/// cache texture for the new size would destroy the only copy of the
+/// pre-resize content. `presented_epoch` is intentionally left stale while
+/// holding so the frame loop keeps rendering (the shimmer animates and the
+/// release repaints promptly).
+fn resizeSettleHoldsCache(
+    session: *const SessionState,
+    cache_entry: *const RenderCache.Entry,
+    current_time_ms: i64,
+) bool {
+    // A hold re-entered mid-sweep displays the transition texture (the
+    // original pre-resize content); a fresh hold displays the cache texture.
+    if (cache_entry.transition_texture == null) {
+        if (cache_entry.texture == null) return false;
+        if (cache_entry.cache_epoch == 0) return false;
+    }
+    return session.resizeSettleHoldActive(current_time_ms);
+}
+
+const settle_shimmer_options = shimmer.Options{
+    .base_alpha = 90,
+    .band_alpha = 60,
+};
+
+/// Takes ownership of the pre-resize cache texture at the start of a settle
+/// transition. The cache slot is left empty so the regular path recreates it
+/// and renders the new layout underneath the sweep. Also drops leftover
+/// transition textures once no transition is running (the destroy forces a
+/// Metal command-queue flush, but only once per transition).
+fn maybeBeginSettleTransition(
+    session: *const SessionState,
+    cache_entry: *RenderCache.Entry,
+    current_time_ms: i64,
+) void {
+    if (!session.resizeSettleTransitionActive(current_time_ms)) {
+        // Keep the textures while a hold owns them (a sweep interrupted by a
+        // repaint wave re-enters the hold and still displays the original
+        // pre-resize content); drop them once nothing is running.
+        if (!session.resizeSettleHoldActive(current_time_ms)) {
+            releaseTransitionTextures(cache_entry);
+        }
+        return;
+    }
+    if (cache_entry.transition_texture != null) return;
+    const old_tex = cache_entry.texture orelse return;
+    if (cache_entry.cache_epoch == 0) return;
+
+    _ = c.SDL_SetTextureScaleMode(old_tex, c.SDL_SCALEMODE_LINEAR);
+    cache_entry.transition_texture = old_tex;
+    cache_entry.transition_w = cache_entry.width;
+    cache_entry.transition_h = cache_entry.height;
+    cache_entry.texture = null;
+    releaseCacheTexture(cache_entry);
+}
+
+/// Sweep-reveals the freshly laid-out content: the pre-resize texture stays
+/// ahead of a diagonal shimmer band while the new content (already rendered
+/// underneath) appears crisply behind it.
+fn renderSettleTransition(
+    renderer: *c.SDL_Renderer,
+    session: *const SessionState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    current_time_ms: i64,
+) void {
+    const old_tex = cache_entry.transition_texture orelse return;
+    if (!session.resizeSettleTransitionActive(current_time_ms)) return;
+
+    // Linear progress: the reveal pass moves at the same constant speed as
+    // the wait shimmer's band (same options, same cycle duration).
+    shimmer.drawSweepReveal(
+        renderer,
+        rect,
+        old_tex,
+        @floatFromInt(cache_entry.transition_w),
+        @floatFromInt(cache_entry.transition_h),
+        session.resizeSettleTransitionProgress(current_time_ms),
+        settle_shimmer_options,
+    );
+}
+
+fn renderResizeSettleHold(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    is_focused: bool,
+    apply_effects: bool,
+    render_overlays: bool,
+    current_time_ms: i64,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) void {
+    const tex = cache_entry.transition_texture orelse cache_entry.texture orelse return;
+    renderCachedTexture(renderer, tex, rect);
+    if (render_overlays) {
+        renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    }
+    if (session.resizeSettleShimmerVisible(current_time_ms)) {
+        shimmer.draw(renderer, rect, current_time_ms, settle_shimmer_options);
+    }
+}
+
 fn refreshSessionCacheTexture(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
@@ -1029,6 +1200,13 @@ fn renderSessionCached(
     const composition = cacheComposition(cache_overlays);
     const render_mode = cacheRenderMode(is_grid_view);
 
+    if (resizeSettleHoldsCache(session, cache_entry, current_time_ms)) {
+        renderResizeSettleHold(renderer, session, view, cache_entry, rect, is_focused, apply_effects, render_overlays, current_time_ms, is_grid_view, theme, ui_scale);
+        return;
+    }
+
+    maybeBeginSettleTransition(session, cache_entry, current_time_ms);
+
     const can_cache = ensureCacheTexture(renderer, cache_entry, session, rect.w, rect.h);
     if (can_cache) {
         if (cache_entry.texture) |tex| {
@@ -1042,6 +1220,8 @@ fn renderSessionCached(
             } else {
                 renderCachedTexture(renderer, tex, rect);
             }
+
+            renderSettleTransition(renderer, session, cache_entry, rect, current_time_ms);
 
             if (render_overlays and composition == .content_only) {
                 renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);

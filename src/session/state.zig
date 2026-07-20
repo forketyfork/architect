@@ -77,6 +77,37 @@ const session_id_buf_len: usize = 32;
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
+/// Resize-settle hold: after a terminal resize, agents like codex erase the
+/// scrollback and re-print their transcript tail as a paced multi-second
+/// stream. The renderer keeps showing the pre-resize content while that
+/// repaint is in flight; the hold releases once output has been quiet for
+/// `resize_settle_quiet_ms` or after `resize_settle_max_ms` at the latest
+/// (an actively streaming session never goes quiet).
+pub const resize_settle_quiet_ms: i64 = 400;
+pub const resize_settle_max_ms: i64 = 5000;
+/// Holds longer than this get the busy shimmer drawn on top.
+pub const resize_settle_shimmer_after_ms: i64 = 500;
+/// When a settle hold releases, the held (pre-resize) content sweeps into
+/// the freshly laid-out content over this duration instead of snapping.
+/// Matches the wait shimmer's cycle so the reveal pass moves at the same
+/// speed as the band the user was just watching.
+pub const resize_settle_transition_ms: i64 = 1400;
+/// Grace period for the app to react to the resize: while no output has
+/// arrived since the resize, the quiet release is deferred up to this long
+/// (agents debounce SIGWINCH and pace their first repaint chunk, so a purely
+/// quiet-based release can fire just before the repaint starts).
+pub const resize_settle_response_grace_ms: i64 = 700;
+/// A single output chunk at least this large during a running sweep — or
+/// within `resize_settle_rearm_window_ms` after the release — is treated as
+/// another repaint wave (codex re-emits its transcript twice per resize,
+/// with a lull between the waves): the hold re-engages so the wave stays
+/// hidden and one more sweep runs once it settles. Status-line ticks are
+/// tens of bytes and never reach this threshold.
+pub const resize_settle_reemit_chunk_bytes: usize = 2048;
+pub const resize_settle_rearm_window_ms: i64 = 3000;
+/// At most this many re-engagements per resize, so sustained heavy output
+/// (unrelated to the resize) cannot keep freezing the session.
+pub const resize_settle_max_rearms: u8 = 2;
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -128,6 +159,12 @@ pub const SessionState = struct {
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
+    resize_settle_started_ms: i64 = 0,
+    resize_settle_last_output_ms: i64 = 0,
+    resize_settle_output_seen: bool = false,
+    resize_settle_released_ms: i64 = 0,
+    resize_settle_rearms: u8 = 0,
+    resize_settle_transition_started_ms: i64 = 0,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -563,6 +600,98 @@ pub const SessionState = struct {
         return current_time_ms - quiet_started_ms;
     }
 
+    /// Begin holding the rendered content after a terminal resize. See
+    /// `resize_settle_quiet_ms` for the release conditions.
+    pub fn startResizeSettleHold(self: *SessionState, current_time_ms: i64) void {
+        self.resize_settle_started_ms = current_time_ms;
+        self.resize_settle_last_output_ms = current_time_ms;
+        self.resize_settle_output_seen = false;
+        self.resize_settle_released_ms = 0;
+        self.resize_settle_rearms = 0;
+        // A new hold supersedes any sweep still running from the previous
+        // release; the held frame becomes the next transition's "old" content.
+        self.resize_settle_transition_started_ms = 0;
+    }
+
+    fn noteResizeSettleOutput(self: *SessionState, current_time_ms: i64, bytes: usize) void {
+        if (self.resize_settle_started_ms != 0) {
+            self.resize_settle_last_output_ms = current_time_ms;
+            self.resize_settle_output_seen = true;
+            return;
+        }
+        // A repaint wave landing during the sweep — or shortly after it —
+        // would visibly redraw the session (codex re-emits its transcript
+        // twice per resize, with a lull between the waves). Re-engage the
+        // hold so the wave stays hidden and one more sweep runs once it
+        // settles.
+        if (bytes < resize_settle_reemit_chunk_bytes) return;
+        if (self.resize_settle_rearms >= resize_settle_max_rearms) return;
+        const in_transition = self.resizeSettleTransitionActive(current_time_ms);
+        const in_rearm_window = self.resize_settle_released_ms != 0 and
+            current_time_ms >= self.resize_settle_released_ms and
+            current_time_ms - self.resize_settle_released_ms < resize_settle_rearm_window_ms;
+        if (!in_transition and !in_rearm_window) return;
+
+        self.resize_settle_started_ms = current_time_ms;
+        self.resize_settle_last_output_ms = current_time_ms;
+        self.resize_settle_output_seen = true;
+        self.resize_settle_rearms += 1;
+        self.resize_settle_transition_started_ms = 0;
+    }
+
+    pub fn resizeSettleHoldActive(self: *const SessionState, current_time_ms: i64) bool {
+        if (self.resize_settle_started_ms == 0) return false;
+        if (!self.spawned or self.dead) return false;
+        // A hold can be started from a timestamp taken later in the same
+        // frame than the caller's clock (output processing re-arms with a
+        // fresh reading); treat it as just-started rather than expired.
+        if (current_time_ms < self.resize_settle_started_ms) return true;
+        const elapsed_ms = current_time_ms - self.resize_settle_started_ms;
+        if (elapsed_ms >= resize_settle_max_ms) return false;
+        const quiet_ms = quietDurationMs(
+            current_time_ms,
+            self.resize_settle_started_ms,
+            self.resize_settle_last_output_ms,
+        );
+        if (quiet_ms < resize_settle_quiet_ms) return true;
+        // Quiet, but the app may not have reacted to the resize yet.
+        return !self.resize_settle_output_seen and elapsed_ms < resize_settle_response_grace_ms;
+    }
+
+    /// True once the hold has lasted long enough to warrant the busy shimmer.
+    pub fn resizeSettleShimmerVisible(self: *const SessionState, current_time_ms: i64) bool {
+        if (self.resize_settle_started_ms == 0) return false;
+        return current_time_ms - self.resize_settle_started_ms >= resize_settle_shimmer_after_ms;
+    }
+
+    /// Clears finished holds. Called once per frame; marks the session dirty
+    /// on release so the settled content repaints immediately, and starts the
+    /// dissolve transition from the held content to the new layout.
+    pub fn expireResizeSettleHold(self: *SessionState, current_time_ms: i64) void {
+        if (self.resize_settle_started_ms == 0) return;
+        if (self.resizeSettleHoldActive(current_time_ms)) return;
+        self.resize_settle_started_ms = 0;
+        self.resize_settle_last_output_ms = 0;
+        self.resize_settle_released_ms = current_time_ms;
+        self.resize_settle_transition_started_ms = current_time_ms;
+        self.markDirty();
+    }
+
+    pub fn resizeSettleTransitionActive(self: *const SessionState, current_time_ms: i64) bool {
+        if (self.resize_settle_transition_started_ms == 0) return false;
+        if (!self.spawned or self.dead) return false;
+        if (current_time_ms < self.resize_settle_transition_started_ms) return false;
+        return current_time_ms - self.resize_settle_transition_started_ms < resize_settle_transition_ms;
+    }
+
+    /// Dissolve progress in [0, 1]; 1 once the transition has finished.
+    pub fn resizeSettleTransitionProgress(self: *const SessionState, current_time_ms: i64) f32 {
+        if (self.resize_settle_transition_started_ms == 0) return 1.0;
+        if (current_time_ms <= self.resize_settle_transition_started_ms) return 0.0;
+        const elapsed: f32 = @floatFromInt(current_time_ms - self.resize_settle_transition_started_ms);
+        return @min(1.0, elapsed / @as(f32, @floatFromInt(resize_settle_transition_ms)));
+    }
+
     fn clearTerminalSelection(self: *SessionState) void {
         if (!self.spawned) return;
         if (self.terminal) |*terminal| {
@@ -612,6 +741,10 @@ pub const SessionState = struct {
             try stream.nextSlice(self.output_buf[0..n]);
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
+            // Pass the running total for this drain call, not the single read:
+            // macOS PTYs deliver data in ~1 KB quanta, so an individual read
+            // never reaches the repaint-wave threshold on its own.
+            self.noteResizeSettleOutput(processed_at_ms, bytes_consumed);
             self.markDirty();
 
             // Keep draining until the PTY would block (or the byte budget is
@@ -1068,6 +1201,193 @@ test "synchronized output keeps future last-output sample" {
     try std.testing.expect(!session.expireSynchronizedOutput(1100));
     try std.testing.expect(session.synchronizedOutputActive());
     try std.testing.expectEqual(@as(i64, 1101), session.synchronized_output_last_output_ms);
+}
+
+test "resize settle hold stays active while output keeps arriving" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.resize_settle_started_ms = 0;
+    session.resize_settle_last_output_ms = 0;
+    session.resize_settle_output_seen = false;
+    session.resize_settle_transition_started_ms = 0;
+
+    try std.testing.expect(!session.resizeSettleHoldActive(1000));
+
+    session.startResizeSettleHold(1000);
+    try std.testing.expect(session.resizeSettleHoldActive(1000));
+    try std.testing.expect(session.resizeSettleHoldActive(1399));
+
+    // Output keeps the hold alive past the quiet window.
+    session.noteResizeSettleOutput(1300, 64);
+    try std.testing.expect(session.resizeSettleHoldActive(1699));
+    try std.testing.expect(!session.resizeSettleHoldActive(1700));
+}
+
+test "resize settle hold defers the quiet release until output was seen" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    // No output at all after the resize: the quiet window alone must not
+    // release the hold while the app may still be debouncing the SIGWINCH.
+    session.startResizeSettleHold(1000);
+    try std.testing.expect(session.resizeSettleHoldActive(1000 + resize_settle_quiet_ms));
+    try std.testing.expect(session.resizeSettleHoldActive(1000 + resize_settle_response_grace_ms - 1));
+    try std.testing.expect(!session.resizeSettleHoldActive(1000 + resize_settle_response_grace_ms));
+
+    // Once output was seen, the plain quiet release applies.
+    session.startResizeSettleHold(2000);
+    session.noteResizeSettleOutput(2050, 64);
+    try std.testing.expect(session.resizeSettleHoldActive(2050 + resize_settle_quiet_ms - 1));
+    try std.testing.expect(!session.resizeSettleHoldActive(2050 + resize_settle_quiet_ms));
+}
+
+test "resize settle hold releases at the maximum duration" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    // Continuous output cannot extend the hold beyond the hard cap.
+    session.noteResizeSettleOutput(5999, 64);
+    try std.testing.expect(session.resizeSettleHoldActive(5999));
+    try std.testing.expect(!session.resizeSettleHoldActive(6000));
+}
+
+test "a repaint wave during the sweep re-enters the hold" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    session.noteResizeSettleOutput(1100, 4096);
+    session.expireResizeSettleHold(1500);
+    try std.testing.expect(session.resizeSettleTransitionActive(1600));
+
+    // Small status ticks must not interrupt the sweep...
+    session.noteResizeSettleOutput(1650, 64);
+    try std.testing.expect(session.resizeSettleTransitionActive(1650));
+    try std.testing.expect(!session.resizeSettleHoldActive(1650));
+
+    // ...but a re-emit-sized chunk rolls the sweep back into the hold.
+    session.noteResizeSettleOutput(1700, resize_settle_reemit_chunk_bytes);
+    try std.testing.expect(!session.resizeSettleTransitionActive(1700));
+    try std.testing.expect(session.resizeSettleHoldActive(1700));
+
+    // An expire call with a slightly older frame clock in the same frame
+    // must not release the just-re-armed hold.
+    session.expireResizeSettleHold(1699);
+    try std.testing.expect(session.resizeSettleHoldActive(1700));
+}
+
+test "resize settle hold expiry clears state and marks the session dirty" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    session.noteResizeSettleOutput(1000, 64);
+    session.expireResizeSettleHold(1100);
+    try std.testing.expectEqual(@as(i64, 1000), session.resize_settle_started_ms);
+    try std.testing.expectEqual(@as(u64, 1), session.render_epoch);
+
+    session.expireResizeSettleHold(1400);
+    try std.testing.expectEqual(@as(i64, 0), session.resize_settle_started_ms);
+    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
+    try std.testing.expect(!session.resizeSettleHoldActive(1400));
+}
+
+test "resize settle shimmer appears only after the grace period" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.resize_settle_started_ms = 0;
+
+    try std.testing.expect(!session.resizeSettleShimmerVisible(1000));
+    session.startResizeSettleHold(1000);
+    try std.testing.expect(!session.resizeSettleShimmerVisible(1499));
+    try std.testing.expect(session.resizeSettleShimmerVisible(1500));
+}
+
+test "resize settle release starts the dissolve transition" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.resize_settle_transition_started_ms = 0;
+
+    session.startResizeSettleHold(1000);
+    session.noteResizeSettleOutput(1000, 64);
+    try std.testing.expect(!session.resizeSettleTransitionActive(1000));
+
+    session.expireResizeSettleHold(1400);
+    try std.testing.expect(session.resizeSettleTransitionActive(1400));
+    try std.testing.expect(session.resizeSettleTransitionActive(1400 + resize_settle_transition_ms - 1));
+    try std.testing.expect(!session.resizeSettleTransitionActive(1400 + resize_settle_transition_ms));
+
+    try std.testing.expectEqual(@as(f32, 0.0), session.resizeSettleTransitionProgress(1400));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), session.resizeSettleTransitionProgress(1400 + @divTrunc(resize_settle_transition_ms, 2)), 0.001);
+    try std.testing.expectEqual(@as(f32, 1.0), session.resizeSettleTransitionProgress(1400 + resize_settle_transition_ms * 2));
+}
+
+test "a new resize settle hold cancels a running transition" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    session.noteResizeSettleOutput(1000, 64);
+    session.expireResizeSettleHold(1400);
+    try std.testing.expect(session.resizeSettleTransitionActive(1500));
+
+    session.startResizeSettleHold(1600);
+    try std.testing.expect(!session.resizeSettleTransitionActive(1600));
+}
+
+test "a repaint wave shortly after the sweep re-engages the hold at most twice" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    session.noteResizeSettleOutput(1000, 64);
+    session.expireResizeSettleHold(1400);
+    try std.testing.expect(!session.resizeSettleTransitionActive(2500));
+
+    // First wave after the sweep finished but within the re-arm window.
+    session.noteResizeSettleOutput(2500, 4096);
+    try std.testing.expect(session.resizeSettleHoldActive(2500));
+    session.expireResizeSettleHold(2900);
+    try std.testing.expect(session.resizeSettleTransitionActive(2900));
+
+    // Second wave: still re-engages.
+    session.noteResizeSettleOutput(4000, 4096);
+    try std.testing.expect(session.resizeSettleHoldActive(4000));
+    session.expireResizeSettleHold(4400);
+
+    // Third burst: the re-arm budget is spent; output renders live.
+    session.noteResizeSettleOutput(5000, 4096);
+    try std.testing.expect(!session.resizeSettleHoldActive(5000));
+}
+
+test "resize settle hold ignores dead sessions" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    session.startResizeSettleHold(1000);
+    session.dead = true;
+    try std.testing.expect(!session.resizeSettleHoldActive(1100));
 }
 
 test "synchronized output hard timeout clears chatty sessions" {

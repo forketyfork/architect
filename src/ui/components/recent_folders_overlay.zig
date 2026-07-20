@@ -9,6 +9,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
+const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 const flowing_line = @import("flowing_line.zig");
 const search_utils = @import("search_utils.zig");
 const font_cache_mod = @import("../../font_cache.zig");
@@ -19,6 +20,7 @@ pub const RecentFoldersOverlayComponent = struct {
     allocator: std.mem.Allocator,
     overlay: ExpandingOverlay = ExpandingOverlay.init(1, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
+    badge: GlyphBadge = .{ .text = "⌘O" },
 
     all_folders: std.ArrayList(Folder) = .{},
     filtered_indices: std.ArrayList(usize) = .{},
@@ -78,6 +80,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn deinit(self_ptr: *anyopaque, _: *c.SDL_Renderer) void {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.badge.deinit();
         self.destroyCache();
         self.clearFolders();
         self.all_folders.deinit(self.allocator);
@@ -364,41 +367,11 @@ pub const RecentFoldersOverlayComponent = struct {
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.renderGlyph(renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
+            .Closed, .Collapsing, .Expanding => self.badge.render(renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
             .Open => self.renderOverlay(renderer, ui_host, rect, ui_host.ui_scale, assets, ui_host.theme),
         }
 
         self.first_frame.markDrawn();
-    }
-
-    fn renderGlyph(_: *RecentFoldersOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
-        const cache = assets.font_cache orelse return;
-        const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = cache.get(font_size) catch return;
-
-        const glyph = "⌘O";
-        const fg = theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
-        defer c.SDL_DestroySurface(surface);
-
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        var text_width_f: f32 = 0;
-        var text_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-        const text_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(text_width_f)), 2);
-        const text_y = rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(text_height_f)), 2);
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = text_width_f,
-            .h = text_height_f,
-        };
-        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
     fn renderOverlay(self: *RecentFoldersOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
