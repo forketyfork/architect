@@ -1360,23 +1360,27 @@ test "a repaint wave shortly after the sweep re-engages the hold at most twice" 
 
     session.startResizeSettleHold(1000);
     session.noteResizeSettleOutput(1000, 64);
-    session.expireResizeSettleHold(1400);
-    try std.testing.expect(!session.resizeSettleTransitionActive(2500));
+    session.expireResizeSettleHold(1000 + resize_settle_quiet_ms);
+    const sweep_done = 1000 + resize_settle_quiet_ms + resize_settle_transition_ms;
+    try std.testing.expect(!session.resizeSettleTransitionActive(sweep_done));
 
     // First wave after the sweep finished but within the re-arm window.
-    session.noteResizeSettleOutput(2500, 4096);
-    try std.testing.expect(session.resizeSettleHoldActive(2500));
-    session.expireResizeSettleHold(2900);
-    try std.testing.expect(session.resizeSettleTransitionActive(2900));
+    const wave2 = sweep_done + 100;
+    session.noteResizeSettleOutput(wave2, 4096);
+    try std.testing.expect(session.resizeSettleHoldActive(wave2));
+    session.expireResizeSettleHold(wave2 + resize_settle_quiet_ms);
+    try std.testing.expect(session.resizeSettleTransitionActive(wave2 + resize_settle_quiet_ms));
 
     // Second wave: still re-engages.
-    session.noteResizeSettleOutput(4000, 4096);
-    try std.testing.expect(session.resizeSettleHoldActive(4000));
-    session.expireResizeSettleHold(4400);
+    const wave3 = wave2 + resize_settle_quiet_ms + resize_settle_transition_ms + 100;
+    session.noteResizeSettleOutput(wave3, 4096);
+    try std.testing.expect(session.resizeSettleHoldActive(wave3));
+    session.expireResizeSettleHold(wave3 + resize_settle_quiet_ms);
 
     // Third burst: the re-arm budget is spent; output renders live.
-    session.noteResizeSettleOutput(5000, 4096);
-    try std.testing.expect(!session.resizeSettleHoldActive(5000));
+    const burst = wave3 + resize_settle_quiet_ms + 100;
+    session.noteResizeSettleOutput(burst, 4096);
+    try std.testing.expect(!session.resizeSettleHoldActive(burst));
 }
 
 test "resize settle hold ignores dead sessions" {
