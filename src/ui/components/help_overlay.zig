@@ -8,6 +8,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
+const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 
 const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
@@ -57,6 +58,7 @@ pub const HelpOverlayComponent = struct {
     overlay: ExpandingOverlay = ExpandingOverlay.init(0, help_button_margin, help_button_size_small, help_button_size_large, help_button_animation_duration_ms),
     cache: ?*Cache = null,
     first_frame: FirstFrameGuard = .{},
+    badge: GlyphBadge = .{ .text = "⌘?" },
     const help_button_size_small: c_int = 40;
     const help_button_size_large: c_int = 440;
     const help_button_margin: c_int = 20;
@@ -75,6 +77,7 @@ pub const HelpOverlayComponent = struct {
     }
 
     fn deinit(self: *HelpOverlayComponent, _: *c.SDL_Renderer) void {
+        self.badge.deinit();
         self.destroyCache();
         self.allocator.destroy(self);
     }
@@ -162,39 +165,9 @@ pub const HelpOverlayComponent = struct {
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.renderQuestionMark(renderer, rect, host.ui_scale, assets, host.theme),
+            .Closed, .Collapsing, .Expanding => self.badge.render(renderer, rect, host.ui_scale, assets, host.theme),
             .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets, host.theme),
         }
-    }
-
-    fn renderQuestionMark(_: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
-        const cache = assets.font_cache orelse return;
-        const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = cache.get(font_size) catch return;
-
-        const question_mark = "⌘?";
-        const fg = theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.regular, question_mark.ptr, @intCast(question_mark.len), fg_color) orelse return;
-        defer c.SDL_DestroySurface(surface);
-
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        var text_width_f: f32 = 0;
-        var text_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-        const text_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(text_width_f)), 2);
-        const text_y = rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(text_height_f)), 2);
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = text_width_f,
-            .h = text_height_f,
-        };
-        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
     fn renderHelpOverlay(self: *HelpOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {

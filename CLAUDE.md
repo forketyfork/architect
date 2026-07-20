@@ -58,6 +58,7 @@ Read these before making any changes:
 - `docs/ARCHITECTURE.md` — How it's built (layers, modules, dependencies)
 - `docs/configuration.md` — Config shape for `config.toml` and `persistence.toml`
 - `docs/development.md` — Developer setup and workflow notes
+- `docs/perf-debugging.md` — Read before investigating rendering/terminal performance: headless repro via the control socket (`scripts/perf/`), codex resize behavior, Debug-vs-Release ghostty-vt costs, SDL/Metal pipeline pitfalls
 
 ## Agent Rules
 
@@ -124,6 +125,9 @@ If you are executing in a git worktree, stay within that worktree and do not att
 
 ### Window-close handling on macOS
 - When you handle Cmd+W yourself, set `SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE` to `"0"` so SDL does not emit `SDL_EVENT_QUIT` and bypass your custom close logic.
+
+### Never render while the window is occluded
+- macOS stops compositing fully covered windows and `CAMetalLayer` stops returning drawables; any render attempt then blocks the main thread for the full ~1s `nextDrawable` timeout, stalling input and PTY processing. The frame loop gates rendering on the `SDL_WINDOW_OCCLUDED` window flag (`shouldRenderFrame` in `src/app/runtime.zig`); keep any new render/present paths behind the same gate.
 
 ### Adding New SDL3 Key Codes
 When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. SDL3 constants are exposed through the c_import and must be explicitly re-exported in c.zig to be accessible throughout the codebase.
@@ -206,9 +210,10 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
 - Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
 - On macOS hosts where `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` is arm64e-only, the Nix dev shell auto-applies a Zig 0.15.2 workaround: it points `DEVELOPER_DIR` at a fake developer dir backed by `MacOSX15.4.sdk` and installs an `xcrun` shim inside that fake developer tree so `zig build`, Ghostty's Apple SDK discovery, and unrelated tools that still invoke `/usr/bin/xcrun` keep working. Remove it once Zig's fix for https://codeberg.org/ziglang/zig/issues/31756 is no longer needed here.
-- Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), and `src/gfx/primitives.zig` (rounded/thick borders); reuse them instead of duplicating helpers.
+- Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), `src/gfx/primitives.zig` (rounded/thick borders), and `src/gfx/shimmer.zig` (busy shimmer used by the quit overlay and the resize-settle hold); reuse them instead of duplicating helpers.
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`'s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
+- Static text badges (the collapsed `⌘O`/`⌘T`/`⌘?` overlay hints) must use `src/ui/components/glyph_badge.zig`. Never create-render-destroy an SDL texture within a single frame: destroying a texture that was queued for rendering forces SDL's Metal backend to flush the command queue and block on drawable acquisition (up to ~1 s under load). Cache textures and invalidate on font/theme changes.
 - Cursor rendering: set the cursor's background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
 - ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty's app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn't support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
 
