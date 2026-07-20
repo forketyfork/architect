@@ -659,8 +659,13 @@ pub const SessionState = struct {
     }
 
     /// True once the hold has lasted long enough to warrant the busy shimmer.
+    /// Gated on output having arrived since the resize: the shimmer means "a
+    /// repaint is in flight", and a session whose foreground process never
+    /// reacts to the SIGWINCH would otherwise flash the shimmer during the
+    /// response-grace tail of the hold.
     pub fn resizeSettleShimmerVisible(self: *const SessionState, current_time_ms: i64) bool {
         if (self.resize_settle_started_ms == 0) return false;
+        if (!self.resize_settle_output_seen) return false;
         return current_time_ms - self.resize_settle_started_ms >= resize_settle_shimmer_after_ms;
     }
 
@@ -1303,7 +1308,7 @@ test "resize settle hold expiry clears state and marks the session dirty" {
     try std.testing.expect(!session.resizeSettleHoldActive(1400));
 }
 
-test "resize settle shimmer appears only after the grace period" {
+test "resize settle shimmer appears only after the grace period and once output arrived" {
     var session: SessionState = undefined;
     session.spawned = true;
     session.dead = false;
@@ -1312,6 +1317,12 @@ test "resize settle shimmer appears only after the grace period" {
 
     try std.testing.expect(!session.resizeSettleShimmerVisible(1000));
     session.startResizeSettleHold(1000);
+    try std.testing.expect(!session.resizeSettleShimmerVisible(1499));
+    // No output since the resize: the session is idle, not repainting, so
+    // the shimmer stays hidden through the response-grace tail of the hold.
+    try std.testing.expect(!session.resizeSettleShimmerVisible(1500));
+
+    session.noteResizeSettleOutput(1200, 64);
     try std.testing.expect(!session.resizeSettleShimmerVisible(1499));
     try std.testing.expect(session.resizeSettleShimmerVisible(1500));
 }
