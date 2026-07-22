@@ -135,7 +135,11 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     const run_zwanzig = b.addRunArtifact(zwanzig.artifact("zwanzig"));
-    run_zwanzig.addArgs(&.{"src"});
+    const target_triple = b.fmt("{s}-{s}", .{
+        @tagName(target.result.cpu.arch),
+        @tagName(target.result.os.tag),
+    });
+    run_zwanzig.addArgs(&.{ "--target", target_triple, "src" });
 
     const lint_step = b.step("lint", "Run Zwanzig");
     lint_step.dependOn(&run_zwanzig.step);
