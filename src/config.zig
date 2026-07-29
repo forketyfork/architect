@@ -73,6 +73,14 @@ pub const UiConfig = struct {
     enable_animations: bool = true,
 };
 
+pub const PasteConfig = struct {
+    /// When true, pressing Cmd+V while the system clipboard holds an image
+    /// writes the image to a temp PNG and pastes that file path into the focused
+    /// terminal, so a CLI like Claude Code attaches the image. Plain text paste
+    /// is unaffected. macOS only. Default false.
+    image_passthrough: bool = false,
+};
+
 pub const PaletteConfig = struct {
     black: ?[]const u8 = null,
     red: ?[]const u8 = null,
@@ -779,6 +787,7 @@ pub const Config = struct {
     grid: GridConfig = .{},
     theme: ThemeConfig = .{},
     ui: UiConfig = .{},
+    paste: PasteConfig = .{},
     rendering: Rendering = .{},
     metrics: MetricsConfig = .{},
     logging: LoggingConfig = .{},
@@ -830,6 +839,13 @@ pub const Config = struct {
             \\# [ui]
             \\# show_hotkey_feedback = true
             \\# enable_animations = true
+            \\
+            \\# Paste options
+            \\# [paste]
+            \\# image_passthrough = false  # When true and the clipboard holds an
+            \\#                            # image, Cmd+V writes a temp PNG and pastes
+            \\#                            # its path so a CLI (e.g. Claude Code)
+            \\#                            # attaches the image.
             \\
             \\# Theme colors (hex format)
             \\# [theme]
@@ -1050,6 +1066,26 @@ test "Config - decode sectioned toml" {
     try std.testing.expectEqual(std.log.Level.warn, config.logging.getMinLevel());
     try std.testing.expectEqual(false, config.ui.show_hotkey_feedback);
     try std.testing.expectEqual(false, config.ui.enable_animations);
+    // [paste] omitted above -> defaults to disabled.
+    try std.testing.expectEqual(false, config.paste.image_passthrough);
+}
+
+test "Config - parses [paste] image_passthrough" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\[paste]
+        \\image_passthrough = true
+        \\
+    ;
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseString(content);
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.paste.image_passthrough);
 }
 
 test "LoggingConfig.getMinLevel falls back to info for unknown values" {
