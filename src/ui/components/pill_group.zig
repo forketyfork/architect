@@ -5,6 +5,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const HelpOverlayComponent = @import("help_overlay.zig").HelpOverlayComponent;
 const WorktreeOverlayComponent = @import("worktree_overlay.zig").WorktreeOverlayComponent;
 const RecentFoldersOverlayComponent = @import("recent_folders_overlay.zig").RecentFoldersOverlayComponent;
+const PRDropdownComponent = @import("pr_dropdown.zig").PRDropdownComponent;
 
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
@@ -13,15 +14,18 @@ pub const PillGroupComponent = struct {
     help: *HelpOverlayComponent,
     recent_folders: *RecentFoldersOverlayComponent,
     worktree: *WorktreeOverlayComponent,
+    pr_dropdown: *PRDropdownComponent,
     last_help_state: ExpandingOverlay.State = .Closed,
     last_recent_folders_state: ExpandingOverlay.State = .Closed,
     last_worktree_state: ExpandingOverlay.State = .Closed,
+    last_pr_state: ExpandingOverlay.State = .Closed,
 
     pub fn create(
         allocator: std.mem.Allocator,
         help: *HelpOverlayComponent,
         recent_folders: *RecentFoldersOverlayComponent,
         worktree: *WorktreeOverlayComponent,
+        pr_dropdown: *PRDropdownComponent,
     ) !UiComponent {
         const comp = try allocator.create(PillGroupComponent);
         comp.* = .{
@@ -29,6 +33,7 @@ pub const PillGroupComponent = struct {
             .help = help,
             .recent_folders = recent_folders,
             .worktree = worktree,
+            .pr_dropdown = pr_dropdown,
         };
 
         return UiComponent{
@@ -57,10 +62,12 @@ pub const PillGroupComponent = struct {
         const help_state = self.help.overlay.state;
         const recent_folders_state = self.recent_folders.overlay.state;
         const worktree_state = self.worktree.overlay.state;
+        const pr_state = self.pr_dropdown.overlay.state;
 
         const help_started_expanding = self.last_help_state != .Expanding and help_state == .Expanding;
         const recent_folders_started_expanding = self.last_recent_folders_state != .Expanding and recent_folders_state == .Expanding;
         const worktree_started_expanding = self.last_worktree_state != .Expanding and worktree_state == .Expanding;
+        const pr_started_expanding = self.last_pr_state != .Expanding and pr_state == .Expanding;
 
         // When one overlay starts expanding, collapse the others
         if (help_started_expanding) {
@@ -69,6 +76,9 @@ pub const PillGroupComponent = struct {
             }
             if (worktree_state == .Open or worktree_state == .Expanding) {
                 self.worktree.overlay.startCollapsing(host.now_ms);
+            }
+            if (pr_state == .Open or pr_state == .Expanding) {
+                self.pr_dropdown.overlay.startCollapsing(host.now_ms);
             }
         }
 
@@ -79,6 +89,9 @@ pub const PillGroupComponent = struct {
             if (worktree_state == .Open or worktree_state == .Expanding) {
                 self.worktree.overlay.startCollapsing(host.now_ms);
             }
+            if (pr_state == .Open or pr_state == .Expanding) {
+                self.pr_dropdown.overlay.startCollapsing(host.now_ms);
+            }
         }
 
         if (worktree_started_expanding) {
@@ -88,11 +101,27 @@ pub const PillGroupComponent = struct {
             if (recent_folders_state == .Open or recent_folders_state == .Expanding) {
                 self.recent_folders.overlay.startCollapsing(host.now_ms);
             }
+            if (pr_state == .Open or pr_state == .Expanding) {
+                self.pr_dropdown.overlay.startCollapsing(host.now_ms);
+            }
+        }
+
+        if (pr_started_expanding) {
+            if (help_state == .Open or help_state == .Expanding) {
+                self.help.overlay.startCollapsing(host.now_ms);
+            }
+            if (recent_folders_state == .Open or recent_folders_state == .Expanding) {
+                self.recent_folders.overlay.startCollapsing(host.now_ms);
+            }
+            if (worktree_state == .Open or worktree_state == .Expanding) {
+                self.worktree.overlay.startCollapsing(host.now_ms);
+            }
         }
 
         self.last_help_state = help_state;
         self.last_recent_folders_state = recent_folders_state;
         self.last_worktree_state = worktree_state;
+        self.last_pr_state = pr_state;
     }
 
     fn render(_: *anyopaque, _: *const types.UiHost, _: *c.SDL_Renderer, _: *types.UiAssets) void {}
