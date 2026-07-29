@@ -63,7 +63,6 @@ Download the latest release from the [releases page](https://github.com/forketyf
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
 tar -xzf architect-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine Architect.app
 open Architect.app
 ```
 
@@ -71,14 +70,12 @@ open Architect.app
 ```bash
 curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
 tar -xzf architect-macos-x86_64.tar.gz
-xattr -dr com.apple.quarantine Architect.app
 open Architect.app
 ```
 
 **Note**:
 
-* These GitHub release archives are ad-hoc signed so macOS can launch them locally, but they are not Developer ID signed or notarized.
-* Clear the quarantine attribute before first launch, or macOS may block the app.
+* These GitHub release archives are Developer ID signed and notarized by Apple, so macOS should open them without a Gatekeeper warning.
 * The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. The MCP helper is bundled at `./Architect.app/Contents/MacOS/architect-mcp`. Keep the bundle contents intact.
 * Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
 
@@ -109,6 +106,8 @@ Or install directly without tapping:
 brew install https://raw.githubusercontent.com/forketyfork/architect/main/Formula/architect.rb
 cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
 ```
+
+**Note**: Homebrew builds `Architect.app` from source locally and does not sign or notarize it, unlike the [pre-built release binaries](#download-pre-built-binary-macos). If Gatekeeper blocks the app, run `xattr -dr com.apple.quarantine Architect.app` after copying it to `/Applications/`.
 
 ### Build from Source
 
@@ -165,7 +164,7 @@ Common settings include font family, theme colors, grid font scale, and logging 
 
 ## Troubleshooting
 
-* **App won't open (Gatekeeper)**: run `xattr -dr com.apple.quarantine Architect.app` after extracting the release.
+* **App won't open (Gatekeeper)**: pre-built releases are notarized and shouldn't trigger this. For Homebrew or source builds (which are unsigned/ad-hoc), run `xattr -dr com.apple.quarantine Architect.app`.
 * **Font not found**: ensure the font is installed and set `font.family` in `config.toml`. The app falls back to `SFNSMono` on macOS.
 * **Missing symbol glyphs**: fallbacks try the bundled Symbols Nerd Font, then `Arial Unicode MS`, then `STIXTwoMath` (if available) before emoji.
 * **Emoji alignment**: single-codepoint emoji are centered using glyph metrics; if they appear off, try a different primary font or font size.

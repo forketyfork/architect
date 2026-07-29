@@ -96,10 +96,54 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow packages ad-hoc-signed app bundles with local `codesign --sign -`. It does not import macOS signing certificates, does not produce Developer ID-signed artifacts, and does not notarize the app. Release downloads therefore still require clearing the quarantine attribute after extraction, as described in the README installation instructions. You can also run the Release workflow manually with `workflow_dispatch` to validate the packaging flow before pushing a real release tag.
+The release workflow signs each app bundle with a Developer ID Application certificate (hardened runtime + secure timestamp) and submits it to Apple's notary service before packaging, using [`scripts/bundle-macos.sh`](../scripts/bundle-macos.sh) and [`scripts/notarize-macos.sh`](../scripts/notarize-macos.sh). The workflow fails fast if the required secrets (below) are not configured — this applies to `workflow_dispatch` runs too, so a maintainer without the secrets set up cannot produce a release build. Local/dev use of `scripts/bundle-macos.sh` is unaffected: without `APPLE_SIGNING_IDENTITY` set, it still ad-hoc signs (`codesign --sign -`) as before.
 
 Each release includes:
 - `architect-macos-arm64.tar.gz` - Apple Silicon
 - `architect-macos-x86_64.tar.gz` - Intel
 
-Each archive contains `Architect.app` with both `Contents/MacOS/architect` and the stdio MCP helper `Contents/MacOS/architect-mcp`.
+Each archive contains `Architect.app` with both `Contents/MacOS/architect` and the stdio MCP helper `Contents/MacOS/architect-mcp`, notarized and stapled so Gatekeeper accepts them without clearing the quarantine attribute.
+
+### Code Signing and Notarization Setup
+
+The release workflow requires these GitHub Actions repository secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `APPLE_CERTIFICATE_P12` | Base64-encoded Developer ID Application certificate + private key (`.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Certificate common name, e.g. `Developer ID Application: Jane Doe (TEAMID1234)` |
+| `APPLE_KEYCHAIN_PASSWORD` | Password for the temporary CI keychain (any random string; only used within the job) |
+| `APPLE_API_KEY_ID` | Key ID of an App Store Connect API key used for notarization |
+| `APPLE_API_ISSUER_ID` | Issuer ID for the same API key |
+| `APPLE_API_KEY_P8` | Full contents of the API key's `.p8` file |
+
+One-time setup, assuming an active Apple Developer Program membership:
+
+1. **Create the Developer ID Application certificate.**
+   - Open Keychain Access → Certificate Assistant → Request a Certificate from a Certificate Authority, save the CSR to disk.
+   - In [Apple Developer → Certificates](https://developer.apple.com/account/resources/certificates/list), create a new certificate, choose **Developer ID Application**, and upload the CSR.
+   - Download the issued certificate and double-click it to install it into your login keychain.
+2. **Export it as a `.p12`.**
+   - In Keychain Access, find the certificate (it will show a disclosure triangle with the matching private key underneath), select both the certificate and the key, right-click → Export 2 items…
+   - Save as `architect-signing.p12` and set an export password — this becomes `APPLE_CERTIFICATE_PASSWORD`.
+3. **Base64-encode the `.p12`** for storage as a secret:
+   ```bash
+   base64 -i architect-signing.p12 | pbcopy
+   ```
+   Paste the result as `APPLE_CERTIFICATE_P12`.
+4. **Determine the signing identity string:**
+   ```bash
+   security find-identity -v -p codesign
+   ```
+   Copy the quoted name (e.g. `Developer ID Application: Jane Doe (TEAMID1234)`) as `APPLE_SIGNING_IDENTITY`.
+5. **Create an App Store Connect API key for notarization.**
+   - Go to [App Store Connect → Users and Access → Integrations → Team Keys](https://appstoreconnect.apple.com/access/integrations/api).
+   - Create a new key with the **Developer** role (sufficient for notarization).
+   - Download the `.p8` file immediately — it can only be downloaded once. Its contents become `APPLE_API_KEY_P8`.
+   - Note the **Key ID** (`APPLE_API_KEY_ID`) and **Issuer ID** (`APPLE_API_ISSUER_ID`) shown on the same page.
+6. **Pick a random string** for `APPLE_KEYCHAIN_PASSWORD` (e.g. `openssl rand -base64 32`); it only protects the ephemeral keychain created during the CI job.
+7. **Add all seven secrets** under the repository's Settings → Secrets and variables → Actions.
+8. Verify by running the Release workflow manually (`workflow_dispatch`) before pushing a real tag, or by pushing a tag once satisfied.
+
+Delete the local `.p12`/CSR files after uploading the secrets — the CI keychain that imports the certificate is created fresh and deleted at the end of every job run.

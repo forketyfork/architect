@@ -205,6 +205,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Documentation updates should be part of the same PR as the code changes.
 
 ## Repo Notes
+- The Release workflow (`.github/workflows/release.yaml`) requires seven `APPLE_*` GitHub secrets for Developer ID signing and notarization (`scripts/bundle-macos.sh`, `scripts/notarize-macos.sh`); it hard-fails fast if any are missing, including on `workflow_dispatch`. See `docs/development.md` "Code Signing and Notarization Setup" for the full list and setup steps. Local/dev use of `bundle-macos.sh` is unaffected and still ad-hoc signs by default.
 - Architect is a Zig app using the ghostty-vt dependency fetched via the Zig package manager; avoid reintroducing a checked-out `ghostty/` path assumption.
 - User config lives in `~/.config/architect/config.toml`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
