@@ -32,7 +32,7 @@ pub const RecentFoldersOverlayComponent = struct {
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
 
-    search_query: std.ArrayList(u8) = .{},
+    search: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },
 
     const button_size_small: c_int = 40;
     const button_size_large: c_int = 400;
@@ -86,7 +86,7 @@ pub const RecentFoldersOverlayComponent = struct {
         self.clearFolders();
         self.all_folders.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
-        self.search_query.deinit(self.allocator);
+        self.search.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -122,7 +122,7 @@ pub const RecentFoldersOverlayComponent = struct {
         self.filtered_indices.clearRetainingCapacity();
         self.destroyCache();
 
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search.text(), " \t");
 
         for (self.all_folders.items, 0..) |folder, idx| {
             if (self.filtered_indices.items.len >= max_display) break;
@@ -179,6 +179,7 @@ pub const RecentFoldersOverlayComponent = struct {
                     switch (self.overlay.state) {
                         .Closed => {
                             self.overlay.startExpanding(host.now_ms);
+                            self.search.touch(host.now_ms);
                         },
                         .Open => self.closeOverlay(host.now_ms),
                         else => {},
@@ -215,21 +216,26 @@ pub const RecentFoldersOverlayComponent = struct {
                         self.closeOverlay(host.now_ms);
                     } else {
                         self.overlay.startExpanding(host.now_ms);
+                        self.search.touch(host.now_ms);
                     }
                     return true;
                 }
 
                 if (self.overlay.state.isOpenOrOpening()) {
-                    if (key == c.SDLK_BACKSPACE) {
-                        const new_len = text_edit.backspace(
-                            self.search_query.items,
-                            text_edit.scopeFromMods(mod),
-                            text_edit.path_separators,
-                        );
-                        if (new_len != self.search_query.items.len) {
-                            self.search_query.items.len = new_len;
-                            self.refilter();
+                    // Cmd+1-9 picks an entry, so it must win over the field's
+                    // own Cmd shortcuts before the input sees the key.
+                    if (has_gui and !has_blocking_mod and key >= c.SDLK_1 and key <= c.SDLK_9) {
+                        const digit_idx: usize = @intCast(key - c.SDLK_1);
+                        if (self.filteredFolder(digit_idx)) |folder| {
+                            self.emitChangeDir(actions, host.focused_session, folder.abs_path);
+                            self.closeOverlay(host.now_ms);
                         }
+                        return true;
+                    }
+
+                    const edit = self.search.handleKey(self.allocator, key, mod, host.now_ms);
+                    if (edit.consumed) {
+                        if (edit.text_changed) self.refilter();
                         return true;
                     }
 
@@ -271,28 +277,13 @@ pub const RecentFoldersOverlayComponent = struct {
                         return true;
                     }
 
-                    // Cmd+1-9 for quick selection
-                    if (has_gui and !has_blocking_mod) {
-                        if (key >= c.SDLK_1 and key <= c.SDLK_9) {
-                            const digit_idx: usize = @intCast(key - c.SDLK_1);
-                            if (self.filteredFolder(digit_idx)) |folder| {
-                                self.emitChangeDir(actions, host.focused_session, folder.abs_path);
-                                self.closeOverlay(host.now_ms);
-                                return true;
-                            }
-                        }
-                    }
-
                     return true;
                 }
             },
             c.SDL_EVENT_TEXT_INPUT => {
                 if (self.overlay.state.isOpenOrOpening()) {
                     const text = std.mem.span(event.text.text);
-                    self.search_query.appendSlice(self.allocator, text) catch |err| {
-                        log.warn("failed to append search input: {}", .{err});
-                    };
-                    self.refilter();
+                    if (self.search.insert(self.allocator, text, host.now_ms)) self.refilter();
                     return true;
                 }
             },
@@ -304,7 +295,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn closeOverlay(self: *RecentFoldersOverlayComponent, now_ms: i64) void {
         self.overlay.startCollapsing(now_ms);
-        self.search_query.clearRetainingCapacity();
+        self.search.clear();
         self.refilter();
     }
 
@@ -412,7 +403,7 @@ pub const RecentFoldersOverlayComponent = struct {
             host,
             search_bar_rect,
             font_cache,
-            self.search_query.items,
+            &self.search,
             self.filtered_indices.items.len,
             if (self.filtered_indices.items.len > 0) self.selected_index else null,
         ) catch |err| {
@@ -426,7 +417,7 @@ pub const RecentFoldersOverlayComponent = struct {
             log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
             break :blk null;
         };
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search.text(), " \t");
 
         for (cache.entries, 0..) |entry_tex, idx| {
             const is_selected = idx == self.selected_index;
@@ -613,7 +604,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 cache.ui_scale == ui_scale and
                 cache.entries.len == entry_count and
                 cache.font_generation == cache_store.generation and
-                cache.query_len == self.search_query.items.len and
+                cache.query_len == self.search.text().len and
                 cache.filtered_count == entry_count)
             {
                 return cache;
@@ -706,7 +697,7 @@ pub const RecentFoldersOverlayComponent = struct {
             .entries = entries,
             .theme_fg = fg,
             .font_generation = cache_store.generation,
-            .query_len = self.search_query.items.len,
+            .query_len = self.search.text().len,
             .filtered_count = entry_count,
         };
 
@@ -910,7 +901,7 @@ const TestComponent = struct {
         self.comp.clearFolders();
         self.comp.all_folders.deinit(testing.allocator);
         self.comp.filtered_indices.deinit(testing.allocator);
-        self.comp.search_query.deinit(testing.allocator);
+        self.comp.search.deinit(testing.allocator);
         self.actions.deinit();
     }
 
@@ -926,18 +917,18 @@ test "Cmd+Backspace clears the search query and Alt+Backspace drops one segment"
     defer t.deinit();
 
     t.comp.overlay.state = .Open;
-    try t.comp.search_query.appendSlice(testing.allocator, "dev/github/architect");
+    try t.comp.search.buf.appendSlice(testing.allocator, "dev/github/architect");
 
     try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT), 0));
-    try testing.expectEqualStrings("dev/github/", t.comp.search_query.items);
+    try testing.expectEqualStrings("dev/github/", t.comp.search.text());
 
     // The separator run is consumed with the next word, so a second press
     // makes progress instead of stalling on the slash.
     try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT), 0));
-    try testing.expectEqualStrings("dev/", t.comp.search_query.items);
+    try testing.expectEqualStrings("dev/", t.comp.search.text());
 
     try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI), 0));
-    try testing.expectEqualStrings("", t.comp.search_query.items);
+    try testing.expectEqualStrings("", t.comp.search.text());
 }
 
 test "plain Backspace still deletes a single character" {
@@ -945,10 +936,10 @@ test "plain Backspace still deletes a single character" {
     defer t.deinit();
 
     t.comp.overlay.state = .Open;
-    try t.comp.search_query.appendSlice(testing.allocator, "arch");
+    try t.comp.search.buf.appendSlice(testing.allocator, "arch");
 
     try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, 0), 0));
-    try testing.expectEqualStrings("arc", t.comp.search_query.items);
+    try testing.expectEqualStrings("arc", t.comp.search.text());
 }
 
 test "keys typed during the expand animation reach the search query" {
@@ -962,10 +953,10 @@ test "keys typed during the expand animation reach the search query" {
 
     try testing.expect(t.send(textEvent("a"), 10));
     try testing.expect(t.send(textEvent("r"), 20));
-    try testing.expectEqualStrings("ar", t.comp.search_query.items);
+    try testing.expectEqualStrings("ar", t.comp.search.text());
 
     try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, 0), 30));
-    try testing.expectEqualStrings("a", t.comp.search_query.items);
+    try testing.expectEqualStrings("a", t.comp.search.text());
 }
 
 test "Cmd+O during the expand animation closes the overlay" {
@@ -983,5 +974,50 @@ test "closed overlay ignores typing so it reaches the terminal" {
 
     try testing.expect(!t.send(textEvent("a"), 0));
     try testing.expect(!t.send(keyEvent(c.SDLK_BACKSPACE, 0), 0));
-    try testing.expectEqualStrings("", t.comp.search_query.items);
+    try testing.expectEqualStrings("", t.comp.search.text());
+}
+
+test "Cmd+A selects the query and the next keystroke replaces it" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "arch");
+
+    try testing.expect(t.send(keyEvent(c.SDLK_A, c.SDL_KMOD_GUI), 0));
+    try testing.expect(t.comp.search.select_all);
+
+    try testing.expect(t.send(textEvent("z"), 10));
+    try testing.expectEqualStrings("z", t.comp.search.text());
+    try testing.expect(!t.comp.search.select_all);
+}
+
+test "Cmd+1-9 picks an entry instead of reaching the text field" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    const folders = [_]config.Persistence.RecentFolder{
+        .{ .path = "/tmp/architect-test-alpha", .count = 1 },
+        .{ .path = "/tmp/architect-test-beta", .count = 1 },
+    };
+    t.comp.setFolders(&folders);
+    t.comp.overlay.state = .Open;
+
+    // Cmd+2 is a quick-select, not a text-field shortcut.
+    try testing.expect(t.send(keyEvent(c.SDLK_2, c.SDL_KMOD_GUI), 0));
+    const action = t.actions.pop() orelse return error.NoActionQueued;
+    try testing.expect(action == .ChangeDirectory);
+    defer testing.allocator.free(action.ChangeDirectory.path);
+    try testing.expectEqualStrings("/tmp/architect-test-beta", action.ChangeDirectory.path);
+}
+
+test "the caret blinks while the picker is open" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    // Opening resets the blink so the caret is solid on the first frame.
+    try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 1000));
+    try testing.expect(t.comp.search.caretVisible(1000));
+    try testing.expect(!t.comp.search.caretVisible(1600));
+    try testing.expect(t.comp.search.caretVisible(2100));
 }

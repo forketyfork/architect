@@ -12,6 +12,7 @@ registry=src/main.zig
 mcp_roots=("src/mcp/main.zig" "src/app/control.zig")
 
 missing=()
+checked=0
 while IFS= read -r file; do
     rel=${file#src/}
 
@@ -22,6 +23,7 @@ while IFS= read -r file; do
     done
     $skip && continue
 
+    checked=$((checked + 1))
     if ! grep -qF "@import(\"$rel\")" "$registry"; then
         missing+=("$file")
     fi
@@ -34,4 +36,4 @@ if [ ${#missing[@]} -ne 0 ]; then
     exit 1
 fi
 
-echo "test registry: all $(grep -rl '^test ' src --include='*.zig' | wc -l | tr -d ' ') files with tests are reachable"
+echo "test registry: $checked files with tests checked, all registered"

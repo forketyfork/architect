@@ -57,7 +57,7 @@ pub const StoryOverlayComponent = struct {
     hover_start_ms: i64 = 0,
 
     search_active: bool = false,
-    search_query: std.ArrayList(u8) = .{},
+    search: text_edit.TextInput = .{ .separators = text_edit.prose_separators, .accepts = text_edit.isSingleLineChar },
     matches: std.ArrayList(SearchMatch) = .{},
     selected_match: ?usize = null,
 
@@ -191,7 +191,7 @@ pub const StoryOverlayComponent = struct {
                 else => line.plain_text,
             };
         }
-        search_utils.rebuildMatches(self.allocator, &self.matches, plain_texts, self.search_query.items, &self.selected_match, null);
+        search_utils.rebuildMatches(self.allocator, &self.matches, plain_texts, self.search.text(), &self.selected_match, null);
     }
 
     fn nextMatch(self: *StoryOverlayComponent, host: *const types.UiHost) void {
@@ -264,7 +264,8 @@ pub const StoryOverlayComponent = struct {
 
                 if (has_gui and !has_blocking and key == c.SDLK_F) {
                     self.search_active = !self.search_active;
-                    if (!self.search_active and self.search_query.items.len == 0) {
+                    if (self.search_active) self.search.touch(host.now_ms);
+                    if (!self.search_active and self.search.isEmpty()) {
                         self.selected_match = null;
                     }
                     return true;
@@ -273,21 +274,14 @@ pub const StoryOverlayComponent = struct {
                 if (self.search_active) {
                     if (key == c.SDLK_ESCAPE) {
                         self.search_active = false;
-                        self.search_query.clearRetainingCapacity();
+                        self.search.clear();
                         self.rebuildSearchMatches();
                         return true;
                     }
 
-                    if (key == c.SDLK_BACKSPACE) {
-                        const new_len = text_edit.backspace(
-                            self.search_query.items,
-                            text_edit.scopeFromMods(mod),
-                            text_edit.prose_separators,
-                        );
-                        if (new_len != self.search_query.items.len) {
-                            self.search_query.items.len = new_len;
-                            self.rebuildSearchMatches();
-                        }
+                    const edit = self.search.handleKey(self.allocator, key, mod, host.now_ms);
+                    if (edit.consumed) {
+                        if (edit.text_changed) self.rebuildSearchMatches();
                         return true;
                     }
 
@@ -314,10 +308,7 @@ pub const StoryOverlayComponent = struct {
             c.SDL_EVENT_TEXT_INPUT => {
                 if (self.search_active) {
                     const text = std.mem.span(event.text.text);
-                    self.search_query.appendSlice(self.allocator, text) catch |err| {
-                        log.warn("failed to append search input: {}", .{err});
-                    };
-                    self.rebuildSearchMatches();
+                    if (self.search.insert(self.allocator, text, host.now_ms)) self.rebuildSearchMatches();
                 }
                 return true;
             },
@@ -459,7 +450,9 @@ pub const StoryOverlayComponent = struct {
 
     fn wantsFrameFn(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *StoryOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        // The search caret blinks, so keep frames flowing while it is shown.
         return self.overlay.wantsFrame() or
+            self.search_active or
             self.scrollbar_state.wantsFrame(host.now_ms) or
             self.hovered_anchor != null or
             self.hovered_link != null;
@@ -579,7 +572,7 @@ pub const StoryOverlayComponent = struct {
         FullscreenOverlay.renderTitleSeparator(renderer, host, overlay_rect, progress);
         self.overlay.renderCloseButton(renderer, host, overlay_rect);
 
-        if (self.search_active or self.search_query.items.len > 0) {
+        if (self.search_active or !self.search.isEmpty()) {
             self.renderSearchBar(renderer, host, overlay_rect, font_cache) catch |err| {
                 log.warn("failed to render story search bar: {}", .{err});
             };
@@ -1017,7 +1010,7 @@ pub const StoryOverlayComponent = struct {
         line: markdown_renderer.RenderLine,
         line_fonts: *FontSet,
     ) void {
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search.text(), " \t");
         if (query.len == 0) return;
 
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
@@ -1118,7 +1111,7 @@ pub const StoryOverlayComponent = struct {
 
     fn renderSearchBar(self: *StoryOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, overlay_rect: geom.Rect, font_cache: *FontCache) !void {
         const rect = searchBarRect(host, overlay_rect);
-        try search_utils.renderSearchBar(self.allocator, renderer, host, rect, font_cache, self.search_query.items, self.matches.items.len, self.selected_match);
+        try search_utils.renderSearchBar(self.allocator, renderer, host, rect, font_cache, &self.search, self.matches.items.len, self.selected_match);
     }
 
     // --- Title ---
@@ -1200,7 +1193,7 @@ pub const StoryOverlayComponent = struct {
         self.blocks.deinit(self.allocator);
         self.lines.deinit(self.allocator);
         self.anchor_positions.deinit(self.allocator);
-        self.search_query.deinit(self.allocator);
+        self.search.deinit(self.allocator);
         self.matches.deinit(self.allocator);
         self.link_hits.deinit(self.allocator);
         if (self.file_path) |path| {

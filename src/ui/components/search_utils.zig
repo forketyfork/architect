@@ -5,10 +5,25 @@ const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const dpi = @import("../../dpi.zig");
 const font_cache_mod = @import("../../font_cache.zig");
+const text_edit = @import("../text_edit.zig");
 
 const FontCache = font_cache_mod.FontCache;
 
 const log = std.log.scoped(.search_utils);
+
+/// Unscaled caret width, matching the worktree name field.
+const caret_width: c_int = 2;
+
+/// Rendered width of `text`, without building a texture for it.
+fn measureWidth(font: *c.TTF_Font, text: []const u8) c_int {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
+        log.warn("TTF_GetStringSize failed: {s}", .{c.SDL_GetError()});
+        return 0;
+    }
+    return w;
+}
 
 pub const SearchMatch = struct {
     line_index: usize,
@@ -92,7 +107,7 @@ pub fn renderSearchBar(
     host: *const types.UiHost,
     rect: geom.Rect,
     font_cache: *FontCache,
-    query: []const u8,
+    input: *const text_edit.TextInput,
     matches_count: usize,
     selected_match: ?usize,
 ) !void {
@@ -106,6 +121,7 @@ pub fn renderSearchBar(
 
     const fonts = try font_cache.get(dpi.scale(14, host.ui_scale));
     const prefix = "Search: ";
+    const query = input.text();
     var count_buf: [32]u8 = undefined;
     const count_text = if (matches_count == 0)
         "0/0"
@@ -121,12 +137,39 @@ pub fn renderSearchBar(
 
     const query_tex = try makeTextTexture(allocator, renderer, fonts.regular, text_buf.items, host.theme.foreground);
     defer c.SDL_DestroyTexture(query_tex.tex);
+    const text_x = rect.x + dpi.scale(8, host.ui_scale);
+    const text_y = rect.y + @divFloor(rect.h - query_tex.h, 2);
+
+    // Behind the glyphs, so the highlight never hides the text.
+    if (input.select_all and query.len > 0) {
+        const prefix_w = measureWidth(fonts.regular, prefix);
+        const sel = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 110);
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(text_x + prefix_w),
+            .y = @floatFromInt(text_y),
+            .w = @floatFromInt(query_tex.w - prefix_w),
+            .h = @floatFromInt(query_tex.h),
+        });
+    }
+
     _ = c.SDL_RenderTexture(renderer, query_tex.tex, null, &c.SDL_FRect{
-        .x = @floatFromInt(rect.x + dpi.scale(8, host.ui_scale)),
-        .y = @floatFromInt(rect.y + @divFloor(rect.h - query_tex.h, 2)),
+        .x = @floatFromInt(text_x),
+        .y = @floatFromInt(text_y),
         .w = @floatFromInt(query_tex.w),
         .h = @floatFromInt(query_tex.h),
     });
+
+    if (input.caretVisible(host.now_ms)) {
+        const fg = host.theme.foreground;
+        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, 255);
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(text_x + query_tex.w + dpi.scale(1, host.ui_scale)),
+            .y = @floatFromInt(text_y),
+            .w = @floatFromInt(dpi.scale(caret_width, host.ui_scale)),
+            .h = @floatFromInt(query_tex.h),
+        });
+    }
 
     const count_tex = try makeTextTexture(allocator, renderer, fonts.regular, count_text, host.theme.accent);
     defer c.SDL_DestroyTexture(count_tex.tex);

@@ -44,7 +44,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
-- Every text field (recent-folder and reader/story search, worktree name, diff comments) follows the macOS editing convention: Backspace deletes one character, ⌥Backspace the previous word, ⌘Backspace the whole field
+- Every text field (recent-folder and reader/story search, worktree name, diff comments) behaves like a macOS text field: a blinking caret, Backspace deletes one character, ⌥Backspace the previous word, ⌘Backspace the whole field, ⌘A selects everything (the next keystroke or paste replaces it), and ⌘C/⌘V copy and paste. Pasting multi-line text into a one-line field drops the newlines
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
