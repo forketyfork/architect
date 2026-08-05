@@ -11,6 +11,7 @@ const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 const button = @import("button.zig");
 const flowing_line = @import("flowing_line.zig");
+const text_edit = @import("../text_edit.zig");
 
 const log = std.log.scoped(.worktree_overlay);
 
@@ -223,7 +224,7 @@ pub const WorktreeOverlayComponent = struct {
                 const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
 
                 if (has_gui and !has_blocking_mod and key == c.SDLK_T) {
-                    if (self.overlay.state == .Open) {
+                    if (self.overlay.state.isOpenOrOpening()) {
                         self.overlay.startCollapsing(host.now_ms);
                     } else {
                         self.needs_refresh = true;
@@ -232,7 +233,7 @@ pub const WorktreeOverlayComponent = struct {
                     return true;
                 }
 
-                if (self.overlay.state == .Open and has_gui and !has_blocking_mod) {
+                if (self.overlay.state.isOpenOrOpening() and has_gui and !has_blocking_mod) {
                     if (key == c.SDLK_0) {
                         self.startCreateModal(host);
                         return true;
@@ -1073,8 +1074,6 @@ pub const WorktreeOverlayComponent = struct {
     fn handleCreateModalKey(self: *WorktreeOverlayComponent, event: *const c.SDL_Event, host: *const types.UiHost, actions: *types.UiActionQueue) bool {
         const key = event.key.key;
         const mod = event.key.mod;
-        const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-        const has_alt = (mod & c.SDL_KMOD_ALT) != 0;
 
         switch (key) {
             c.SDLK_RETURN, c.SDLK_KP_ENTER => {
@@ -1101,34 +1100,15 @@ pub const WorktreeOverlayComponent = struct {
             },
             c.SDLK_BACKSPACE => {
                 self.cursor_blink_start_ms = host.now_ms;
-                if (has_gui) {
-                    self.create_input.clearRetainingCapacity();
-                } else if (has_alt) {
-                    self.deleteLastWord();
-                } else {
-                    if (self.create_input.items.len > 0) {
-                        self.create_input.items.len -= 1;
-                    }
-                }
+                self.create_input.items.len = text_edit.backspace(
+                    self.create_input.items,
+                    text_edit.scopeFromMods(mod),
+                    text_edit.name_separators,
+                );
                 return true;
             },
             else => return false,
         }
-    }
-
-    fn deleteLastWord(self: *WorktreeOverlayComponent) void {
-        if (self.create_input.items.len == 0) return;
-
-        var i = self.create_input.items.len;
-        while (i > 0 and (self.create_input.items[i - 1] == '-' or self.create_input.items[i - 1] == '_')) {
-            i -= 1;
-        }
-
-        while (i > 0 and self.create_input.items[i - 1] != '-' and self.create_input.items[i - 1] != '_') {
-            i -= 1;
-        }
-
-        self.create_input.items.len = i;
     }
 
     fn handleCreateModalClick(self: *WorktreeOverlayComponent, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {

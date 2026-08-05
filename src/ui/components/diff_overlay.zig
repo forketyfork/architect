@@ -9,6 +9,7 @@ const easing = @import("../../anim/easing.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
 const scrollbar = @import("scrollbar.zig");
 const comment_layout = @import("diff_comment_layout.zig");
+const text_edit = @import("../text_edit.zig");
 
 const log = std.log.scoped(.diff_overlay);
 
@@ -1232,18 +1233,11 @@ pub const DiffOverlayComponent = struct {
                     }
                     if (key == c.SDLK_BACKSPACE) {
                         if (self.editing) |*ed| {
-                            if (has_gui) {
-                                ed.input_buf.clearRetainingCapacity();
-                            } else if (ed.input_buf.items.len > 0) {
-                                // Remove last UTF-8 codepoint
-                                var remove_len: usize = 1;
-                                while (remove_len < ed.input_buf.items.len and
-                                    (ed.input_buf.items[ed.input_buf.items.len - remove_len] & 0xC0) == 0x80)
-                                {
-                                    remove_len += 1;
-                                }
-                                ed.input_buf.shrinkRetainingCapacity(ed.input_buf.items.len - remove_len);
-                            }
+                            ed.input_buf.shrinkRetainingCapacity(text_edit.backspace(
+                                ed.input_buf.items,
+                                text_edit.scopeFromMods(mod),
+                                text_edit.prose_separators,
+                            ));
                             ed.cursor_blink_start_ms = host.now_ms;
                         }
                         return true;

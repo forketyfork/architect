@@ -1,3 +1,4 @@
+const std = @import("std");
 const geom = @import("../../geom.zig");
 const easing = @import("../../anim/easing.zig");
 const dpi = @import("../../dpi.zig");
@@ -14,7 +15,20 @@ pub const ExpandingOverlay = struct {
     duration_ms: i64,
     content_height: c_int = 0,
 
-    pub const State = enum { Closed, Expanding, Open, Collapsing };
+    pub const State = enum {
+        Closed,
+        Expanding,
+        Open,
+        Collapsing,
+
+        /// True from the moment the overlay starts opening. An overlay owns
+        /// the keyboard and shows its content for the whole expand animation,
+        /// not just once it completes — gating on `.Open` alone drops
+        /// everything the user types during the expand into the terminal.
+        pub fn isOpenOrOpening(self: State) bool {
+            return self == .Open or self == .Expanding;
+        }
+    };
 
     pub fn init(slot: usize, margin: c_int, small: c_int, large: c_int, duration_ms: i64) ExpandingOverlay {
         return .{
@@ -39,10 +53,14 @@ pub const ExpandingOverlay = struct {
         self.target_size = self.large_size;
     }
 
+    /// Collapsing an overlay that is still expanding starts from the size it
+    /// currently has, so an interrupted expand reverses instead of snapping to
+    /// full size first.
     pub fn startCollapsing(self: *ExpandingOverlay, now: i64) void {
+        const from = if (self.state == .Expanding) self.unscaledSize(now) else self.large_size;
         self.state = .Collapsing;
         self.start_time = now;
-        self.start_size = self.large_size;
+        self.start_size = from;
         self.target_size = self.small_size;
     }
 
@@ -55,13 +73,16 @@ pub const ExpandingOverlay = struct {
         return elapsed >= self.duration_ms;
     }
 
-    pub fn currentSize(self: *const ExpandingOverlay, now: i64, ui_scale: f32) c_int {
+    fn unscaledSize(self: *const ExpandingOverlay, now: i64) c_int {
         const elapsed = now - self.start_time;
         const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(self.duration_ms)));
         const eased = easing.easeInOutCubic(progress);
         const size_diff = self.target_size - self.start_size;
-        const unscaled = self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
-        return dpi.scale(unscaled, ui_scale);
+        return self.start_size + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(size_diff)) * eased));
+    }
+
+    pub fn currentSize(self: *const ExpandingOverlay, now: i64, ui_scale: f32) c_int {
+        return dpi.scale(self.unscaledSize(now), ui_scale);
     }
 
     /// Returns the overlay rectangle for rendering.
@@ -98,3 +119,34 @@ pub const ExpandingOverlay = struct {
         return geom.Rect{ .x = x, .y = y, .w = size, .h = height };
     }
 };
+
+// --- Tests ---
+
+test "isOpenOrOpening covers the whole expand animation" {
+    try std.testing.expect(ExpandingOverlay.State.Open.isOpenOrOpening());
+    try std.testing.expect(ExpandingOverlay.State.Expanding.isOpenOrOpening());
+    try std.testing.expect(!ExpandingOverlay.State.Closed.isOpenOrOpening());
+    try std.testing.expect(!ExpandingOverlay.State.Collapsing.isOpenOrOpening());
+}
+
+test "collapsing an interrupted expand reverses from the current size" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    overlay.startExpanding(0);
+
+    const mid = overlay.currentSize(100, 1.0);
+    try std.testing.expect(mid > 40 and mid < 400);
+
+    overlay.startCollapsing(100);
+    // No jump to full size at the moment the direction flips.
+    try std.testing.expectEqual(mid, overlay.currentSize(100, 1.0));
+    try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(300, 1.0));
+}
+
+test "collapsing from the open state starts at full size" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    overlay.state = .Open;
+
+    overlay.startCollapsing(1000);
+    try std.testing.expectEqual(@as(c_int, 400), overlay.currentSize(1000, 1.0));
+    try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(1200, 1.0));
+}

@@ -14,6 +14,7 @@ const markdown_parser = @import("markdown_parser.zig");
 const markdown_renderer = @import("markdown_renderer.zig");
 const scrollbar = @import("scrollbar.zig");
 const search_utils = @import("search_utils.zig");
+const text_edit = @import("../text_edit.zig");
 
 const log = std.log.scoped(.reader_overlay);
 const SessionState = session_state.SessionState;
@@ -696,8 +697,13 @@ pub const ReaderOverlayComponent = struct {
                     }
 
                     if (key == c.SDLK_BACKSPACE) {
-                        if (self.search_query.items.len > 0) {
-                            self.search_query.items.len -= 1;
+                        const new_len = text_edit.backspace(
+                            self.search_query.items,
+                            text_edit.scopeFromMods(mod),
+                            text_edit.prose_separators,
+                        );
+                        if (new_len != self.search_query.items.len) {
+                            self.search_query.items.len = new_len;
                             self.rebuildSearchMatches();
                         }
                         return true;

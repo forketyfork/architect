@@ -34,7 +34,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Calm resize repaints** — agents like codex redraw their whole transcript after any terminal resize; instead of showing that as seconds of scrolling text, view toggles and window resizes keep the previous content on screen until the repaint settles, with a subtle busy shimmer when it takes longer than half a second, and then sweep the new layout in behind the shimmer band instead of snapping
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repo tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
-- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
+- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list — the overlay takes the keyboard the instant it starts opening, so nothing you type is lost to the animation), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
@@ -44,6 +44,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Every text field (recent-folder and reader/story search, worktree name, diff comments) follows the macOS editing convention: Backspace deletes one character, ⌥Backspace the previous word, ⌘Backspace the whole field
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
