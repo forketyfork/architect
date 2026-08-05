@@ -46,6 +46,8 @@ lint:
         ruff check "${py_files[@]}"
     fi
 
+    ./scripts/check-test-registry.sh
+
     zig fmt --check src/
 
     zig build lint

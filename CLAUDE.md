@@ -64,7 +64,7 @@ Read these before making any changes:
 
 1. Read the project documentation listed above before writing any code.
 2. For Zig changes, use the `zig-best-practices` skill; install it via the skill installer if not available.
-3. Every new feature must have corresponding tests.
+3. Every new feature must have corresponding tests. A new file that declares tests must also be added to the `test { _ = @import(...); }` block in `src/main.zig` — Zig only collects tests from files it analyzes, so an unregistered file's tests compile but never run. `scripts/check-test-registry.sh` (part of `just lint`) enforces this.
 4. Do not introduce new dependencies without asking first.
 5. If you change the architecture (new modules, new data flows), update `docs/ARCHITECTURE.md`.
 6. Use conventional commit messages.
@@ -213,6 +213,8 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), `src/gfx/primitives.zig` (rounded/thick borders), and `src/gfx/shimmer.zig` (busy shimmer used by the quit overlay and the resize-settle hold); reuse them instead of duplicating helpers.
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`'s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
+- Backspace handling for any text input must go through `src/ui/text_edit.zig` (`scopeFromMods` + `backspace`), so every field keeps the same macOS semantics: Cmd clears, Alt deletes a word, plain deletes one UTF-8 codepoint. Pick the separator set that matches the field (`name_separators`, `path_separators`, `prose_separators`).
+- Overlays built on `ExpandingOverlay` must gate keyboard input and toggles on `state.isOpenOrOpening()`, never on `state == .Open`: the expand animation lasts ~200 ms, and keys typed during it otherwise fall through to the focused terminal.
 - Static text badges (the collapsed `⌘O`/`⌘T`/`⌘?` overlay hints) must use `src/ui/components/glyph_badge.zig`. Never create-render-destroy an SDL texture within a single frame: destroying a texture that was queued for rendering forces SDL's Metal backend to flush the command queue and block on drawable acquisition (up to ~1 s under load). Cache textures and invalidate on font/theme changes.
 - Cursor rendering: set the cursor's background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
 - ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty's app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn't support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
