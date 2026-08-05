@@ -221,6 +221,8 @@ pub fn applyTerminalResize(
         }
 
         if (terminal_cells_changed) {
+            const prev_cols = terminal.cols;
+            const prev_rows = terminal.rows;
             resizeTerminal(allocator, terminal, terminal_cols, target.ws_row, target) catch |err| {
                 log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, terminal_cols, target.ws_row, err });
                 continue;
@@ -231,6 +233,7 @@ pub fn applyTerminalResize(
             }
             session.resetSynchronizedOutputTracking();
             session.startResizeSettleHold(now_ms);
+            log.debug("session {d}: resize settle hold started, {d}x{d} -> {d}x{d}", .{ session.id, prev_cols, prev_rows, terminal_cols, target.ws_row });
             session.markDirty();
             terminal_resized = true;
         } else if (terminal_pixels_changed) {

@@ -108,6 +108,19 @@ pub const resize_settle_rearm_window_ms: i64 = 3000;
 /// At most this many re-engagements per resize, so sustained heavy output
 /// (unrelated to the resize) cannot keep freezing the session.
 pub const resize_settle_max_rearms: u8 = 2;
+
+/// Which `resizeSettleHoldActive` branch ended a hold. Diagnostics only.
+const ResizeSettleRelease = enum {
+    /// Output went quiet for `resize_settle_quiet_ms`.
+    quiet,
+    /// `resize_settle_max_ms` elapsed while output kept arriving.
+    max_duration,
+    /// Nothing was printed within `resize_settle_response_grace_ms`; the
+    /// foreground process never reacted to the SIGWINCH.
+    no_response,
+    /// The session died or was despawned mid-hold.
+    session_gone,
+};
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -637,6 +650,13 @@ pub const SessionState = struct {
         self.resize_settle_output_seen = true;
         self.resize_settle_rearms += 1;
         self.resize_settle_transition_started_ms = 0;
+        log.debug("session {d}: resize settle hold re-armed {s} by a {d}-byte chunk, rearm {d}/{d}", .{
+            self.id,
+            if (in_transition) "mid-sweep" else "post-sweep",
+            bytes,
+            self.resize_settle_rearms,
+            resize_settle_max_rearms,
+        });
     }
 
     pub fn resizeSettleHoldActive(self: *const SessionState, current_time_ms: i64) bool {
@@ -669,12 +689,29 @@ pub const SessionState = struct {
         return current_time_ms - self.resize_settle_started_ms >= resize_settle_shimmer_after_ms;
     }
 
+    /// Mirrors the exit branches of `resizeSettleHoldActive`; only meaningful
+    /// once that predicate has gone false.
+    fn resizeSettleReleaseReason(self: *const SessionState, current_time_ms: i64) ResizeSettleRelease {
+        if (!self.spawned or self.dead) return .session_gone;
+        const elapsed_ms = current_time_ms - self.resize_settle_started_ms;
+        if (elapsed_ms >= resize_settle_max_ms) return .max_duration;
+        if (!self.resize_settle_output_seen) return .no_response;
+        return .quiet;
+    }
+
     /// Clears finished holds. Called once per frame; marks the session dirty
     /// on release so the settled content repaints immediately, and starts the
     /// dissolve transition from the held content to the new layout.
     pub fn expireResizeSettleHold(self: *SessionState, current_time_ms: i64) void {
         if (self.resize_settle_started_ms == 0) return;
         if (self.resizeSettleHoldActive(current_time_ms)) return;
+        log.debug("session {d}: resize settle hold released after {d}ms ({s}), rearms={d}, sweep {d}ms", .{
+            self.id,
+            current_time_ms - self.resize_settle_started_ms,
+            @tagName(self.resizeSettleReleaseReason(current_time_ms)),
+            self.resize_settle_rearms,
+            resize_settle_transition_ms,
+        });
         self.resize_settle_started_ms = 0;
         self.resize_settle_last_output_ms = 0;
         self.resize_settle_released_ms = current_time_ms;
@@ -1261,6 +1298,39 @@ test "resize settle hold releases at the maximum duration" {
     session.noteResizeSettleOutput(5999, 64);
     try std.testing.expect(session.resizeSettleHoldActive(5999));
     try std.testing.expect(!session.resizeSettleHoldActive(6000));
+}
+
+test "resize settle release reason distinguishes the exit branches" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+
+    // Nothing printed within the grace period.
+    session.startResizeSettleHold(1000);
+    try std.testing.expectEqual(
+        ResizeSettleRelease.no_response,
+        session.resizeSettleReleaseReason(1000 + resize_settle_response_grace_ms),
+    );
+
+    // Output arrived, then went quiet.
+    session.noteResizeSettleOutput(1100, 64);
+    try std.testing.expectEqual(
+        ResizeSettleRelease.quiet,
+        session.resizeSettleReleaseReason(1100 + resize_settle_quiet_ms),
+    );
+
+    // Output kept arriving until the hard cap.
+    try std.testing.expectEqual(
+        ResizeSettleRelease.max_duration,
+        session.resizeSettleReleaseReason(1000 + resize_settle_max_ms),
+    );
+
+    session.dead = true;
+    try std.testing.expectEqual(
+        ResizeSettleRelease.session_gone,
+        session.resizeSettleReleaseReason(1100 + resize_settle_quiet_ms),
+    );
 }
 
 test "a repaint wave during the sweep re-enters the hold" {
