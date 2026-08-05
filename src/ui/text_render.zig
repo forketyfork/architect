@@ -8,9 +8,9 @@
 //!
 //! The terminal already solves this per glyph by scaling each rendered glyph
 //! into its cell (`font.zig`). UI text has no cell grid, so this module does
-//! the equivalent: split a line into emoji and non-emoji runs, render each
-//! with the font that owns it, scale the emoji runs down to the line height,
-//! and compose the runs into one surface.
+//! the equivalent: split a line into emoji and non-emoji runs, render each with
+//! the font that owns it, scale the emoji runs by the ascent ratio so they land
+//! on the text baseline, and compose the runs into one surface.
 
 const std = @import("std");
 const c = @import("../c.zig");
@@ -105,7 +105,7 @@ fn renderRunSurface(font: *c.TTF_Font, text: []const u8, color: c.SDL_Color) ?*c
     return c.TTF_RenderText_Blended(font, text.ptr, text.len, color);
 }
 
-/// Renders one line of text, scaling emoji down to the surrounding line height.
+/// Renders one line of text, scaling emoji to sit on the surrounding baseline.
 /// Falls back to a single plain render when the line has no emoji or no emoji
 /// font is configured, which is the common case.
 pub fn makeTextTexture(
@@ -159,14 +159,26 @@ fn composeRuns(
     // tinted with the text color.
     const emoji_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
 
+    const text_ascent = c.TTF_GetFontAscent(text_font);
+    const emoji_ascent = c.TTF_GetFontAscent(emoji_font);
+
+    const placements = try allocator.alloc(EmojiPlacement, run_count);
+    defer allocator.free(placements);
+
     var total_w: c_int = 0;
     for (runs[0..run_count], 0..) |run, i| {
         const slice = text[run.start..run.end];
         const font = if (run.emoji) emoji_font else text_font;
         const run_color = if (run.emoji) emoji_color else color;
         surfaces[i] = renderRunSurface(font, slice, run_color);
+        placements[i] = .{ .w = 0, .h = 0, .y = 0 };
         const surface = surfaces[i] orelse continue;
-        total_w += if (run.emoji) scaledEmojiWidth(surface, line_h) else surface.*.w;
+        if (run.emoji) {
+            placements[i] = placeEmoji(surface.*.w, surface.*.h, emoji_ascent, text_ascent, line_h);
+            total_w += placements[i].w;
+        } else {
+            total_w += surface.*.w;
+        }
     }
     if (total_w <= 0) return error.SurfaceFailed;
 
@@ -181,12 +193,12 @@ fn composeRuns(
     for (runs[0..run_count], 0..) |run, i| {
         const surface = surfaces[i] orelse continue;
         if (run.emoji) {
-            const w = scaledEmojiWidth(surface, line_h);
-            var dst_rect = c.SDL_Rect{ .x = x, .y = 0, .w = w, .h = line_h };
+            const place = placements[i];
+            var dst_rect = c.SDL_Rect{ .x = x, .y = place.y, .w = place.w, .h = place.h };
             if (!c.SDL_BlitSurfaceScaled(surface, null, dest, &dst_rect, c.SDL_SCALEMODE_LINEAR)) {
                 log.warn("SDL_BlitSurfaceScaled failed: {s}", .{c.SDL_GetError()});
             }
-            x += w;
+            x += place.w;
         } else {
             // Text runs already come back at the line height; top-align them so
             // every run shares the same baseline.
@@ -201,10 +213,50 @@ fn composeRuns(
     return dest;
 }
 
-/// Width an emoji surface gets when scaled to the line height, keeping aspect.
-fn scaledEmojiWidth(surface: *c.SDL_Surface, line_h: c_int) c_int {
-    if (surface.*.h <= 0) return 0;
-    return @max(1, @divTrunc(surface.*.w * line_h, surface.*.h));
+/// Where a scaled emoji surface goes inside the composed line box.
+const EmojiPlacement = struct {
+    w: c_int,
+    h: c_int,
+    /// Offset from the top of the line box.
+    y: c_int,
+};
+
+/// Sizes and positions an emoji surface so it sits on the text baseline.
+///
+/// The surface SDL_ttf returns is the emoji font's whole line box (160x210 for
+/// Apple Color Emoji at any requested size), with the 160x160 glyph occupying
+/// the ascent region and empty descent padding below. Scaling that box to the
+/// text line height lands the emoji baseline above the text's, which reads as
+/// the emoji floating high. Scaling by the ascent ratio instead makes the glyph
+/// exactly the text's ascent tall and puts the two baselines on the same line;
+/// the empty descent padding that then hangs past the line box is clipped by
+/// the blit.
+fn placeEmoji(
+    surface_w: c_int,
+    surface_h: c_int,
+    emoji_ascent: c_int,
+    text_ascent: c_int,
+    line_h: c_int,
+) EmojiPlacement {
+    if (surface_w <= 0 or surface_h <= 0) return .{ .w = 0, .h = 0, .y = 0 };
+
+    // Without usable metrics, fall back to filling the line box.
+    if (emoji_ascent <= 0 or text_ascent <= 0) {
+        return .{ .w = @max(1, @divTrunc(surface_w * line_h, surface_h)), .h = line_h, .y = 0 };
+    }
+
+    const w = @max(1, divRound(surface_w * text_ascent, emoji_ascent));
+    const h = @max(1, divRound(surface_h * text_ascent, emoji_ascent));
+    // Rounded, not truncated: at these sizes one pixel of bias is visible as
+    // the emoji sitting off the baseline.
+    const scaled_baseline = divRound(h * emoji_ascent, surface_h);
+    return .{ .w = w, .h = h, .y = text_ascent - scaled_baseline };
+}
+
+/// Nearest-integer division for the positive pixel math above.
+fn divRound(a: c_int, b: c_int) c_int {
+    if (b == 0) return 0;
+    return @divTrunc(a + @divTrunc(b, 2), b);
 }
 
 /// Fade painted over the leading edge of an overflowing line, so text dissolves
@@ -373,10 +425,43 @@ test "composed emoji lines stay at the text line height" {
     try std.testing.expect(composed.*.w < plain.*.w + line_h * 2);
 }
 
-test "scaledEmojiWidth preserves the aspect ratio" {
-    var square = c.SDL_Surface{ .flags = 0, .format = 0, .w = 160, .h = 160, .pitch = 0, .pixels = null, .refcount = 0, .reserved = null };
-    try std.testing.expectEqual(@as(c_int, 17), scaledEmojiWidth(&square, 17));
+test "placeEmoji lands the emoji baseline on the text baseline" {
+    // Real metrics: Apple Color Emoji renders a 160x210 box (160x160 glyph over
+    // 50 px of descent padding, ascent 160) next to SFNS 14 pt (height 17,
+    // ascent 14).
+    const place = placeEmoji(160, 210, 160, 14, 17);
 
-    var wide = c.SDL_Surface{ .flags = 0, .format = 0, .w = 320, .h = 160, .pitch = 0, .pixels = null, .refcount = 0, .reserved = null };
-    try std.testing.expectEqual(@as(c_int, 34), scaledEmojiWidth(&wide, 17));
+    // The glyph becomes exactly the text ascent tall, so it sits on the
+    // baseline rather than floating above it.
+    try std.testing.expectEqual(@as(c_int, 14), place.w);
+    try std.testing.expectEqual(@as(c_int, 0), place.y);
+
+    const scaled_baseline = place.y + divRound(place.h * 160, 210);
+    try std.testing.expectEqual(@as(c_int, 14), scaled_baseline);
+
+    // Filling the line box instead — the previous behavior — put the baseline
+    // a pixel high, which is what made the emoji look lifted.
+    const naive_baseline = divRound(17 * 160, 210);
+    try std.testing.expect(naive_baseline < scaled_baseline);
+}
+
+test "placeEmoji keeps the aspect ratio for multi-emoji runs" {
+    const one = placeEmoji(160, 210, 160, 14, 17);
+    const two = placeEmoji(320, 210, 160, 14, 17);
+    try std.testing.expectEqual(one.w * 2, two.w);
+    try std.testing.expectEqual(one.h, two.h);
+    try std.testing.expectEqual(one.y, two.y);
+}
+
+test "placeEmoji falls back to the line box without usable metrics" {
+    const place = placeEmoji(160, 160, 0, 14, 17);
+    try std.testing.expectEqual(@as(c_int, 17), place.h);
+    try std.testing.expectEqual(@as(c_int, 17), place.w);
+    try std.testing.expectEqual(@as(c_int, 0), place.y);
+}
+
+test "placeEmoji tolerates an empty surface" {
+    const place = placeEmoji(0, 0, 160, 14, 17);
+    try std.testing.expectEqual(@as(c_int, 0), place.w);
+    try std.testing.expectEqual(@as(c_int, 0), place.h);
 }
