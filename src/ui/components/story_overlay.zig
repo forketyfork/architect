@@ -758,7 +758,7 @@ pub const StoryOverlayComponent = struct {
                     const rest_text = if (first_run.text.len > 1) first_run.text[1..] else "";
                     if (rest_text.len > 0) {
                         const text_color = self.diffLineColor(line, host);
-                        const tex = makeTextTexture(self.allocator, renderer, line_fonts.regular, rest_text, text_color) catch |err| {
+                        const tex = search_utils.makeTextTextureEmoji(self.allocator, renderer, .{ .text = line_fonts.regular, .emoji = line_fonts.emoji }, rest_text, text_color) catch |err| {
                             log.warn("failed to create diff text texture: {}", .{err});
                             y_pos += lh;
                             continue;
@@ -849,7 +849,7 @@ pub const StoryOverlayComponent = struct {
             break :blk self.chooseRunColor(host, line, run, link_hovered);
         };
 
-        const tex = makeTextTexture(self.allocator, renderer, run_font, run.text, run_color) catch |err| {
+        const tex = search_utils.makeTextTextureEmoji(self.allocator, renderer, .{ .text = run_font, .emoji = line_fonts.emoji }, run.text, run_color) catch |err| {
             log.warn("failed to create run texture: {}", .{err});
             return;
         };

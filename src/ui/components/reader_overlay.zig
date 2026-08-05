@@ -1027,7 +1027,7 @@ pub const ReaderOverlayComponent = struct {
                 else
                     false;
                 const run_color = chooseRunColor(host, line, run, link_hovered);
-                const tex = makeTextTexture(self.allocator, renderer, run_font, run.text, run_color) catch |err| {
+                const tex = search_utils.makeTextTextureEmoji(self.allocator, renderer, .{ .text = run_font, .emoji = line_fonts.emoji }, run.text, run_color) catch |err| {
                     log.warn("failed to render reader line run texture: {}", .{err});
                     continue;
                 };
@@ -1345,7 +1345,7 @@ pub const ReaderOverlayComponent = struct {
             else
                 false;
             const run_color = chooseRunColorForStyle(host, line, wrapped_run.style, false, link_hovered);
-            const tex = makeTextTexture(self.allocator, renderer, run_font, wrapped_run.text, run_color) catch |err| {
+            const tex = search_utils.makeTextTextureEmoji(self.allocator, renderer, .{ .text = run_font, .emoji = fonts.emoji }, wrapped_run.text, run_color) catch |err| {
                 log.warn("failed to render wrapped table run texture: {}", .{err});
                 continue;
             };

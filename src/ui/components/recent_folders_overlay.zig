@@ -13,6 +13,7 @@ const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 const flowing_line = @import("flowing_line.zig");
 const search_utils = @import("search_utils.zig");
 const text_edit = @import("../text_edit.zig");
+const text_render = @import("../text_render.zig");
 const font_cache_mod = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.recent_folders_overlay);
@@ -626,7 +627,7 @@ pub const RecentFoldersOverlayComponent = struct {
         };
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, title, title_color) catch {
+        const title_tex = self.makeTextTexture(renderer, .{ .text = title_fonts.regular }, title, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -653,7 +654,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 log.warn("failed to format hotkey: {}", .{err});
                 break :blk key_buf[0..0];
             };
-            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
+            const key_tex = self.makeTextTexture(renderer, .{ .text = entry_fonts.regular }, key_slice, key_color) catch {
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
@@ -669,7 +670,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 log.warn("failed to truncate path: {}", .{err});
                 break :blk path_slice;
             };
-            const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
+            const path_tex = self.makeTextTexture(renderer, .{ .text = entry_fonts.regular, .emoji = entry_fonts.emoji }, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
@@ -782,28 +783,16 @@ pub const RecentFoldersOverlayComponent = struct {
         return text[0..@min(text.len, buf.len)];
     }
 
+    /// Entry paths are user data and can contain emoji, so they go through the
+    /// emoji-aware renderer; `fonts.emoji` is null only for static labels.
     fn makeTextTexture(
+        self: *RecentFoldersOverlayComponent,
         renderer: *c.SDL_Renderer,
-        font: *c.TTF_Font,
+        fonts: text_render.LineFonts,
         text: []const u8,
         color: c.SDL_Color,
     ) !TextTex {
-        var buf: [256]u8 = undefined;
-        if (text.len >= buf.len) return error.TextTooLong;
-        @memcpy(buf[0..text.len], text);
-        buf[text.len] = 0;
-        const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), text.len, color) orelse return error.SurfaceFailed;
-        defer c.SDL_DestroySurface(surface);
-        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
-        var w: f32 = 0;
-        var h: f32 = 0;
-        _ = c.SDL_GetTextureSize(tex, &w, &h);
-        _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
-        return TextTex{
-            .tex = tex,
-            .w = @intFromFloat(w),
-            .h = @intFromFloat(h),
-        };
+        return text_render.makeTextTexture(self.allocator, renderer, fonts, text, color);
     }
 
     fn destroyEntryTextures(allocator: std.mem.Allocator, entries: []EntryTex) void {

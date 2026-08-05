@@ -9,6 +9,7 @@ const easing = @import("../../anim/easing.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
 const scrollbar = @import("scrollbar.zig");
 const comment_layout = @import("diff_comment_layout.zig");
+const text_render = @import("../text_render.zig");
 const text_edit = @import("../text_edit.zig");
 
 const log = std.log.scoped(.diff_overlay);
@@ -106,11 +107,7 @@ const LineTexture = struct {
     segments: []SegmentTexture,
 };
 
-const TextTex = struct {
-    tex: *c.SDL_Texture,
-    w: c_int,
-    h: c_int,
-};
+const TextTex = text_render.TextTex;
 
 const Cache = struct {
     ui_scale: f32,
@@ -1022,7 +1019,7 @@ pub const DiffOverlayComponent = struct {
     fn renderWrappedCommentText(
         self: *DiffOverlayComponent,
         renderer: *c.SDL_Renderer,
-        font: *c.TTF_Font,
+        fonts: text_render.LineFonts,
         text: []const u8,
         color: c.SDL_Color,
         alpha: f32,
@@ -1035,7 +1032,7 @@ pub const DiffOverlayComponent = struct {
         const RenderContext = struct {
             self: *DiffOverlayComponent,
             renderer: *c.SDL_Renderer,
-            font: *c.TTF_Font,
+            fonts: text_render.LineFonts,
             text: []const u8,
             color: c.SDL_Color,
             alpha: f32,
@@ -1051,7 +1048,7 @@ pub const DiffOverlayComponent = struct {
                 const line_text = ctx.text[line.start..line.end];
                 if (line_text.len == 0) return;
 
-                const tex = ctx.self.makeTextTexture(ctx.renderer, ctx.font, line_text, ctx.color) catch return;
+                const tex = ctx.self.makeTextTextureEmoji(ctx.renderer, ctx.fonts, line_text, ctx.color) catch return;
                 defer c.SDL_DestroyTexture(tex.tex);
 
                 _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * ctx.alpha));
@@ -1064,7 +1061,7 @@ pub const DiffOverlayComponent = struct {
         var context = RenderContext{
             .self = self,
             .renderer = renderer,
-            .font = font,
+            .fonts = fonts,
             .text = text,
             .color = color,
             .alpha = alpha,
@@ -1849,33 +1846,19 @@ pub const DiffOverlayComponent = struct {
         text: []const u8,
         color: c.SDL_Color,
     ) !TextTex {
-        if (text.len == 0) return error.EmptyText;
+        return text_render.makeTextTexture(self.allocator, renderer, .{ .text = font }, text, color);
+    }
 
-        var buf: [128]u8 = undefined;
-        var surface: *c.SDL_Surface = undefined;
-        if (text.len < buf.len) {
-            @memcpy(buf[0..text.len], text);
-            buf[text.len] = 0;
-            surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), @intCast(text.len), color) orelse return error.SurfaceFailed;
-        } else {
-            const heap_buf = try self.allocator.alloc(u8, text.len + 1);
-            defer self.allocator.free(heap_buf);
-            @memcpy(heap_buf[0..text.len], text);
-            heap_buf[text.len] = 0;
-            surface = c.TTF_RenderText_Blended(font, @ptrCast(heap_buf.ptr), @intCast(text.len), color) orelse return error.SurfaceFailed;
-        }
-        defer c.SDL_DestroySurface(surface);
-
-        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
-        var w: f32 = 0;
-        var h: f32 = 0;
-        _ = c.SDL_GetTextureSize(tex, &w, &h);
-        _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
-        return TextTex{
-            .tex = tex,
-            .w = @intFromFloat(w),
-            .h = @intFromFloat(h),
-        };
+    /// Comment bodies are user text, so emoji must be scaled to the line
+    /// height instead of arriving at the bitmap strike's native size.
+    fn makeTextTextureEmoji(
+        self: *DiffOverlayComponent,
+        renderer: *c.SDL_Renderer,
+        fonts: text_render.LineFonts,
+        text: []const u8,
+        color: c.SDL_Color,
+    ) !TextTex {
+        return text_render.makeTextTexture(self.allocator, renderer, fonts, text, color);
     }
 
     fn buildLineTexture(
@@ -3025,7 +3008,7 @@ pub const DiffOverlayComponent = struct {
 
         // Render comment text in warm yellow/amber color
         const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
-        self.renderWrappedCommentText(renderer, fonts.regular, comment.text, comment_color, alpha, text_x, text_y, max_w, line_height_px, wrap_cols);
+        self.renderWrappedCommentText(renderer, .{ .text = fonts.regular, .emoji = fonts.emoji }, comment.text, comment_color, alpha, text_x, text_y, max_w, line_height_px, wrap_cols);
 
         // Delete button "x"
         self.renderCommentDeleteBtn(host, renderer, del_btn, comment_idx);
@@ -3117,7 +3100,7 @@ pub const DiffOverlayComponent = struct {
             self.renderSelectAllHighlight(renderer, host, &ed, layout.wrap_cols, alpha, text_x, text_y, max_text_w, line_height_px, fonts.regular);
         }
 
-        self.renderWrappedCommentText(renderer, fonts.regular, ed.input.text(), host.theme.foreground, alpha, text_x, text_y, max_text_w, line_height_px, layout.wrap_cols);
+        self.renderWrappedCommentText(renderer, .{ .text = fonts.regular, .emoji = fonts.emoji }, ed.input.text(), host.theme.foreground, alpha, text_x, text_y, max_text_w, line_height_px, layout.wrap_cols);
 
         // Blinking cursor
         if (ed.input.caretVisible(host.now_ms)) {
@@ -3251,7 +3234,7 @@ pub const DiffOverlayComponent = struct {
         const text_y = input_y + dpi.scale(4, host.ui_scale);
         const line_height_px = self.lineHeight(host);
 
-        self.renderWrappedCommentText(renderer, fonts.regular, ed.input.text(), host.theme.foreground, alpha, text_x, text_y, editingCommentTextWidth(host, rect), line_height_px, layout.wrap_cols);
+        self.renderWrappedCommentText(renderer, .{ .text = fonts.regular, .emoji = fonts.emoji }, ed.input.text(), host.theme.foreground, alpha, text_x, text_y, editingCommentTextWidth(host, rect), line_height_px, layout.wrap_cols);
 
         // Buttons
         const btn_h = dpi.scale(comment_button_height, host.ui_scale);
@@ -3365,7 +3348,7 @@ pub const DiffOverlayComponent = struct {
             if (self.submit_anim_text) |anim_text| {
                 self.renderWrappedCommentText(
                     renderer,
-                    fonts.regular,
+                    .{ .text = fonts.regular, .emoji = fonts.emoji },
                     anim_text,
                     host.theme.foreground,
                     alpha * fade_out,
@@ -3384,7 +3367,7 @@ pub const DiffOverlayComponent = struct {
             const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
             self.renderWrappedCommentText(
                 renderer,
-                fonts.regular,
+                .{ .text = fonts.regular, .emoji = fonts.emoji },
                 comment.text,
                 comment_color,
                 alpha * fade_in,
@@ -3454,7 +3437,7 @@ pub const DiffOverlayComponent = struct {
         const fonts = font_cache.get(scaled_font_size) catch return;
 
         const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
-        self.renderWrappedCommentText(renderer, fonts.regular, comment.text, comment_color, alpha, text_x, text_y, max_w, self.lineHeight(host), wrap_cols);
+        self.renderWrappedCommentText(renderer, .{ .text = fonts.regular, .emoji = fonts.emoji }, comment.text, comment_color, alpha, text_x, text_y, max_w, self.lineHeight(host), wrap_cols);
 
         // Delete button "x"
         self.renderCommentDeleteBtn(host, renderer, del_btn, comment_idx);
