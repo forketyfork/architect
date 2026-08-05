@@ -73,6 +73,13 @@ just test
 zig build test
 ```
 
+Tests live next to the code they cover. Zig only collects tests from files it
+actually analyzes, so **a new file with tests must be listed in the
+`test { _ = @import(...); }` block at the bottom of `src/main.zig`** — otherwise
+its tests compile but silently never run. `scripts/check-test-registry.sh`
+(part of `just lint`) fails the build when a file with tests is missing from
+that block.
+
 Check formatting and script linting:
 ```bash
 just lint

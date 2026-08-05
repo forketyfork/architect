@@ -95,6 +95,13 @@ Debug build; benchmark VT behavior with `-Doptimize=ReleaseFast`.
   grid/full transitions (`event=view_enter_full` etc.) and, at debug level,
   `rendering to cache: session=N` lines — enough to correlate user-visible
   stalls with render churn, but only with second granularity.
+- With `[logging].min_level = "debug"`, the resize-settle lifecycle traces
+  itself: `resize settle hold started, AxB -> CxD` (scope `layout`), then
+  `resize settle hold re-armed mid-sweep by a N-byte chunk` and
+  `resize settle hold released after Nms (quiet|max_duration|no_response|
+  session_gone), rearms=N` (scope `session_state`). The release reason tells
+  you whether the agent went quiet on its own, hit `resize_settle_max_ms`
+  while still streaming, or never reacted to the SIGWINCH at all.
 - For millisecond attribution, add temporary timing around
   `applyTerminalResize`, `processOutput`, and the render pass, and print
   per-frame lines to stderr.

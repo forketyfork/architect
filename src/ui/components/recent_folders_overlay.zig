@@ -12,6 +12,8 @@ const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 const flowing_line = @import("flowing_line.zig");
 const search_utils = @import("search_utils.zig");
+const text_edit = @import("../text_edit.zig");
+const text_render = @import("../text_render.zig");
 const font_cache_mod = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.recent_folders_overlay);
@@ -31,7 +33,7 @@ pub const RecentFoldersOverlayComponent = struct {
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
 
-    search_query: std.ArrayList(u8) = .{},
+    search: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },
 
     const button_size_small: c_int = 40;
     const button_size_large: c_int = 400;
@@ -85,7 +87,7 @@ pub const RecentFoldersOverlayComponent = struct {
         self.clearFolders();
         self.all_folders.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
-        self.search_query.deinit(self.allocator);
+        self.search.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -121,7 +123,7 @@ pub const RecentFoldersOverlayComponent = struct {
         self.filtered_indices.clearRetainingCapacity();
         self.destroyCache();
 
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search.text(), " \t");
 
         for (self.all_folders.items, 0..) |folder, idx| {
             if (self.filtered_indices.items.len >= max_display) break;
@@ -178,6 +180,7 @@ pub const RecentFoldersOverlayComponent = struct {
                     switch (self.overlay.state) {
                         .Closed => {
                             self.overlay.startExpanding(host.now_ms);
+                            self.search.touch(host.now_ms);
                         },
                         .Open => self.closeOverlay(host.now_ms),
                         else => {},
@@ -210,20 +213,30 @@ pub const RecentFoldersOverlayComponent = struct {
 
                 // Cmd+O toggles overlay
                 if (has_gui and !has_blocking_mod and key == c.SDLK_O) {
-                    if (self.overlay.state == .Open) {
+                    if (self.overlay.state.isOpenOrOpening()) {
                         self.closeOverlay(host.now_ms);
                     } else {
                         self.overlay.startExpanding(host.now_ms);
+                        self.search.touch(host.now_ms);
                     }
                     return true;
                 }
 
-                if (self.overlay.state == .Open) {
-                    if (key == c.SDLK_BACKSPACE) {
-                        if (self.search_query.items.len > 0) {
-                            self.search_query.items.len -= 1;
-                            self.refilter();
+                if (self.overlay.state.isOpenOrOpening()) {
+                    // Cmd+1-9 picks an entry, so it must win over the field's
+                    // own Cmd shortcuts before the input sees the key.
+                    if (has_gui and !has_blocking_mod and key >= c.SDLK_1 and key <= c.SDLK_9) {
+                        const digit_idx: usize = @intCast(key - c.SDLK_1);
+                        if (self.filteredFolder(digit_idx)) |folder| {
+                            self.emitChangeDir(actions, host.focused_session, folder.abs_path);
+                            self.closeOverlay(host.now_ms);
                         }
+                        return true;
+                    }
+
+                    const edit = self.search.handleKey(self.allocator, key, mod, host.now_ms);
+                    if (edit.consumed) {
+                        if (edit.text_changed) self.refilter();
                         return true;
                     }
 
@@ -265,28 +278,13 @@ pub const RecentFoldersOverlayComponent = struct {
                         return true;
                     }
 
-                    // Cmd+1-9 for quick selection
-                    if (has_gui and !has_blocking_mod) {
-                        if (key >= c.SDLK_1 and key <= c.SDLK_9) {
-                            const digit_idx: usize = @intCast(key - c.SDLK_1);
-                            if (self.filteredFolder(digit_idx)) |folder| {
-                                self.emitChangeDir(actions, host.focused_session, folder.abs_path);
-                                self.closeOverlay(host.now_ms);
-                                return true;
-                            }
-                        }
-                    }
-
                     return true;
                 }
             },
             c.SDL_EVENT_TEXT_INPUT => {
-                if (self.overlay.state == .Open) {
+                if (self.overlay.state.isOpenOrOpening()) {
                     const text = std.mem.span(event.text.text);
-                    self.search_query.appendSlice(self.allocator, text) catch |err| {
-                        log.warn("failed to append search input: {}", .{err});
-                    };
-                    self.refilter();
+                    if (self.search.insert(self.allocator, text, host.now_ms)) self.refilter();
                     return true;
                 }
             },
@@ -298,7 +296,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn closeOverlay(self: *RecentFoldersOverlayComponent, now_ms: i64) void {
         self.overlay.startCollapsing(now_ms);
-        self.search_query.clearRetainingCapacity();
+        self.search.clear();
         self.refilter();
     }
 
@@ -406,7 +404,7 @@ pub const RecentFoldersOverlayComponent = struct {
             host,
             search_bar_rect,
             font_cache,
-            self.search_query.items,
+            &self.search,
             self.filtered_indices.items.len,
             if (self.filtered_indices.items.len > 0) self.selected_index else null,
         ) catch |err| {
@@ -420,7 +418,7 @@ pub const RecentFoldersOverlayComponent = struct {
             log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
             break :blk null;
         };
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search.text(), " \t");
 
         for (cache.entries, 0..) |entry_tex, idx| {
             const is_selected = idx == self.selected_index;
@@ -607,7 +605,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 cache.ui_scale == ui_scale and
                 cache.entries.len == entry_count and
                 cache.font_generation == cache_store.generation and
-                cache.query_len == self.search_query.items.len and
+                cache.query_len == self.search.text().len and
                 cache.filtered_count == entry_count)
             {
                 return cache;
@@ -629,7 +627,7 @@ pub const RecentFoldersOverlayComponent = struct {
         };
 
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, title, title_color) catch {
+        const title_tex = self.makeTextTexture(renderer, .{ .text = title_fonts.regular }, title, title_color) catch {
             self.allocator.destroy(cache);
             return null;
         };
@@ -656,7 +654,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 log.warn("failed to format hotkey: {}", .{err});
                 break :blk key_buf[0..0];
             };
-            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
+            const key_tex = self.makeTextTexture(renderer, .{ .text = entry_fonts.regular }, key_slice, key_color) catch {
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
@@ -672,7 +670,7 @@ pub const RecentFoldersOverlayComponent = struct {
                 log.warn("failed to truncate path: {}", .{err});
                 break :blk path_slice;
             };
-            const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
+            const path_tex = self.makeTextTexture(renderer, .{ .text = entry_fonts.regular, .emoji = entry_fonts.emoji }, truncated_path, entry_color) catch {
                 c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
@@ -700,7 +698,7 @@ pub const RecentFoldersOverlayComponent = struct {
             .entries = entries,
             .theme_fg = fg,
             .font_generation = cache_store.generation,
-            .query_len = self.search_query.items.len,
+            .query_len = self.search.text().len,
             .filtered_count = entry_count,
         };
 
@@ -785,28 +783,16 @@ pub const RecentFoldersOverlayComponent = struct {
         return text[0..@min(text.len, buf.len)];
     }
 
+    /// Entry paths are user data and can contain emoji, so they go through the
+    /// emoji-aware renderer; `fonts.emoji` is null only for static labels.
     fn makeTextTexture(
+        self: *RecentFoldersOverlayComponent,
         renderer: *c.SDL_Renderer,
-        font: *c.TTF_Font,
+        fonts: text_render.LineFonts,
         text: []const u8,
         color: c.SDL_Color,
     ) !TextTex {
-        var buf: [256]u8 = undefined;
-        if (text.len >= buf.len) return error.TextTooLong;
-        @memcpy(buf[0..text.len], text);
-        buf[text.len] = 0;
-        const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), text.len, color) orelse return error.SurfaceFailed;
-        defer c.SDL_DestroySurface(surface);
-        const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
-        var w: f32 = 0;
-        var h: f32 = 0;
-        _ = c.SDL_GetTextureSize(tex, &w, &h);
-        _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
-        return TextTex{
-            .tex = tex,
-            .w = @intFromFloat(w),
-            .h = @intFromFloat(h),
-        };
+        return text_render.makeTextTexture(self.allocator, renderer, fonts, text, color);
     }
 
     fn destroyEntryTextures(allocator: std.mem.Allocator, entries: []EntryTex) void {
@@ -835,3 +821,192 @@ pub const RecentFoldersOverlayComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+// --- Tests ---
+
+const testing = std.testing;
+
+fn testTheme() colors.Theme {
+    const base = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    return .{
+        .background = base,
+        .foreground = base,
+        .selection = base,
+        .accent = base,
+        .palette = [_]c.SDL_Color{base} ** 16,
+    };
+}
+
+fn testHost(now_ms: i64, theme: *const colors.Theme) types.UiHost {
+    return .{
+        .now_ms = now_ms,
+        .window_w = 1200,
+        .window_h = 800,
+        .ui_scale = 1.0,
+        .grid_cols = 2,
+        .grid_rows = 2,
+        .cell_w = 8,
+        .cell_h = 16,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &.{},
+        .theme = theme,
+    };
+}
+
+fn keyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = key;
+    event.key.mod = mod;
+    return event;
+}
+
+fn textEvent(text: [*c]const u8) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_TEXT_INPUT;
+    event.text.text = text;
+    return event;
+}
+
+const TestComponent = struct {
+    comp: RecentFoldersOverlayComponent,
+    actions: types.UiActionQueue,
+    theme: colors.Theme,
+
+    fn init() TestComponent {
+        return .{
+            .comp = .{ .allocator = testing.allocator },
+            .actions = types.UiActionQueue.init(testing.allocator),
+            .theme = testTheme(),
+        };
+    }
+
+    fn deinit(self: *TestComponent) void {
+        self.comp.clearFolders();
+        self.comp.all_folders.deinit(testing.allocator);
+        self.comp.filtered_indices.deinit(testing.allocator);
+        self.comp.search.deinit(testing.allocator);
+        self.actions.deinit();
+    }
+
+    fn send(self: *TestComponent, event: c.SDL_Event, now_ms: i64) bool {
+        const host = testHost(now_ms, &self.theme);
+        var ev = event;
+        return RecentFoldersOverlayComponent.handleEvent(&self.comp, &host, &ev, &self.actions);
+    }
+};
+
+test "Cmd+Backspace clears the search query and Alt+Backspace drops one segment" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "dev/github/architect");
+
+    try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT), 0));
+    try testing.expectEqualStrings("dev/github/", t.comp.search.text());
+
+    // The separator run is consumed with the next word, so a second press
+    // makes progress instead of stalling on the slash.
+    try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_ALT), 0));
+    try testing.expectEqualStrings("dev/", t.comp.search.text());
+
+    try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, c.SDL_KMOD_GUI), 0));
+    try testing.expectEqualStrings("", t.comp.search.text());
+}
+
+test "plain Backspace still deletes a single character" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "arch");
+
+    try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, 0), 0));
+    try testing.expectEqualStrings("arc", t.comp.search.text());
+}
+
+test "keys typed during the expand animation reach the search query" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    // Cmd+O starts the expand; the overlay is .Expanding, not .Open, for the
+    // whole animation, and must already own the keyboard.
+    try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
+    try testing.expectEqual(ExpandingOverlay.State.Expanding, t.comp.overlay.state);
+
+    try testing.expect(t.send(textEvent("a"), 10));
+    try testing.expect(t.send(textEvent("r"), 20));
+    try testing.expectEqualStrings("ar", t.comp.search.text());
+
+    try testing.expect(t.send(keyEvent(c.SDLK_BACKSPACE, 0), 30));
+    try testing.expectEqualStrings("a", t.comp.search.text());
+}
+
+test "Cmd+O during the expand animation closes the overlay" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
+    try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 50));
+    try testing.expectEqual(ExpandingOverlay.State.Collapsing, t.comp.overlay.state);
+}
+
+test "closed overlay ignores typing so it reaches the terminal" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    try testing.expect(!t.send(textEvent("a"), 0));
+    try testing.expect(!t.send(keyEvent(c.SDLK_BACKSPACE, 0), 0));
+    try testing.expectEqualStrings("", t.comp.search.text());
+}
+
+test "Cmd+A selects the query and the next keystroke replaces it" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "arch");
+
+    try testing.expect(t.send(keyEvent(c.SDLK_A, c.SDL_KMOD_GUI), 0));
+    try testing.expect(t.comp.search.select_all);
+
+    try testing.expect(t.send(textEvent("z"), 10));
+    try testing.expectEqualStrings("z", t.comp.search.text());
+    try testing.expect(!t.comp.search.select_all);
+}
+
+test "Cmd+1-9 picks an entry instead of reaching the text field" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    const folders = [_]config.Persistence.RecentFolder{
+        .{ .path = "/tmp/architect-test-alpha", .count = 1 },
+        .{ .path = "/tmp/architect-test-beta", .count = 1 },
+    };
+    t.comp.setFolders(&folders);
+    t.comp.overlay.state = .Open;
+
+    // Cmd+2 is a quick-select, not a text-field shortcut.
+    try testing.expect(t.send(keyEvent(c.SDLK_2, c.SDL_KMOD_GUI), 0));
+    const action = t.actions.pop() orelse return error.NoActionQueued;
+    try testing.expect(action == .ChangeDirectory);
+    defer testing.allocator.free(action.ChangeDirectory.path);
+    try testing.expectEqualStrings("/tmp/architect-test-beta", action.ChangeDirectory.path);
+}
+
+test "the caret blinks while the picker is open" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    // Opening resets the blink so the caret is solid on the first frame.
+    try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 1000));
+    try testing.expect(t.comp.search.caretVisible(1000));
+    try testing.expect(!t.comp.search.caretVisible(1600));
+    try testing.expect(t.comp.search.caretVisible(2100));
+}
