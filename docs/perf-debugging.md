@@ -46,11 +46,9 @@ frames stayed at 3–20 ms and VT resizes at 0–1 ms throughout — the
 seconds-long "scrolling text" after a grid/full toggle is entirely
 producer-side codex pacing, not Architect's consumption. Resumed-session
 probes therefore *cannot* reproduce the toggle lag; only live sessions with
-real transcript history can. Architect hides the in-flight repaint with the
-resize-settle hold (`SessionState.startResizeSettleHold`, described in
-`docs/ARCHITECTURE.md`): the pre-resize content stays on screen — with the
-busy shimmer once the hold outlasts half a second — until the session's
-output goes quiet or the hard cap elapses.
+real transcript history can. Architect renders that repaint live, the way
+Ghostty does: whatever the app draws is what appears on screen, and the
+picture converges once the app finishes redrawing.
 
 ## Measured costs (ghostty-vt 1.3.1, Apple Silicon)
 
@@ -95,13 +93,9 @@ Debug build; benchmark VT behavior with `-Doptimize=ReleaseFast`.
   grid/full transitions (`event=view_enter_full` etc.) and, at debug level,
   `rendering to cache: session=N` lines — enough to correlate user-visible
   stalls with render churn, but only with second granularity.
-- With `[logging].min_level = "debug"`, the resize-settle lifecycle traces
-  itself: `resize settle hold started, AxB -> CxD` (scope `layout`), then
-  `resize settle hold re-armed mid-sweep by a N-byte chunk` and
-  `resize settle hold released after Nms (quiet|max_duration|no_response|
-  session_gone), rearms=N` (scope `session_state`). The release reason tells
-  you whether the agent went quiet on its own, hit `resize_settle_max_ms`
-  while still streaming, or never reacted to the SIGWINCH at all.
+- With `[logging].min_level = "debug"`, each VT resize logs
+  `session N: terminal resized, AxB -> CxD` (scope `layout`), which pins the
+  exact moment a SIGWINCH went out and the cell counts on either side of it.
 - For millisecond attribution, add temporary timing around
   `applyTerminalResize`, `processOutput`, and the render pass, and print
   per-frame lines to stderr.

@@ -180,7 +180,6 @@ pub fn applyTerminalResize(
     allocator: std.mem.Allocator,
     sizes: Sizes,
     full_set: FullSet,
-    now_ms: i64,
 ) bool {
     const grid_size = pty_mod.winsize{
         .ws_row = sizes.grid.rows,
@@ -232,8 +231,7 @@ pub fn applyTerminalResize(
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
             session.resetSynchronizedOutputTracking();
-            session.startResizeSettleHold(now_ms);
-            log.debug("session {d}: resize settle hold started, {d}x{d} -> {d}x{d}", .{ session.id, prev_cols, prev_rows, terminal_cols, target.ws_row });
+            log.debug("session {d}: terminal resized, {d}x{d} -> {d}x{d}", .{ session.id, prev_cols, prev_rows, terminal_cols, target.ws_row });
             session.markDirty();
             terminal_resized = true;
         } else if (terminal_pixels_changed) {
@@ -399,7 +397,7 @@ test "applyTerminalResize preserves DECCOLM width while layout target is unchang
     terminal.modes.set(.enable_mode_3, true);
 
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 });
 
     try std.testing.expect(!changed);
     try std.testing.expectEqual(@as(u16, 80), terminal.cols);
@@ -418,7 +416,7 @@ test "applyTerminalResize preserves DECCOLM width on row-only layout changes" {
     terminal.modes.set(.in_band_size_reports, true);
 
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 30), .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 30), .{ .primary = 0 });
 
     try std.testing.expect(changed);
     try std.testing.expectEqual(@as(u16, 80), terminal.cols);
@@ -446,7 +444,7 @@ test "applyTerminalResize preserves DECCOLM width on pixel-only layout changes" 
         .full = .{ .cols = 100, .rows = 24, .width_px = 1200, .height_px = 480 },
     };
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, sizes, .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, sizes, .{ .primary = 0 });
 
     try std.testing.expect(!changed);
     try std.testing.expectEqual(@as(u16, 80), terminal.cols);
@@ -470,7 +468,7 @@ test "applyTerminalResize resets DECCOLM width when layout target changes" {
     terminal.modes.set(.enable_mode_3, true);
 
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, testSizes(120, 24), .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(120, 24), .{ .primary = 0 });
 
     try std.testing.expect(changed);
     try std.testing.expectEqual(@as(u16, 120), terminal.cols);
@@ -485,26 +483,44 @@ test "applyTerminalResize corrects non-DECCOLM terminal width drift" {
     defer fixture.deinit(allocator);
 
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 });
 
     try std.testing.expect(changed);
     const terminal = try testTerminal(&fixture.session);
     try std.testing.expectEqual(@as(u16, 100), terminal.cols);
     try std.testing.expectEqual(@as(u16, 24), terminal.rows);
-    try std.testing.expect(fixture.session.resizeSettleHoldActive(1000));
 }
 
-test "applyTerminalResize does not start a settle hold without a cell change" {
+// A resize must publish the new content immediately: nothing may defer the
+// repaint behind a settle/freeze window. Architect renders whatever the app
+// draws in response to SIGWINCH, live, the way Ghostty does.
+test "applyTerminalResize makes the session renderable immediately" {
+    const allocator = std.testing.allocator;
+    const target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
+    var fixture = try initSpawnedTestSession(allocator, target, 100, 24);
+    defer fixture.deinit(allocator);
+
+    const epoch_before = fixture.session.render_epoch;
+    var sessions = [_]*SessionState{&fixture.session};
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(120, 30), .{ .primary = 0 });
+
+    try std.testing.expect(changed);
+    try std.testing.expect(fixture.session.render_epoch != epoch_before);
+}
+
+test "applyTerminalResize reports no change when the cell count already matches" {
     const allocator = std.testing.allocator;
     const target = pty_mod.winsize{ .ws_col = 100, .ws_row = 24, .ws_xpixel = 1000, .ws_ypixel = 480 };
     var fixture = try initSpawnedTestSession(allocator, target, 100, 24);
     defer fixture.deinit(allocator);
 
     var sessions = [_]*SessionState{&fixture.session};
-    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 }, 1000);
+    const changed = applyTerminalResize(&sessions, allocator, testSizes(100, 24), .{ .primary = 0 });
 
     try std.testing.expect(!changed);
-    try std.testing.expect(!fixture.session.resizeSettleHoldActive(1000));
+    const terminal = try testTerminal(&fixture.session);
+    try std.testing.expectEqual(@as(u16, 100), terminal.cols);
+    try std.testing.expectEqual(@as(u16, 24), terminal.rows);
 }
 
 test "terminal resize preserves prompt contents when shell does not redraw" {
