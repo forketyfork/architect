@@ -58,6 +58,13 @@ just run
 zig build run
 ```
 
+Run with a custom log directory (see `docs/configuration.md` for logging details):
+```bash
+just run --log-dir .tmp/architect-debug-logs
+# or
+zig build run -- --log-dir .tmp/architect-debug-logs
+```
+
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).

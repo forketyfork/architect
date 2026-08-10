@@ -1193,7 +1193,7 @@ fn startQuitFlow(
     return false;
 }
 
-pub fn run() !void {
+pub fn run(log_dir_override: ?[]const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -1243,6 +1243,7 @@ pub fn run() !void {
     var file_logging_enabled = false;
     logging_mod.init(allocator, .{
         .min_level = config.logging.getMinLevel(),
+        .directory_override = log_dir_override,
     }) catch |err| {
         std.debug.print("Failed to initialize file logging: {}\n", .{err});
     };

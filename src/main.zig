@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const runtime = @import("app/runtime.zig");
 const logging = @import("logging.zig");
+const cli_args = @import("cli_args.zig");
 
 pub const std_options: std.Options = .{
     // Keep compile-time logging permissive; runtime filtering is handled by
@@ -11,7 +12,16 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
-    try runtime.run();
+    const allocator = std.heap.page_allocator;
+    const argv = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, argv);
+
+    const parsed = cli_args.parse(argv[1..]) catch |err| {
+        std.debug.print("architect: {s}\n{s}", .{ @errorName(err), cli_args.usage_text });
+        std.process.exit(1);
+    };
+
+    try runtime.run(parsed.log_dir_override);
 }
 
 // Zig only collects tests from files reachable through this block, so every
@@ -27,6 +37,7 @@ test {
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
     _ = @import("app/terminal_history.zig");
+    _ = @import("cli_args.zig");
     _ = @import("colors.zig");
     _ = @import("config.zig");
     _ = @import("font.zig");

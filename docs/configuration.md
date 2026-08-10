@@ -159,6 +159,8 @@ Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a ti
 
 Event markers (startup/shutdown and grid/full view transitions) are always recorded at `INFO` level.
 
+Pass `--log-dir <path>` on the command line to write `architect.log` (and its rotated archives) to a custom directory instead of the default location, e.g. `zig build run -- --log-dir /path/to/logs` or `just run --log-dir /path/to/logs`.
+
 ### Worktree Configuration
 
 ```toml
