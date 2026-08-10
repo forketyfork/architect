@@ -10,8 +10,7 @@ between the waves.
 
 Args: [initial_lines] [reemit_lines] [mode]. Mode "active" (default) keeps a
 status line ticking through the lull and between resizes; "idle" stays
-silent like a codex waiting for input — the case that exercises the
-quiet-release/re-arm logic of Architect's resize-settle hold.
+silent like a codex waiting for input.
 """
 import signal
 import sys
