@@ -791,6 +791,245 @@ fn handleExternalSpawnRequest(
     } });
 }
 
+/// Close the terminal in `idx`, reclaim its grid slot, and relayout/animate the
+/// remaining sessions exactly as the close-pane keybinding does. Shared by the
+/// `.DespawnSession` UI action and the external `close_session` control request
+/// so a programmatic close goes through the same battle-tested path (rather than
+/// signal-killing the child, which would leave a dead, unresponsive pane).
+fn despawnSessionAtIndex(
+    idx: usize,
+    allocator: std.mem.Allocator,
+    sessions: []*SessionState,
+    grid: *GridLayout,
+    anim_state: *AnimationState,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
+    render_cache: *renderer_mod.RenderCache,
+    loop: *xev.Loop,
+    animations_enabled: bool,
+    now: i64,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    font: *font_mod.Font,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+    cell_width_pixels: *c_int,
+    cell_height_pixels: *c_int,
+) void {
+    if (idx >= sessions.len) return;
+
+    if (anim_state.mode == .Full and anim_state.focused_session == idx) {
+        if (animations_enabled) {
+            grid_nav.startCollapseToGrid(anim_state, now, cell_width_pixels.*, cell_height_pixels.*, render_width, render_height, grid.cols);
+        } else {
+            anim_state.mode = .Grid;
+        }
+    }
+    log.info("despawn idx={d} mode={s} spawned_count={d}", .{
+        idx,
+        @tagName(anim_state.mode),
+        countSpawnedSessions(sessions),
+    });
+    var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
+    defer if (old_positions) |*snapshots| {
+        snapshots.deinit(allocator);
+    };
+    if (animations_enabled and anim_state.mode == .Grid) {
+        old_positions = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
+            std.debug.print("Failed to snapshot session positions: {}\n", .{err});
+            break :blk null;
+        };
+    }
+    sessions[idx].despawn(allocator);
+    session_interaction_component.resetView(idx);
+    sessions[idx].markDirty();
+    compactSessions(sessions, session_interaction_component.viewSlice(), render_cache, anim_state);
+
+    // Handle grid contraction
+    const remaining_count = countSpawnedSessions(sessions);
+    const max_spawned_idx = highestSpawnedIndex(sessions);
+    const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
+
+    if (remaining_count == 0) {
+        // Re-spawn a fresh terminal in slot 0
+        sessions[0].ensureSpawnedWithLoop(loop) catch |err| {
+            std.debug.print("Failed to respawn terminal: {}\n", .{err});
+        };
+        anim_state.focused_session = 0;
+        grid.cols = 1;
+        grid.rows = 1;
+        cell_width_pixels.* = render_width;
+        cell_height_pixels.* = render_height;
+        anim_state.mode = .Full;
+        applyTerminalLayout(sessions, allocator, font, render_width, render_height, ui_scale, anim_state, grid.cols, grid.rows, grid_font_scale, full_cols, full_rows);
+    } else if (remaining_count == 1) {
+        // Only 1 terminal remains - go directly to Full mode, no resize animation
+        grid.cols = 1;
+        grid.rows = 1;
+        cell_width_pixels.* = render_width;
+        cell_height_pixels.* = render_height;
+        if (!sessions[anim_state.focused_session].spawned) {
+            for (sessions, 0..) |s, i| {
+                if (s.spawned) {
+                    anim_state.focused_session = i;
+                    break;
+                }
+            }
+        }
+        anim_state.mode = .Full;
+        applyTerminalLayout(sessions, allocator, font, render_width, render_height, ui_scale, anim_state, grid.cols, grid.rows, grid_font_scale, full_cols, full_rows);
+    } else {
+        const new_dims = GridLayout.calculateDimensions(required_slots);
+        const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
+        if (should_shrink) {
+            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+            const grid_will_resize = new_dims.cols != grid.cols or new_dims.rows != grid.rows;
+            if (can_animate_reflow) {
+                if (old_positions) |snapshots| {
+                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                        std.debug.print("Failed to collect session moves: {}\n", .{err});
+                        break :blk null;
+                    };
+                    if (move_result) |*moves| {
+                        defer moves.list.deinit(allocator);
+                        if (grid_will_resize or moves.moved) {
+                            grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                std.debug.print("Failed to start grid resize animation: {}\n", .{err});
+                            };
+                            anim_state.mode = .GridResizing;
+                        } else {
+                            grid.cols = new_dims.cols;
+                            grid.rows = new_dims.rows;
+                        }
+                    } else {
+                        grid.cols = new_dims.cols;
+                        grid.rows = new_dims.rows;
+                    }
+                } else {
+                    grid.cols = new_dims.cols;
+                    grid.rows = new_dims.rows;
+                }
+            } else {
+                grid.cols = new_dims.cols;
+                grid.rows = new_dims.rows;
+            }
+
+            cell_width_pixels.* = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+            cell_height_pixels.* = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+            applyTerminalLayout(sessions, allocator, font, render_width, render_height, ui_scale, anim_state, grid.cols, grid.rows, grid_font_scale, full_cols, full_rows);
+
+            if (!sessions[anim_state.focused_session].spawned) {
+                var new_focus: usize = 0;
+                for (sessions, 0..) |s, i| {
+                    if (s.spawned) {
+                        new_focus = i;
+                        break;
+                    }
+                }
+                anim_state.focused_session = new_focus;
+            }
+            std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
+        } else {
+            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
+            if (can_animate_reflow) {
+                if (old_positions) |snapshots| {
+                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                        std.debug.print("Failed to collect session moves: {}\n", .{err});
+                        break :blk null;
+                    };
+                    if (move_result) |*moves| {
+                        defer moves.list.deinit(allocator);
+                        if (moves.moved) {
+                            grid.startResize(grid.cols, grid.rows, now, render_width, render_height, moves.list.items) catch |err| {
+                                std.debug.print("Failed to start grid reflow animation: {}\n", .{err});
+                            };
+                            anim_state.mode = .GridResizing;
+                        }
+                    }
+                }
+            }
+            if (!sessions[anim_state.focused_session].spawned) {
+                var new_focus: usize = 0;
+                for (sessions, 0..) |s, i| {
+                    if (s.spawned) {
+                        new_focus = i;
+                        break;
+                    }
+                }
+                anim_state.focused_session = new_focus;
+            }
+        }
+    }
+}
+
+/// Resolve which spawned slot an external close request targets: by session id
+/// if given, else by explicit slot_index. Returns null when nothing matches.
+fn resolveCloseTargetIndex(sessions: []const *SessionState, request: control.CloseRequest) ?usize {
+    if (request.session_id) |session_id| {
+        return findSessionIndexById(sessions, session_id);
+    }
+    if (request.slot_index) |slot_index| {
+        if (slot_index < sessions.len and sessions[slot_index].spawned) return slot_index;
+    }
+    return null;
+}
+
+fn handleExternalCloseRequest(
+    allocator: std.mem.Allocator,
+    pending: *control.PendingClose,
+    sessions: []*SessionState,
+    grid: *GridLayout,
+    anim_state: *AnimationState,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
+    render_cache: *renderer_mod.RenderCache,
+    loop: *xev.Loop,
+    animations_enabled: bool,
+    now: i64,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    font: *font_mod.Font,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+    cell_width_pixels: *c_int,
+    cell_height_pixels: *c_int,
+) void {
+    const idx = resolveCloseTargetIndex(sessions, pending.request) orelse {
+        pending.completion.complete(.{ .failure = .{
+            .code = .not_found,
+            .message = "no Architect session matches the requested identifier",
+        } });
+        return;
+    };
+
+    const session_id = sessions[idx].id;
+    despawnSessionAtIndex(
+        idx,
+        allocator,
+        sessions,
+        grid,
+        anim_state,
+        session_interaction_component,
+        render_cache,
+        loop,
+        animations_enabled,
+        now,
+        render_width,
+        render_height,
+        ui_scale,
+        font,
+        grid_font_scale,
+        full_cols,
+        full_rows,
+        cell_width_pixels,
+        cell_height_pixels,
+    );
+
+    pending.completion.complete(.{ .success = .{ .session_id = session_id } });
+}
+
 fn initSharedFont(
     allocator: std.mem.Allocator,
     renderer: *c.SDL_Renderer,
@@ -1201,6 +1440,9 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var control_queue = ControlQueue{};
     defer control_queue.deinit(allocator);
 
+    var close_queue = control.CloseQueue{};
+    defer close_queue.deinit(allocator);
+
     const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
@@ -1329,6 +1571,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         control_sock,
         control_discovery_path,
         &control_queue,
+        &close_queue,
         &control_stop,
         .{
             .context = &sdl,
@@ -1338,6 +1581,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     defer {
         control_stop.store(true, .seq_cst);
         control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
+        control.failPendingClose(&close_queue, allocator, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
     }
@@ -2432,7 +2676,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
-        const had_control_requests = control_requests.items.len > 0;
+        var had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
             handleExternalSpawnRequest(
                 allocator,
@@ -2455,6 +2699,33 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 &cell_height_pixels,
             );
             request.request.deinit(allocator);
+        }
+
+        var close_requests = close_queue.drainAll();
+        defer close_requests.deinit(allocator);
+        if (close_requests.items.len > 0) had_control_requests = true;
+        for (close_requests.items) |*request| {
+            handleExternalCloseRequest(
+                allocator,
+                request,
+                sessions,
+                &grid,
+                &anim_state,
+                session_interaction_component,
+                &render_cache,
+                &loop,
+                animations_enabled,
+                now,
+                render_width,
+                render_height,
+                ui_scale,
+                &font,
+                config.grid.font_scale,
+                &full_cols,
+                &full_rows,
+                &cell_width_pixels,
+                &cell_height_pixels,
+            );
         }
 
         var notifications = notify_queue.drainAll();
@@ -2560,151 +2831,27 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 std.debug.print("Expanding session: {d}\n", .{idx});
             },
             .DespawnSession => |idx| {
-                if (idx < sessions.len) {
-                    if (anim_state.mode == .Full and anim_state.focused_session == idx) {
-                        if (animations_enabled) {
-                            grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
-                        } else {
-                            anim_state.mode = .Grid;
-                        }
-                    }
-                    log.info("ui despawn requested idx={d} mode={s} spawned_count={d}", .{
-                        idx,
-                        @tagName(anim_state.mode),
-                        countSpawnedSessions(sessions),
-                    });
-                    var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
-                    defer if (old_positions) |*snapshots| {
-                        snapshots.deinit(allocator);
-                    };
-                    if (animations_enabled and anim_state.mode == .Grid) {
-                        old_positions = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
-                            std.debug.print("Failed to snapshot session positions: {}\n", .{err});
-                            break :blk null;
-                        };
-                    }
-                    sessions[idx].despawn(allocator);
-                    session_interaction_component.resetView(idx);
-                    sessions[idx].markDirty();
-                    compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
-                    std.debug.print("UI requested despawn: {d}\n", .{idx});
-
-                    // Handle grid contraction
-                    const remaining_count = countSpawnedSessions(sessions);
-                    const max_spawned_idx = highestSpawnedIndex(sessions);
-                    const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
-
-                    if (remaining_count == 0) {
-                        // Re-spawn a fresh terminal in slot 0
-                        sessions[0].ensureSpawnedWithLoop(&loop) catch |err| {
-                            std.debug.print("Failed to respawn terminal: {}\n", .{err});
-                        };
-                        anim_state.focused_session = 0;
-                        grid.cols = 1;
-                        grid.rows = 1;
-                        cell_width_pixels = render_width;
-                        cell_height_pixels = render_height;
-                        anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-                    } else if (remaining_count == 1) {
-                        // Only 1 terminal remains - go directly to Full mode, no resize animation
-                        grid.cols = 1;
-                        grid.rows = 1;
-                        cell_width_pixels = render_width;
-                        cell_height_pixels = render_height;
-                        if (!sessions[anim_state.focused_session].spawned) {
-                            for (sessions, 0..) |s, i| {
-                                if (s.spawned) {
-                                    anim_state.focused_session = i;
-                                    break;
-                                }
-                            }
-                        }
-                        anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-                    } else {
-                        const new_dims = GridLayout.calculateDimensions(required_slots);
-                        const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
-                        if (should_shrink) {
-                            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
-                            const grid_will_resize = new_dims.cols != grid.cols or new_dims.rows != grid.rows;
-                            if (can_animate_reflow) {
-                                if (old_positions) |snapshots| {
-                                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
-                                        std.debug.print("Failed to collect session moves: {}\n", .{err});
-                                        break :blk null;
-                                    };
-                                    if (move_result) |*moves| {
-                                        defer moves.list.deinit(allocator);
-                                        if (grid_will_resize or moves.moved) {
-                                            grid.startResize(new_dims.cols, new_dims.rows, now, render_width, render_height, moves.list.items) catch |err| {
-                                                std.debug.print("Failed to start grid resize animation: {}\n", .{err});
-                                            };
-                                            anim_state.mode = .GridResizing;
-                                        } else {
-                                            grid.cols = new_dims.cols;
-                                            grid.rows = new_dims.rows;
-                                        }
-                                    } else {
-                                        grid.cols = new_dims.cols;
-                                        grid.rows = new_dims.rows;
-                                    }
-                                } else {
-                                    grid.cols = new_dims.cols;
-                                    grid.rows = new_dims.rows;
-                                }
-                            } else {
-                                grid.cols = new_dims.cols;
-                                grid.rows = new_dims.rows;
-                            }
-
-                            cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                            cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-
-                            if (!sessions[anim_state.focused_session].spawned) {
-                                var new_focus: usize = 0;
-                                for (sessions, 0..) |s, i| {
-                                    if (s.spawned) {
-                                        new_focus = i;
-                                        break;
-                                    }
-                                }
-                                anim_state.focused_session = new_focus;
-                            }
-                            std.debug.print("Grid shrunk to {d}x{d} with {d} terminals\n", .{ grid.cols, grid.rows, remaining_count });
-                        } else {
-                            const can_animate_reflow = animations_enabled and anim_state.mode == .Grid;
-                            if (can_animate_reflow) {
-                                if (old_positions) |snapshots| {
-                                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
-                                        std.debug.print("Failed to collect session moves: {}\n", .{err});
-                                        break :blk null;
-                                    };
-                                    if (move_result) |*moves| {
-                                        defer moves.list.deinit(allocator);
-                                        if (moves.moved) {
-                                            grid.startResize(grid.cols, grid.rows, now, render_width, render_height, moves.list.items) catch |err| {
-                                                std.debug.print("Failed to start grid reflow animation: {}\n", .{err});
-                                            };
-                                            anim_state.mode = .GridResizing;
-                                        }
-                                    }
-                                }
-                            }
-                            if (!sessions[anim_state.focused_session].spawned) {
-                                var new_focus: usize = 0;
-                                for (sessions, 0..) |s, i| {
-                                    if (s.spawned) {
-                                        new_focus = i;
-                                        break;
-                                    }
-                                }
-                                anim_state.focused_session = new_focus;
-                            }
-                        }
-                    }
-                }
+                despawnSessionAtIndex(
+                    idx,
+                    allocator,
+                    sessions,
+                    &grid,
+                    &anim_state,
+                    session_interaction_component,
+                    &render_cache,
+                    &loop,
+                    animations_enabled,
+                    now,
+                    render_width,
+                    render_height,
+                    ui_scale,
+                    &font,
+                    config.grid.font_scale,
+                    &full_cols,
+                    &full_rows,
+                    &cell_width_pixels,
+                    &cell_height_pixels,
+                );
             },
             .RequestCollapseFocused => {
                 if (anim_state.mode == .Full) {
