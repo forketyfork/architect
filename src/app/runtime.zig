@@ -1456,6 +1456,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     };
     errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
+    const show_onboarding = !persistence.onboarding_shown;
 
     // Initialize recent folders with home directory if empty
     if (persistence.recent_folders.items.len == 0) {
@@ -1717,6 +1718,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var running = true;
     var persistence_dirty = false;
     var persistence_dirty_since_ms: i64 = 0;
+    var onboarding_displayed = false;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -3327,10 +3329,16 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 ui_scale,
                 config.grid.font_scale,
                 &grid,
+                show_onboarding,
+                &onboarding_displayed,
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;
             };
+            if (show_onboarding and onboarding_displayed and !persistence.onboarding_shown) {
+                persistence.onboarding_shown = true;
+                markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
+            }
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             if (relaunch_trace_frames > 0) {
@@ -3524,13 +3532,25 @@ test "drainPendingSessionSends drops a send targeting a dead session" {
     try std.testing.expectEqual(@as(usize, 0), pending_sends.items.len);
 }
 
-test "drainPendingSessionSends waits for the deadline before sending when the agent is not yet confirmed" {
+test "drainPendingSessionSends waits for the deadline, then writes the pending text exactly once" {
+    const shell_mod = @import("../shell.zig");
     const allocator = std.testing.allocator;
+
+    // A pipe stands in for the PTY: `Shell.write` writes to `pty.master`, so the
+    // test can read the other end to observe exactly what was sent, instead of
+    // trusting a fabricated session whose `sendInput` would silently no-op.
+    const pipe_fds = try posix.pipe();
+    defer posix.close(pipe_fds[0]);
+    defer posix.close(pipe_fds[1]);
+
     var session: SessionState = undefined;
     session.id = 1;
     session.spawned = true;
     session.dead = false;
-    session.shell = null;
+    session.shell = shell_mod.Shell{
+        .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
+        .child_pid = -1,
+    };
     session.pending_write = .empty;
     session.allocator = allocator;
     var sessions = [_]*SessionState{&session};
@@ -3549,14 +3569,18 @@ test "drainPendingSessionSends waits for the deadline before sending when the ag
     const renderer: *c.SDL_Renderer = undefined;
     defer ui.deinit(renderer);
 
-    // Before the deadline and with no way to confirm the expected agent (no live
-    // shell in this fabricated session), the send stays queued.
+    // Before the deadline, the pipe isn't recognized as a foreground `claude`
+    // process, so the send stays queued and nothing is written yet.
     drainPendingSessionSends(allocator, &pending_sends, &sessions, 500, &ui);
     try std.testing.expectEqual(@as(usize, 1), pending_sends.items.len);
 
     // Once the deadline passes, delivery is guaranteed rather than silently dropped.
     drainPendingSessionSends(allocator, &pending_sends, &sessions, 1_000, &ui);
     try std.testing.expectEqual(@as(usize, 0), pending_sends.items.len);
+
+    var buf: [64]u8 = undefined;
+    const n = try posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualStrings("hello", buf[0..n]);
 }
 
 test "agentLabel reports the detected agent name or 'none'" {
