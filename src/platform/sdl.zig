@@ -7,6 +7,8 @@ const log = std.log.scoped(.sdl);
 
 pub const WindowPosition = struct { x: c_int, y: c_int };
 
+const window_visibility_margin: c_int = 32;
+
 pub const InitError = error{
     SDLInitFailed,
     TTFInitFailed,
@@ -30,6 +32,39 @@ pub const Platform = struct {
     scale_x: f32,
     scale_y: f32,
 };
+
+fn windowPositionIsUsable(
+    position: WindowPosition,
+    window_w: c_int,
+    window_h: c_int,
+    display_bounds: c.SDL_Rect,
+) bool {
+    const min_x = display_bounds.x - window_w + window_visibility_margin;
+    const max_x = display_bounds.x + display_bounds.w - window_visibility_margin;
+    const min_y = display_bounds.y - window_h + window_visibility_margin;
+    const max_y = display_bounds.y + display_bounds.h - window_visibility_margin;
+
+    return position.x >= min_x and position.x <= max_x and
+        position.y >= min_y and position.y <= max_y;
+}
+
+fn restoredWindowPosition(
+    position: ?WindowPosition,
+    window_w: c_int,
+    window_h: c_int,
+) ?WindowPosition {
+    const desired = position orelse return null;
+    const primary = c.SDL_GetPrimaryDisplay();
+    if (primary == 0) return desired;
+
+    var display_bounds: c.SDL_Rect = undefined;
+    if (!c.SDL_GetDisplayBounds(primary, &display_bounds)) return desired;
+
+    if (windowPositionIsUsable(desired, window_w, window_h, display_bounds)) return desired;
+
+    log.info("saved window position is no longer visible; using default placement", .{});
+    return null;
+}
 
 pub fn init(
     title: [*:0]const u8,
@@ -60,13 +95,14 @@ pub fn init(
         return error.TTFInitFailed;
     }
 
+    const restored_position = restoredWindowPosition(position, width, height);
     const window_flags = c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
     const window = c.SDL_CreateWindow(title, width, height, window_flags) orelse {
         std.debug.print("SDL_CreateWindow Error: {s}\n", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
     };
 
-    if (position) |pos| {
+    if (restored_position) |pos| {
         _ = c.SDL_SetWindowPosition(window, pos.x, pos.y);
     }
 
@@ -166,4 +202,26 @@ pub fn deinit(p: *Platform) void {
     c.SDL_DestroyWindow(p.window);
     c.TTF_Quit();
     c.SDL_Quit();
+}
+
+test "window position is usable when enough of the window remains visible" {
+    const bounds = c.SDL_Rect{ .x = 0, .y = 0, .w = 1920, .h = 1080 };
+
+    try std.testing.expect(windowPositionIsUsable(.{ .x = 100, .y = 100 }, 1200, 900, bounds));
+    try std.testing.expect(windowPositionIsUsable(.{ .x = -1168, .y = -868 }, 1200, 900, bounds));
+    try std.testing.expect(windowPositionIsUsable(.{ .x = 1888, .y = 148 }, 1200, 900, bounds));
+}
+
+test "window position is rejected when it is entirely off display" {
+    const bounds = c.SDL_Rect{ .x = 0, .y = 0, .w = 1920, .h = 1080 };
+
+    try std.testing.expect(!windowPositionIsUsable(.{ .x = -1200, .y = 100 }, 1200, 900, bounds));
+    try std.testing.expect(!windowPositionIsUsable(.{ .x = 100, .y = -900 }, 1200, 900, bounds));
+}
+
+test "window position visibility accounts for displays with negative origins" {
+    const bounds = c.SDL_Rect{ .x = -1920, .y = -100, .w = 1920, .h = 1080 };
+
+    try std.testing.expect(windowPositionIsUsable(.{ .x = -1800, .y = 0 }, 1200, 900, bounds));
+    try std.testing.expect(!windowPositionIsUsable(.{ .x = 0, .y = 0 }, 1200, 900, bounds));
 }

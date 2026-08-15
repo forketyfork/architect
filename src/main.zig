@@ -46,6 +46,7 @@ test {
     _ = @import("logging.zig");
     _ = @import("metrics.zig");
     _ = @import("pty.zig");
+    _ = @import("platform/sdl.zig");
     _ = @import("render/renderer.zig");
     _ = @import("session/notify.zig");
     _ = @import("session/pty_watcher.zig");
