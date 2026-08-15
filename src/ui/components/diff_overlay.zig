@@ -7,6 +7,7 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const easing = @import("../../anim/easing.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
+const session_state = @import("../../session/state.zig");
 const scrollbar = @import("scrollbar.zig");
 const comment_layout = @import("diff_comment_layout.zig");
 const text_render = @import("../text_render.zig");
@@ -191,7 +192,12 @@ pub const DiffOverlayComponent = struct {
     const agent_dropdown_width: c_int = 140;
     const send_button_width: c_int = 110;
     const send_button_height: c_int = 26;
-    const dropdown_items = [_][]const u8{ "Paste directly", "claude", "codex", "gemini" };
+    const agent_dropdown_item_count: usize = 1 + @typeInfo(session_state.AgentKind).@"enum".fields.len;
+
+    fn agentDropdownLabel(index: usize) []const u8 {
+        if (index == 0) return "Paste directly";
+        return @as(session_state.AgentKind, @enumFromInt(index - 1)).name();
+    }
 
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
@@ -1343,12 +1349,12 @@ pub const DiffOverlayComponent = struct {
                         const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
                         const rel_y = mouse_y - dd.y;
                         const item_idx: usize = @intCast(@divFloor(rel_y, item_h));
-                        if (item_idx < dropdown_items.len) {
+                        if (item_idx < agent_dropdown_item_count) {
                             if (item_idx == 0) {
                                 // "Paste directly" — send to terminal without starting an agent
                                 self.sendCommentsToAgent(host, actions, null);
                             } else {
-                                self.sendCommentsToAgent(host, actions, dropdown_items[item_idx]);
+                                self.sendCommentsToAgent(host, actions, agentDropdownLabel(item_idx));
                             }
                         }
                         self.show_agent_dropdown = false;
@@ -1504,7 +1510,7 @@ pub const DiffOverlayComponent = struct {
                         const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
                         const rel_y = mouse_y - dd.y;
                         const idx: usize = @intCast(@divFloor(rel_y, item_h));
-                        self.agent_dropdown_hovered = if (idx < dropdown_items.len) idx else null;
+                        self.agent_dropdown_hovered = if (idx < agent_dropdown_item_count) idx else null;
                     } else {
                         self.agent_dropdown_hovered = null;
                     }
@@ -2694,7 +2700,7 @@ pub const DiffOverlayComponent = struct {
         const comments_text = self.formatCommentsForAgent() orelse return;
         var agent_cmd: ?[]const u8 = null;
         if (agent_name) |name| {
-            agent_cmd = std.fmt.allocPrint(self.allocator, "{s}\n", .{name}) catch {
+            agent_cmd = self.allocator.dupe(u8, name) catch {
                 self.allocator.free(comments_text);
                 return;
             };
@@ -2781,7 +2787,7 @@ pub const DiffOverlayComponent = struct {
             .x = sb.x + sb.w - dd_w,
             .y = sb.y + sb.h + dpi.scale(2, host.ui_scale),
             .w = dd_w,
-            .h = item_h * @as(c_int, @intCast(dropdown_items.len)),
+            .h = item_h * @as(c_int, @intCast(agent_dropdown_item_count)),
         };
     }
 
@@ -3196,8 +3202,9 @@ pub const DiffOverlayComponent = struct {
         });
 
         // Clip interior rendering to the animated height, saving outer clip
+        const had_clip = c.SDL_RenderClipEnabled(renderer);
         var prev_clip: c.SDL_Rect = undefined;
-        _ = c.SDL_GetRenderClipRect(renderer, &prev_clip);
+        if (had_clip) _ = c.SDL_GetRenderClipRect(renderer, &prev_clip);
         const anim_clip = c.SDL_Rect{
             .x = rect.x,
             .y = y_pos,
@@ -3222,12 +3229,12 @@ pub const DiffOverlayComponent = struct {
 
         // Input text
         const font_cache = assets.font_cache orelse {
-            _ = c.SDL_SetRenderClipRect(renderer, &prev_clip);
+            _ = c.SDL_SetRenderClipRect(renderer, if (had_clip) &prev_clip else null);
             return;
         };
         const scaled_font_size = dpi.scale(font_size, host.ui_scale);
         const fonts = font_cache.get(scaled_font_size) catch {
-            _ = c.SDL_SetRenderClipRect(renderer, &prev_clip);
+            _ = c.SDL_SetRenderClipRect(renderer, if (had_clip) &prev_clip else null);
             return;
         };
         const text_x = input_x + dpi.scale(4, host.ui_scale);
@@ -3271,7 +3278,7 @@ pub const DiffOverlayComponent = struct {
             });
         } else |_| {}
 
-        _ = c.SDL_SetRenderClipRect(renderer, &prev_clip);
+        _ = c.SDL_SetRenderClipRect(renderer, if (had_clip) &prev_clip else null);
     }
 
     fn renderSubmitMorph(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment, progress: f32) void {
@@ -3317,8 +3324,9 @@ pub const DiffOverlayComponent = struct {
         });
 
         // Clip to morph area, saving outer clip
+        const morph_had_clip = c.SDL_RenderClipEnabled(renderer);
         var morph_prev_clip: c.SDL_Rect = undefined;
-        _ = c.SDL_GetRenderClipRect(renderer, &morph_prev_clip);
+        if (morph_had_clip) _ = c.SDL_GetRenderClipRect(renderer, &morph_prev_clip);
         const morph_clip = c.SDL_Rect{
             .x = rect.x,
             .y = y_pos,
@@ -3328,12 +3336,12 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderClipRect(renderer, &morph_clip);
 
         const font_cache = assets.font_cache orelse {
-            _ = c.SDL_SetRenderClipRect(renderer, &morph_prev_clip);
+            _ = c.SDL_SetRenderClipRect(renderer, if (morph_had_clip) &morph_prev_clip else null);
             return;
         };
         const scaled_font_size = dpi.scale(font_size, host.ui_scale);
         const fonts = font_cache.get(scaled_font_size) catch {
-            _ = c.SDL_SetRenderClipRect(renderer, &morph_prev_clip);
+            _ = c.SDL_SetRenderClipRect(renderer, if (morph_had_clip) &morph_prev_clip else null);
             return;
         };
 
@@ -3379,7 +3387,7 @@ pub const DiffOverlayComponent = struct {
             );
         }
 
-        _ = c.SDL_SetRenderClipRect(renderer, &morph_prev_clip);
+        _ = c.SDL_SetRenderClipRect(renderer, if (morph_had_clip) &morph_prev_clip else null);
     }
 
     fn renderSavedCommentWithGlow(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment, glow_progress: f32, comment_idx: usize) void {
@@ -3528,7 +3536,8 @@ pub const DiffOverlayComponent = struct {
         const scaled_font_size = dpi.scale(font_size, host.ui_scale);
         const fonts = font_cache.get(scaled_font_size) catch return;
 
-        for (dropdown_items, 0..) |name, i| {
+        for (0..agent_dropdown_item_count) |i| {
+            const name = agentDropdownLabel(i);
             const item_y = dd.y + @as(c_int, @intCast(i)) * item_h;
 
             if (self.agent_dropdown_hovered) |h| {

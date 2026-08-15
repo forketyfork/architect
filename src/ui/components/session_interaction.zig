@@ -13,6 +13,8 @@ const app_state = @import("../../app/app_state.zig");
 const types = @import("../types.zig");
 const scrollbar = @import("scrollbar.zig");
 const view_state = @import("../session_view_state.zig");
+const primitives = @import("../../gfx/primitives.zig");
+const glyph_badge = @import("glyph_badge.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 
 const log = std.log.scoped(.session_interaction);
@@ -41,6 +43,8 @@ pub const SessionInteractionComponent = struct {
     pointer_cursor: ?*c.SDL_Cursor = null,
     current_cursor: CursorKind = .arrow,
     last_update_ms: i64 = 0,
+    selection_pill_badge: glyph_badge.GlyphBadge = .{ .text = "Launch agent" },
+    selection_pill_hovered: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -84,6 +88,7 @@ pub const SessionInteractionComponent = struct {
 
     pub fn destroy(self: *SessionInteractionComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.selection_pill_badge.deinit();
         for (self.views) |*view| {
             view.terminal_scrollbar.deinit();
         }
@@ -115,10 +120,15 @@ pub const SessionInteractionComponent = struct {
         const view = &self.views[idx];
         view.clearSelection();
         view.clearHover();
+        self.selection_pill_hovered = false;
         if (self.sessions[idx].terminal) |*terminal| {
             terminal.screens.active.clearSelection();
         }
         self.sessions[idx].markDirty();
+    }
+
+    pub fn hideSelectionMenus(self: *SessionInteractionComponent) void {
+        for (self.views) |*view| view.hideSelectionMenu();
     }
 
     pub fn setStatus(self: *SessionInteractionComponent, idx: usize, status: app_state.SessionStatus) void {
@@ -168,6 +178,14 @@ pub const SessionInteractionComponent = struct {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
+                if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    if (self.selectionPillRect(host)) |pill_rect| {
+                        if (geom.containsPoint(pill_rect, mouse_x, mouse_y)) {
+                            self.queueSelectionAgent(host, actions);
+                            return true;
+                        }
+                    }
+                }
                 if (event.button.button == c.SDL_BUTTON_LEFT and
                     self.handleTerminalScrollbarMouseDown(host, mouse_x, mouse_y))
                 {
@@ -194,6 +212,10 @@ pub const SessionInteractionComponent = struct {
 
                     if (focused.spawned and focused.terminal != null) {
                         const terminal = &focused.terminal.?;
+                        if (event.button.button == c.SDL_BUTTON_LEFT) {
+                            view.selection_menu_visible = false;
+                            view.selection_menu_cell = null;
+                        }
                         if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
@@ -280,6 +302,15 @@ pub const SessionInteractionComponent = struct {
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
+
+                self.selection_pill_hovered = false;
+                if (self.selectionPillRect(host)) |pill_rect| {
+                    if (geom.containsPoint(pill_rect, mouse_x, mouse_y)) {
+                        self.selection_pill_hovered = true;
+                        self.updateCursor(.pointer);
+                        return true;
+                    }
+                }
 
                 var desired_cursor: CursorKind = .arrow;
                 const dragging_scrollbar = self.handleTerminalScrollbarDrag(host, mouse_x, mouse_y);
@@ -458,8 +489,83 @@ pub const SessionInteractionComponent = struct {
         return false;
     }
 
-    fn hitTest(_: *anyopaque, _: *const types.UiHost, _: c_int, _: c_int) bool {
-        return false;
+    fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
+        const pill_rect = self.selectionPillRect(host) orelse return false;
+        return geom.containsPoint(pill_rect, x, y);
+    }
+
+    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
+        const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
+        const pill_rect = self.selectionPillRect(host) orelse return;
+
+        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+        const accent = host.theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, 235);
+        primitives.fillRoundedRect(renderer, pill_rect, @divFloor(pill_rect.h, 2));
+        if (self.selection_pill_hovered) {
+            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 32);
+            primitives.fillRoundedRect(renderer, pill_rect, @divFloor(pill_rect.h, 2));
+        }
+        const fg = host.theme.background;
+        _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, 255);
+        primitives.drawRoundedBorder(renderer, pill_rect, @divFloor(pill_rect.h, 2));
+        self.selection_pill_badge.renderWithColor(renderer, pill_rect, host.ui_scale, assets, .{
+            .r = fg.r,
+            .g = fg.g,
+            .b = fg.b,
+            .a = 255,
+        });
+    }
+
+    fn selectionPillRect(self: *const SessionInteractionComponent, host: *const types.UiHost) ?geom.Rect {
+        if (host.view_mode != .Full or host.focused_session >= self.sessions.len) return null;
+        const session = self.sessions[host.focused_session];
+        const terminal = session.terminal orelse return null;
+        if (terminal.screens.active.selection == null) return null;
+        const view = &self.views[host.focused_session];
+        if (!view.selection_menu_visible) return null;
+        const cell = view.selection_menu_cell orelse return null;
+
+        const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
+        const pill_w = dpi.scale(136, host.ui_scale);
+        const pill_h = dpi.scale(30, host.ui_scale);
+        const cell_right = padding + (@as(c_int, @intCast(cell.col)) + 1) * self.font.cell_width;
+        const cell_bottom = padding + (@as(c_int, @intCast(cell.row)) + 1) * self.font.cell_height;
+        const max_x = @max(0, host.window_w - pill_w);
+        const max_y = @max(0, host.window_h - pill_h);
+        return .{
+            .x = @min(max_x, @max(0, cell_right - pill_w)),
+            .y = @min(max_y, @max(0, cell_bottom - pill_h)),
+            .w = pill_w,
+            .h = pill_h,
+        };
+    }
+
+    fn queueSelectionAgent(self: *SessionInteractionComponent, host: *const types.UiHost, actions: *types.UiActionQueue) void {
+        if (host.focused_session >= self.sessions.len) return;
+        const terminal = self.sessions[host.focused_session].terminal orelse return;
+        const selection = terminal.screens.active.selection orelse return;
+        const selected_text = terminal.screens.active.selectionString(self.allocator, .{
+            .sel = selection,
+            .trim = true,
+        }) catch |err| {
+            log.warn("failed to read terminal selection: {}", .{err});
+            return;
+        };
+        if (selected_text.len == 0) {
+            self.allocator.free(selected_text);
+            self.clearSelection(host.focused_session);
+            return;
+        }
+
+        actions.append(.{ .OpenSelectionAgent = .{
+            .session_id = self.sessions[host.focused_session].id,
+            .selected_text = selected_text,
+        } }) catch |err| {
+            log.warn("failed to queue selection agent overlay: {}", .{err});
+            self.allocator.free(selected_text);
+        };
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -645,7 +751,7 @@ pub const SessionInteractionComponent = struct {
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .update = update,
-        .render = null,
+        .render = render,
         .hitTest = hitTest,
         .deinit = deinitComp,
         .wantsFrame = wantsFrame,
@@ -746,6 +852,8 @@ fn beginSelection(session: *SessionState, view: *SessionViewState, pin: ghostty_
     const terminal = session.terminal orelse return;
     terminal.screens.active.clearSelection();
     view.selection_anchor = pin;
+    view.selection_menu_cell = null;
+    view.selection_menu_visible = false;
     view.selection_pending = true;
     view.selection_dragging = false;
     session.markDirty();
@@ -762,6 +870,7 @@ fn startSelectionDrag(session: *SessionState, view: *SessionViewState, pin: ghos
     terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
         log.warn("session {d}: failed to start selection: {}", .{ session.id, err });
     };
+    setSelectionMenuCell(&terminal, view, anchor, pin);
     session.markDirty();
 }
 
@@ -772,6 +881,7 @@ fn updateSelectionDrag(session: *SessionState, view: *SessionViewState, pin: gho
     terminal.screens.active.select(ghostty_vt.Selection.init(anchor, pin, false)) catch |err| {
         log.warn("session {d}: failed to update selection: {}", .{ session.id, err });
     };
+    setSelectionMenuCell(&terminal, view, anchor, pin);
     session.markDirty();
 }
 
@@ -779,6 +889,62 @@ fn endSelection(view: *SessionViewState) void {
     view.selection_dragging = false;
     view.selection_pending = false;
     view.selection_anchor = null;
+    view.selection_menu_visible = view.selection_menu_cell != null;
+}
+
+fn setSelectionMenuCell(
+    terminal: *const ghostty_vt.Terminal,
+    view: *SessionViewState,
+    anchor: ghostty_vt.Pin,
+    current: ghostty_vt.Pin,
+) void {
+    const anchor_cell = selectionCellForPin(terminal, view, anchor) orelse return;
+    const current_cell = selectionCellForPin(terminal, view, current) orelse return;
+    view.selection_menu_cell = selectionMenuCellForEndpoints(anchor_cell, current_cell);
+}
+
+fn selectionMenuCellForEndpoints(
+    anchor: SessionViewState.SelectionCell,
+    current: SessionViewState.SelectionCell,
+) SessionViewState.SelectionCell {
+    const row = @max(anchor.row, current.row);
+    const col = if (anchor.row == current.row)
+        @max(anchor.col, current.col)
+    else if (anchor.row > current.row)
+        anchor.col
+    else
+        current.col;
+    return .{ .col = col, .row = row };
+}
+
+const PinCoords = struct { x: u16, y: u32 };
+
+/// Resolves a Pin to (x, y) coordinates in whichever page is currently
+/// visible: the scrollback viewport while the user is scrolled back, or the
+/// live active screen otherwise.
+fn pinToCoords(
+    terminal: *const ghostty_vt.Terminal,
+    pin: ghostty_vt.Pin,
+    is_viewing_scrollback: bool,
+) ?PinCoords {
+    const point = terminal.screens.active.pages.pointFromPin(
+        if (is_viewing_scrollback) .viewport else .active,
+        pin,
+    ) orelse return null;
+    return switch (point) {
+        .viewport => |p| .{ .x = p.x, .y = p.y },
+        .active => |p| .{ .x = p.x, .y = p.y },
+        else => null,
+    };
+}
+
+fn selectionCellForPin(
+    terminal: *const ghostty_vt.Terminal,
+    view: *const SessionViewState,
+    pin: ghostty_vt.Pin,
+) ?SessionViewState.SelectionCell {
+    const coords = pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return null;
+    return .{ .col = coords.x, .row = @intCast(coords.y) };
 }
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
@@ -809,13 +975,9 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const page = &pin.node.data;
     const max_col: u16 = @intCast(page.size.cols - 1);
 
-    const pin_point = if (view.is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_x = if (view.is_viewing_scrollback) point.viewport.x else point.active.x;
-    const click_y = if (view.is_viewing_scrollback) point.viewport.y else point.active.y;
+    const click_coords = pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return;
+    const click_x = click_coords.x;
+    const click_y = click_coords.y;
 
     const clicked_cell = terminal.screens.active.pages.getCell(
         if (view.is_viewing_scrollback)
@@ -865,10 +1027,13 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
 
     terminal.screens.active.clearSelection();
+    view.selection_menu_cell = null;
+    view.selection_menu_visible = false;
     terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
         log.err("failed to select word: {}", .{err});
         return;
     };
+    view.selection_menu_cell = .{ .col = end_x, .row = @intCast(click_y) };
     session.markDirty();
 }
 
@@ -877,12 +1042,7 @@ fn selectLine(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const page = &pin.node.data;
     const max_col: u16 = @intCast(page.size.cols - 1);
 
-    const pin_point = if (view.is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_y = if (view.is_viewing_scrollback) point.viewport.y else point.active.y;
+    const click_y = (pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return).y;
 
     const start_point = if (view.is_viewing_scrollback)
         ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = click_y } }
@@ -897,10 +1057,13 @@ fn selectLine(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const end_pin = terminal.screens.active.pages.pin(end_point) orelse return;
 
     terminal.screens.active.clearSelection();
+    view.selection_menu_cell = null;
+    view.selection_menu_visible = false;
     terminal.screens.active.select(ghostty_vt.Selection.init(start_pin, end_pin, false)) catch |err| {
         log.err("failed to select line: {}", .{err});
         return;
     };
+    view.selection_menu_cell = .{ .col = max_col, .row = @intCast(click_y) };
     session.markDirty();
 }
 
@@ -925,12 +1088,8 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         };
     }
 
-    const pin_point = if (is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point_or_null = pin_point orelse return null;
-    const start_y_orig = if (is_viewing_scrollback) point_or_null.viewport.y else point_or_null.active.y;
+    const pin_coords = pinToCoords(terminal, pin, is_viewing_scrollback) orelse return null;
+    const start_y_orig = pin_coords.y;
 
     var start_y = start_y_orig;
     var current_row = row_and_cell.row;
@@ -1027,7 +1186,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         }
     }
 
-    const pin_x = if (is_viewing_scrollback) point_or_null.viewport.x else point_or_null.active.x;
+    const pin_x = pin_coords.x;
     const click_cell_idx = (start_y_orig - start_y) * page.size.cols + pin_x;
     if (click_cell_idx >= cell_to_byte.items.len) return null;
     const click_byte_pos = cell_to_byte.items[click_cell_idx];
@@ -1082,6 +1241,39 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
     return null;
 }
 
+test "selection action pill anchors to the lower-right selection endpoint" {
+    const forward = selectionMenuCellForEndpoints(.{ .col = 2, .row = 3 }, .{ .col = 7, .row = 5 });
+    try std.testing.expectEqual(@as(u16, 7), forward.col);
+    try std.testing.expectEqual(@as(u16, 5), forward.row);
+
+    const reverse = selectionMenuCellForEndpoints(.{ .col = 7, .row = 5 }, .{ .col = 2, .row = 3 });
+    try std.testing.expectEqual(@as(u16, 7), reverse.col);
+    try std.testing.expectEqual(@as(u16, 5), reverse.row);
+
+    const same_line = selectionMenuCellForEndpoints(.{ .col = 9, .row = 4 }, .{ .col = 2, .row = 4 });
+    try std.testing.expectEqual(@as(u16, 9), same_line.col);
+    try std.testing.expectEqual(@as(u16, 4), same_line.row);
+}
+
+test "selection action pill becomes visible only after release" {
+    var view = SessionViewState{
+        .selection_menu_cell = .{ .col = 4, .row = 6 },
+    };
+    try std.testing.expect(!view.selection_menu_visible);
+
+    endSelection(&view);
+    try std.testing.expect(view.selection_menu_visible);
+
+    view.hideSelectionMenu();
+    try std.testing.expect(!view.selection_menu_visible);
+    try std.testing.expect(view.selection_menu_cell == null);
+
+    view.selection_menu_cell = .{ .col = 4, .row = 6 };
+    view.selection_menu_visible = true;
+    view.clearSelection();
+    try std.testing.expect(!view.selection_menu_visible);
+}
+
 fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, now: i64) void {
     if (!session.spawned) return;
 
@@ -1093,6 +1285,7 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
         var pages = &terminal.screens.active.pages;
         pages.scroll(.{ .delta_row = delta });
         view.is_viewing_scrollback = (pages.viewport != .active);
+        view.hideSelectionMenu();
         view.terminal_scrollbar.noteActivity(now);
         session.markDirty();
     }
@@ -1128,6 +1321,7 @@ fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_ti
             var pages = &terminal.screens.active.pages;
             pages.scroll(.{ .delta_row = scroll_lines });
             view.is_viewing_scrollback = (pages.viewport != .active);
+            view.hideSelectionMenu();
             view.terminal_scrollbar.noteActivity(now_ms);
             session.markDirty();
         }

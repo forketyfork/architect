@@ -262,13 +262,19 @@ pub fn init(allocator: std.mem.Allocator, options: InitOptions) !void {
 
     if (state.initialized) return;
 
-    const directory_path = if (options.directory_override) |override|
-        try allocator.dupe(u8, override)
-    else
-        try defaultLogDirectoryPath(allocator);
-    errdefer allocator.free(directory_path);
+    // openActiveLogFile/rotateLocked use the *Absolute fs APIs, so a relative
+    // --log-dir override (e.g. ".tmp/logs") must be resolved before storing.
+    const directory_path = blk: {
+        const raw_directory_path = if (options.directory_override) |override|
+            try allocator.dupe(u8, override)
+        else
+            try defaultLogDirectoryPath(allocator);
+        defer allocator.free(raw_directory_path);
 
-    try fs.cwd().makePath(directory_path);
+        try fs.cwd().makePath(raw_directory_path);
+        break :blk try fs.cwd().realpathAlloc(allocator, raw_directory_path);
+    };
+    errdefer allocator.free(directory_path);
 
     const active = try openActiveLogFile(directory_path);
 
@@ -493,6 +499,36 @@ test "rotation archives old file once size limit is exceeded" {
 
     try std.testing.expect(active_found);
     try std.testing.expect(archive_count > 0);
+}
+
+test "init resolves a relative directory_override to an absolute log directory" {
+    const allocator = std.testing.allocator;
+    const relative_dir = ".tmp/logging_relative_override_test";
+    fs.cwd().deleteTree(relative_dir) catch |err| {
+        std.debug.print("failed to pre-clean test log directory: {}\n", .{err});
+    };
+    defer fs.cwd().deleteTree(relative_dir) catch |err| {
+        std.debug.print("failed to clean up test log directory: {}\n", .{err});
+    };
+
+    try init(allocator, .{
+        .directory_override = relative_dir,
+        .min_level = .info,
+    });
+    defer deinit();
+
+    const resolved = state.directory_path orelse return error.TestUnexpectedResult;
+    try std.testing.expect(fs.path.isAbsolute(resolved));
+    try std.testing.expect(std.mem.endsWith(u8, resolved, "logging_relative_override_test"));
+
+    var dir = try fs.openDirAbsolute(resolved, .{ .iterate = true });
+    defer dir.close();
+    var found_active = false;
+    var iterator = dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (entry.kind == .file and std.mem.eql(u8, entry.name, active_log_filename)) found_active = true;
+    }
+    try std.testing.expect(found_active);
 }
 
 test "startup, shutdown, and explicit events are emitted with info level" {

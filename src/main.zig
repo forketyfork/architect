@@ -60,6 +60,7 @@ test {
     _ = @import("ui/components/recent_folders_overlay.zig");
     _ = @import("ui/components/scrollbar.zig");
     _ = @import("ui/components/search_utils.zig");
+    _ = @import("ui/components/selection_agent_overlay.zig");
     _ = @import("ui/components/session_interaction.zig");
     _ = @import("ui/components/worktree_overlay.zig");
     _ = @import("ui/text_edit.zig");

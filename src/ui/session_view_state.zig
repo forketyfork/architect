@@ -3,6 +3,11 @@ const ghostty_vt = @import("ghostty-vt");
 const scrollbar = @import("components/scrollbar.zig");
 
 pub const SessionViewState = struct {
+    pub const SelectionCell = struct {
+        col: u16,
+        row: u16,
+    };
+
     status: app_state.SessionStatus = .running,
     attention: bool = false,
     is_viewing_scrollback: bool = false,
@@ -11,6 +16,8 @@ pub const SessionViewState = struct {
     last_scroll_time: i64 = 0,
     scroll_inertia_allowed: bool = true,
     selection_anchor: ?ghostty_vt.Pin = null,
+    selection_menu_cell: ?SelectionCell = null,
+    selection_menu_visible: bool = false,
     selection_dragging: bool = false,
     selection_pending: bool = false,
     hovered_link_start: ?ghostty_vt.Pin = null,
@@ -26,8 +33,15 @@ pub const SessionViewState = struct {
 
     pub fn clearSelection(self: *SessionViewState) void {
         self.selection_anchor = null;
+        self.selection_menu_cell = null;
+        self.selection_menu_visible = false;
         self.selection_dragging = false;
         self.selection_pending = false;
+    }
+
+    pub fn hideSelectionMenu(self: *SessionViewState) void {
+        self.selection_menu_cell = null;
+        self.selection_menu_visible = false;
     }
 
     pub fn clearHover(self: *SessionViewState) void {
