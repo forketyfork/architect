@@ -381,7 +381,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Glyph cache | GPU textures + in-memory LRU | Up to 4096 shaped glyph textures |
 | Render cache | GPU textures per session | Cached terminal renders, epoch-invalidated |
 | config.toml | `~/.config/architect/config.toml` | User preferences (font, theme, UI flags, worktree location) |
-| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
+| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs, onboarding state) |
 | architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
 | architect_control_<uid>_<pid>.json | `XDG_RUNTIME_DIR`, or `~/Library/Caches/Architect/runtime` on macOS / `~/.cache/architect/runtime` elsewhere | Per-instance discovery file pointing `architect-mcp` at a running app's local control socket |
@@ -413,7 +413,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/pty_watcher.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and posts a wake event when one becomes readable (or hangs up/errors); mutex-guarded fd list refreshed once per frame by the runtime | `PtyWatcher`, `start()`, `updateFds()` | std (poll, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
-| `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
+| `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting, first-launch onboarding hint | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
 | `ui/root.zig` | UI component registry, z-index dispatch, action drain | `UiRoot`, `register()`, `handleEvent()`, `update()`, `render()`, `needsFrame()` | `ui/component`, `ui/types` |
