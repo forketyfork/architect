@@ -31,6 +31,12 @@ pub const grid_border_thickness: c_int = attention_thickness;
 const faint_factor: f32 = 0.6;
 const cursor_color = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
 const dark_fallback = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const onboarding_hint_lines = [_][]const u8{
+    "Welcome to Architect",
+    "Cmd+N adds a terminal; Cmd+W closes one.",
+    "Cmd+Enter toggles grid/full; hold Escape to interrupt agents.",
+    "Hooks: architect hook claude | codex | gemini",
+};
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -143,6 +149,8 @@ pub fn render(
     ui_scale: f32,
     grid_font_scale: f32,
     grid: ?*const GridLayout,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -190,7 +198,7 @@ pub fn render(
 
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
-                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
                 }
             }
         },
@@ -200,7 +208,7 @@ pub fn render(
             const entry = render_cache.entry(anim_state.focused_session);
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
-            try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale);
+            try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -214,7 +222,7 @@ pub fn render(
             const prev_entry = render_cache.entry(anim_state.previous_session);
             const prev_session = sessions[anim_state.previous_session];
             const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
-            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
@@ -224,7 +232,7 @@ pub fn render(
             const new_entry = render_cache.entry(anim_state.focused_session);
             const new_session = sessions[anim_state.focused_session];
             const new_dims = sessionTermDims(new_session, term_cols, term_rows);
-            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -238,7 +246,7 @@ pub fn render(
             const prev_entry = render_cache.entry(anim_state.previous_session);
             const prev_session = sessions[anim_state.previous_session];
             const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
-            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
@@ -248,7 +256,7 @@ pub fn render(
             const new_entry = render_cache.entry(anim_state.focused_session);
             const new_session = sessions[anim_state.focused_session];
             const new_dims = sessionTermDims(new_session, term_cols, term_rows);
-            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -277,7 +285,7 @@ pub fn render(
 
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
-                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
                 }
             }
 
@@ -285,7 +293,7 @@ pub fn render(
             const entry = render_cache.entry(anim_state.focused_session);
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
-            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale);
+            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .GridResizing => {
             // Render session contents first so borders draw on top.
@@ -319,7 +327,7 @@ pub fn render(
 
                 const entry = render_cache.entry(i);
                 const session_dims = sessionTermDims(session, term_cols, term_rows);
-                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
             }
 
             // Render borders and overlays on top of the animated content.
@@ -370,8 +378,10 @@ fn renderSession(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -390,6 +400,8 @@ fn renderSessionContent(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     if (!session.spawned) return;
 
@@ -674,6 +686,21 @@ fn renderSessionContent(
         }
     }
 
+    if (shouldShowOnboarding(show_onboarding, is_focused, session.slot_index, session.dead)) {
+        if (try renderOnboardingHint(
+            font,
+            origin_x,
+            origin_y,
+            cell_width_actual,
+            cell_height_actual,
+            visible_cols,
+            visible_rows,
+            theme,
+        )) {
+            onboarding_displayed.* = true;
+        }
+    }
+
     if (session.dead) {
         const message = "[Process completed]";
         const message_row: usize = @intCast(cursor.y);
@@ -692,6 +719,44 @@ fn renderSessionContent(
             }
         }
     }
+}
+
+fn shouldShowOnboarding(show_onboarding: bool, is_focused: bool, slot_index: usize, session_dead: bool) bool {
+    return show_onboarding and is_focused and slot_index == 0 and !session_dead;
+}
+
+test "onboarding hint is limited to the focused live first session" {
+    try std.testing.expect(shouldShowOnboarding(true, true, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(false, true, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(true, false, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(true, true, 1, false));
+    try std.testing.expect(!shouldShowOnboarding(true, true, 0, true));
+}
+
+fn renderOnboardingHint(
+    font: *font_mod.Font,
+    origin_x: c_int,
+    origin_y: c_int,
+    cell_width_actual: c_int,
+    cell_height_actual: c_int,
+    visible_cols: usize,
+    visible_rows: usize,
+    theme: *const colors.Theme,
+) RenderError!bool {
+    if (visible_cols == 0 or visible_rows < onboarding_hint_lines.len) return false;
+
+    const hint_color = applyFaint(theme.foreground);
+    const start_row = visible_rows - onboarding_hint_lines.len;
+    for (onboarding_hint_lines, 0..) |line, idx| {
+        const line_y = origin_y + @as(c_int, @intCast(start_row + idx)) * cell_height_actual;
+        var offset_x = origin_x;
+        for (line, 0..) |ch, col| {
+            if (col >= visible_cols) break;
+            try font.renderGlyph(ch, offset_x, line_y, cell_width_actual, cell_height_actual, hint_color);
+            offset_x += cell_width_actual;
+        }
+    }
+    return true;
 }
 
 fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize, is_grid_view: bool, is_viewing_scrollback: bool) usize {
@@ -1002,6 +1067,8 @@ fn refreshSessionCacheTexture(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
     const render_mode = cacheRenderMode(is_grid_view);
@@ -1015,7 +1082,7 @@ fn refreshSessionCacheTexture(
     _ = c.SDL_RenderClear(renderer);
 
     const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     if (cache_overlays) {
         renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     }
@@ -1052,6 +1119,8 @@ fn renderSessionCached(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     if (!session.spawned) {
         cache_entry.presented_epoch = session.render_epoch;
@@ -1067,7 +1136,7 @@ fn renderSessionCached(
         if (cache_entry.texture) |tex| {
             const sync_holding = synchronizedOutputHoldsCache(session, cache_entry, composition);
             if (!sync_holding and cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
-                try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
+                try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
             }
 
             if (wave_effect) |wave| {
@@ -1085,11 +1154,11 @@ fn renderSessionCached(
     }
 
     if (render_overlays) {
-        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
