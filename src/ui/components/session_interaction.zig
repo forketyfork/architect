@@ -560,7 +560,7 @@ pub const SessionInteractionComponent = struct {
         }
 
         actions.append(.{ .OpenSelectionAgent = .{
-            .session = host.focused_session,
+            .session_id = self.sessions[host.focused_session].id,
             .selected_text = selected_text,
         } }) catch |err| {
             log.warn("failed to queue selection agent overlay: {}", .{err});
@@ -917,20 +917,34 @@ fn selectionMenuCellForEndpoints(
     return .{ .col = col, .row = row };
 }
 
+const PinCoords = struct { x: u16, y: u32 };
+
+/// Resolves a Pin to (x, y) coordinates in whichever page is currently
+/// visible: the scrollback viewport while the user is scrolled back, or the
+/// live active screen otherwise.
+fn pinToCoords(
+    terminal: *const ghostty_vt.Terminal,
+    pin: ghostty_vt.Pin,
+    is_viewing_scrollback: bool,
+) ?PinCoords {
+    const point = terminal.screens.active.pages.pointFromPin(
+        if (is_viewing_scrollback) .viewport else .active,
+        pin,
+    ) orelse return null;
+    return switch (point) {
+        .viewport => |p| .{ .x = p.x, .y = p.y },
+        .active => |p| .{ .x = p.x, .y = p.y },
+        else => null,
+    };
+}
+
 fn selectionCellForPin(
     terminal: *const ghostty_vt.Terminal,
     view: *const SessionViewState,
     pin: ghostty_vt.Pin,
 ) ?SessionViewState.SelectionCell {
-    const point = terminal.screens.active.pages.pointFromPin(
-        if (view.is_viewing_scrollback) .viewport else .active,
-        pin,
-    ) orelse return null;
-    return switch (point) {
-        .viewport => |p| .{ .col = p.x, .row = @intCast(p.y) },
-        .active => |p| .{ .col = p.x, .row = @intCast(p.y) },
-        else => null,
-    };
+    const coords = pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return null;
+    return .{ .col = coords.x, .row = @intCast(coords.y) };
 }
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
@@ -961,13 +975,9 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const page = &pin.node.data;
     const max_col: u16 = @intCast(page.size.cols - 1);
 
-    const pin_point = if (view.is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_x = if (view.is_viewing_scrollback) point.viewport.x else point.active.x;
-    const click_y = if (view.is_viewing_scrollback) point.viewport.y else point.active.y;
+    const click_coords = pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return;
+    const click_x = click_coords.x;
+    const click_y = click_coords.y;
 
     const clicked_cell = terminal.screens.active.pages.getCell(
         if (view.is_viewing_scrollback)
@@ -1032,12 +1042,7 @@ fn selectLine(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
     const page = &pin.node.data;
     const max_col: u16 = @intCast(page.size.cols - 1);
 
-    const pin_point = if (view.is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point = pin_point orelse return;
-    const click_y = if (view.is_viewing_scrollback) point.viewport.y else point.active.y;
+    const click_y = (pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return).y;
 
     const start_point = if (view.is_viewing_scrollback)
         ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = click_y } }
@@ -1083,12 +1088,8 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         };
     }
 
-    const pin_point = if (is_viewing_scrollback)
-        terminal.screens.active.pages.pointFromPin(.viewport, pin)
-    else
-        terminal.screens.active.pages.pointFromPin(.active, pin);
-    const point_or_null = pin_point orelse return null;
-    const start_y_orig = if (is_viewing_scrollback) point_or_null.viewport.y else point_or_null.active.y;
+    const pin_coords = pinToCoords(terminal, pin, is_viewing_scrollback) orelse return null;
+    const start_y_orig = pin_coords.y;
 
     var start_y = start_y_orig;
     var current_row = row_and_cell.row;
@@ -1185,7 +1186,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
         }
     }
 
-    const pin_x = if (is_viewing_scrollback) point_or_null.viewport.x else point_or_null.active.x;
+    const pin_x = pin_coords.x;
     const click_cell_idx = (start_y_orig - start_y) * page.size.cols + pin_x;
     if (click_cell_idx >= cell_to_byte.items.len) return null;
     const click_byte_pos = cell_to_byte.items[click_cell_idx];

@@ -421,12 +421,14 @@ fn applyTerminalLayout(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 ) void {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
     _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    session_interaction_component.hideSelectionMenus();
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -442,12 +444,15 @@ fn applyTerminalLayoutIfSizeChanged(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 ) bool {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    return layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    const changed = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    if (changed) session_interaction_component.hideSelectionMenus();
+    return changed;
 }
 
 /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -843,31 +848,17 @@ fn spawnSessionIntoGrid(
         context.grid_font_scale,
         context.full_cols,
         context.full_rows,
+        context.session_interaction_component,
     );
 
     return session;
 }
 
 fn handleExternalSpawnRequest(
-    allocator: std.mem.Allocator,
+    context: *const SpawnSessionContext,
     pending: *control.PendingSpawn,
-    sessions: []const *SessionState,
-    grid: *GridLayout,
-    anim_state: *AnimationState,
-    session_interaction_component: *ui_mod.SessionInteractionComponent,
-    loop: *xev.Loop,
-    animations_enabled: bool,
-    now: i64,
-    render_width: c_int,
-    render_height: c_int,
-    ui_scale: f32,
-    font: *font_mod.Font,
-    grid_font_scale: f32,
-    full_cols: *u16,
-    full_rows: *u16,
-    cell_width_pixels: *c_int,
-    cell_height_pixels: *c_int,
 ) void {
+    const allocator = context.allocator;
     if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
         pending.completion.complete(.{ .failure = failure });
         return;
@@ -890,26 +881,7 @@ fn handleExternalSpawnRequest(
     defer allocator.free(cwd_buf);
     const cwd_z: [:0]const u8 = cwd_buf[0..pending.request.cwd.len :0];
 
-    const context = SpawnSessionContext{
-        .allocator = allocator,
-        .sessions = sessions,
-        .grid = grid,
-        .anim_state = anim_state,
-        .session_interaction_component = session_interaction_component,
-        .loop = loop,
-        .animations_enabled = animations_enabled,
-        .now = now,
-        .render_width = render_width,
-        .render_height = render_height,
-        .ui_scale = ui_scale,
-        .font = font,
-        .grid_font_scale = grid_font_scale,
-        .full_cols = full_cols,
-        .full_rows = full_rows,
-        .cell_width_pixels = cell_width_pixels,
-        .cell_height_pixels = cell_height_pixels,
-    };
-    const session = spawnSessionIntoGrid(&context, anim_state.focused_session, cwd_z, command_input) catch |err| {
+    const session = spawnSessionIntoGrid(context, context.anim_state.focused_session, cwd_z, command_input) catch |err| {
         log.warn("external spawn failed for cwd {s}: {}", .{ pending.request.cwd, err });
         const message = if (err == error.NoFreeSession)
             "all Architect terminal slots are in use"
@@ -927,27 +899,14 @@ fn handleExternalSpawnRequest(
 }
 
 fn handleLaunchAgentWithContext(
-    allocator: std.mem.Allocator,
+    context: *const SpawnSessionContext,
     action: ui_types.LaunchAgentWithContextAction,
-    sessions: []const *SessionState,
-    grid: *GridLayout,
-    anim_state: *AnimationState,
-    session_interaction_component: *ui_mod.SessionInteractionComponent,
-    loop: *xev.Loop,
-    animations_enabled: bool,
-    now: i64,
-    render_width: c_int,
-    render_height: c_int,
-    ui_scale: f32,
-    font: *font_mod.Font,
-    grid_font_scale: f32,
-    full_cols: *u16,
-    full_rows: *u16,
-    cell_width_pixels: *c_int,
-    cell_height_pixels: *c_int,
     pending_sends: *std.ArrayList(PendingSessionSend),
     ui: *ui_mod.UiRoot,
 ) void {
+    const allocator = context.allocator;
+    const sessions = context.sessions;
+    const now = context.now;
     defer allocator.free(action.agent_command);
 
     const agent = session_state.AgentKind.fromString(action.agent_command) orelse {
@@ -957,12 +916,12 @@ fn handleLaunchAgentWithContext(
         return;
     };
 
-    if (action.session >= sessions.len) {
+    const source_idx = findSessionIndexById(sessions, action.session_id) orelse {
         allocator.free(action.prompt);
         ui.showToast("The source terminal is no longer available", now);
         return;
-    }
-    const source = sessions[action.session];
+    };
+    const source = sessions[source_idx];
     if (!source.spawned or source.dead) {
         allocator.free(action.prompt);
         ui.showToast("The source terminal is no longer running", now);
@@ -989,26 +948,7 @@ fn handleLaunchAgentWithContext(
     };
     defer allocator.free(command_input);
 
-    const context = SpawnSessionContext{
-        .allocator = allocator,
-        .sessions = sessions,
-        .grid = grid,
-        .anim_state = anim_state,
-        .session_interaction_component = session_interaction_component,
-        .loop = loop,
-        .animations_enabled = animations_enabled,
-        .now = now,
-        .render_width = render_width,
-        .render_height = render_height,
-        .ui_scale = ui_scale,
-        .font = font,
-        .grid_font_scale = grid_font_scale,
-        .full_cols = full_cols,
-        .full_rows = full_rows,
-        .cell_width_pixels = cell_width_pixels,
-        .cell_height_pixels = cell_height_pixels,
-    };
-    const session = spawnSessionIntoGrid(&context, action.session, cwd_z, command_input) catch |err| {
+    const session = spawnSessionIntoGrid(context, source_idx, cwd_z, command_input) catch |err| {
         allocator.free(action.prompt);
         log.warn("selection agent terminal spawn failed for cwd {s}: {}", .{ cwd, err });
         const message = if (err == error.NoFreeSession)
@@ -1032,7 +972,7 @@ fn handleLaunchAgentWithContext(
         return;
     };
 
-    session_interaction_component.clearSelection(action.session);
+    context.session_interaction_component.clearSelection(source_idx);
 }
 
 fn initSharedFont(
@@ -1185,6 +1125,7 @@ const RuntimeScaleChangeContext = struct {
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 };
 
 fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Font.InitError!void {
@@ -1203,15 +1144,20 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const sizes = computeTerminalSizes(ctx.font, ctx.render_width, ctx.render_height, ctx.ui_scale, ctx.grid_cols, ctx.grid_rows, ctx.grid_font_scale);
-    ctx.full_cols.* = sizes.full.cols;
-    ctx.full_rows.* = sizes.full.rows;
-    const full_set = fullSetForMode(ctx.anim_state.mode, ctx.anim_state.focused_session, ctx.anim_state.previous_session);
-    _ = layout.applyTerminalResize(
+    applyTerminalLayout(
         ctx.sessions,
         ctx.allocator,
-        sizes,
-        full_set,
+        ctx.font,
+        ctx.render_width,
+        ctx.render_height,
+        ctx.ui_scale,
+        ctx.anim_state,
+        ctx.grid_cols,
+        ctx.grid_rows,
+        ctx.grid_font_scale,
+        ctx.full_cols,
+        ctx.full_rows,
+        ctx.session_interaction_component,
     );
 }
 
@@ -1972,7 +1918,6 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
                     const prev_scale = ui_scale;
                     ui_scale = @max(scale_x, scale_y);
-                    session_interaction_component.hideSelectionMenus();
                     var scale_change_ctx = RuntimeScaleChangeContext{
                         .allocator = allocator,
                         .renderer = renderer,
@@ -1993,6 +1938,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                         .grid_font_scale = config.grid.font_scale,
                         .full_cols = &full_cols,
                         .full_rows = &full_rows,
+                        .session_interaction_component = session_interaction_component,
                     };
                     try applyScaleChangeAndResize(
                         RuntimeScaleChangeContext,
@@ -2215,8 +2161,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                                 cell_width_pixels = render_width;
                                 cell_height_pixels = render_height;
                                 anim_state.mode = .Full;
-                                session_interaction_component.hideSelectionMenus();
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             } else if (remaining_count == 1) {
                                 // Only 1 terminal remains - go directly to Full mode, no resize animation
                                 grid.cols = 1;
@@ -2232,8 +2177,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                                     }
                                 }
                                 anim_state.mode = .Full;
-                                session_interaction_component.hideSelectionMenus();
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2273,8 +2217,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    session_interaction_component.hideSelectionMenus();
-                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
@@ -2352,8 +2295,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            session_interaction_component.hideSelectionMenus();
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -2417,8 +2359,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            session_interaction_component.hideSelectionMenus();
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(new_idx);
@@ -2683,30 +2624,31 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             anim_state.previous_session,
         );
 
+        const spawn_context = SpawnSessionContext{
+            .allocator = allocator,
+            .sessions = sessions,
+            .grid = &grid,
+            .anim_state = &anim_state,
+            .session_interaction_component = session_interaction_component,
+            .loop = &loop,
+            .animations_enabled = animations_enabled,
+            .now = now,
+            .render_width = render_width,
+            .render_height = render_height,
+            .ui_scale = ui_scale,
+            .font = &font,
+            .grid_font_scale = config.grid.font_scale,
+            .full_cols = &full_cols,
+            .full_rows = &full_rows,
+            .cell_width_pixels = &cell_width_pixels,
+            .cell_height_pixels = &cell_height_pixels,
+        };
+
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
         const had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
-            handleExternalSpawnRequest(
-                allocator,
-                request,
-                sessions,
-                &grid,
-                &anim_state,
-                session_interaction_component,
-                &loop,
-                animations_enabled,
-                now,
-                render_width,
-                render_height,
-                ui_scale,
-                &font,
-                config.grid.font_scale,
-                &full_cols,
-                &full_rows,
-                &cell_width_pixels,
-                &cell_height_pixels,
-            );
+            handleExternalSpawnRequest(&spawn_context, request);
             request.request.deinit(allocator);
         }
 
@@ -2846,8 +2788,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                         cell_width_pixels = render_width;
                         cell_height_pixels = render_height;
                         anim_state.mode = .Full;
-                        session_interaction_component.hideSelectionMenus();
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                     } else if (remaining_count == 1) {
                         // Only 1 terminal remains - go directly to Full mode, no resize animation
                         grid.cols = 1;
@@ -2863,8 +2804,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                             }
                         }
                         anim_state.mode = .Full;
-                        session_interaction_component.hideSelectionMenus();
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2903,8 +2843,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            session_interaction_component.hideSelectionMenus();
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
@@ -3213,35 +3152,15 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 }
             },
             .OpenSelectionAgent => |selection_action| {
-                if (selection_action.session >= sessions.len) {
+                const session_idx = findSessionIndexById(sessions, selection_action.session_id);
+                if (session_idx == null or sessions[session_idx.?].dead) {
                     allocator.free(selection_action.selected_text);
                     continue;
                 }
-                selection_agent_overlay_component.open(selection_action.selected_text, selection_action.session, now);
+                selection_agent_overlay_component.open(selection_action.selected_text, selection_action.session_id, now);
             },
             .LaunchAgentWithContext => |launch_action| {
-                handleLaunchAgentWithContext(
-                    allocator,
-                    launch_action,
-                    sessions,
-                    &grid,
-                    &anim_state,
-                    session_interaction_component,
-                    &loop,
-                    animations_enabled,
-                    now,
-                    render_width,
-                    render_height,
-                    ui_scale,
-                    &font,
-                    config.grid.font_scale,
-                    &full_cols,
-                    &full_rows,
-                    &cell_width_pixels,
-                    &cell_height_pixels,
-                    &pending_sends,
-                    &ui,
-                );
+                handleLaunchAgentWithContext(&spawn_context, launch_action, &pending_sends, &ui);
             },
             .SendDiffComments => |dc_action| {
                 if (dc_action.session >= sessions.len) {
@@ -3341,9 +3260,9 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             config.grid.font_scale,
             &full_cols,
             &full_rows,
+            session_interaction_component,
         );
         if (terminal_layout_changed) {
-            session_interaction_component.hideSelectionMenus();
             any_session_dirty = true;
             std.debug.print("Terminal layout adjusted for {s}: {d}x{d}\n", .{
                 @tagName(anim_state.mode),
