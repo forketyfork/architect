@@ -24,7 +24,7 @@ const padding: c_int = 28;
 const title_height: c_int = 32;
 const field_height: c_int = 42;
 const prompt_height: c_int = 150;
-const context_height: c_int = 96;
+const context_height: c_int = 115;
 const button_width: c_int = 132;
 const button_height: c_int = 42;
 const dropdown_item_height: c_int = 36;
@@ -398,6 +398,22 @@ pub const SelectionAgentOverlayComponent = struct {
         var previous_clip: c.SDL_Rect = undefined;
         if (had_clip) _ = c.SDL_GetRenderClipRect(renderer, &previous_clip);
         _ = c.SDL_SetRenderClipRect(renderer, &clip);
+
+        if (self.prompt.select_all) {
+            // Behind the glyphs, so the highlight never hides the text.
+            const sel = host.theme.accent;
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 110);
+            for (self.prompt_lines, 0..) |line_data, line_index| {
+                if (line_data.w == 0) continue;
+                _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                    .x = @floatFromInt(text_x),
+                    .y = @floatFromInt(text_y + @as(c_int, @intCast(line_index)) * line_h),
+                    .w = @floatFromInt(line_data.w),
+                    .h = @floatFromInt(line_h),
+                });
+            }
+        }
 
         for (self.prompt_lines, 0..) |line_data, line_index| {
             if (line_data.tex) |texture| {
