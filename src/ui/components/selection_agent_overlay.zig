@@ -8,6 +8,7 @@ const session_state = @import("../../session/state.zig");
 const text_render = @import("../text_render.zig");
 const text_edit = @import("../text_edit.zig");
 const diff_comment_layout = @import("diff_comment_layout.zig");
+const modal_frame = @import("modal_frame.zig");
 const types = @import("../types.zig");
 const first_frame = @import("../first_frame_guard.zig");
 const UiComponent = @import("../component.zig").UiComponent;
@@ -76,7 +77,7 @@ pub const SelectionAgentOverlayComponent = struct {
     visible: bool = false,
     dropdown_open: bool = false,
     selected_agent: usize = 0,
-    source_session: usize = 0,
+    source_session_id: usize = 0,
     selected_text: ?[]const u8 = null,
     prompt: text_edit.TextInput = .{
         .separators = text_edit.prose_separators,
@@ -125,11 +126,11 @@ pub const SelectionAgentOverlayComponent = struct {
         };
     }
 
-    pub fn open(self: *SelectionAgentOverlayComponent, selected_text: []const u8, session: usize, now_ms: i64) void {
+    pub fn open(self: *SelectionAgentOverlayComponent, selected_text: []const u8, session_id: usize, now_ms: i64) void {
         self.releaseSelectedText();
         self.invalidateContextPreview();
         self.selected_text = selected_text;
-        self.source_session = session;
+        self.source_session_id = session_id;
         self.selected_agent = 0;
         self.dropdown_open = false;
         self.prompt.clear();
@@ -192,7 +193,7 @@ pub const SelectionAgentOverlayComponent = struct {
                     return true;
                 }
 
-                if (key == c.SDLK_ESCAPE or (key == c.SDLK_W and (mod & c.SDL_KMOD_GUI) != 0)) {
+                if (modal_frame.isDismissKey(key, mod)) {
                     self.close();
                     return true;
                 }
@@ -275,7 +276,7 @@ pub const SelectionAgentOverlayComponent = struct {
             return;
         };
         actions.append(.{ .LaunchAgentWithContext = .{
-            .session = self.source_session,
+            .session_id = self.source_session_id,
             .agent_command = agent_command,
             .prompt = prompt,
         } }) catch |err| {
@@ -323,21 +324,8 @@ pub const SelectionAgentOverlayComponent = struct {
             return;
         };
 
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
-        const scrim = c.SDL_FRect{
-            .x = 0,
-            .y = 0,
-            .w = @floatFromInt(host.window_w),
-            .h = @floatFromInt(host.window_h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &scrim);
-
         const modal_radius_px = dpi.scale(modal_radius, host.ui_scale);
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.selection.r, host.theme.selection.g, host.theme.selection.b, 240);
-        primitives.fillRoundedRect(renderer, modal, modal_radius_px);
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, modal_radius_px);
+        modal_frame.renderScrimAndPanel(renderer, host, modal, modal_radius_px);
 
         self.renderStaticTexture(renderer, self.title_tex, modal.x + dpi.scale(padding, host.ui_scale), modal.y + dpi.scale(padding, host.ui_scale));
 

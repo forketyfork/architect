@@ -63,13 +63,17 @@ pub const UiAction = union(enum) {
 };
 
 pub const OpenSelectionAgentAction = struct {
-    session: usize,
+    /// Stable `SessionState.id`, not a slot index — resolved via `findSessionIndexById`
+    /// so the target survives grid reindexing between when this is queued and handled.
+    session_id: usize,
     /// Heap-allocated; ownership transfers to the selection-agent overlay.
     selected_text: []const u8,
 };
 
 pub const LaunchAgentWithContextAction = struct {
-    session: usize,
+    /// Stable `SessionState.id`, not a slot index — resolved via `findSessionIndexById`
+    /// so the target survives grid reindexing between when this is queued and handled.
+    session_id: usize,
     /// Heap-allocated; ownership transfers to runtime, which frees after use.
     agent_command: []const u8,
     /// Heap-allocated; ownership transfers to runtime. Includes the selected context.
