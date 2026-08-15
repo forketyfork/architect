@@ -43,6 +43,7 @@ pub const SDL_RenderTexture = c_import.SDL_RenderTexture;
 pub const SDL_SetRenderDrawBlendMode = c_import.SDL_SetRenderDrawBlendMode;
 pub const SDL_SetRenderClipRect = c_import.SDL_SetRenderClipRect;
 pub const SDL_GetRenderClipRect = c_import.SDL_GetRenderClipRect;
+pub const SDL_RenderClipEnabled = c_import.SDL_RenderClipEnabled;
 pub const SDL_GetTextureSize = c_import.SDL_GetTextureSize;
 pub const SDL_CreateTextureFromSurface = c_import.SDL_CreateTextureFromSurface;
 pub const SDL_DestroyTexture = c_import.SDL_DestroyTexture;

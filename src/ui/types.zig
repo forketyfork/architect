@@ -56,8 +56,24 @@ pub const UiAction = union(enum) {
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     ToggleReaderOverlay: void,
+    OpenSelectionAgent: OpenSelectionAgentAction,
+    LaunchAgentWithContext: LaunchAgentWithContextAction,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
+};
+
+pub const OpenSelectionAgentAction = struct {
+    session: usize,
+    /// Heap-allocated; ownership transfers to the selection-agent overlay.
+    selected_text: []const u8,
+};
+
+pub const LaunchAgentWithContextAction = struct {
+    session: usize,
+    /// Heap-allocated; ownership transfers to runtime, which frees after use.
+    agent_command: []const u8,
+    /// Heap-allocated; ownership transfers to runtime. Includes the selected context.
+    prompt: []const u8,
 };
 
 pub const SwitchWorktreeAction = struct {

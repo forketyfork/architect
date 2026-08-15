@@ -35,10 +35,20 @@ pub const GlyphBadge = struct {
         assets: *types.UiAssets,
         theme: *const colors.Theme,
     ) void {
+        const fg = theme.foreground;
+        self.renderWithColor(renderer, rect, ui_scale, assets, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 });
+    }
+
+    pub fn renderWithColor(
+        self: *GlyphBadge,
+        renderer: *c.SDL_Renderer,
+        rect: geom.Rect,
+        ui_scale: f32,
+        assets: *types.UiAssets,
+        fg_color: c.SDL_Color,
+    ) void {
         const cache = assets.font_cache orelse return;
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fg = theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
         const stale = self.texture == null or
             self.font_size != font_size or
