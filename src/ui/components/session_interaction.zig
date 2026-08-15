@@ -30,6 +30,8 @@ pub const wave_row_anim_ms: i64 = 150;
 pub const wave_amplitude: f32 = 0.08;
 pub const nav_wave_amplitude: f32 = 0.02;
 pub const wave_strip_height: i64 = 8;
+const selection_pill_width: c_int = 42;
+const selection_pill_height: c_int = 30;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
@@ -43,7 +45,7 @@ pub const SessionInteractionComponent = struct {
     pointer_cursor: ?*c.SDL_Cursor = null,
     current_cursor: CursorKind = .arrow,
     last_update_ms: i64 = 0,
-    selection_pill_badge: glyph_badge.GlyphBadge = .{ .text = "Launch agent" },
+    selection_pill_badge: glyph_badge.GlyphBadge = .{ .text = "🤖", .emoji_aware = true },
     selection_pill_hovered: bool = false,
 
     pub fn init(
@@ -510,7 +512,7 @@ pub const SessionInteractionComponent = struct {
         const fg = host.theme.background;
         _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, 255);
         primitives.drawRoundedBorder(renderer, pill_rect, @divFloor(pill_rect.h, 2));
-        self.selection_pill_badge.renderWithColor(renderer, pill_rect, host.ui_scale, assets, .{
+        self.selection_pill_badge.renderWithColor(self.allocator, renderer, pill_rect, host.ui_scale, assets, .{
             .r = fg.r,
             .g = fg.g,
             .b = fg.b,
@@ -528,15 +530,26 @@ pub const SessionInteractionComponent = struct {
         const cell = view.selection_menu_cell orelse return null;
 
         const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
-        const pill_w = dpi.scale(136, host.ui_scale);
-        const pill_h = dpi.scale(30, host.ui_scale);
+        const pill_w = dpi.scale(selection_pill_width, host.ui_scale);
+        const pill_h = dpi.scale(selection_pill_height, host.ui_scale);
         const cell_right = padding + (@as(c_int, @intCast(cell.col)) + 1) * self.font.cell_width;
         const cell_bottom = padding + (@as(c_int, @intCast(cell.row)) + 1) * self.font.cell_height;
-        const max_x = @max(0, host.window_w - pill_w);
-        const max_y = @max(0, host.window_h - pill_h);
+        return selectionPillRectForAnchor(cell_right, cell_bottom, pill_w, pill_h, host.window_w, host.window_h);
+    }
+
+    fn selectionPillRectForAnchor(
+        cell_right: c_int,
+        cell_bottom: c_int,
+        pill_w: c_int,
+        pill_h: c_int,
+        window_w: c_int,
+        window_h: c_int,
+    ) geom.Rect {
+        const max_x = @max(0, window_w - pill_w);
+        const max_y = @max(0, window_h - pill_h);
         return .{
-            .x = @min(max_x, @max(0, cell_right - pill_w)),
-            .y = @min(max_y, @max(0, cell_bottom - pill_h)),
+            .x = @min(max_x, @max(0, cell_right)),
+            .y = @min(max_y, @max(0, cell_bottom)),
             .w = pill_w,
             .h = pill_h,
         };
@@ -1253,6 +1266,16 @@ test "selection action pill anchors to the lower-right selection endpoint" {
     const same_line = selectionMenuCellForEndpoints(.{ .col = 9, .row = 4 }, .{ .col = 2, .row = 4 });
     try std.testing.expectEqual(@as(u16, 9), same_line.col);
     try std.testing.expectEqual(@as(u16, 4), same_line.row);
+}
+
+test "selection action pill starts at the selection bottom-right corner" {
+    const pill = SessionInteractionComponent.selectionPillRectForAnchor(320, 200, 42, 30, 1200, 900);
+    try std.testing.expectEqual(@as(c_int, 320), pill.x);
+    try std.testing.expectEqual(@as(c_int, 200), pill.y);
+
+    const clamped = SessionInteractionComponent.selectionPillRectForAnchor(1190, 880, 42, 30, 1200, 900);
+    try std.testing.expectEqual(@as(c_int, 1158), clamped.x);
+    try std.testing.expectEqual(@as(c_int, 870), clamped.y);
 }
 
 test "selection action pill becomes visible only after release" {

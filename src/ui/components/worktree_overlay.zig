@@ -380,7 +380,7 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.badge.render(renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
+            .Closed, .Collapsing, .Expanding => self.badge.render(self.allocator, renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
             .Open => self.renderOverlay(renderer, ui_host, rect, ui_host.ui_scale, assets, ui_host.theme),
         }
     }
