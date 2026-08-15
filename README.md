@@ -128,6 +128,7 @@ architect hook claude
 architect hook codex
 architect hook gemini
 ```
+On first launch, Architect shows a faint in-terminal hint with the core shortcuts and the `architect hook` setup command. The hint is shown once and is not sent to the shell.
 
 ## MCP
 

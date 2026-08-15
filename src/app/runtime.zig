@@ -1266,6 +1266,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     };
     errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
+    const show_onboarding = !persistence.onboarding_shown;
 
     // Initialize recent folders with home directory if empty
     if (persistence.recent_folders.items.len == 0) {
@@ -1527,6 +1528,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var running = true;
     var persistence_dirty = false;
     var persistence_dirty_since_ms: i64 = 0;
+    var onboarding_displayed = false;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -3116,10 +3118,16 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 ui_scale,
                 config.grid.font_scale,
                 &grid,
+                show_onboarding,
+                &onboarding_displayed,
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;
             };
+            if (show_onboarding and onboarding_displayed and !persistence.onboarding_shown) {
+                persistence.onboarding_shown = true;
+                markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
+            }
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             if (relaunch_trace_frames > 0) {

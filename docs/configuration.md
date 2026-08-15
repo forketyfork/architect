@@ -242,6 +242,7 @@ Auto-managed runtime state. Do not edit manually unless troubleshooting.
 
 ```toml
 font_size = 14
+onboarding_shown = true
 
 terminals = [
   "/Users/me/projects/app",
@@ -269,6 +270,7 @@ y = 50
 | Field | Description |
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
+| `onboarding_shown` | Whether the first-launch onboarding hint has been displayed; older persistence files without this field are treated as already shown |
 | `terminals` | Working directories for each terminal (ordered by session index) |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
 | `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
