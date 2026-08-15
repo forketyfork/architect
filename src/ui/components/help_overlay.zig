@@ -165,7 +165,7 @@ pub const HelpOverlayComponent = struct {
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.badge.render(renderer, rect, host.ui_scale, assets, host.theme),
+            .Closed, .Collapsing, .Expanding => self.badge.render(self.allocator, renderer, rect, host.ui_scale, assets, host.theme),
             .Open => self.renderHelpOverlay(renderer, rect, host.ui_scale, assets, host.theme),
         }
     }

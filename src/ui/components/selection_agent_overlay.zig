@@ -26,8 +26,10 @@ const title_height: c_int = 32;
 const field_height: c_int = 42;
 const prompt_height: c_int = 150;
 const context_height: c_int = 115;
+const cancel_button_width: c_int = 112;
 const button_width: c_int = 132;
 const button_height: c_int = 42;
+const button_gap: c_int = 12;
 const dropdown_item_height: c_int = 36;
 const prompt_max_len: usize = 64 * 1024;
 const context_preview_line_count: usize = 4;
@@ -84,6 +86,7 @@ pub const SelectionAgentOverlayComponent = struct {
         .max_len = prompt_max_len,
     },
     prompt_focused: bool = true,
+    cancel_hovered: bool = false,
     launch_hovered: bool = false,
     selector_hovered: bool = false,
     guard: first_frame.FirstFrameGuard = .{},
@@ -94,6 +97,7 @@ pub const SelectionAgentOverlayComponent = struct {
     label_tex: ?TextTexture = null,
     prompt_label_tex: ?TextTexture = null,
     context_label_tex: ?TextTexture = null,
+    cancel_tex: ?TextTexture = null,
     launch_tex: ?TextTexture = null,
     placeholder_tex: ?TextTexture = null,
     agent_tex: [agent_count]?TextTexture = [_]?TextTexture{null} ** agent_count,
@@ -136,6 +140,9 @@ pub const SelectionAgentOverlayComponent = struct {
         self.prompt.clear();
         self.prompt.touch(now_ms);
         self.prompt_focused = true;
+        self.cancel_hovered = false;
+        self.launch_hovered = false;
+        self.selector_hovered = false;
         self.visible = true;
         self.guard.markTransition();
     }
@@ -162,6 +169,9 @@ pub const SelectionAgentOverlayComponent = struct {
         self.dropdown_open = false;
         self.releaseSelectedText();
         self.prompt.clear();
+        self.cancel_hovered = false;
+        self.launch_hovered = false;
+        self.selector_hovered = false;
         self.guard.markTransition();
     }
 
@@ -245,6 +255,12 @@ pub const SelectionAgentOverlayComponent = struct {
                     return true;
                 }
                 if (event.button.button == c.SDL_BUTTON_LEFT and
+                    geom.containsPoint(self.cancelRect(host, modal), mouse_x, mouse_y))
+                {
+                    self.close();
+                    return true;
+                }
+                if (event.button.button == c.SDL_BUTTON_LEFT and
                     geom.containsPoint(self.launchRect(host, modal), mouse_x, mouse_y))
                 {
                     self.queueLaunch(actions);
@@ -256,6 +272,7 @@ pub const SelectionAgentOverlayComponent = struct {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
                 const modal = self.modalRect(host);
+                self.cancel_hovered = geom.containsPoint(self.cancelRect(host, modal), mouse_x, mouse_y);
                 self.launch_hovered = geom.containsPoint(self.launchRect(host, modal), mouse_x, mouse_y);
                 self.selector_hovered = geom.containsPoint(self.selectorRect(host, modal), mouse_x, mouse_y);
                 return true;
@@ -363,6 +380,7 @@ pub const SelectionAgentOverlayComponent = struct {
         self.renderPrompt(renderer, host, prompt);
         self.renderStaticTexture(renderer, self.context_label_tex, context.x, context.y - dpi.scale(24, host.ui_scale));
         self.renderContextPreview(renderer, host, context);
+        self.renderCancelButton(renderer, host, modal);
         self.renderLaunchButton(renderer, host, modal);
 
         if (self.dropdown_open) self.renderDropdown(renderer, host, self.dropdownRect(host, selector));
@@ -494,6 +512,17 @@ pub const SelectionAgentOverlayComponent = struct {
         }
     }
 
+    fn renderCancelButton(self: *SelectionAgentOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, modal: geom.Rect) void {
+        const button = self.cancelRect(host, modal);
+        fillPanel(renderer, button, host.theme.background);
+        if (self.cancel_hovered) {
+            fillPanel(renderer, button, .{ .r = 255, .g = 255, .b = 255, .a = 30 });
+        }
+        if (self.cancel_tex) |cancel| {
+            self.renderStaticTexture(renderer, cancel, button.x + @divFloor(button.w - cancel.w, 2), button.y + @divFloor(button.h - cancel.h, 2));
+        }
+    }
+
     fn renderDropdown(self: *SelectionAgentOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect) void {
         const dropdown_radius = dpi.scale(7, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.background.r, host.theme.background.g, host.theme.background.b, 255);
@@ -521,6 +550,7 @@ pub const SelectionAgentOverlayComponent = struct {
         self.label_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Agent", title_color);
         self.prompt_label_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Prompt", title_color);
         self.context_label_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Selected terminal text", title_color);
+        self.cancel_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Cancel", title_color);
         self.launch_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Launch", button_color);
         self.placeholder_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Describe what the agent should do...", host.theme.foreground);
         for (0..agent_count) |idx| {
@@ -701,6 +731,7 @@ pub const SelectionAgentOverlayComponent = struct {
         destroyTexture(&self.label_tex);
         destroyTexture(&self.prompt_label_tex);
         destroyTexture(&self.context_label_tex);
+        destroyTexture(&self.cancel_tex);
         destroyTexture(&self.launch_tex);
         destroyTexture(&self.placeholder_tex);
         for (&self.agent_tex) |*texture| destroyTexture(texture);
@@ -775,15 +806,32 @@ pub const SelectionAgentOverlayComponent = struct {
         };
     }
 
-    fn launchRect(_: *const SelectionAgentOverlayComponent, host: *const types.UiHost, modal: geom.Rect) geom.Rect {
-        const scaled_padding = dpi.scale(padding, host.ui_scale);
-        const button_h = dpi.scale(button_height, host.ui_scale);
-        return .{
-            .x = modal.x + modal.w - scaled_padding - dpi.scale(button_width, host.ui_scale),
+    fn actionButtonRects(modal: geom.Rect, ui_scale: f32) struct { cancel: geom.Rect, launch: geom.Rect } {
+        const scaled_padding = dpi.scale(padding, ui_scale);
+        const button_h = dpi.scale(button_height, ui_scale);
+        const launch = geom.Rect{
+            .x = modal.x + modal.w - scaled_padding - dpi.scale(button_width, ui_scale),
             .y = modal.y + modal.h - scaled_padding - button_h,
-            .w = dpi.scale(button_width, host.ui_scale),
+            .w = dpi.scale(button_width, ui_scale),
             .h = button_h,
         };
+        return .{
+            .cancel = .{
+                .x = launch.x - dpi.scale(button_gap, ui_scale) - dpi.scale(cancel_button_width, ui_scale),
+                .y = launch.y,
+                .w = dpi.scale(cancel_button_width, ui_scale),
+                .h = button_h,
+            },
+            .launch = launch,
+        };
+    }
+
+    fn cancelRect(_: *const SelectionAgentOverlayComponent, host: *const types.UiHost, modal: geom.Rect) geom.Rect {
+        return actionButtonRects(modal, host.ui_scale).cancel;
+    }
+
+    fn launchRect(_: *const SelectionAgentOverlayComponent, host: *const types.UiHost, modal: geom.Rect) geom.Rect {
+        return actionButtonRects(modal, host.ui_scale).launch;
     }
 
     fn dropdownRect(_: *const SelectionAgentOverlayComponent, host: *const types.UiHost, selector: geom.Rect) geom.Rect {
@@ -858,4 +906,12 @@ test "formatAgentPrompt preserves multiline instructions and context" {
     const prompt = try formatAgentPrompt(std.testing.allocator, "First line\nSecond line", "one\ntwo");
     defer std.testing.allocator.free(prompt);
     try std.testing.expectEqualStrings("First line\nSecond line\n\n---\n\none\ntwo\n\n---\n", prompt);
+}
+
+test "selection agent action buttons share a row without overlapping" {
+    const buttons = SelectionAgentOverlayComponent.actionButtonRects(.{ .x = 100, .y = 50, .w = 760, .h = 620 }, 1.0);
+
+    try std.testing.expectEqual(buttons.cancel.y, buttons.launch.y);
+    try std.testing.expectEqual(buttons.cancel.h, buttons.launch.h);
+    try std.testing.expectEqual(buttons.cancel.x + buttons.cancel.w + button_gap, buttons.launch.x);
 }

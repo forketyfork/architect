@@ -1,7 +1,9 @@
+const std = @import("std");
 const c = @import("../../c.zig");
 const colors = @import("../../colors.zig");
 const dpi = @import("../../dpi.zig");
 const geom = @import("../../geom.zig");
+const text_render = @import("../text_render.zig");
 const types = @import("../types.zig");
 
 /// Cached texture for a small static text badge (e.g. the "⌘O" hint shown on
@@ -11,6 +13,7 @@ const types = @import("../types.zig");
 /// milliseconds while the app is rendering continuously.
 pub const GlyphBadge = struct {
     text: [:0]const u8,
+    emoji_aware: bool = false,
     texture: ?*c.SDL_Texture = null,
     w: f32 = 0,
     h: f32 = 0,
@@ -29,6 +32,7 @@ pub const GlyphBadge = struct {
     /// only when the font size, font generation, or theme color changes.
     pub fn render(
         self: *GlyphBadge,
+        allocator: std.mem.Allocator,
         renderer: *c.SDL_Renderer,
         rect: geom.Rect,
         ui_scale: f32,
@@ -36,11 +40,12 @@ pub const GlyphBadge = struct {
         theme: *const colors.Theme,
     ) void {
         const fg = theme.foreground;
-        self.renderWithColor(renderer, rect, ui_scale, assets, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 });
+        self.renderWithColor(allocator, renderer, rect, ui_scale, assets, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 });
     }
 
     pub fn renderWithColor(
         self: *GlyphBadge,
+        allocator: std.mem.Allocator,
         renderer: *c.SDL_Renderer,
         rect: geom.Rect,
         ui_scale: f32,
@@ -58,11 +63,29 @@ pub const GlyphBadge = struct {
             self.deinit();
 
             const fonts = cache.get(font_size) catch return;
-            const surface = c.TTF_RenderText_Blended(fonts.regular, self.text.ptr, @intCast(self.text.len), fg_color) orelse return;
-            defer c.SDL_DestroySurface(surface);
+            var texture: *c.SDL_Texture = undefined;
+            var width: f32 = 0;
+            var height: f32 = 0;
+            if (self.emoji_aware) {
+                const rendered = text_render.makeTextTexture(
+                    allocator,
+                    renderer,
+                    .{ .text = fonts.regular, .emoji = fonts.emoji },
+                    self.text[0..self.text.len],
+                    fg_color,
+                ) catch return;
+                texture = rendered.tex;
+                width = @floatFromInt(rendered.w);
+                height = @floatFromInt(rendered.h);
+            } else {
+                const surface = c.TTF_RenderText_Blended(fonts.regular, self.text.ptr, @intCast(self.text.len), fg_color) orelse return;
+                defer c.SDL_DestroySurface(surface);
 
-            const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-            _ = c.SDL_GetTextureSize(texture, &self.w, &self.h);
+                texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
+                _ = c.SDL_GetTextureSize(texture, &width, &height);
+            }
+            self.w = width;
+            self.h = height;
             self.texture = texture;
             self.font_size = font_size;
             self.font_generation = cache.generation;

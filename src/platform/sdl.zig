@@ -39,10 +39,12 @@ fn windowPositionIsUsable(
     window_h: c_int,
     display_bounds: c.SDL_Rect,
 ) bool {
-    const min_x = display_bounds.x - window_w + window_visibility_margin;
-    const max_x = display_bounds.x + display_bounds.w - window_visibility_margin;
-    const min_y = display_bounds.y - window_h + window_visibility_margin;
-    const max_y = display_bounds.y + display_bounds.h - window_visibility_margin;
+    const margin_x: c_int = @max(0, @min(window_visibility_margin, window_w));
+    const margin_y: c_int = @max(0, @min(window_visibility_margin, window_h));
+    const min_x = display_bounds.x - window_w + margin_x;
+    const max_x = display_bounds.x + display_bounds.w - margin_x;
+    const min_y = display_bounds.y - window_h + margin_y;
+    const max_y = display_bounds.y + display_bounds.h - margin_y;
 
     return position.x >= min_x and position.x <= max_x and
         position.y >= min_y and position.y <= max_y;
@@ -224,4 +226,11 @@ test "window position visibility accounts for displays with negative origins" {
 
     try std.testing.expect(windowPositionIsUsable(.{ .x = -1800, .y = 0 }, 1200, 900, bounds));
     try std.testing.expect(!windowPositionIsUsable(.{ .x = 0, .y = 0 }, 1200, 900, bounds));
+}
+
+test "small windows use their dimensions as the visibility margin" {
+    const bounds = c.SDL_Rect{ .x = 0, .y = 0, .w = 1920, .h = 1080 };
+
+    try std.testing.expect(windowPositionIsUsable(.{ .x = 0, .y = 0 }, 16, 16, bounds));
+    try std.testing.expect(windowPositionIsUsable(.{ .x = 1904, .y = 1064 }, 16, 16, bounds));
 }
