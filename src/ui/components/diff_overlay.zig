@@ -10,6 +10,7 @@ const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
 const session_state = @import("../../session/state.zig");
 const scrollbar = @import("scrollbar.zig");
 const comment_layout = @import("diff_comment_layout.zig");
+const dropdown_menu = @import("dropdown_menu.zig");
 const text_render = @import("../text_render.zig");
 const text_edit = @import("../text_edit.zig");
 
@@ -139,8 +140,7 @@ pub const DiffOverlayComponent = struct {
 
     comments: std.ArrayList(DiffComment) = .{},
     editing: ?EditingComment = null,
-    show_agent_dropdown: bool = false,
-    agent_dropdown_hovered: ?usize = null,
+    agent_dropdown: dropdown_menu.DropdownMenu,
     send_button_hovered: bool = false,
     delete_hovered_comment: ?usize = null,
     comment_submit_hovered: bool = false,
@@ -192,19 +192,21 @@ pub const DiffOverlayComponent = struct {
     const agent_dropdown_width: c_int = 140;
     const send_button_width: c_int = 110;
     const send_button_height: c_int = 26;
-    const agent_dropdown_item_count: usize = 1 + @typeInfo(session_state.AgentKind).@"enum".fields.len;
-
-    fn agentDropdownLabel(index: usize) []const u8 {
-        if (index == 0) return "Paste directly";
-        return @as(session_state.AgentKind, @enumFromInt(index - 1)).name();
-    }
+    const agent_kind_count: usize = @typeInfo(session_state.AgentKind).@"enum".fields.len;
+    const agent_dropdown_item_count: usize = 1 + agent_kind_count;
+    const agent_dropdown_items: [agent_dropdown_item_count][]const u8 = blk: {
+        var items: [agent_dropdown_item_count][]const u8 = undefined;
+        items[0] = "Paste directly";
+        for (0..agent_kind_count) |i| items[i + 1] = @as(session_state.AgentKind, @enumFromInt(i)).name();
+        break :blk items;
+    };
 
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
 
     pub fn init(allocator: std.mem.Allocator) !*DiffOverlayComponent {
         const comp = try allocator.create(DiffOverlayComponent);
-        comp.* = .{ .allocator = allocator };
+        comp.* = .{ .allocator = allocator, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
         comp.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
         comp.pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
         comp.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
@@ -771,8 +773,7 @@ pub const DiffOverlayComponent = struct {
         self.hovered_file = null;
         self.freeComments();
         self.cancelEditingImmediate();
-        self.show_agent_dropdown = false;
-        self.agent_dropdown_hovered = null;
+        self.agent_dropdown.close();
         self.send_button_hovered = false;
         self.comment_submit_hovered = false;
         self.comment_cancel_hovered = false;
@@ -1275,8 +1276,8 @@ pub const DiffOverlayComponent = struct {
                     (self.comment_anim == null or self.comment_anim.? != .editor_closing);
                 if (editor_interactive) {
                     if (key == c.SDLK_ESCAPE) {
-                        if (self.show_agent_dropdown) {
-                            self.show_agent_dropdown = false;
+                        if (self.agent_dropdown.open) {
+                            self.agent_dropdown.close();
                         } else {
                             self.cancelEditing(host.now_ms);
                         }
@@ -1298,11 +1299,14 @@ pub const DiffOverlayComponent = struct {
                     return true;
                 }
 
-                if (key == c.SDLK_ESCAPE) {
-                    if (self.show_agent_dropdown) {
-                        self.show_agent_dropdown = false;
-                        return true;
+                if (self.agent_dropdown.open) {
+                    if (self.agent_dropdown.handleKey(key, &agent_dropdown_items) == .selected) {
+                        self.applyAgentDropdownSelection(host, actions);
                     }
+                    return true;
+                }
+
+                if (key == c.SDLK_ESCAPE) {
                     actions.append(.ToggleDiffOverlay) catch |err| {
                         log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
                     };
@@ -1343,24 +1347,12 @@ pub const DiffOverlayComponent = struct {
                 const mouse_y: c_int = @intFromFloat(event.button.y);
 
                 // Agent dropdown click
-                if (self.show_agent_dropdown) {
+                if (self.agent_dropdown.open) {
                     const dd = agentDropdownRect(host, FullscreenOverlay.overlayRect(host));
-                    if (geom.containsPoint(dd, mouse_x, mouse_y)) {
-                        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
-                        const rel_y = mouse_y - dd.y;
-                        const item_idx: usize = @intCast(@divFloor(rel_y, item_h));
-                        if (item_idx < agent_dropdown_item_count) {
-                            if (item_idx == 0) {
-                                // "Paste directly" — send to terminal without starting an agent
-                                self.sendCommentsToAgent(host, actions, null);
-                            } else {
-                                self.sendCommentsToAgent(host, actions, agentDropdownLabel(item_idx));
-                            }
-                        }
-                        self.show_agent_dropdown = false;
-                        return true;
+                    const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+                    if (self.agent_dropdown.handleClick(dd, item_h, &agent_dropdown_items, mouse_x, mouse_y) == .selected) {
+                        self.applyAgentDropdownSelection(host, actions);
                     }
-                    self.show_agent_dropdown = false;
                     return true;
                 }
 
@@ -1379,7 +1371,7 @@ pub const DiffOverlayComponent = struct {
                         if (host.focused_has_foreground_process) {
                             self.sendCommentsToAgent(host, actions, null);
                         } else {
-                            self.show_agent_dropdown = true;
+                            self.agent_dropdown.openMenu();
                         }
                         return true;
                     }
@@ -1504,16 +1496,10 @@ pub const DiffOverlayComponent = struct {
                     false;
 
                 // Agent dropdown hover
-                if (self.show_agent_dropdown) {
+                if (self.agent_dropdown.open) {
                     const dd = agentDropdownRect(host, FullscreenOverlay.overlayRect(host));
-                    if (geom.containsPoint(dd, mouse_x, mouse_y)) {
-                        const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
-                        const rel_y = mouse_y - dd.y;
-                        const idx: usize = @intCast(@divFloor(rel_y, item_h));
-                        self.agent_dropdown_hovered = if (idx < agent_dropdown_item_count) idx else null;
-                    } else {
-                        self.agent_dropdown_hovered = null;
-                    }
+                    const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
+                    self.agent_dropdown.handleMotion(dd, item_h, &agent_dropdown_items, mouse_x, mouse_y);
                 }
 
                 const rect = FullscreenOverlay.overlayRect(host);
@@ -1542,7 +1528,13 @@ pub const DiffOverlayComponent = struct {
                 var want_cursor: CursorKind = .arrow;
                 if (self.overlay.close_hovered or self.send_button_hovered) {
                     want_cursor = .pointer;
-                } else if (self.show_agent_dropdown and self.agent_dropdown_hovered != null) {
+                } else if (self.agent_dropdown.open and dropdown_menu.DropdownMenu.itemAt(
+                    agentDropdownRect(host, FullscreenOverlay.overlayRect(host)),
+                    dpi.scale(agent_dropdown_item_height, host.ui_scale),
+                    &agent_dropdown_items,
+                    mouse_x,
+                    mouse_y,
+                ) != null) {
                     want_cursor = .pointer;
                 } else if (mouse_y >= content_top and scaled_line_h > 0) {
                     const relative_y = mouse_y - content_top + scroll_int;
@@ -2722,6 +2714,16 @@ pub const DiffOverlayComponent = struct {
         };
     }
 
+    fn applyAgentDropdownSelection(self: *DiffOverlayComponent, host: *const types.UiHost, actions: *types.UiActionQueue) void {
+        const idx = self.agent_dropdown.selected;
+        if (idx == 0) {
+            // "Paste directly" — send to terminal without starting an agent
+            self.sendCommentsToAgent(host, actions, null);
+        } else {
+            self.sendCommentsToAgent(host, actions, agent_dropdown_items[idx]);
+        }
+    }
+
     fn markCommentsSent(self: *DiffOverlayComponent) void {
         for (self.comments.items) |*comment| {
             comment.sent = true;
@@ -3516,62 +3518,30 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn renderAgentDropdown(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect) void {
-        if (!self.show_agent_dropdown) return;
+        if (!self.agent_dropdown.open) return;
+        const cache = assets.font_cache orelse return;
 
         const dd = agentDropdownRect(host, overlay_rect);
         const item_h = dpi.scale(agent_dropdown_item_height, host.ui_scale);
-        const alpha = self.overlay.render_alpha;
-        const radius = dpi.scale(4, host.ui_scale);
-
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const bg = host.theme.background;
-        _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, @intFromFloat(250.0 * alpha));
-        primitives.fillRoundedRect(renderer, dd, radius);
-
-        const accent = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, @intFromFloat(150.0 * alpha));
-        primitives.drawRoundedBorder(renderer, dd, radius);
-
-        const font_cache = assets.font_cache orelse return;
-        const scaled_font_size = dpi.scale(font_size, host.ui_scale);
-        const fonts = font_cache.get(scaled_font_size) catch return;
-
-        for (0..agent_dropdown_item_count) |i| {
-            const name = agentDropdownLabel(i);
-            const item_y = dd.y + @as(c_int, @intCast(i)) * item_h;
-
-            if (self.agent_dropdown_hovered) |h| {
-                if (h == i) {
-                    const sel = host.theme.selection;
-                    _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, @intFromFloat(60.0 * alpha));
-                    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                        .x = @floatFromInt(dd.x + 1),
-                        .y = @floatFromInt(item_y),
-                        .w = @floatFromInt(dd.w - 2),
-                        .h = @floatFromInt(item_h),
-                    });
-                }
-            }
-
-            const tex = self.makeTextTexture(renderer, fonts.regular, name, host.theme.foreground) catch |err| {
-                log.warn("failed to render dropdown text: {}", .{err});
-                continue;
-            };
-            defer c.SDL_DestroyTexture(tex.tex);
-            _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(dd.x + dpi.scale(FullscreenOverlay.text_padding, host.ui_scale)),
-                .y = @floatFromInt(item_y + @divFloor(item_h - tex.h, 2)),
-                .w = @floatFromInt(tex.w),
-                .h = @floatFromInt(tex.h),
-            });
-        }
+        self.agent_dropdown.render(renderer, cache, dd, item_h, &agent_dropdown_items, .{
+            .font_size = dpi.scale(font_size, host.ui_scale),
+            .radius = dpi.scale(4, host.ui_scale),
+            .bg = .{ .r = host.theme.background.r, .g = host.theme.background.g, .b = host.theme.background.b, .a = 250 },
+            .border = .{ .r = host.theme.accent.r, .g = host.theme.accent.g, .b = host.theme.accent.b, .a = 150 },
+            .highlight = .{ .r = host.theme.selection.r, .g = host.theme.selection.g, .b = host.theme.selection.b, .a = 60 },
+            .text = host.theme.foreground,
+            .text_inset_x = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale),
+            .fade = self.overlay.render_alpha,
+        }) catch |err| {
+            log.warn("failed to render agent dropdown: {}", .{err});
+        };
     }
 
     fn destroy(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
         self.scrollbar_state.deinit();
         self.clearContent();
+        self.agent_dropdown.deinit();
         self.display_rows.deinit(self.allocator);
         if (self.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);
         if (self.pointer_cursor) |cur| c.SDL_DestroyCursor(cur);

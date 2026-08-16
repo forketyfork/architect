@@ -8,6 +8,7 @@ const session_state = @import("../../session/state.zig");
 const text_render = @import("../text_render.zig");
 const text_edit = @import("../text_edit.zig");
 const diff_comment_layout = @import("diff_comment_layout.zig");
+const dropdown_menu = @import("dropdown_menu.zig");
 const modal_frame = @import("modal_frame.zig");
 const scrollbar = @import("scrollbar.zig");
 const types = @import("../types.zig");
@@ -18,6 +19,11 @@ const log = std.log.scoped(.selection_agent_overlay);
 
 const AgentKind = session_state.AgentKind;
 const agent_count: usize = @typeInfo(AgentKind).@"enum".fields.len;
+const agent_items: [agent_count][]const u8 = blk: {
+    var items: [agent_count][]const u8 = undefined;
+    for (0..agent_count) |i| items[i] = @as(AgentKind, @enumFromInt(i)).name();
+    break :blk items;
+};
 const modal_width: c_int = 760;
 const modal_height: c_int = 620;
 const modal_margin: c_int = 28;
@@ -116,12 +122,6 @@ fn contextWrapCols(font: *c.TTF_Font, rect: geom.Rect, ui_scale: f32) usize {
     );
 }
 
-fn dropdownItemAt(rect: geom.Rect, item_height: c_int, item_count: usize, x: c_int, y: c_int) ?usize {
-    if (item_height <= 0 or !geom.containsPoint(rect, x, y)) return null;
-    const index: usize = @intCast(@divFloor(y - rect.y, item_height));
-    return if (index < item_count) index else null;
-}
-
 fn contextScrollMetricsForLineCount(
     line_count: usize,
     line_height: c_int,
@@ -167,8 +167,7 @@ fn contextTextureWindow(
 pub const SelectionAgentOverlayComponent = struct {
     allocator: std.mem.Allocator,
     visible: bool = false,
-    dropdown_open: bool = false,
-    selected_agent: usize = 0,
+    agent_dropdown: dropdown_menu.DropdownMenu,
     source_session_id: usize = 0,
     selected_text: ?[]const u8 = null,
     prompt: text_edit.TextInput = .{
@@ -179,7 +178,6 @@ pub const SelectionAgentOverlayComponent = struct {
     cancel_hovered: bool = false,
     launch_hovered: bool = false,
     selector_hovered: bool = false,
-    dropdown_hovered_agent: ?usize = null,
     context_scrollbar: scrollbar.State = .{},
     context_scroll_offset: f32 = 0,
     guard: first_frame.FirstFrameGuard = .{},
@@ -193,7 +191,6 @@ pub const SelectionAgentOverlayComponent = struct {
     cancel_tex: ?TextTexture = null,
     launch_tex: ?TextTexture = null,
     placeholder_tex: ?TextTexture = null,
-    agent_tex: [agent_count]?TextTexture = [_]?TextTexture{null} ** agent_count,
 
     prompt_lines: []PromptLine = &.{},
     prompt_generation: u64 = 0,
@@ -209,7 +206,7 @@ pub const SelectionAgentOverlayComponent = struct {
 
     pub fn init(allocator: std.mem.Allocator) !*SelectionAgentOverlayComponent {
         const self = try allocator.create(SelectionAgentOverlayComponent);
-        self.* = .{ .allocator = allocator };
+        self.* = .{ .allocator = allocator, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
         return self;
     }
 
@@ -226,9 +223,8 @@ pub const SelectionAgentOverlayComponent = struct {
         self.invalidateContextPreview();
         self.selected_text = selected_text;
         self.source_session_id = session_id;
-        self.selected_agent = 0;
-        self.dropdown_open = false;
-        self.dropdown_hovered_agent = null;
+        self.agent_dropdown.selected = 0;
+        self.agent_dropdown.close();
         self.prompt.clear();
         self.prompt.touch(now_ms);
         self.prompt_focused = true;
@@ -246,6 +242,7 @@ pub const SelectionAgentOverlayComponent = struct {
         self.invalidateStaticTextures();
         self.invalidatePromptLines();
         self.invalidateContextPreview();
+        self.agent_dropdown.deinit();
         self.context_scrollbar.deinit();
         self.prompt.deinit(self.allocator);
         self.releaseSelectedText();
@@ -261,8 +258,7 @@ pub const SelectionAgentOverlayComponent = struct {
 
     fn close(self: *SelectionAgentOverlayComponent) void {
         self.visible = false;
-        self.dropdown_open = false;
-        self.dropdown_hovered_agent = null;
+        self.agent_dropdown.close();
         self.releaseSelectedText();
         self.prompt.clear();
         self.cancel_hovered = false;
@@ -280,27 +276,8 @@ pub const SelectionAgentOverlayComponent = struct {
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
                 const mod = event.key.mod;
-                if (self.dropdown_open) {
-                    if (key == c.SDLK_ESCAPE) {
-                        self.dropdown_open = false;
-                        self.dropdown_hovered_agent = null;
-                        self.prompt_focused = true;
-                        return true;
-                    }
-                    if (key == c.SDLK_UP or key == c.SDLK_DOWN) {
-                        const direction: isize = if (key == c.SDLK_UP) -1 else 1;
-                        const next = @as(isize, @intCast(self.selected_agent)) + direction;
-                        self.selected_agent = @intCast(@mod(next + @as(isize, agent_count), @as(isize, agent_count)));
-                        self.dropdown_hovered_agent = null;
-                        return true;
-                    }
-                    if (key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER) {
-                        if (self.dropdown_hovered_agent) |hovered| self.selected_agent = hovered;
-                        self.dropdown_open = false;
-                        self.dropdown_hovered_agent = null;
-                        self.prompt_focused = true;
-                        return true;
-                    }
+                if (self.agent_dropdown.open) {
+                    if (self.agent_dropdown.handleKey(key, &agent_items) != .none) self.prompt_focused = true;
                     return true;
                 }
 
@@ -325,7 +302,7 @@ pub const SelectionAgentOverlayComponent = struct {
                 return true;
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
-                if (!self.dropdown_open) {
+                if (!self.agent_dropdown.open) {
                     const modal = self.modalRect(host);
                     const context = self.contextRect(host, modal);
                     const metrics = self.contextScrollMetrics(host, context);
@@ -346,13 +323,10 @@ pub const SelectionAgentOverlayComponent = struct {
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const modal = self.modalRect(host);
 
-                if (self.dropdown_open) {
+                if (self.agent_dropdown.open) {
                     const dropdown = self.dropdownRect(host, self.selectorRect(host, modal));
                     const item_height = dpi.scale(dropdown_item_height, host.ui_scale);
-                    if (dropdownItemAt(dropdown, item_height, agent_count, mouse_x, mouse_y)) |item_idx|
-                        self.selected_agent = item_idx;
-                    self.dropdown_open = false;
-                    self.dropdown_hovered_agent = null;
+                    _ = self.agent_dropdown.handleClick(dropdown, item_height, &agent_items, mouse_x, mouse_y);
                     self.prompt_focused = true;
                     return true;
                 }
@@ -362,8 +336,7 @@ pub const SelectionAgentOverlayComponent = struct {
                     return true;
                 }
                 if (geom.containsPoint(self.selectorRect(host, modal), mouse_x, mouse_y)) {
-                    self.dropdown_open = true;
-                    self.dropdown_hovered_agent = self.selected_agent;
+                    self.agent_dropdown.openMenu();
                     self.prompt_focused = false;
                     self.context_scrollbar.endDrag(host.now_ms);
                     return true;
@@ -412,12 +385,12 @@ pub const SelectionAgentOverlayComponent = struct {
                 self.cancel_hovered = geom.containsPoint(self.cancelRect(host, modal), mouse_x, mouse_y);
                 self.launch_hovered = geom.containsPoint(self.launchRect(host, modal), mouse_x, mouse_y);
                 self.selector_hovered = geom.containsPoint(self.selectorRect(host, modal), mouse_x, mouse_y);
-                if (self.dropdown_open) {
+                if (self.agent_dropdown.open) {
                     const dropdown = self.dropdownRect(host, self.selectorRect(host, modal));
-                    self.dropdown_hovered_agent = dropdownItemAt(
+                    self.agent_dropdown.handleMotion(
                         dropdown,
                         dpi.scale(dropdown_item_height, host.ui_scale),
-                        agent_count,
+                        &agent_items,
                         mouse_x,
                         mouse_y,
                     );
@@ -459,7 +432,7 @@ pub const SelectionAgentOverlayComponent = struct {
             log.warn("failed to format selection agent prompt: {}", .{err});
             return;
         };
-        const agent_command = self.allocator.dupe(u8, agentKindAt(self.selected_agent).name()) catch |err| {
+        const agent_command = self.allocator.dupe(u8, agentKindAt(self.agent_dropdown.selected).name()) catch |err| {
             log.warn("failed to copy selection agent command: {}", .{err});
             self.allocator.free(prompt);
             return;
@@ -482,7 +455,7 @@ pub const SelectionAgentOverlayComponent = struct {
         if (!self.visible) return false;
         const modal = self.modalRect(host);
         return geom.containsPoint(modal, x, y) or
-            (self.dropdown_open and geom.containsPoint(self.dropdownRect(host, self.selectorRect(host, modal)), x, y));
+            (self.agent_dropdown.open and geom.containsPoint(self.dropdownRect(host, self.selectorRect(host, modal)), x, y));
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -507,6 +480,10 @@ pub const SelectionAgentOverlayComponent = struct {
 
         self.ensureStaticTextures(renderer, host, cache) catch |err| {
             log.warn("failed to render selection agent overlay labels: {}", .{err});
+            return;
+        };
+        self.agent_dropdown.ensureLabels(renderer, cache, dpi.scale(16, host.ui_scale), &agent_items, host.theme.foreground) catch |err| {
+            log.warn("failed to render agent dropdown labels: {}", .{err});
             return;
         };
         self.ensurePromptLines(renderer, host, cache, prompt) catch |err| {
@@ -538,7 +515,7 @@ pub const SelectionAgentOverlayComponent = struct {
         const selector_border = if (self.selector_hovered) host.theme.accent else host.theme.foreground;
         _ = c.SDL_SetRenderDrawColor(renderer, selector_border.r, selector_border.g, selector_border.b, if (self.selector_hovered) 255 else 120);
         primitives.drawRoundedBorder(renderer, selector, selector_radius);
-        if (self.agent_tex[self.selected_agent]) |agent_tex| {
+        if (self.agent_dropdown.labelTexture(self.agent_dropdown.selected)) |agent_tex| {
             self.renderStaticTexture(renderer, agent_tex, selector.x + dpi.scale(12, host.ui_scale), selector.y + @divFloor(selector.h - agent_tex.h, 2));
         }
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.foreground.r, host.theme.foreground.g, host.theme.foreground.b, 220);
@@ -564,7 +541,20 @@ pub const SelectionAgentOverlayComponent = struct {
         self.renderCancelButton(renderer, host, modal);
         self.renderLaunchButton(renderer, host, modal);
 
-        if (self.dropdown_open) self.renderDropdown(renderer, host, self.dropdownRect(host, selector));
+        if (self.agent_dropdown.open) {
+            const dropdown_rect = self.dropdownRect(host, selector);
+            self.agent_dropdown.render(renderer, cache, dropdown_rect, dpi.scale(dropdown_item_height, host.ui_scale), &agent_items, .{
+                .font_size = dpi.scale(16, host.ui_scale),
+                .radius = dpi.scale(7, host.ui_scale),
+                .bg = .{ .r = host.theme.background.r, .g = host.theme.background.g, .b = host.theme.background.b, .a = 255 },
+                .border = .{ .r = host.theme.accent.r, .g = host.theme.accent.g, .b = host.theme.accent.b, .a = 255 },
+                .highlight = .{ .r = host.theme.selection.r, .g = host.theme.selection.g, .b = host.theme.selection.b, .a = 190 },
+                .text = host.theme.foreground,
+                .text_inset_x = dpi.scale(12, host.ui_scale),
+            }) catch |err| {
+                log.warn("failed to render agent dropdown: {}", .{err});
+            };
+        }
         self.guard.markDrawn();
     }
 
@@ -708,38 +698,6 @@ pub const SelectionAgentOverlayComponent = struct {
         }
     }
 
-    fn renderDropdown(self: *SelectionAgentOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect) void {
-        const dropdown_radius = dpi.scale(7, host.ui_scale);
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.background.r, host.theme.background.g, host.theme.background.b, 255);
-        primitives.fillRoundedRect(renderer, rect, dropdown_radius);
-        _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 255);
-        primitives.drawRoundedBorder(renderer, rect, dropdown_radius);
-        const item_h = dpi.scale(dropdown_item_height, host.ui_scale);
-        const highlighted = self.dropdown_hovered_agent orelse self.selected_agent;
-        for (0..agent_count) |idx| {
-            if (idx == highlighted) {
-                const item_y = rect.y + @as(c_int, @intCast(idx)) * item_h;
-                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                _ = c.SDL_SetRenderDrawColor(
-                    renderer,
-                    host.theme.selection.r,
-                    host.theme.selection.g,
-                    host.theme.selection.b,
-                    190,
-                );
-                _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                    .x = @floatFromInt(rect.x + 1),
-                    .y = @floatFromInt(item_y),
-                    .w = @floatFromInt(rect.w - 2),
-                    .h = @floatFromInt(item_h),
-                });
-            }
-            if (self.agent_tex[idx]) |agent| {
-                self.renderStaticTexture(renderer, agent, rect.x + dpi.scale(12, host.ui_scale), rect.y + @as(c_int, @intCast(idx)) * item_h + @divFloor(item_h - agent.h, 2));
-            }
-        }
-    }
-
     fn ensureStaticTextures(self: *SelectionAgentOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, cache: *font_cache.FontCache) !void {
         const font_size = dpi.scale(16, host.ui_scale);
         if (self.title_tex != null and self.static_generation == cache.generation and self.static_font_size == font_size) return;
@@ -756,15 +714,6 @@ pub const SelectionAgentOverlayComponent = struct {
         self.cancel_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Cancel", title_color);
         self.launch_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Launch", button_color);
         self.placeholder_tex = try text_render.makeTextTexture(self.allocator, renderer, .{ .text = fonts.regular }, "Describe what the agent should do...", host.theme.foreground);
-        for (0..agent_count) |idx| {
-            self.agent_tex[idx] = try text_render.makeTextTexture(
-                self.allocator,
-                renderer,
-                .{ .text = fonts.regular },
-                agentKindAt(idx).name(),
-                title_color,
-            );
-        }
         self.static_generation = cache.generation;
         self.static_font_size = font_size;
     }
@@ -980,7 +929,6 @@ pub const SelectionAgentOverlayComponent = struct {
         destroyTexture(&self.cancel_tex);
         destroyTexture(&self.launch_tex);
         destroyTexture(&self.placeholder_tex);
-        for (&self.agent_tex) |*texture| destroyTexture(texture);
         self.static_generation = 0;
         self.static_font_size = 0;
     }
@@ -1184,16 +1132,6 @@ test "selection agent action buttons share a row without overlapping" {
     try std.testing.expectEqual(buttons.cancel.y, buttons.launch.y);
     try std.testing.expectEqual(buttons.cancel.h, buttons.launch.h);
     try std.testing.expectEqual(buttons.cancel.x + buttons.cancel.w + button_gap, buttons.launch.x);
-}
-
-test "selection agent dropdown resolves the hovered item" {
-    const dropdown = geom.Rect{ .x = 100, .y = 200, .w = 240, .h = 108 };
-
-    try std.testing.expectEqual(@as(?usize, 0), dropdownItemAt(dropdown, 36, 3, 120, 210));
-    try std.testing.expectEqual(@as(?usize, 1), dropdownItemAt(dropdown, 36, 3, 120, 250));
-    try std.testing.expectEqual(@as(?usize, 2), dropdownItemAt(dropdown, 36, 3, 120, 307));
-    try std.testing.expectEqual(@as(?usize, null), dropdownItemAt(dropdown, 36, 3, 99, 210));
-    try std.testing.expectEqual(@as(?usize, null), dropdownItemAt(dropdown, 36, 3, 120, 308));
 }
 
 test "selected terminal text wraps into scrollable context metrics" {
