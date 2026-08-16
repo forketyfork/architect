@@ -7,6 +7,58 @@ const c = @import("../c.zig");
 const SessionState = session_state.SessionState;
 const log = std.log.scoped(.terminal_actions);
 
+pub const SubmittedPasteError = error{
+    NoShell,
+    NoTerminal,
+    BracketedPasteUnavailable,
+    OutOfMemory,
+};
+
+pub fn isSubmittedPasteReady(session: *const SessionState) bool {
+    if (session.shell == null) return false;
+    const terminal = session.terminal orelse return false;
+    return ghostty_vt.input.PasteOptions.fromTerminal(&terminal).bracketed;
+}
+
+pub fn buildSubmittedPaste(
+    allocator: std.mem.Allocator,
+    session: *const SessionState,
+    text: []const u8,
+) SubmittedPasteError![]u8 {
+    if (session.shell == null) return error.NoShell;
+    const terminal = session.terminal orelse return error.NoTerminal;
+    return buildSubmittedPastePayload(
+        allocator,
+        text,
+        ghostty_vt.input.PasteOptions.fromTerminal(&terminal),
+    );
+}
+
+fn buildSubmittedPastePayload(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    options: ghostty_vt.input.PasteOptions,
+) SubmittedPasteError![]u8 {
+    if (!options.bracketed) return error.BracketedPasteUnavailable;
+
+    var mutable_text: ?[]u8 = null;
+    defer if (mutable_text) |owned| allocator.free(owned);
+    const parts = ghostty_vt.input.encodePaste(text, options) catch |err| switch (err) {
+        error.MutableRequired => blk: {
+            const owned = try allocator.dupe(u8, text);
+            mutable_text = owned;
+            break :blk ghostty_vt.input.encodePaste(owned, options);
+        },
+    };
+
+    var payload: std.ArrayList(u8) = .empty;
+    errdefer payload.deinit(allocator);
+    try payload.ensureTotalCapacity(allocator, text.len + 13);
+    for (parts) |part| try payload.appendSlice(allocator, part);
+    try payload.append(allocator, '\r');
+    return payload.toOwnedSlice(allocator);
+}
+
 pub fn pasteText(
     session: *SessionState,
     allocator: std.mem.Allocator,
@@ -116,4 +168,43 @@ pub fn pasteClipboardIntoSession(
     };
 
     ui.showToast("Pasted clipboard", now);
+}
+
+test "submitted paste preserves multiline text and appends Enter" {
+    const payload = try buildSubmittedPastePayload(
+        std.testing.allocator,
+        "first\nsecond",
+        .{ .bracketed = true },
+    );
+    defer std.testing.allocator.free(payload);
+
+    try std.testing.expectEqualStrings("\x1b[200~first\nsecond\x1b[201~\r", payload);
+}
+
+test "submitted paste supports prompts larger than command argument limits" {
+    const prompt = try std.testing.allocator.alloc(u8, 2 * 1024 * 1024);
+    defer std.testing.allocator.free(prompt);
+    @memset(prompt, 'x');
+
+    const payload = try buildSubmittedPastePayload(
+        std.testing.allocator,
+        prompt,
+        .{ .bracketed = true },
+    );
+    defer std.testing.allocator.free(payload);
+
+    try std.testing.expectEqual(prompt.len + 13, payload.len);
+    try std.testing.expectEqualStrings("\x1b[200~", payload[0..6]);
+    try std.testing.expectEqualStrings("\x1b[201~\r", payload[payload.len - 7 ..]);
+}
+
+test "submitted paste requires bracketed paste mode" {
+    try std.testing.expectError(
+        error.BracketedPasteUnavailable,
+        buildSubmittedPastePayload(
+            std.testing.allocator,
+            "first\nsecond",
+            .{ .bracketed = false },
+        ),
+    );
 }

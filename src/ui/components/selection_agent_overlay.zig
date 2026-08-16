@@ -35,6 +35,7 @@ const dropdown_item_height: c_int = 36;
 const prompt_max_len: usize = 64 * 1024;
 const wrap_tab_width: usize = 4;
 const wrap_min_printable: u8 = 32;
+const context_texture_overscan_lines: usize = 2;
 
 const TextTexture = text_render.TextTex;
 
@@ -51,9 +52,16 @@ const PromptLine = struct {
 };
 
 const ContextLine = struct {
+    start: usize = 0,
+    end: usize = 0,
     tex: ?*c.SDL_Texture = null,
     w: c_int = 0,
     h: c_int = 0,
+};
+
+const ContextTextureWindow = struct {
+    first: usize,
+    end: usize,
 };
 
 const WrappedRangeCollector = struct {
@@ -63,6 +71,19 @@ const WrappedRangeCollector = struct {
 
 fn collectWrappedLine(context: *WrappedRangeCollector, line: diff_comment_layout.WrappedLine) void {
     if (context.count < context.ranges.len) context.ranges[context.count] = line;
+    context.count += 1;
+}
+
+const ContextLineCollector = struct {
+    lines: []ContextLine,
+    count: usize = 0,
+};
+
+fn collectContextLine(context: *ContextLineCollector, line: diff_comment_layout.WrappedLine) void {
+    if (context.count < context.lines.len) {
+        context.lines[context.count].start = line.start;
+        context.lines[context.count].end = line.end;
+    }
     context.count += 1;
 }
 
@@ -112,6 +133,35 @@ fn contextScrollMetricsForLineCount(
         @as(f32, @floatFromInt(line_height)) +
         @as(f32, @floatFromInt(inner_padding * 2));
     return scrollbar.Metrics.init(content_height, offset, @floatFromInt(viewport_height));
+}
+
+fn contextTextureWindow(
+    line_count: usize,
+    line_height: c_int,
+    inner_padding: c_int,
+    viewport_height: c_int,
+    offset: f32,
+) ContextTextureWindow {
+    if (line_count == 0 or line_height <= 0 or viewport_height <= 0) return .{ .first = 0, .end = 0 };
+
+    const line_height_f: f32 = @floatFromInt(line_height);
+    const inner_padding_f: f32 = @floatFromInt(inner_padding);
+    const viewport_height_f: f32 = @floatFromInt(viewport_height);
+    const first_visible_raw: usize = if (offset <= inner_padding_f)
+        0
+    else
+        @intFromFloat(@floor((offset - inner_padding_f) / line_height_f));
+    const visible_end_raw: usize = @intFromFloat(@ceil(@max(
+        @as(f32, 0),
+        offset + viewport_height_f - inner_padding_f,
+    ) / line_height_f));
+    const first_visible = @min(first_visible_raw, line_count);
+    const visible_end = @min(@max(visible_end_raw, first_visible), line_count);
+
+    return .{
+        .first = first_visible -| context_texture_overscan_lines,
+        .end = @min(line_count, visible_end +| context_texture_overscan_lines),
+    };
 }
 
 pub const SelectionAgentOverlayComponent = struct {
@@ -463,8 +513,12 @@ pub const SelectionAgentOverlayComponent = struct {
             log.warn("failed to render selection agent prompt: {}", .{err});
             return;
         };
-        self.ensureContextPreview(renderer, host, cache, context) catch |err| {
+        self.ensureContextLayout(host, cache, context) catch |err| {
             log.warn("failed to render selected terminal context preview: {}", .{err});
+            return;
+        };
+        self.ensureVisibleContextTextures(renderer, host, cache, context) catch |err| {
+            log.warn("failed to render visible terminal context: {}", .{err});
             return;
         };
 
@@ -824,9 +878,8 @@ pub const SelectionAgentOverlayComponent = struct {
         self.prompt_rect_width = rect.w;
     }
 
-    fn ensureContextPreview(
+    fn ensureContextLayout(
         self: *SelectionAgentOverlayComponent,
-        renderer: *c.SDL_Renderer,
         host: *const types.UiHost,
         cache: *font_cache.FontCache,
         rect: geom.Rect,
@@ -850,40 +903,19 @@ pub const SelectionAgentOverlayComponent = struct {
             wrap_tab_width,
             wrap_min_printable,
         );
-        const ranges = try self.allocator.alloc(diff_comment_layout.WrappedLine, line_count);
-        defer self.allocator.free(ranges);
-        var collector = WrappedRangeCollector{ .ranges = ranges };
+        const context_lines = try self.allocator.alloc(ContextLine, line_count);
+        @memset(context_lines, .{});
+        errdefer self.allocator.free(context_lines);
+        var collector = ContextLineCollector{ .lines = context_lines };
         diff_comment_layout.forEachWrappedLine(
             selected_text,
             wrap_cols,
             wrap_tab_width,
             wrap_min_printable,
             &collector,
-            collectWrappedLine,
+            collectContextLine,
         );
-
-        const context_lines = try self.allocator.alloc(ContextLine, collector.count);
-        @memset(context_lines, .{});
-
-        for (ranges[0..collector.count], 0..) |range, index| {
-            const source = selected_text[range.start..range.end];
-            if (source.len == 0) continue;
-            const texture = text_render.makeTextTexture(
-                self.allocator,
-                renderer,
-                .{ .text = fonts.regular, .emoji = fonts.emoji },
-                source,
-                host.theme.foreground,
-            ) catch |err| {
-                log.warn("failed to render selected context line: {}", .{err});
-                continue;
-            };
-            context_lines[index] = .{
-                .tex = texture.tex,
-                .w = texture.w,
-                .h = texture.h,
-            };
-        }
+        std.debug.assert(collector.count == line_count);
         self.context_lines = context_lines;
         self.context_preview_generation = cache.generation;
         self.context_preview_font_size = font_size;
@@ -895,6 +927,48 @@ pub const SelectionAgentOverlayComponent = struct {
             self.context_scrollbar.noteActivity(host.now_ms);
         } else {
             self.context_scrollbar.hideNow();
+        }
+    }
+
+    fn ensureVisibleContextTextures(
+        self: *SelectionAgentOverlayComponent,
+        renderer: *c.SDL_Renderer,
+        host: *const types.UiHost,
+        cache: *font_cache.FontCache,
+        rect: geom.Rect,
+    ) !void {
+        const selected_text = self.selected_text orelse return;
+        const fonts = try cache.get(dpi.scale(14, host.ui_scale));
+        const line_height = dpi.scale(19, host.ui_scale);
+        const inner = dpi.scale(10, host.ui_scale);
+        const metrics = self.contextScrollMetrics(host, rect);
+        self.context_scroll_offset = metrics.offset;
+        const window = contextTextureWindow(
+            self.context_lines.len,
+            line_height,
+            inner,
+            rect.h,
+            self.context_scroll_offset,
+        );
+
+        for (self.context_lines, 0..) |*line, index| {
+            if (index < window.first or index >= window.end) destroyContextLineTexture(line);
+        }
+        for (self.context_lines[window.first..window.end]) |*line| {
+            if (line.tex != null or line.start == line.end) continue;
+            const texture = text_render.makeTextTexture(
+                self.allocator,
+                renderer,
+                .{ .text = fonts.regular, .emoji = fonts.emoji },
+                selected_text[line.start..line.end],
+                host.theme.foreground,
+            ) catch |err| {
+                log.warn("failed to render selected context line: {}", .{err});
+                continue;
+            };
+            line.tex = texture.tex;
+            line.w = texture.w;
+            line.h = texture.h;
         }
     }
 
@@ -1075,8 +1149,17 @@ fn destroyPromptLine(allocator: std.mem.Allocator, line: *PromptLine) void {
 }
 
 fn destroyContextLine(line: *ContextLine) void {
-    if (line.tex) |texture| c.SDL_DestroyTexture(texture);
+    destroyContextLineTexture(line);
     line.* = .{};
+}
+
+fn destroyContextLineTexture(line: *ContextLine) void {
+    if (line.tex) |texture| {
+        c.SDL_DestroyTexture(texture);
+        line.tex = null;
+    }
+    line.w = 0;
+    line.h = 0;
 }
 
 pub fn formatAgentPrompt(allocator: std.mem.Allocator, input: []const u8, selected_text: []const u8) ![]u8 {
@@ -1121,4 +1204,19 @@ test "selected terminal text wraps into scrollable context metrics" {
     try std.testing.expect(line_count > 1);
     try std.testing.expect(metrics.isScrollable());
     try std.testing.expect(metrics.maxOffset() > 0);
+}
+
+test "context preview texture window stays bounded for large selections" {
+    const top = contextTextureWindow(500_000, 19, 10, 115, 0);
+    try std.testing.expectEqual(@as(usize, 0), top.first);
+    try std.testing.expect(top.end - top.first <= 11);
+
+    const middle = contextTextureWindow(500_000, 19, 10, 115, 4_000_000);
+    try std.testing.expect(middle.first > 0);
+    try std.testing.expect(middle.end < 500_000);
+    try std.testing.expect(middle.end - middle.first <= 11);
+
+    const bottom = contextTextureWindow(500_000, 19, 10, 115, 9_500_000);
+    try std.testing.expect(bottom.end <= 500_000);
+    try std.testing.expect(bottom.end - bottom.first <= 11);
 }

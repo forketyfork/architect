@@ -569,6 +569,26 @@ fn pendingSendLabel(kind: PendingSessionSendKind) []const u8 {
     };
 }
 
+fn pendingSendNeedsSubmittedPaste(pending: PendingSessionSend) bool {
+    return pending.kind == .selection_agent and pending.expected_agent == .codex;
+}
+
+fn pendingSendReady(session: *const SessionState, pending: PendingSessionSend) bool {
+    return !pendingSendNeedsSubmittedPaste(pending) or terminal_actions.isSubmittedPasteReady(session);
+}
+
+fn sendPendingSessionText(
+    allocator: std.mem.Allocator,
+    session: *SessionState,
+    pending: PendingSessionSend,
+) !void {
+    if (!pendingSendNeedsSubmittedPaste(pending)) return session.sendInput(pending.text);
+
+    const submitted_paste = try terminal_actions.buildSubmittedPaste(allocator, session, pending.text);
+    defer allocator.free(submitted_paste);
+    try session.sendInput(submitted_paste);
+}
+
 fn drainPendingSessionSends(
     allocator: std.mem.Allocator,
     pending_sends: *std.ArrayList(PendingSessionSend),
@@ -590,8 +610,8 @@ fn drainPendingSessionSends(
         } else {
             const session = sessions[session_idx.?];
             if (session.detectForegroundAgent()) |actual_agent| {
-                if (actual_agent == pending.expected_agent) {
-                    session.sendInput(pending.text) catch |err| {
+                if (actual_agent == pending.expected_agent and pendingSendReady(session, pending)) {
+                    sendPendingSessionText(allocator, session, pending) catch |err| {
                         log.warn("failed to send pending {s}: {}", .{ label, err });
                         ui.showToast("Could not send the pending agent context", now);
                     };
@@ -600,14 +620,22 @@ fn drainPendingSessionSends(
             }
 
             if (!remove and now >= pending.deadline_ms) {
-                log.warn(
-                    "pending {s}: expected agent {s} not confirmed in session id {d} by deadline; sending anyway",
-                    .{ label, pending.expected_agent.name(), pending.session_id },
-                );
-                session.sendInput(pending.text) catch |err| {
-                    log.warn("failed to send pending {s} after deadline: {}", .{ label, err });
-                    ui.showToast("Could not send the pending agent context", now);
-                };
+                if (pendingSendReady(session, pending)) {
+                    log.warn(
+                        "pending {s}: expected agent {s} not confirmed in session id {d} by deadline; sending anyway",
+                        .{ label, pending.expected_agent.name(), pending.session_id },
+                    );
+                    sendPendingSessionText(allocator, session, pending) catch |err| {
+                        log.warn("failed to send pending {s} after deadline: {}", .{ label, err });
+                        ui.showToast("Could not send the pending agent context", now);
+                    };
+                } else {
+                    log.warn(
+                        "pending {s}: agent {s} did not enable bracketed paste in session id {d} by deadline",
+                        .{ label, pending.expected_agent.name(), pending.session_id },
+                    );
+                    ui.showToast("Codex did not become ready for the prompt", now);
+                }
                 remove = true;
             }
         }
@@ -758,26 +786,6 @@ fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
     @memcpy(out[0..command.len], command);
     if (needs_newline) out[out.len - 1] = '\n';
     return out;
-}
-
-fn appendShellQuotedArgument(command: *std.ArrayList(u8), allocator: std.mem.Allocator, argument: []const u8) !void {
-    try command.append(allocator, '\'');
-    for (argument) |byte| switch (byte) {
-        '\'' => try command.appendSlice(allocator, "'\"'\"'"),
-        else => try command.append(allocator, byte),
-    };
-    try command.append(allocator, '\'');
-}
-
-fn buildCodexLaunchCommand(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
-    var command: std.ArrayList(u8) = .empty;
-    errdefer command.deinit(allocator);
-
-    try command.appendSlice(allocator, session_state.AgentKind.codex.name());
-    try command.append(allocator, ' ');
-    try appendShellQuotedArgument(&command, allocator, prompt);
-    try command.append(allocator, '\n');
-    return command.toOwnedSlice(allocator);
 }
 
 fn completeExternalSpawnFailure(
@@ -960,11 +968,7 @@ fn handleLaunchAgentWithContext(
         ui.showToast("Could not prepare the source terminal directory", now);
         return;
     };
-    const prompt_is_launch_argument = agent == .codex;
-    const command_input = (if (prompt_is_launch_argument)
-        buildCodexLaunchCommand(allocator, action.prompt)
-    else
-        buildQueuedCommand(allocator, action.agent_command)) catch |err| {
+    const command_input = buildQueuedCommand(allocator, action.agent_command) catch |err| {
         allocator.free(action.prompt);
         log.warn("failed to prepare selection agent command: {}", .{err});
         ui.showToast("Could not prepare the agent command", now);
@@ -982,12 +986,6 @@ fn handleLaunchAgentWithContext(
         ui.showToast(message, now);
         return;
     };
-
-    if (prompt_is_launch_argument) {
-        allocator.free(action.prompt);
-        context.session_interaction_component.clearSelection(source_idx);
-        return;
-    }
 
     pending_sends.append(allocator, .{
         .session_id = session.id,
@@ -3642,19 +3640,6 @@ test "buildQueuedCommand appends a newline only when needed" {
     const second = try buildQueuedCommand(allocator, "echo ok\n");
     defer allocator.free(second);
     try std.testing.expectEqualStrings("echo ok\n", second);
-}
-
-test "Codex selection launch passes the prompt as a shell-quoted positional argument" {
-    const command = try buildCodexLaunchCommand(
-        std.testing.allocator,
-        "Fix the user's issue\n\n<selection>\ncontext\n</selection>\n",
-    );
-    defer std.testing.allocator.free(command);
-
-    try std.testing.expectEqualStrings(
-        "codex 'Fix the user'\"'\"'s issue\n\n<selection>\ncontext\n</selection>\n'\n",
-        command,
-    );
 }
 
 test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
