@@ -760,6 +760,26 @@ fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
     return out;
 }
 
+fn appendShellQuotedArgument(command: *std.ArrayList(u8), allocator: std.mem.Allocator, argument: []const u8) !void {
+    try command.append(allocator, '\'');
+    for (argument) |byte| switch (byte) {
+        '\'' => try command.appendSlice(allocator, "'\"'\"'"),
+        else => try command.append(allocator, byte),
+    };
+    try command.append(allocator, '\'');
+}
+
+fn buildCodexLaunchCommand(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
+    var command: std.ArrayList(u8) = .empty;
+    errdefer command.deinit(allocator);
+
+    try command.appendSlice(allocator, session_state.AgentKind.codex.name());
+    try command.append(allocator, ' ');
+    try appendShellQuotedArgument(&command, allocator, prompt);
+    try command.append(allocator, '\n');
+    return command.toOwnedSlice(allocator);
+}
+
 fn completeExternalSpawnFailure(
     pending: *control.PendingSpawn,
     code: control.SpawnErrorCode,
@@ -940,7 +960,11 @@ fn handleLaunchAgentWithContext(
         ui.showToast("Could not prepare the source terminal directory", now);
         return;
     };
-    const command_input = buildQueuedCommand(allocator, action.agent_command) catch |err| {
+    const prompt_is_launch_argument = agent == .codex;
+    const command_input = (if (prompt_is_launch_argument)
+        buildCodexLaunchCommand(allocator, action.prompt)
+    else
+        buildQueuedCommand(allocator, action.agent_command)) catch |err| {
         allocator.free(action.prompt);
         log.warn("failed to prepare selection agent command: {}", .{err});
         ui.showToast("Could not prepare the agent command", now);
@@ -958,6 +982,12 @@ fn handleLaunchAgentWithContext(
         ui.showToast(message, now);
         return;
     };
+
+    if (prompt_is_launch_argument) {
+        allocator.free(action.prompt);
+        context.session_interaction_component.clearSelection(source_idx);
+        return;
+    }
 
     pending_sends.append(allocator, .{
         .session_id = session.id,
@@ -3612,6 +3642,19 @@ test "buildQueuedCommand appends a newline only when needed" {
     const second = try buildQueuedCommand(allocator, "echo ok\n");
     defer allocator.free(second);
     try std.testing.expectEqualStrings("echo ok\n", second);
+}
+
+test "Codex selection launch passes the prompt as a shell-quoted positional argument" {
+    const command = try buildCodexLaunchCommand(
+        std.testing.allocator,
+        "Fix the user's issue\n\n<selection>\ncontext\n</selection>\n",
+    );
+    defer std.testing.allocator.free(command);
+
+    try std.testing.expectEqualStrings(
+        "codex 'Fix the user'\"'\"'s issue\n\n<selection>\ncontext\n</selection>\n'\n",
+        command,
+    );
 }
 
 test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
