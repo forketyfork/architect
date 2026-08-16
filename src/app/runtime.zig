@@ -569,6 +569,26 @@ fn pendingSendLabel(kind: PendingSessionSendKind) []const u8 {
     };
 }
 
+fn pendingSendNeedsSubmittedPaste(pending: PendingSessionSend) bool {
+    return pending.kind == .selection_agent and pending.expected_agent == .codex;
+}
+
+fn pendingSendReady(session: *const SessionState, pending: PendingSessionSend) bool {
+    return !pendingSendNeedsSubmittedPaste(pending) or terminal_actions.isSubmittedPasteReady(session);
+}
+
+fn sendPendingSessionText(
+    allocator: std.mem.Allocator,
+    session: *SessionState,
+    pending: PendingSessionSend,
+) !void {
+    if (!pendingSendNeedsSubmittedPaste(pending)) return session.sendInput(pending.text);
+
+    const submitted_paste = try terminal_actions.buildSubmittedPaste(allocator, session, pending.text);
+    defer allocator.free(submitted_paste);
+    try session.sendInput(submitted_paste);
+}
+
 fn drainPendingSessionSends(
     allocator: std.mem.Allocator,
     pending_sends: *std.ArrayList(PendingSessionSend),
@@ -590,8 +610,8 @@ fn drainPendingSessionSends(
         } else {
             const session = sessions[session_idx.?];
             if (session.detectForegroundAgent()) |actual_agent| {
-                if (actual_agent == pending.expected_agent) {
-                    session.sendInput(pending.text) catch |err| {
+                if (actual_agent == pending.expected_agent and pendingSendReady(session, pending)) {
+                    sendPendingSessionText(allocator, session, pending) catch |err| {
                         log.warn("failed to send pending {s}: {}", .{ label, err });
                         ui.showToast("Could not send the pending agent context", now);
                     };
@@ -600,14 +620,22 @@ fn drainPendingSessionSends(
             }
 
             if (!remove and now >= pending.deadline_ms) {
-                log.warn(
-                    "pending {s}: expected agent {s} not confirmed in session id {d} by deadline; sending anyway",
-                    .{ label, pending.expected_agent.name(), pending.session_id },
-                );
-                session.sendInput(pending.text) catch |err| {
-                    log.warn("failed to send pending {s} after deadline: {}", .{ label, err });
-                    ui.showToast("Could not send the pending agent context", now);
-                };
+                if (pendingSendReady(session, pending)) {
+                    log.warn(
+                        "pending {s}: expected agent {s} not confirmed in session id {d} by deadline; sending anyway",
+                        .{ label, pending.expected_agent.name(), pending.session_id },
+                    );
+                    sendPendingSessionText(allocator, session, pending) catch |err| {
+                        log.warn("failed to send pending {s} after deadline: {}", .{ label, err });
+                        ui.showToast("Could not send the pending agent context", now);
+                    };
+                } else {
+                    log.warn(
+                        "pending {s}: agent {s} did not enable bracketed paste in session id {d} by deadline",
+                        .{ label, pending.expected_agent.name(), pending.session_id },
+                    );
+                    ui.showToast("Codex did not become ready for the prompt", now);
+                }
                 remove = true;
             }
         }

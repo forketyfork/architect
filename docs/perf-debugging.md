@@ -72,6 +72,10 @@ Debug build; benchmark VT behavior with `-Doptimize=ReleaseFast`.
   `nextDrawable` can block for up to ~1 s when the drawable pool is exhausted.
   Never create-render-destroy a texture per frame; cache static textures
   (see `src/ui/components/glyph_badge.zig`).
+- Scrollable text previews must not materialize one SDL texture per logical
+  line. Cache the wrapped byte ranges needed for scroll metrics, but keep
+  textures only for the visible viewport plus a small overscan window (see
+  `src/ui/components/selection_agent_overlay.zig`).
 - **Occluded windows stop getting drawables.** When the window is fully
   covered (another window on top, Space switch), macOS stops compositing it
   and `nextDrawable` blocks for its full ~1 s timeout on every render attempt,

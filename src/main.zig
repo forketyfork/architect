@@ -36,6 +36,7 @@ test {
     _ = @import("app/grid_layout.zig");
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
+    _ = @import("app/terminal_actions.zig");
     _ = @import("app/terminal_history.zig");
     _ = @import("cli_args.zig");
     _ = @import("colors.zig");
