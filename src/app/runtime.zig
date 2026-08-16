@@ -15,6 +15,7 @@ const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
+const pty_watcher = @import("../session/pty_watcher.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
@@ -28,6 +29,7 @@ const config_mod = @import("../config.zig");
 const logging_mod = @import("../logging.zig");
 const colors_mod = @import("../colors.zig");
 const ui_mod = @import("../ui/mod.zig");
+const ui_types = @import("../ui/types.zig");
 const font_cache_mod = @import("../font_cache.zig");
 const c = @import("../c.zig");
 const dpi = @import("../dpi.zig");
@@ -58,10 +60,44 @@ const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
 const SessionMove = grid_layout.SessionMove;
 
+const PendingSessionSendKind = enum {
+    selection_agent,
+    diff_comments,
+};
+
+const PendingSessionSend = struct {
+    session_id: usize,
+    text: []const u8,
+    expected_agent: session_state.AgentKind,
+    deadline_ms: i64,
+    kind: PendingSessionSendKind,
+};
+
+const pending_session_send_timeout_ms: i64 = 10_000;
+
+const SpawnSessionContext = struct {
+    allocator: std.mem.Allocator,
+    sessions: []const *SessionState,
+    grid: *GridLayout,
+    anim_state: *AnimationState,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
+    loop: *xev.Loop,
+    animations_enabled: bool,
+    now: i64,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    font: *font_mod.Font,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+    cell_width_pixels: *c_int,
+    cell_height_pixels: *c_int,
+};
+
 const FrameWaitDecision = union(enum) {
     none,
-    idle_wait_ms: c_int,
-    active_sleep_ns: u64,
+    wait_ms: c_int,
 };
 
 const ForegroundProcessCache = struct {
@@ -116,25 +152,36 @@ fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
     return @intCast(@min(timeout_ms, max_timeout_ms));
 }
 
+/// Rendering is suppressed while the window is fully occluded: macOS stops
+/// compositing covered windows and `CAMetalLayer` stops handing out
+/// drawables, so any render attempt blocks the main thread for the full
+/// ~1s `nextDrawable` timeout — freezing input handling and PTY processing
+/// with it. PTY output keeps being consumed while occluded; the
+/// `SDL_EVENT_WINDOW_EXPOSED` event that fires on un-covering counts as a
+/// processed event and triggers an immediate repaint.
+fn shouldRenderFrame(window_occluded: bool, wants_render: bool) bool {
+    return wants_render and !window_occluded;
+}
+
 fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
     if (is_idle) {
         const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
-        return if (timeout_ms > 0) .{ .idle_wait_ms = timeout_ms } else .none;
+        return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
     }
     if (vsync_enabled) return .none;
 
-    const sleep_ns = remainingFrameBudgetNs(active_frame_ns, frame_ns);
-    return if (sleep_ns > 0) .{ .active_sleep_ns = sleep_ns } else .none;
+    const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(active_frame_ns, frame_ns));
+    return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
 }
 
+/// Waits for the next frame using the same interruptible SDL wait mechanism
+/// for both idle and active pacing, so a key press or PTY-watcher wake event
+/// during active-frame pacing is observed immediately instead of waiting out
+/// a fixed, uninterruptible sleep.
 fn waitForNextFrame(wait_decision: FrameWaitDecision) ?c.SDL_Event {
     return switch (wait_decision) {
         .none => null,
-        .idle_wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
-        .active_sleep_ns => |sleep_ns| blk: {
-            std.Thread.sleep(sleep_ns);
-            break :blk null;
-        },
+        .wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
     };
 }
 
@@ -287,17 +334,43 @@ fn syncPersistenceTerminalEntriesFromSessions(
     return true;
 }
 
+const persistence_save_debounce_ms: i64 = 500;
+
+/// Marks persistence dirty and records when it first became dirty.
+/// `dirty_since_ms` is only set on the false->true transition, so repeated
+/// calls during a burst of events (e.g. every tick of a window drag) keep the
+/// oldest timestamp rather than pushing the debounce window forward. This
+/// guarantees a save happens within `persistence_save_debounce_ms` of the
+/// first change even under continuous activity.
+fn markPersistenceDirty(dirty: *bool, dirty_since_ms: *i64, now_ms: i64) void {
+    if (dirty.*) return;
+    dirty.* = true;
+    dirty_since_ms.* = now_ms;
+}
+
+/// Pure debounce decision: a dirty persistence state is due for saving once
+/// it has been dirty for at least `persistence_save_debounce_ms`. Guards
+/// against a backwards clock jump stalling the save indefinitely.
+fn shouldSavePersistenceNow(dirty: bool, dirty_since_ms: i64, now_ms: i64) bool {
+    if (!dirty) return false;
+    if (now_ms < dirty_since_ms) return true;
+    return now_ms - dirty_since_ms >= persistence_save_debounce_ms;
+}
+
 fn savePersistenceIfDirty(
     persistence: *config_mod.Persistence,
     allocator: std.mem.Allocator,
     dirty: *bool,
+    dirty_since_ms: *i64,
+    now_ms: i64,
 ) void {
-    if (!dirty.*) return;
+    if (!shouldSavePersistenceNow(dirty.*, dirty_since_ms.*, now_ms)) return;
     persistence.save(allocator) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
         return;
     };
     dirty.* = false;
+    dirty_since_ms.* = 0;
 }
 
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
@@ -307,10 +380,6 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
         if (sessions[idx].spawned) return idx;
     }
     return null;
-}
-
-fn agentProcessStarted(session: *const SessionState) bool {
-    return session.hasForegroundProcess();
 }
 
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
@@ -352,12 +421,14 @@ fn applyTerminalLayout(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 ) void {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
     _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    session_interaction_component.hideSelectionMenus();
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -373,12 +444,15 @@ fn applyTerminalLayoutIfSizeChanged(
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 ) bool {
     const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    return layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    const changed = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
+    if (changed) session_interaction_component.hideSelectionMenus();
+    return changed;
 }
 
 /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -486,6 +560,65 @@ fn findSessionIndexById(sessions: []const *SessionState, session_id: usize) ?usi
         if (session.spawned and session.id == session_id) return idx;
     }
     return null;
+}
+
+fn pendingSendLabel(kind: PendingSessionSendKind) []const u8 {
+    return switch (kind) {
+        .selection_agent => "selection agent context",
+        .diff_comments => "diff comments",
+    };
+}
+
+fn drainPendingSessionSends(
+    allocator: std.mem.Allocator,
+    pending_sends: *std.ArrayList(PendingSessionSend),
+    sessions: []const *SessionState,
+    now: i64,
+    ui: *ui_mod.UiRoot,
+) void {
+    var idx: usize = 0;
+    while (idx < pending_sends.items.len) {
+        const pending = pending_sends.items[idx];
+        const label = pendingSendLabel(pending.kind);
+        var remove = false;
+
+        const session_idx = findSessionIndexById(sessions, pending.session_id);
+        if (session_idx == null or sessions[session_idx.?].dead) {
+            ui.showToast("The target terminal is no longer available", now);
+            log.warn("dropping pending {s} for missing session id {d}", .{ label, pending.session_id });
+            remove = true;
+        } else {
+            const session = sessions[session_idx.?];
+            if (session.detectForegroundAgent()) |actual_agent| {
+                if (actual_agent == pending.expected_agent) {
+                    session.sendInput(pending.text) catch |err| {
+                        log.warn("failed to send pending {s}: {}", .{ label, err });
+                        ui.showToast("Could not send the pending agent context", now);
+                    };
+                    remove = true;
+                }
+            }
+
+            if (!remove and now >= pending.deadline_ms) {
+                log.warn(
+                    "pending {s}: expected agent {s} not confirmed in session id {d} by deadline; sending anyway",
+                    .{ label, pending.expected_agent.name(), pending.session_id },
+                );
+                session.sendInput(pending.text) catch |err| {
+                    log.warn("failed to send pending {s} after deadline: {}", .{ label, err });
+                    ui.showToast("Could not send the pending agent context", now);
+                };
+                remove = true;
+            }
+        }
+
+        if (remove) {
+            allocator.free(pending.text);
+            _ = pending_sends.orderedRemove(idx);
+        } else {
+            idx += 1;
+        }
+    }
 }
 
 fn compactSessions(
@@ -638,35 +771,98 @@ fn completeExternalSpawnFailure(
     } });
 }
 
+fn spawnSessionIntoGrid(
+    context: *const SpawnSessionContext,
+    preferred_session: usize,
+    cwd_z: [:0]const u8,
+    command_input: ?[]const u8,
+) !*SessionState {
+    const plan = planExternalSpawnSlot(
+        context.sessions,
+        context.grid.cols,
+        context.grid.rows,
+        preferred_session,
+    ) orelse return error.NoFreeSession;
+
+    if (plan.expands_grid) {
+        var moves = try collectSessionMovesCurrent(context.sessions, context.allocator);
+        defer moves.deinit(context.allocator);
+
+        if (context.animations_enabled) {
+            context.grid.startResize(
+                plan.cols,
+                plan.rows,
+                context.now,
+                context.render_width,
+                context.render_height,
+                moves.items,
+            ) catch |err| {
+                log.warn("failed to start grid resize for new session: {}", .{err});
+                context.grid.cols = plan.cols;
+                context.grid.rows = plan.rows;
+            };
+            if (context.grid.is_resizing) context.anim_state.mode = .GridResizing;
+        } else {
+            context.grid.cols = plan.cols;
+            context.grid.rows = plan.rows;
+        }
+    }
+
+    const session = context.sessions[plan.slot_index];
+    session.ensureSpawnedWithDir(cwd_z, context.loop) catch |err| {
+        log.warn("failed to spawn session in requested cwd: {}", .{err});
+        return err;
+    };
+    errdefer if (command_input != null and session.spawned) session.despawn(context.allocator);
+
+    if (command_input) |input_bytes| {
+        try session.pending_write.appendSlice(context.allocator, input_bytes);
+    }
+
+    context.session_interaction_component.setStatus(plan.slot_index, .running);
+    context.session_interaction_component.setAttention(plan.slot_index, false, context.now);
+    context.session_interaction_component.clearSelection(context.anim_state.focused_session);
+    context.session_interaction_component.clearSelection(plan.slot_index);
+
+    context.anim_state.previous_session = context.anim_state.focused_session;
+    context.anim_state.focused_session = plan.slot_index;
+
+    context.cell_width_pixels.* = @divFloor(
+        context.render_width,
+        @as(c_int, @intCast(context.grid.cols)),
+    );
+    context.cell_height_pixels.* = @divFloor(
+        context.render_height,
+        @as(c_int, @intCast(context.grid.rows)),
+    );
+    applyTerminalLayout(
+        context.sessions,
+        context.allocator,
+        context.font,
+        context.render_width,
+        context.render_height,
+        context.ui_scale,
+        context.anim_state,
+        context.grid.cols,
+        context.grid.rows,
+        context.grid_font_scale,
+        context.full_cols,
+        context.full_rows,
+        context.session_interaction_component,
+    );
+
+    return session;
+}
+
 fn handleExternalSpawnRequest(
-    allocator: std.mem.Allocator,
+    context: *const SpawnSessionContext,
     pending: *control.PendingSpawn,
-    sessions: []const *SessionState,
-    grid: *GridLayout,
-    anim_state: *AnimationState,
-    session_interaction_component: *ui_mod.SessionInteractionComponent,
-    loop: *xev.Loop,
-    animations_enabled: bool,
-    now: i64,
-    render_width: c_int,
-    render_height: c_int,
-    ui_scale: f32,
-    font: *font_mod.Font,
-    grid_font_scale: f32,
-    full_cols: *u16,
-    full_rows: *u16,
-    cell_width_pixels: *c_int,
-    cell_height_pixels: *c_int,
 ) void {
+    const allocator = context.allocator;
     if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
         pending.completion.complete(.{ .failure = failure });
         return;
     }
-
-    const plan = planExternalSpawnSlot(sessions, grid.cols, grid.rows, anim_state.focused_session) orelse {
-        completeExternalSpawnFailure(pending, .full_grid, "all Architect terminal slots are in use");
-        return;
-    };
 
     const command_input = if (pending.request.command) |command| blk: {
         break :blk buildQueuedCommand(allocator, command) catch |err| {
@@ -685,73 +881,98 @@ fn handleExternalSpawnRequest(
     defer allocator.free(cwd_buf);
     const cwd_z: [:0]const u8 = cwd_buf[0..pending.request.cwd.len :0];
 
-    if (plan.expands_grid) {
-        var moves = collectSessionMovesCurrent(sessions, allocator) catch |err| {
-            log.warn("failed to collect external spawn grid moves: {}", .{err});
-            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare grid expansion");
-            return;
-        };
-        defer moves.deinit(allocator);
-
-        if (animations_enabled) {
-            grid.startResize(plan.cols, plan.rows, now, render_width, render_height, moves.items) catch |err| {
-                log.warn("failed to start external spawn grid resize: {}", .{err});
-                grid.cols = plan.cols;
-                grid.rows = plan.rows;
-            };
-            if (grid.is_resizing) {
-                anim_state.mode = .GridResizing;
-            }
-        } else {
-            grid.cols = plan.cols;
-            grid.rows = plan.rows;
-        }
-    }
-
-    const session = sessions[plan.slot_index];
-    session.ensureSpawnedWithDir(cwd_z, loop) catch |err| {
+    const session = spawnSessionIntoGrid(context, context.anim_state.focused_session, cwd_z, command_input) catch |err| {
         log.warn("external spawn failed for cwd {s}: {}", .{ pending.request.cwd, err });
-        completeExternalSpawnFailure(pending, .spawn_failed, "failed to spawn terminal session");
+        const message = if (err == error.NoFreeSession)
+            "all Architect terminal slots are in use"
+        else
+            "failed to spawn terminal session";
+        const code: control.SpawnErrorCode = if (err == error.NoFreeSession) .full_grid else .spawn_failed;
+        completeExternalSpawnFailure(pending, code, message);
         return;
     };
 
-    if (command_input) |input_bytes| {
-        session.pending_write.appendSlice(allocator, input_bytes) catch |err| {
-            log.warn("failed to queue external spawn command for session {d}: {}", .{ session.id, err });
-            completeExternalSpawnFailure(pending, .spawn_failed, "failed to queue command for the new session");
-            return;
-        };
-    }
-
-    session_interaction_component.setStatus(plan.slot_index, .running);
-    session_interaction_component.setAttention(plan.slot_index, false, now);
-    session_interaction_component.clearSelection(anim_state.focused_session);
-    session_interaction_component.clearSelection(plan.slot_index);
-
-    anim_state.previous_session = anim_state.focused_session;
-    anim_state.focused_session = plan.slot_index;
-
-    cell_width_pixels.* = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-    cell_height_pixels.* = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-    applyTerminalLayout(
-        sessions,
-        allocator,
-        font,
-        render_width,
-        render_height,
-        ui_scale,
-        anim_state,
-        grid.cols,
-        grid.rows,
-        grid_font_scale,
-        full_cols,
-        full_rows,
-    );
-
     pending.completion.complete(.{ .success = .{
         .session_id = session.id,
-        .slot_index = plan.slot_index,
+        .slot_index = session.slot_index,
     } });
+}
+
+fn handleLaunchAgentWithContext(
+    context: *const SpawnSessionContext,
+    action: ui_types.LaunchAgentWithContextAction,
+    pending_sends: *std.ArrayList(PendingSessionSend),
+    ui: *ui_mod.UiRoot,
+) void {
+    const allocator = context.allocator;
+    const sessions = context.sessions;
+    const now = context.now;
+    defer allocator.free(action.agent_command);
+
+    const agent = session_state.AgentKind.fromString(action.agent_command) orelse {
+        allocator.free(action.prompt);
+        log.warn("unknown selection agent command: {s}", .{action.agent_command});
+        ui.showToast("The selected agent is not supported", now);
+        return;
+    };
+
+    const source_idx = findSessionIndexById(sessions, action.session_id) orelse {
+        allocator.free(action.prompt);
+        ui.showToast("The source terminal is no longer available", now);
+        return;
+    };
+    const source = sessions[source_idx];
+    if (!source.spawned or source.dead) {
+        allocator.free(action.prompt);
+        ui.showToast("The source terminal is no longer running", now);
+        return;
+    }
+    const cwd = source.cwd_path orelse {
+        allocator.free(action.prompt);
+        ui.showToast("Could not determine the source terminal directory", now);
+        return;
+    };
+
+    var working_dir = WorkingDir.init(allocator, cwd);
+    defer working_dir.deinit(allocator);
+    const cwd_z = working_dir.cwd_z orelse {
+        allocator.free(action.prompt);
+        ui.showToast("Could not prepare the source terminal directory", now);
+        return;
+    };
+    const command_input = buildQueuedCommand(allocator, action.agent_command) catch |err| {
+        allocator.free(action.prompt);
+        log.warn("failed to prepare selection agent command: {}", .{err});
+        ui.showToast("Could not prepare the agent command", now);
+        return;
+    };
+    defer allocator.free(command_input);
+
+    const session = spawnSessionIntoGrid(context, source_idx, cwd_z, command_input) catch |err| {
+        allocator.free(action.prompt);
+        log.warn("selection agent terminal spawn failed for cwd {s}: {}", .{ cwd, err });
+        const message = if (err == error.NoFreeSession)
+            "All terminals in use"
+        else
+            "Could not create a terminal for the agent";
+        ui.showToast(message, now);
+        return;
+    };
+
+    pending_sends.append(allocator, .{
+        .session_id = session.id,
+        .text = action.prompt,
+        .expected_agent = agent,
+        .deadline_ms = now + pending_session_send_timeout_ms,
+        .kind = .selection_agent,
+    }) catch |err| {
+        allocator.free(action.prompt);
+        log.warn("failed to queue selection agent prompt: {}", .{err});
+        ui.showToast("Could not queue the agent context", now);
+        return;
+    };
+
+    context.session_interaction_component.clearSelection(source_idx);
 }
 
 fn initSharedFont(
@@ -904,6 +1125,7 @@ const RuntimeScaleChangeContext = struct {
     grid_font_scale: f32,
     full_cols: *u16,
     full_rows: *u16,
+    session_interaction_component: *ui_mod.SessionInteractionComponent,
 };
 
 fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Font.InitError!void {
@@ -922,15 +1144,20 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const sizes = computeTerminalSizes(ctx.font, ctx.render_width, ctx.render_height, ctx.ui_scale, ctx.grid_cols, ctx.grid_rows, ctx.grid_font_scale);
-    ctx.full_cols.* = sizes.full.cols;
-    ctx.full_rows.* = sizes.full.rows;
-    const full_set = fullSetForMode(ctx.anim_state.mode, ctx.anim_state.focused_session, ctx.anim_state.previous_session);
-    _ = layout.applyTerminalResize(
+    applyTerminalLayout(
         ctx.sessions,
         ctx.allocator,
-        sizes,
-        full_set,
+        ctx.font,
+        ctx.render_width,
+        ctx.render_height,
+        ctx.ui_scale,
+        ctx.anim_state,
+        ctx.grid_cols,
+        ctx.grid_rows,
+        ctx.grid_font_scale,
+        ctx.full_cols,
+        ctx.full_rows,
+        ctx.session_interaction_component,
     );
 }
 
@@ -1151,7 +1378,7 @@ fn startQuitFlow(
     return false;
 }
 
-pub fn run() !void {
+pub fn run(log_dir_override: ?[]const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -1175,6 +1402,9 @@ pub fn run() !void {
 
     var notify_stop = std.atomic.Value(bool).init(false);
     var control_stop = std.atomic.Value(bool).init(false);
+    var pty_watcher_stop = std.atomic.Value(bool).init(false);
+    var pty_wake_pending = std.atomic.Value(bool).init(false);
+    var pty_watcher_state = pty_watcher.PtyWatcher{};
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1198,6 +1428,7 @@ pub fn run() !void {
     var file_logging_enabled = false;
     logging_mod.init(allocator, .{
         .min_level = config.logging.getMinLevel(),
+        .directory_override = log_dir_override,
     }) catch |err| {
         std.debug.print("Failed to initialize file logging: {}\n", .{err});
     };
@@ -1225,6 +1456,7 @@ pub fn run() !void {
     };
     errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
+    const show_onboarding = !persistence.onboarding_shown;
 
     // Initialize recent folders with home directory if empty
     if (persistence.recent_folders.items.len == 0) {
@@ -1299,6 +1531,19 @@ pub fn run() !void {
         control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
+    }
+    const pty_watcher_thread = try pty_watcher.start(
+        &pty_watcher_state,
+        &pty_watcher_stop,
+        &pty_wake_pending,
+        .{
+            .context = &sdl,
+            .callback = platform.pushWakeEventFromOpaque,
+        },
+    );
+    defer {
+        pty_watcher_stop.store(true, .seq_cst);
+        pty_watcher_thread.join();
     }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
@@ -1472,6 +1717,8 @@ pub fn run() !void {
 
     var running = true;
     var persistence_dirty = false;
+    var persistence_dirty_since_ms: i64 = 0;
+    var onboarding_displayed = false;
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
@@ -1490,12 +1737,11 @@ pub fn run() !void {
     var relaunch_trace_frames: u8 = 0;
     var window_close_suppress_countdown: u8 = 0;
 
-    const PendingCommentSend = struct {
-        session: usize,
-        text: []const u8,
-        send_after_ms: i64,
-    };
-    var pending_comment_send: ?PendingCommentSend = null;
+    var pending_sends = std.ArrayList(PendingSessionSend).empty;
+    defer {
+        for (pending_sends.items) |pending| allocator.free(pending.text);
+        pending_sends.deinit(allocator);
+    }
 
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
@@ -1558,6 +1804,8 @@ pub fn run() !void {
     try ui.register(reader_overlay_component.asComponent());
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
     try ui.register(story_overlay_component.asComponent());
+    const selection_agent_overlay_component = try ui_mod.selection_agent_overlay.SelectionAgentOverlayComponent.init(allocator);
+    try ui.register(selection_agent_overlay_component.asComponent());
 
     // Main loop: optionally wait for the next wake-worthy event, then handle SDL
     // input, feed PTY output into terminals, apply async notifications, drive
@@ -1664,8 +1912,7 @@ pub fn run() !void {
 
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -1691,6 +1938,7 @@ pub fn run() !void {
                         .grid_font_scale = config.grid.font_scale,
                         .full_cols = &full_cols,
                         .full_rows = &full_rows,
+                        .session_interaction_component = session_interaction_component,
                     };
                     try applyScaleChangeAndResize(
                         RuntimeScaleChangeContext,
@@ -1710,8 +1958,7 @@ pub fn run() !void {
                     persistence.window.height = window_height_points;
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
-                    persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
@@ -1914,7 +2161,7 @@ pub fn run() !void {
                                 cell_width_pixels = render_width;
                                 cell_height_pixels = render_height;
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             } else if (remaining_count == 1) {
                                 // Only 1 terminal remains - go directly to Full mode, no resize animation
                                 grid.cols = 1;
@@ -1930,7 +2177,7 @@ pub fn run() !void {
                                     }
                                 }
                                 anim_state.mode = .Full;
-                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             } else {
                                 const new_dims = GridLayout.calculateDimensions(required_slots);
                                 const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -1970,7 +2217,7 @@ pub fn run() !void {
 
                                     cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                                     cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                                    applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                                     // Update focus to a valid session
                                     if (!sessions[anim_state.focused_session].spawned) {
@@ -2048,12 +2295,11 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
-                            persistence_dirty = true;
-                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                            markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                         }
 
                         var notification_buf: [64]u8 = undefined;
@@ -2113,7 +2359,7 @@ pub fn run() !void {
                             // Update cell dimensions for new grid
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(new_idx);
@@ -2315,6 +2561,16 @@ pub fn run() !void {
             log.info("frame trace after xev run", .{});
         }
 
+        pty_wake_pending.store(false, .seq_cst);
+        var pty_fds: [grid_layout.max_terminals]posix.fd_t = undefined;
+        var pty_fd_count: usize = 0;
+        for (sessions) |session| {
+            const pty_fd = session.ptyMasterFd() orelse continue;
+            pty_fds[pty_fd_count] = pty_fd;
+            pty_fd_count += 1;
+        }
+        pty_watcher_state.updateFds(pty_fds[0..pty_fd_count]);
+
         for (sessions) |session| {
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace before process session idx={d} id={d}", .{ session.slot_index, session.id });
@@ -2341,7 +2597,7 @@ pub fn run() !void {
                         log.warn("failed to update recent folders: {}", .{err});
                     };
                     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
-                    persistence_dirty = true;
+                    markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
                 }
             }
             if (relaunch_trace_frames > 0 and session.spawned) {
@@ -2354,39 +2610,45 @@ pub fn run() !void {
             break :blk false;
         };
         if (terminal_entries_changed) {
-            persistence_dirty = true;
+            markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
         }
-        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, &persistence_dirty_since_ms, now);
 
         if (quit_teardown.isFinished()) {
             running = false;
         }
-        var any_session_dirty = render_cache.anyDirty(sessions);
+        var any_session_dirty = render_cache.anyDirty(
+            sessions,
+            anim_state.mode,
+            anim_state.focused_session,
+            anim_state.previous_session,
+        );
+
+        const spawn_context = SpawnSessionContext{
+            .allocator = allocator,
+            .sessions = sessions,
+            .grid = &grid,
+            .anim_state = &anim_state,
+            .session_interaction_component = session_interaction_component,
+            .loop = &loop,
+            .animations_enabled = animations_enabled,
+            .now = now,
+            .render_width = render_width,
+            .render_height = render_height,
+            .ui_scale = ui_scale,
+            .font = &font,
+            .grid_font_scale = config.grid.font_scale,
+            .full_cols = &full_cols,
+            .full_rows = &full_rows,
+            .cell_width_pixels = &cell_width_pixels,
+            .cell_height_pixels = &cell_height_pixels,
+        };
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
         const had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
-            handleExternalSpawnRequest(
-                allocator,
-                request,
-                sessions,
-                &grid,
-                &anim_state,
-                session_interaction_component,
-                &loop,
-                animations_enabled,
-                now,
-                render_width,
-                render_height,
-                ui_scale,
-                &font,
-                config.grid.font_scale,
-                &full_cols,
-                &full_rows,
-                &cell_width_pixels,
-                &cell_height_pixels,
-            );
+            handleExternalSpawnRequest(&spawn_context, request);
             request.request.deinit(allocator);
         }
 
@@ -2415,19 +2677,7 @@ pub fn run() !void {
             }
         }
 
-        if (pending_comment_send) |pcs| {
-            const prompt_ready = pcs.session < sessions.len and
-                agentProcessStarted(sessions[pcs.session]);
-            if (now >= pcs.send_after_ms or prompt_ready) {
-                if (pcs.session < sessions.len) {
-                    sessions[pcs.session].sendInput(pcs.text) catch |err| {
-                        log.warn("failed to send pending diff comments: {}", .{err});
-                    };
-                }
-                allocator.free(pcs.text);
-                pending_comment_send = null;
-            }
-        }
+        drainPendingSessionSends(allocator, &pending_sends, sessions, now, &ui);
 
         var focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
         const ui_update_host = ui_host.makeUiHost(
@@ -2538,7 +2788,7 @@ pub fn run() !void {
                         cell_width_pixels = render_width;
                         cell_height_pixels = render_height;
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                     } else if (remaining_count == 1) {
                         // Only 1 terminal remains - go directly to Full mode, no resize animation
                         grid.cols = 1;
@@ -2554,7 +2804,7 @@ pub fn run() !void {
                             }
                         }
                         anim_state.mode = .Full;
-                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                        applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
                     } else {
                         const new_dims = GridLayout.calculateDimensions(required_slots);
                         const should_shrink = new_dims.cols < grid.cols or new_dims.rows < grid.rows;
@@ -2593,7 +2843,7 @@ pub fn run() !void {
 
                             cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
                             cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows, session_interaction_component);
 
                             if (!sessions[anim_state.focused_session].spawned) {
                                 var new_focus: usize = 0;
@@ -2901,6 +3151,17 @@ pub fn run() !void {
                     .unavailable => ui.showToast("Reader mode requires a selected running terminal", now),
                 }
             },
+            .OpenSelectionAgent => |selection_action| {
+                const session_idx = findSessionIndexById(sessions, selection_action.session_id);
+                if (session_idx == null or sessions[session_idx.?].dead) {
+                    allocator.free(selection_action.selected_text);
+                    continue;
+                }
+                selection_agent_overlay_component.open(selection_action.selected_text, selection_action.session_id, now);
+            },
+            .LaunchAgentWithContext => |launch_action| {
+                handleLaunchAgentWithContext(&spawn_context, launch_action, &pending_sends, &ui);
+            },
             .SendDiffComments => |dc_action| {
                 if (dc_action.session >= sessions.len) {
                     allocator.free(dc_action.comments_text);
@@ -2909,18 +3170,36 @@ pub fn run() !void {
                 }
                 var dc_session = sessions[dc_action.session];
                 if (dc_action.agent_command) |cmd| {
-                    dc_session.sendInput(cmd) catch |err| {
-                        log.warn("failed to send agent command: {}", .{err});
+                    const expected_agent = session_state.AgentKind.fromString(cmd) orelse {
+                        allocator.free(dc_action.comments_text);
+                        allocator.free(cmd);
+                        ui.showToast("The selected agent is not supported", now);
+                        continue;
+                    };
+                    const command_input = buildQueuedCommand(allocator, cmd) catch |err| {
+                        log.warn("failed to prepare agent command: {}", .{err});
                         allocator.free(dc_action.comments_text);
                         allocator.free(cmd);
                         continue;
                     };
                     allocator.free(cmd);
-                    if (pending_comment_send) |prev| allocator.free(prev.text);
-                    pending_comment_send = .{
-                        .session = dc_action.session,
+                    dc_session.sendInput(command_input) catch |err| {
+                        log.warn("failed to send agent command: {}", .{err});
+                        allocator.free(dc_action.comments_text);
+                        allocator.free(command_input);
+                        continue;
+                    };
+                    allocator.free(command_input);
+                    pending_sends.append(allocator, .{
+                        .session_id = dc_session.id,
                         .text = dc_action.comments_text,
-                        .send_after_ms = now + 2000,
+                        .expected_agent = expected_agent,
+                        .deadline_ms = now + pending_session_send_timeout_ms,
+                        .kind = .diff_comments,
+                    }) catch |err| {
+                        allocator.free(dc_action.comments_text);
+                        log.warn("failed to queue pending diff comments: {}", .{err});
+                        ui.showToast("Could not queue the diff comments", now);
                     };
                 } else {
                     dc_session.sendInput(dc_action.comments_text) catch |err| {
@@ -2981,6 +3260,7 @@ pub fn run() !void {
             config.grid.font_scale,
             &full_cols,
             &full_rows,
+            session_interaction_component,
         );
         if (terminal_layout_changed) {
             any_session_dirty = true;
@@ -3019,7 +3299,11 @@ pub fn run() !void {
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const window_occluded = (c.SDL_GetWindowFlags(sdl.window) & c.SDL_WINDOW_OCCLUDED) != 0;
+        const should_render = shouldRenderFrame(
+            window_occluded,
+            animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale,
+        );
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -3045,10 +3329,16 @@ pub fn run() !void {
                 ui_scale,
                 config.grid.font_scale,
                 &grid,
+                show_onboarding,
+                &onboarding_displayed,
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;
             };
+            if (show_onboarding and onboarding_displayed and !persistence.onboarding_shown) {
+                persistence.onboarding_shown = true;
+                markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
+            }
             ui.render(&ui_render_host, renderer);
             _ = c.SDL_RenderPresent(renderer);
             if (relaunch_trace_frames > 0) {
@@ -3168,6 +3458,131 @@ test "planExternalSpawnSlot reports full grid" {
     try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
 }
 
+test "pending session targets resolve by stable id after slot movement" {
+    var first: SessionState = undefined;
+    first.spawned = true;
+    first.id = 17;
+    var second: SessionState = undefined;
+    second.spawned = true;
+    second.id = 29;
+    var sessions = [_]*SessionState{ &first, &second };
+
+    try std.testing.expectEqual(@as(?usize, 0), findSessionIndexById(&sessions, 17));
+    std.mem.swap(*SessionState, &sessions[0], &sessions[1]);
+    try std.testing.expectEqual(@as(?usize, 1), findSessionIndexById(&sessions, 17));
+}
+
+test "drainPendingSessionSends drops a send targeting a missing session" {
+    const allocator = std.testing.allocator;
+    var session: SessionState = undefined;
+    session.id = 1;
+    session.spawned = true;
+    session.dead = false;
+    session.shell = null;
+    session.pending_write = .empty;
+    session.allocator = allocator;
+    var sessions = [_]*SessionState{&session};
+
+    var pending_sends = std.ArrayList(PendingSessionSend).empty;
+    defer pending_sends.deinit(allocator);
+    try pending_sends.append(allocator, .{
+        .session_id = 999,
+        .text = try allocator.dupe(u8, "hello"),
+        .expected_agent = .claude,
+        .deadline_ms = 0,
+        .kind = .selection_agent,
+    });
+
+    var ui = ui_mod.UiRoot.init(allocator);
+    const renderer: *c.SDL_Renderer = undefined;
+    defer ui.deinit(renderer);
+
+    drainPendingSessionSends(allocator, &pending_sends, &sessions, 0, &ui);
+
+    try std.testing.expectEqual(@as(usize, 0), pending_sends.items.len);
+}
+
+test "drainPendingSessionSends drops a send targeting a dead session" {
+    const allocator = std.testing.allocator;
+    var session: SessionState = undefined;
+    session.id = 1;
+    session.spawned = true;
+    session.dead = true;
+    session.shell = null;
+    session.pending_write = .empty;
+    session.allocator = allocator;
+    var sessions = [_]*SessionState{&session};
+
+    var pending_sends = std.ArrayList(PendingSessionSend).empty;
+    defer pending_sends.deinit(allocator);
+    try pending_sends.append(allocator, .{
+        .session_id = 1,
+        .text = try allocator.dupe(u8, "hello"),
+        .expected_agent = .claude,
+        .deadline_ms = 0,
+        .kind = .diff_comments,
+    });
+
+    var ui = ui_mod.UiRoot.init(allocator);
+    const renderer: *c.SDL_Renderer = undefined;
+    defer ui.deinit(renderer);
+
+    drainPendingSessionSends(allocator, &pending_sends, &sessions, 0, &ui);
+
+    try std.testing.expectEqual(@as(usize, 0), pending_sends.items.len);
+}
+
+test "drainPendingSessionSends waits for the deadline, then writes the pending text exactly once" {
+    const shell_mod = @import("../shell.zig");
+    const allocator = std.testing.allocator;
+
+    // A pipe stands in for the PTY: `Shell.write` writes to `pty.master`, so the
+    // test can read the other end to observe exactly what was sent, instead of
+    // trusting a fabricated session whose `sendInput` would silently no-op.
+    const pipe_fds = try posix.pipe();
+    defer posix.close(pipe_fds[0]);
+    defer posix.close(pipe_fds[1]);
+
+    var session: SessionState = undefined;
+    session.id = 1;
+    session.spawned = true;
+    session.dead = false;
+    session.shell = shell_mod.Shell{
+        .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
+        .child_pid = -1,
+    };
+    session.pending_write = .empty;
+    session.allocator = allocator;
+    var sessions = [_]*SessionState{&session};
+
+    var pending_sends = std.ArrayList(PendingSessionSend).empty;
+    defer pending_sends.deinit(allocator);
+    try pending_sends.append(allocator, .{
+        .session_id = 1,
+        .text = try allocator.dupe(u8, "hello"),
+        .expected_agent = .claude,
+        .deadline_ms = 1_000,
+        .kind = .selection_agent,
+    });
+
+    var ui = ui_mod.UiRoot.init(allocator);
+    const renderer: *c.SDL_Renderer = undefined;
+    defer ui.deinit(renderer);
+
+    // Before the deadline, the pipe isn't recognized as a foreground `claude`
+    // process, so the send stays queued and nothing is written yet.
+    drainPendingSessionSends(allocator, &pending_sends, &sessions, 500, &ui);
+    try std.testing.expectEqual(@as(usize, 1), pending_sends.items.len);
+
+    // Once the deadline passes, delivery is guaranteed rather than silently dropped.
+    drainPendingSessionSends(allocator, &pending_sends, &sessions, 1_000, &ui);
+    try std.testing.expectEqual(@as(usize, 0), pending_sends.items.len);
+
+    var buf: [64]u8 = undefined;
+    const n = try posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualStrings("hello", buf[0..n]);
+}
+
 test "agentLabel reports the detected agent name or 'none'" {
     var session: SessionState = undefined;
     session.agent_icon = null;
@@ -3205,18 +3620,51 @@ test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
     try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
 }
 
+test "markPersistenceDirty keeps the oldest dirty timestamp" {
+    var dirty = false;
+    var dirty_since_ms: i64 = 0;
+
+    markPersistenceDirty(&dirty, &dirty_since_ms, 1_000);
+    try std.testing.expect(dirty);
+    try std.testing.expectEqual(@as(i64, 1_000), dirty_since_ms);
+
+    // A later mark while still dirty must not push the timestamp forward,
+    // otherwise continuous events (e.g. a window drag) would starve the save.
+    markPersistenceDirty(&dirty, &dirty_since_ms, 1_400);
+    try std.testing.expectEqual(@as(i64, 1_000), dirty_since_ms);
+}
+
+test "shouldSavePersistenceNow waits for the debounce window then fires" {
+    try std.testing.expect(!shouldSavePersistenceNow(false, 0, 10_000));
+    try std.testing.expect(!shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms - 1));
+    try std.testing.expect(shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms));
+    try std.testing.expect(shouldSavePersistenceNow(true, 1_000, 1_000 + persistence_save_debounce_ms + 500));
+}
+
+test "shouldSavePersistenceNow does not stall forever if the clock moves backwards" {
+    try std.testing.expect(shouldSavePersistenceNow(true, 5_000, 4_000));
+}
+
 test "computeFrameWaitDecision returns idle wait while idle" {
     const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
     switch (decision) {
-        .idle_wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
+        .wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
         else => try std.testing.expect(false),
     }
 }
 
-test "computeFrameWaitDecision keeps active pacing without vsync" {
+test "shouldRenderFrame suppresses rendering while the window is occluded" {
+    try std.testing.expect(shouldRenderFrame(false, true));
+    try std.testing.expect(!shouldRenderFrame(true, true));
+    try std.testing.expect(!shouldRenderFrame(false, false));
+    try std.testing.expect(!shouldRenderFrame(true, false));
+}
+
+test "computeFrameWaitDecision keeps active pacing without vsync, rounded up to whole ms" {
     const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
+    const expected_ms = waitTimeoutMsFromNs(@intCast(active_frame_ns - (5 * std.time.ns_per_ms)));
     switch (decision) {
-        .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
+        .wait_ms => |timeout_ms| try std.testing.expectEqual(expected_ms, timeout_ms),
         else => try std.testing.expect(false),
     }
 }

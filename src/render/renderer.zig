@@ -31,6 +31,12 @@ pub const grid_border_thickness: c_int = attention_thickness;
 const faint_factor: f32 = 0.6;
 const cursor_color = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
 const dark_fallback = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const onboarding_hint_lines = [_][]const u8{
+    "Welcome to Architect",
+    "Cmd+N adds a terminal; Cmd+W closes one.",
+    "Cmd+Enter toggles grid/full; hold Escape to interrupt agents.",
+    "Hooks: architect hook claude | codex | gemini",
+};
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
 
@@ -67,7 +73,7 @@ pub const RenderCache = struct {
     }
 
     pub fn deinit(self: *RenderCache) void {
-        for (self.entries) |cache_entry| {
+        for (self.entries) |*cache_entry| {
             if (cache_entry.texture) |tex| {
                 c.SDL_DestroyTexture(tex);
             }
@@ -80,15 +86,48 @@ pub const RenderCache = struct {
         return &self.entries[idx];
     }
 
-    pub fn anyDirty(self: *RenderCache, sessions: []const *SessionState) bool {
+    /// True when a session at `idx` contributes visible pixels in the given
+    /// view mode. Sessions that are not visible must not trigger renders:
+    /// in Full view, background sessions keep producing output (their
+    /// `render_epoch` advances) but are never presented, so counting them
+    /// would keep the app rendering and presenting full-window frames at the
+    /// maximum rate for content nobody sees.
+    pub fn sessionVisibleInMode(mode: app_state.ViewMode, idx: usize, focused: usize, previous: usize) bool {
+        return switch (mode) {
+            .Grid, .GridResizing, .Expanding, .Collapsing => true,
+            .Full => idx == focused,
+            .PanningLeft, .PanningRight, .PanningUp, .PanningDown => idx == focused or idx == previous,
+        };
+    }
+
+    pub fn anyDirty(
+        self: *RenderCache,
+        sessions: []const *SessionState,
+        mode: app_state.ViewMode,
+        focused: usize,
+        previous: usize,
+    ) bool {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
             if (!session.spawned) continue;
+            if (!sessionVisibleInMode(mode, i, focused, previous)) continue;
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
         }
         return false;
     }
 };
+
+test "sessionVisibleInMode gates background sessions per view mode" {
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Grid, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.GridResizing, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Expanding, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Collapsing, 3, 0, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.Full, 2, 2, 0));
+    try std.testing.expect(!RenderCache.sessionVisibleInMode(.Full, 3, 2, 0));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 2, 2, 5));
+    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 5, 2, 5));
+    try std.testing.expect(!RenderCache.sessionVisibleInMode(.PanningLeft, 3, 2, 5));
+}
 
 pub fn render(
     renderer: *c.SDL_Renderer,
@@ -110,6 +149,8 @@ pub fn render(
     ui_scale: f32,
     grid_font_scale: f32,
     grid: ?*const GridLayout,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -157,7 +198,7 @@ pub fn render(
 
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
-                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
                 }
             }
         },
@@ -167,7 +208,7 @@ pub fn render(
             const entry = render_cache.entry(anim_state.focused_session);
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
-            try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale);
+            try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -181,7 +222,7 @@ pub fn render(
             const prev_entry = render_cache.entry(anim_state.previous_session);
             const prev_session = sessions[anim_state.previous_session];
             const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
-            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
 
             const new_offset = if (anim_state.mode == .PanningLeft)
                 window_width - offset
@@ -191,7 +232,7 @@ pub fn render(
             const new_entry = render_cache.entry(anim_state.focused_session);
             const new_session = sessions[anim_state.focused_session];
             const new_dims = sessionTermDims(new_session, term_cols, term_rows);
-            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .PanningUp, .PanningDown => {
             const elapsed = current_time - anim_state.start_time;
@@ -205,7 +246,7 @@ pub fn render(
             const prev_entry = render_cache.entry(anim_state.previous_session);
             const prev_session = sessions[anim_state.previous_session];
             const prev_dims = sessionTermDims(prev_session, term_cols, term_rows);
-            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, prev_session, &views[anim_state.previous_session], prev_entry, prev_rect, 1.0, false, false, font, prev_dims.cols, prev_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
 
             const new_offset = if (anim_state.mode == .PanningUp)
                 window_height - offset
@@ -215,7 +256,7 @@ pub fn render(
             const new_entry = render_cache.entry(anim_state.focused_session);
             const new_session = sessions[anim_state.focused_session];
             const new_dims = sessionTermDims(new_session, term_cols, term_rows);
-            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale);
+            try renderSession(renderer, new_session, &views[anim_state.focused_session], new_entry, new_rect, 1.0, true, false, font, new_dims.cols, new_dims.rows, current_time, false, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .Expanding, .Collapsing => {
             const animating_rect = anim_state.getCurrentRect(current_time);
@@ -244,7 +285,7 @@ pub fn render(
 
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
-                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, false, true, true, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
                 }
             }
 
@@ -252,7 +293,7 @@ pub fn render(
             const entry = render_cache.entry(anim_state.focused_session);
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
-            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale);
+            try renderSession(renderer, focused_session, &views[anim_state.focused_session], entry, animating_rect, anim_scale, true, apply_effects, font, focused_dims.cols, focused_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
         },
         .GridResizing => {
             // Render session contents first so borders draw on top.
@@ -286,7 +327,7 @@ pub fn render(
 
                 const entry = render_cache.entry(i);
                 const session_dims = sessionTermDims(session, term_cols, term_rows);
-                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale, show_onboarding, onboarding_displayed);
             }
 
             // Render borders and overlays on top of the animated content.
@@ -337,8 +378,10 @@ fn renderSession(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -357,6 +400,8 @@ fn renderSessionContent(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     if (!session.spawned) return;
 
@@ -418,6 +463,19 @@ fn renderSessionContent(
 
     const active_selection = screen.selection;
 
+    // Resolve the pin for the first visible row once, then step it down a
+    // row at a time. A fresh `pages.pin(...)` call walks from the top-left
+    // anchor every time it's invoked (O(rows) per call), so calling it once
+    // per cell made a full repaint quadratic in the row count. `Pin.down(1)`
+    // advances to the next row (crossing page-node boundaries as needed) in
+    // amortized O(1), and a `Pin` copy with an updated `.x` is free, so it
+    // replaces the extra per-cell `pages.pin(...)` calls used for selection
+    // and hovered-link highlighting below.
+    var row_pin = pages.pin(if (view.is_viewing_scrollback)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = 0 } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = @intCast(active_row_offset) } });
+
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
         const eff_cw = cell_width_actual;
@@ -438,15 +496,16 @@ fn renderSessionContent(
         var underline_count: usize = 0;
         var underline_segments: [256]struct { x_start: f32, x_end: f32, y_pos: f32, color: c.SDL_Color } = undefined;
 
+        const current_row_pin = row_pin orelse continue;
+        row_pin = current_row_pin.down(1);
+        const row_cells = current_row_pin.node.data.getCells(current_row_pin.rowAndCell().row);
+
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
             const source_row = row + active_row_offset;
-            const list_cell = pages.getCell(if (view.is_viewing_scrollback)
-                .{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-            else
-                .{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } }) orelse continue;
-
-            const cell = list_cell.cell;
+            const cell = &row_cells[col];
+            var cell_pin = current_row_pin;
+            cell_pin.x = @intCast(col);
             const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint else 0;
             const glyph_width_cells: c_int = switch (cell.wide) {
                 .wide => 2,
@@ -461,9 +520,9 @@ fn renderSessionContent(
 
             const on_cursor = should_render_cursor and cursor_col == col and cursor_row == source_row;
 
-            const style = list_cell.style();
+            const style = current_row_pin.style(cell);
             var fg_color = getCellColor(style.fg_color, session_fg_color, &terminal.colors.palette.current);
-            var bg_color = if (style.bg(list_cell.cell, &terminal.colors.palette.current)) |rgb|
+            var bg_color = if (style.bg(cell, &terminal.colors.palette.current)) |rgb|
                 c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
             else
                 session_bg_color;
@@ -496,35 +555,24 @@ fn renderSessionContent(
             }
 
             if (active_selection) |sel| {
-                const point_tag = if (view.is_viewing_scrollback)
-                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                if (pages.pin(point_tag)) |pin| {
-                    if (sel.contains(screen, pin)) {
-                        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
-                        const sel_rect = c.SDL_FRect{
-                            .x = @floatFromInt(x),
-                            .y = @floatFromInt(y),
-                            .w = @floatFromInt(eff_cw * glyph_width_cells),
-                            .h = @floatFromInt(eff_ch),
-                        };
-                        _ = c.SDL_RenderFillRect(renderer, &sel_rect);
-                    }
+                if (sel.contains(screen, cell_pin)) {
+                    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+                    _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
+                    const sel_rect = c.SDL_FRect{
+                        .x = @floatFromInt(x),
+                        .y = @floatFromInt(y),
+                        .w = @floatFromInt(eff_cw * glyph_width_cells),
+                        .h = @floatFromInt(eff_ch),
+                    };
+                    _ = c.SDL_RenderFillRect(renderer, &sel_rect);
                 }
             }
 
             const has_hover_underline = blk: {
                 const link_start = view.hovered_link_start orelse break :blk false;
                 const link_end = view.hovered_link_end orelse break :blk false;
-                const point_for_link = if (view.is_viewing_scrollback)
-                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                const link_pin = pages.pin(point_for_link) orelse break :blk false;
                 const link_sel = ghostty_vt.Selection.init(link_start, link_end, false);
-                break :blk link_sel.contains(screen, link_pin);
+                break :blk link_sel.contains(screen, cell_pin);
             };
 
             if ((style.flags.underline != .none or has_hover_underline) and underline_count < underline_segments.len) {
@@ -566,7 +614,7 @@ fn renderSessionContent(
                 cluster_len += 1;
 
                 if (cell.hasGrapheme()) {
-                    if (list_cell.node.data.lookupGrapheme(list_cell.cell)) |extra| {
+                    if (current_row_pin.node.data.lookupGrapheme(cell)) |extra| {
                         for (extra) |gcp| {
                             if (cluster_len >= cluster_buf.len) break;
                             cluster_buf[cluster_len] = gcp;
@@ -638,6 +686,21 @@ fn renderSessionContent(
         }
     }
 
+    if (shouldShowOnboarding(show_onboarding, is_focused, session.slot_index, session.dead)) {
+        if (try renderOnboardingHint(
+            font,
+            origin_x,
+            origin_y,
+            cell_width_actual,
+            cell_height_actual,
+            visible_cols,
+            visible_rows,
+            theme,
+        )) {
+            onboarding_displayed.* = true;
+        }
+    }
+
     if (session.dead) {
         const message = "[Process completed]";
         const message_row: usize = @intCast(cursor.y);
@@ -656,6 +719,44 @@ fn renderSessionContent(
             }
         }
     }
+}
+
+fn shouldShowOnboarding(show_onboarding: bool, is_focused: bool, slot_index: usize, session_dead: bool) bool {
+    return show_onboarding and is_focused and slot_index == 0 and !session_dead;
+}
+
+test "onboarding hint is limited to the focused live first session" {
+    try std.testing.expect(shouldShowOnboarding(true, true, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(false, true, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(true, false, 0, false));
+    try std.testing.expect(!shouldShowOnboarding(true, true, 1, false));
+    try std.testing.expect(!shouldShowOnboarding(true, true, 0, true));
+}
+
+fn renderOnboardingHint(
+    font: *font_mod.Font,
+    origin_x: c_int,
+    origin_y: c_int,
+    cell_width_actual: c_int,
+    cell_height_actual: c_int,
+    visible_cols: usize,
+    visible_rows: usize,
+    theme: *const colors.Theme,
+) RenderError!bool {
+    if (visible_cols == 0 or visible_rows < onboarding_hint_lines.len) return false;
+
+    const hint_color = applyFaint(theme.foreground);
+    const start_row = visible_rows - onboarding_hint_lines.len;
+    for (onboarding_hint_lines, 0..) |line, idx| {
+        const line_y = origin_y + @as(c_int, @intCast(start_row + idx)) * cell_height_actual;
+        var offset_x = origin_x;
+        for (line, 0..) |ch, col| {
+            if (col >= visible_cols) break;
+            try font.renderGlyph(ch, offset_x, line_y, cell_width_actual, cell_height_actual, hint_color);
+            offset_x += cell_width_actual;
+        }
+    }
+    return true;
 }
 
 fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize, is_grid_view: bool, is_viewing_scrollback: bool) usize {
@@ -966,6 +1067,8 @@ fn refreshSessionCacheTexture(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     log.debug("rendering to cache: session={d} spawned={} focused={}", .{ session.id, session.spawned, is_focused });
     const render_mode = cacheRenderMode(is_grid_view);
@@ -979,7 +1082,7 @@ fn refreshSessionCacheTexture(
     _ = c.SDL_RenderClear(renderer);
 
     const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     if (cache_overlays) {
         renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     }
@@ -1016,6 +1119,8 @@ fn renderSessionCached(
     is_grid_view: bool,
     theme: *const colors.Theme,
     ui_scale: f32,
+    show_onboarding: bool,
+    onboarding_displayed: *bool,
 ) RenderError!void {
     if (!session.spawned) {
         cache_entry.presented_epoch = session.render_epoch;
@@ -1031,7 +1136,7 @@ fn renderSessionCached(
         if (cache_entry.texture) |tex| {
             const sync_holding = synchronizedOutputHoldsCache(session, cache_entry, composition);
             if (!sync_holding and cacheNeedsRefresh(cache_entry, session.render_epoch, composition, render_mode)) {
-                try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale);
+                try refreshSessionCacheTexture(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, cache_overlays, composition, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
             }
 
             if (wave_effect) |wave| {
@@ -1049,11 +1154,11 @@ fn renderSessionCached(
     }
 
     if (render_overlays) {
-        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+        try renderSession(renderer, session, view, cache_entry, rect, scale, is_focused, apply_effects, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
@@ -1180,6 +1285,50 @@ test "getCellColor uses the live terminal palette for indexed colors" {
     try std.testing.expectEqual(@as(u8, 0x34), color.g);
     try std.testing.expectEqual(@as(u8, 0x56), color.b);
     try std.testing.expectEqual(@as(u8, 255), color.a);
+}
+
+test "row pin stepping matches per-cell getCell for content, wide flag, and style" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 4,
+        .max_scrollback = 0,
+    });
+    defer terminal.deinit(allocator);
+
+    try terminal.printString("Hi\n\xe4\xbd\xa0\xe5\xa5\xbd\nABCDEFGHIJ\nZ");
+
+    const pages = terminal.screens.active.pages;
+
+    var row_pin = pages.pin(.{ .active = .{ .x = 0, .y = 0 } }) orelse return error.TestUnexpectedResult;
+
+    var row: usize = 0;
+    while (row < @as(usize, terminal.rows)) : (row += 1) {
+        const row_rac = row_pin.rowAndCell();
+        const row_cells = row_pin.node.data.getCells(row_rac.row);
+
+        var col: usize = 0;
+        while (col < @as(usize, terminal.cols)) : (col += 1) {
+            const walked_cell = &row_cells[col];
+            const reference = pages.getCell(.{ .active = .{ .x = @intCast(col), .y = @intCast(row) } }) orelse
+                return error.TestUnexpectedResult;
+
+            try std.testing.expectEqual(reference.cell.content_tag, walked_cell.content_tag);
+            try std.testing.expectEqual(reference.cell.wide, walked_cell.wide);
+            if (reference.cell.content_tag == .codepoint or reference.cell.content_tag == .codepoint_grapheme) {
+                try std.testing.expectEqual(reference.cell.content.codepoint, walked_cell.content.codepoint);
+            }
+
+            const reference_style = reference.style();
+            const walked_style = row_pin.style(walked_cell);
+            try std.testing.expectEqual(reference_style.flags, walked_style.flags);
+        }
+
+        if (row + 1 < @as(usize, terminal.rows)) {
+            row_pin = row_pin.down(1) orelse return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "cache refresh predicate stays clean for an unchanged content-only texture" {

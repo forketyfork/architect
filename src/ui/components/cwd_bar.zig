@@ -43,24 +43,17 @@ pub const CwdBarComponent = struct {
         parent_h: c_int = 0,
         cached_path: ?[]const u8 = null,
         font_size: c_int = 0,
+        // Hotkey label texture is cached separately: recreating it per frame
+        // forces SDL's Metal backend to flush the command queue on every
+        // destroy, which can block on drawable acquisition under load.
+        hotkey_tex: ?*c.SDL_Texture = null,
+        hotkey_w: c_int = 0,
+        hotkey_h: c_int = 0,
+        hotkey_grid_index: ?usize = null,
+        hotkey_font_size: c_int = 0,
 
         fn deinit(self: *SessionCache, allocator: std.mem.Allocator) void {
-            if (self.basename_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                self.basename_tex = null;
-            }
-            if (self.parent_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                self.parent_tex = null;
-            }
-            if (self.cached_path) |path| {
-                allocator.free(path);
-                self.cached_path = null;
-            }
-            self.basename_w = 0;
-            self.basename_h = 0;
-            self.parent_w = 0;
-            self.parent_h = 0;
+            self.invalidate(allocator);
             self.font_size = 0;
         }
 
@@ -81,6 +74,18 @@ pub const CwdBarComponent = struct {
             self.basename_h = 0;
             self.parent_w = 0;
             self.parent_h = 0;
+            self.invalidateHotkey();
+        }
+
+        fn invalidateHotkey(self: *SessionCache) void {
+            if (self.hotkey_tex) |tex| {
+                c.SDL_DestroyTexture(tex);
+                self.hotkey_tex = null;
+            }
+            self.hotkey_w = 0;
+            self.hotkey_h = 0;
+            self.hotkey_grid_index = null;
+            self.hotkey_font_size = 0;
         }
     };
 
@@ -205,30 +210,41 @@ pub const CwdBarComponent = struct {
         const fg = host.theme.foreground;
         const dimmed_fg = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 180 };
 
+        var sc = &self.session_caches[session_idx];
+
         var hotkey_width: c_int = 0;
         if (grid_index) |gi| {
             if (input.terminalHotkeyLabel(gi)) |hotkey_str| {
-                const hotkey_surface = c.TTF_RenderText_Blended(cwd_font, hotkey_str.ptr, hotkey_str.len, dimmed_fg) orelse return;
-                defer c.SDL_DestroySurface(hotkey_surface);
+                if (sc.hotkey_tex == null or sc.hotkey_grid_index != gi or sc.hotkey_font_size != font_px) {
+                    sc.invalidateHotkey();
 
-                const hotkey_texture = c.SDL_CreateTextureFromSurface(renderer, hotkey_surface) orelse return;
-                defer c.SDL_DestroyTexture(hotkey_texture);
+                    const hotkey_surface = c.TTF_RenderText_Blended(cwd_font, hotkey_str.ptr, hotkey_str.len, dimmed_fg) orelse return;
+                    defer c.SDL_DestroySurface(hotkey_surface);
 
-                var hotkey_w_f: f32 = 0;
-                var hotkey_h_f: f32 = 0;
-                _ = c.SDL_GetTextureSize(hotkey_texture, &hotkey_w_f, &hotkey_h_f);
-                hotkey_width = @intFromFloat(hotkey_w_f);
-                const hotkey_height: c_int = @intFromFloat(hotkey_h_f);
+                    const hotkey_texture = c.SDL_CreateTextureFromSurface(renderer, hotkey_surface) orelse return;
 
-                const hotkey_x = bar_rect.x + bar_rect.w - hotkey_width - padding;
-                const hotkey_y = bar_rect.y + @divFloor(bar_rect.h - hotkey_height, 2);
+                    var hotkey_w_f: f32 = 0;
+                    var hotkey_h_f: f32 = 0;
+                    _ = c.SDL_GetTextureSize(hotkey_texture, &hotkey_w_f, &hotkey_h_f);
+                    sc.hotkey_tex = hotkey_texture;
+                    sc.hotkey_w = @intFromFloat(hotkey_w_f);
+                    sc.hotkey_h = @intFromFloat(hotkey_h_f);
+                    sc.hotkey_grid_index = gi;
+                    sc.hotkey_font_size = font_px;
+                }
 
-                _ = c.SDL_RenderTexture(renderer, hotkey_texture, null, &c.SDL_FRect{
-                    .x = @floatFromInt(hotkey_x),
-                    .y = @floatFromInt(hotkey_y),
-                    .w = hotkey_w_f,
-                    .h = hotkey_h_f,
-                });
+                if (sc.hotkey_tex) |hotkey_texture| {
+                    hotkey_width = sc.hotkey_w;
+                    const hotkey_x = bar_rect.x + bar_rect.w - hotkey_width - padding;
+                    const hotkey_y = bar_rect.y + @divFloor(bar_rect.h - sc.hotkey_h, 2);
+
+                    _ = c.SDL_RenderTexture(renderer, hotkey_texture, null, &c.SDL_FRect{
+                        .x = @floatFromInt(hotkey_x),
+                        .y = @floatFromInt(hotkey_y),
+                        .w = @floatFromInt(sc.hotkey_w),
+                        .h = @floatFromInt(sc.hotkey_h),
+                    });
+                }
             }
         }
 
@@ -248,8 +264,6 @@ pub const CwdBarComponent = struct {
             basename_with_slash_buf[cwd_basename.len] = '/';
             break :blk basename_with_slash_buf[0 .. cwd_basename.len + 1];
         };
-
-        var sc = &self.session_caches[session_idx];
 
         const path_changed = if (sc.cached_path) |cp| !std.mem.eql(u8, cp, cwd_path) else true;
         const font_changed = sc.font_size != font_px;

@@ -58,9 +58,17 @@ just run
 zig build run
 ```
 
+Run with a custom log directory (see `docs/configuration.md` for logging details):
+```bash
+just run --log-dir .tmp/architect-debug-logs
+# or
+zig build run -- --log-dir .tmp/architect-debug-logs
+```
+
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).
+- **Zwanzig** is pinned as a Zig build dependency and runs as a host-targeted `ReleaseFast` build tool through `zig build lint`. Architect passes its requested target architecture and operating system to Zwanzig for target-aware analysis.
 - **SDL3** and **SDL3_ttf** are provided by Nix. SDL3 is pinned to 3.4.10 via `overlays/sdl3-3-4-10.nix` with binaries cached in the public `forketyfork` Cachix to avoid rebuilds.
 
 ## Tests and Formatting
@@ -71,6 +79,13 @@ just test
 # or
 zig build test
 ```
+
+Tests live next to the code they cover. Zig only collects tests from files it
+actually analyzes, so **a new file with tests must be listed in the
+`test { _ = @import(...); }` block at the bottom of `src/main.zig`** — otherwise
+its tests compile but silently never run. `scripts/check-test-registry.sh`
+(part of `just lint`) fails the build when a file with tests is missing from
+that block.
 
 Check formatting and script linting:
 ```bash

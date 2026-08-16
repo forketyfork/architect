@@ -326,6 +326,7 @@ pub const Persistence = struct {
     terminal_entries: std.ArrayListUnmanaged(TerminalEntry) = .{},
     recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
     visit_counter: u32 = 0,
+    onboarding_shown: bool = false,
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
@@ -334,6 +335,7 @@ pub const Persistence = struct {
         terminal_agent_types: ?[]const []const u8 = null,
         terminal_session_ids: ?[]const []const u8 = null,
         recent_folders: ?toml.HashMap(u32) = null,
+        onboarding_shown: ?bool = null,
     };
 
     const TomlPersistenceV2 = struct {
@@ -341,12 +343,14 @@ pub const Persistence = struct {
         font_size: c_int = 14,
         terminals: ?[]const []const u8 = null,
         recent_folders: ?[]const []const u8 = null,
+        onboarding_shown: ?bool = null,
     };
 
     const TomlPersistenceV1 = struct {
         window: WindowConfig = .{},
         font_size: c_int = 14,
         terminals: ?toml.HashMap([]const u8) = null,
+        onboarding_shown: ?bool = null,
     };
 
     pub fn init(allocator: std.mem.Allocator) Persistence {
@@ -386,6 +390,7 @@ pub const Persistence = struct {
             defer result.deinit();
             persistence.window = result.value.window;
             persistence.font_size = result.value.font_size;
+            persistence.onboarding_shown = onboardingShownFromStoredValue(result.value.onboarding_shown);
 
             if (result.value.terminals) |paths| {
                 for (paths, 0..) |path, idx| {
@@ -416,6 +421,7 @@ pub const Persistence = struct {
             defer result.deinit();
             persistence.window = result.value.window;
             persistence.font_size = result.value.font_size;
+            persistence.onboarding_shown = onboardingShownFromStoredValue(result.value.onboarding_shown);
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
@@ -446,6 +452,7 @@ pub const Persistence = struct {
 
         persistence.window = result_v1.value.window;
         persistence.font_size = result_v1.value.font_size;
+        persistence.onboarding_shown = onboardingShownFromStoredValue(result_v1.value.onboarding_shown);
 
         if (result_v1.value.terminals) |stored| {
             try persistence.appendLegacyTerminalEntries(allocator, stored);
@@ -479,6 +486,7 @@ pub const Persistence = struct {
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
         // Write font_size first (top-level scalar)
         try writer.print("font_size = {d}\n", .{self.font_size});
+        try writer.print("onboarding_shown = {}\n", .{self.onboarding_shown});
 
         // Write terminal path and agent arrays before any sections
         if (self.terminal_entries.items.len > 0) {
@@ -525,6 +533,10 @@ pub const Persistence = struct {
                 try writer.print(" = {d}\n", .{folder.count});
             }
         }
+    }
+
+    fn onboardingShownFromStoredValue(value: ?bool) bool {
+        return value orelse true;
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
@@ -1163,7 +1175,7 @@ test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
 test "Persistence save/load round-trip preserves all fields" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
@@ -1180,6 +1192,7 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.x = 100;
     original.window.y = 200;
     original.font_size = 16;
+    original.onboarding_shown = true;
     try original.appendTerminalEntry(allocator, "/home/user/project1", null, null);
     try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def");
     try original.appendTerminalEntry(allocator, "/tmp/test", null, null);
@@ -1202,6 +1215,7 @@ test "Persistence save/load round-trip preserves all fields" {
 
     loaded.window = result.value.window;
     loaded.font_size = result.value.font_size;
+    loaded.onboarding_shown = Persistence.onboardingShownFromStoredValue(result.value.onboarding_shown);
 
     if (result.value.terminals) |paths| {
         for (paths, 0..) |path, idx| {
@@ -1222,6 +1236,7 @@ test "Persistence save/load round-trip preserves all fields" {
     try std.testing.expectEqual(original.window.x, loaded.window.x);
     try std.testing.expectEqual(original.window.y, loaded.window.y);
     try std.testing.expectEqual(original.font_size, loaded.font_size);
+    try std.testing.expectEqual(original.onboarding_shown, loaded.onboarding_shown);
     try std.testing.expectEqual(original.terminal_entries.items.len, loaded.terminal_entries.items.len);
 
     for (original.terminal_entries.items, loaded.terminal_entries.items) |orig, loaded_entry| {
@@ -1237,6 +1252,16 @@ test "Persistence save/load round-trip preserves all fields" {
             try std.testing.expect(loaded_entry.agent_session_id == null);
         }
     }
+}
+
+test "Persistence treats missing onboarding state as already shown" {
+    var persistence = Persistence.init(std.testing.allocator);
+    defer persistence.deinit(std.testing.allocator);
+
+    try std.testing.expect(!persistence.onboarding_shown);
+    try std.testing.expect(Persistence.onboardingShownFromStoredValue(null));
+    try std.testing.expect(!Persistence.onboardingShownFromStoredValue(false));
+    try std.testing.expect(Persistence.onboardingShownFromStoredValue(true));
 }
 
 test "writeFileAtomicallyAbsolute replaces file with valid TOML" {

@@ -64,28 +64,28 @@ pub const PillGroupComponent = struct {
 
         // When one overlay starts expanding, collapse the others
         if (help_started_expanding) {
-            if (recent_folders_state == .Open or recent_folders_state == .Expanding) {
+            if (recent_folders_state.isOpenOrOpening()) {
                 self.recent_folders.overlay.startCollapsing(host.now_ms);
             }
-            if (worktree_state == .Open or worktree_state == .Expanding) {
+            if (worktree_state.isOpenOrOpening()) {
                 self.worktree.overlay.startCollapsing(host.now_ms);
             }
         }
 
         if (recent_folders_started_expanding) {
-            if (help_state == .Open or help_state == .Expanding) {
+            if (help_state.isOpenOrOpening()) {
                 self.help.overlay.startCollapsing(host.now_ms);
             }
-            if (worktree_state == .Open or worktree_state == .Expanding) {
+            if (worktree_state.isOpenOrOpening()) {
                 self.worktree.overlay.startCollapsing(host.now_ms);
             }
         }
 
         if (worktree_started_expanding) {
-            if (help_state == .Open or help_state == .Expanding) {
+            if (help_state.isOpenOrOpening()) {
                 self.help.overlay.startCollapsing(host.now_ms);
             }
-            if (recent_folders_state == .Open or recent_folders_state == .Expanding) {
+            if (recent_folders_state.isOpenOrOpening()) {
                 self.recent_folders.overlay.startCollapsing(host.now_ms);
             }
         }

@@ -127,19 +127,22 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_mcp_unit_tests.step);
 
-    // Lint step using zwanzig. Always build the linter with ReleaseFast: it is a
+    // Lint step using Zwanzig. Always build the linter with ReleaseFast: it is a
     // build-time tool and Debug-mode safety/allocator overhead makes analysis
     // multiple orders of magnitude slower on x86 Linux runners.
-    if (b.lazyDependency("zwanzig", .{
-        .target = target,
+    const zwanzig = b.dependency("zwanzig", .{
+        .target = b.graph.host,
         .optimize = .ReleaseFast,
-    })) |zw| {
-        const zw_exe = zw.artifact("zwanzig");
-        const lint_run = b.addRunArtifact(zw_exe);
-        lint_run.addArgs(&.{"src"});
-        const lint_step = b.step("lint", "Run zwanzig linter");
-        lint_step.dependOn(&lint_run.step);
-    }
+    });
+    const run_zwanzig = b.addRunArtifact(zwanzig.artifact("zwanzig"));
+    const target_triple = b.fmt("{s}-{s}", .{
+        @tagName(target.result.cpu.arch),
+        @tagName(target.result.os.tag),
+    });
+    run_zwanzig.addArgs(&.{ "--target", target_triple, "src" });
+
+    const lint_step = b.step("lint", "Run Zwanzig");
+    lint_step.dependOn(&run_zwanzig.step);
 }
 
 // Prefer the active developer selection over hardcoded SDK locations so

@@ -33,8 +33,9 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repo tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
-- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
+- **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list — the overlay takes the keyboard the instant it starts opening, so nothing you type is lost to the animation), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
+- **Selection-to-agent context** — release after selecting terminal text to reveal a narrow robot button anchored just outside the selection; choose Claude, Codex, or Gemini in a centered modal, review the selected context, enter wrapped multiline instructions, cancel if needed, or launch a new agent in the selected terminal's working directory with the selection appended as context
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
@@ -43,11 +44,13 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
 - Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Every text field (recent-folder and reader/story search, worktree name, diff comments, selection-agent instructions) behaves like a macOS text field: a blinking caret, Backspace deletes one character, ⌥Backspace the previous word, ⌘Backspace the whole field, ⌘A selects everything (the next keystroke or paste replaces it), and ⌘C/⌘V copy and paste. The selection-agent field accepts multiline instructions with ⇧↩; plain ↩ launches, while Escape or Cancel dismisses it. Pasting multi-line text into a one-line field drops the newlines, and text longer than the field fades out at its edge instead of spilling past it. Emoji are scaled to the surrounding line height wherever they appear (search fields, comments, reader mode, stories, selection-agent instructions)
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
+- VT-compatible 80/132-column mode handling for applications that use DECCOLM
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions
 
@@ -125,6 +128,7 @@ architect hook claude
 architect hook codex
 architect hook gemini
 ```
+On first launch, Architect shows a faint in-terminal hint with the core shortcuts and the `architect hook` setup command. The hint is shown once and is not sent to the shell.
 
 ## MCP
 
@@ -156,7 +160,7 @@ $(brew --prefix)/Cellar/architect/$(brew list --versions architect | awk '{print
 Architect stores configuration in `~/.config/architect/`:
 
 * `config.toml`: read-only user preferences (edit via `⌘,`).
-* `persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically.
+* `persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically. If a saved window position is no longer usable after a display change, Architect starts with the platform's default placement instead.
 
 Common settings include font family, theme colors, grid font scale, and logging minimum severity (`[logging].min_level`). On macOS, structured app logs are written to `~/Library/Logs/Architect/` with size-based rotation at 10 MiB, including startup/shutdown markers and grid/full view transition events at `INFO`. The grid size is dynamic and adapts to the number of terminals. Remove the files to reset to the default values.
 

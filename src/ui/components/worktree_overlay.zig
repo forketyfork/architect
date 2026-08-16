@@ -8,8 +8,10 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
+const GlyphBadge = @import("glyph_badge.zig").GlyphBadge;
 const button = @import("button.zig");
 const flowing_line = @import("flowing_line.zig");
+const text_edit = @import("../text_edit.zig");
 
 const log = std.log.scoped(.worktree_overlay);
 
@@ -17,6 +19,7 @@ pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
     overlay: ExpandingOverlay = ExpandingOverlay.init(2, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
+    badge: GlyphBadge = .{ .text = "⌘T" },
 
     worktrees: std.ArrayList(Worktree) = .{},
     last_cwd: ?[]const u8 = null,
@@ -32,15 +35,19 @@ pub const WorktreeOverlayComponent = struct {
     pending_removal_path: ?[]const u8 = null,
     pending_refresh_ms: i64 = 0,
     escape_pressed: bool = false,
-    create_input: std.ArrayList(u8) = .empty,
+    create_input: text_edit.TextInput = .{
+        .separators = text_edit.name_separators,
+        .max_len = create_name_max_len,
+        .accepts = isValidNameChar,
+    },
     create_error: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
-    cursor_blink_start_ms: i64 = 0,
     modal_confirm_hovered: bool = false,
     modal_cancel_hovered: bool = false,
 
+    const create_name_max_len: usize = 64;
     const button_size_small: c_int = 40;
     const button_size_large: c_int = 480;
     const button_margin: c_int = 20;
@@ -108,6 +115,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn deinit(self_ptr: *anyopaque, _: *c.SDL_Renderer) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.badge.deinit();
         self.destroyCache();
         self.clearWorktrees();
         self.clearCreateInput();
@@ -220,7 +228,7 @@ pub const WorktreeOverlayComponent = struct {
                 const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
 
                 if (has_gui and !has_blocking_mod and key == c.SDLK_T) {
-                    if (self.overlay.state == .Open) {
+                    if (self.overlay.state.isOpenOrOpening()) {
                         self.overlay.startCollapsing(host.now_ms);
                     } else {
                         self.needs_refresh = true;
@@ -229,7 +237,7 @@ pub const WorktreeOverlayComponent = struct {
                     return true;
                 }
 
-                if (self.overlay.state == .Open and has_gui and !has_blocking_mod) {
+                if (self.overlay.state.isOpenOrOpening() and has_gui and !has_blocking_mod) {
                     if (key == c.SDLK_0) {
                         self.startCreateModal(host);
                         return true;
@@ -372,39 +380,9 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.renderGlyph(renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
+            .Closed, .Collapsing, .Expanding => self.badge.render(self.allocator, renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
             .Open => self.renderOverlay(renderer, ui_host, rect, ui_host.ui_scale, assets, ui_host.theme),
         }
-    }
-
-    fn renderGlyph(_: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
-        const cache = assets.font_cache orelse return;
-        const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = cache.get(font_size) catch return;
-
-        const glyph = "⌘T";
-        const fg = theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
-        defer c.SDL_DestroySurface(surface);
-
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        var text_width_f: f32 = 0;
-        var text_height_f: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &text_width_f, &text_height_f);
-
-        const text_x = rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(text_width_f)), 2);
-        const text_y = rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(text_height_f)), 2);
-
-        const dest_rect = c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = text_width_f,
-            .h = text_height_f,
-        };
-        _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
     }
 
     fn renderOverlay(self: *WorktreeOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
@@ -1033,7 +1011,7 @@ pub const WorktreeOverlayComponent = struct {
         self.escape_pressed = false;
         self.clearCreateInput();
         self.overlay.startCollapsing(host.now_ms);
-        self.cursor_blink_start_ms = host.now_ms;
+        self.create_input.touch(host.now_ms);
     }
 
     fn startRemoveModal(self: *WorktreeOverlayComponent, wt_idx: usize) void {
@@ -1052,7 +1030,7 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn clearCreateInput(self: *WorktreeOverlayComponent) void {
-        self.create_input.clearAndFree(self.allocator);
+        self.create_input.clear();
         if (self.create_error) |err| {
             self.allocator.free(err);
             self.create_error = null;
@@ -1084,28 +1062,16 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8, now_ms: i64) void {
-        const max_len: usize = 64;
-        for (text) |ch| {
-            if (self.create_input.items.len >= max_len) break;
-            if (isValidNameChar(ch)) {
-                self.create_input.append(self.allocator, ch) catch |err| {
-                    log.warn("failed to append text input: {}", .{err});
-                    break;
-                };
-                self.cursor_blink_start_ms = now_ms;
-            }
-        }
+        _ = self.create_input.insert(self.allocator, text, now_ms);
     }
 
     fn handleCreateModalKey(self: *WorktreeOverlayComponent, event: *const c.SDL_Event, host: *const types.UiHost, actions: *types.UiActionQueue) bool {
         const key = event.key.key;
         const mod = event.key.mod;
-        const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-        const has_alt = (mod & c.SDL_KMOD_ALT) != 0;
 
         switch (key) {
             c.SDLK_RETURN, c.SDLK_KP_ENTER => {
-                if (self.create_input.items.len == 0) {
+                if (self.create_input.isEmpty()) {
                     self.setCreateError("Name required");
                     return true;
                 }
@@ -1113,7 +1079,7 @@ pub const WorktreeOverlayComponent = struct {
                     self.setCreateError("No git root found");
                     return true;
                 };
-                self.emitCreate(actions, host.focused_session, base, self.create_input.items);
+                self.emitCreate(actions, host.focused_session, base, self.create_input.text());
                 self.overlay.startCollapsing(host.now_ms);
                 self.creating = false;
                 self.escape_pressed = false;
@@ -1126,36 +1092,8 @@ pub const WorktreeOverlayComponent = struct {
                 self.clearCreateInput();
                 return true;
             },
-            c.SDLK_BACKSPACE => {
-                self.cursor_blink_start_ms = host.now_ms;
-                if (has_gui) {
-                    self.create_input.clearRetainingCapacity();
-                } else if (has_alt) {
-                    self.deleteLastWord();
-                } else {
-                    if (self.create_input.items.len > 0) {
-                        self.create_input.items.len -= 1;
-                    }
-                }
-                return true;
-            },
-            else => return false,
+            else => return self.create_input.handleKey(self.allocator, key, mod, host.now_ms).consumed,
         }
-    }
-
-    fn deleteLastWord(self: *WorktreeOverlayComponent) void {
-        if (self.create_input.items.len == 0) return;
-
-        var i = self.create_input.items.len;
-        while (i > 0 and (self.create_input.items[i - 1] == '-' or self.create_input.items[i - 1] == '_')) {
-            i -= 1;
-        }
-
-        while (i > 0 and self.create_input.items[i - 1] != '-' and self.create_input.items[i - 1] != '_') {
-            i -= 1;
-        }
-
-        self.create_input.items.len = i;
     }
 
     fn handleCreateModalClick(self: *WorktreeOverlayComponent, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -1291,8 +1229,8 @@ pub const WorktreeOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, input_style.border.r, input_style.border.g, input_style.border.b, input_style.border.a);
         primitives.drawRoundedBorder(renderer, input_rect, 6);
 
-        const input_text = if (self.create_input.items.len == 0) "name" else self.create_input.items;
-        const placeholder = self.create_input.items.len == 0;
+        const placeholder = self.create_input.isEmpty();
+        const input_text = if (placeholder) "name" else self.create_input.text();
         const input_color = if (placeholder) input_style.placeholder else input_style.text;
         const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch |err| blk: {
             log.warn("failed to create input texture: {}", .{err});
@@ -1305,6 +1243,16 @@ pub const WorktreeOverlayComponent = struct {
             defer c.SDL_DestroyTexture(tex.tex);
             text_width = @floatFromInt(tex.w);
             text_height = @floatFromInt(tex.h);
+            if (self.create_input.select_all and !placeholder) {
+                const sel_bg = theme.accent;
+                _ = c.SDL_SetRenderDrawColor(renderer, sel_bg.r, sel_bg.g, sel_bg.b, 110);
+                _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                    .x = layout.input.x + input_pad,
+                    .y = layout.input.y + input_pad,
+                    .w = text_width,
+                    .h = text_height,
+                });
+            }
             _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
                 .x = layout.input.x + input_pad,
                 .y = layout.input.y + input_pad,
@@ -1313,10 +1261,7 @@ pub const WorktreeOverlayComponent = struct {
             });
         }
 
-        const elapsed_ms = host.now_ms - self.cursor_blink_start_ms;
-        const blink_period_ms: i64 = 1000;
-        const blink_phase = @mod(elapsed_ms, blink_period_ms);
-        if (blink_phase < blink_period_ms / 2) {
+        if (self.create_input.caretVisible(host.now_ms)) {
             const cursor_x = layout.input.x + input_pad + (if (placeholder) 0.0 else text_width + 2.0);
             const cursor_y = layout.input.y + input_pad;
             const cursor_h = if (text_height > 0) text_height else @as(f32, @floatFromInt(dpi.scale(16, host.ui_scale)));

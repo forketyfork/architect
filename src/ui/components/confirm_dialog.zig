@@ -7,6 +7,7 @@ const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const font_cache = @import("../../font_cache.zig");
+const modal_frame = @import("modal_frame.zig");
 
 const log = std.log.scoped(.confirm_dialog);
 
@@ -136,7 +137,7 @@ pub const ConfirmDialogComponent = struct {
                     self.escape_pressed = false;
                     return true;
                 }
-                if (key == c.SDLK_ESCAPE or (key == c.SDLK_W and (mod & c.SDL_KMOD_GUI) != 0)) {
+                if (modal_frame.isDismissKey(key, mod)) {
                     if (key == c.SDLK_ESCAPE) {
                         self.escape_pressed = true;
                     }
@@ -204,24 +205,9 @@ pub const ConfirmDialogComponent = struct {
         const cancel_tex = self.cancel_tex orelse return;
         const confirm_tex = self.confirm_tex orelse return;
 
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
-        const overlay = c.SDL_FRect{
-            .x = 0,
-            .y = 0,
-            .w = @floatFromInt(host.window_w),
-            .h = @floatFromInt(host.window_h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &overlay);
-
         const modal = self.modalRect(host);
-        const sel = host.theme.selection;
         const modal_r = dpi.scale(modal_radius, host.ui_scale);
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
-        primitives.fillRoundedRect(renderer, modal, modal_r);
-        const acc = host.theme.accent;
-        _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, modal_r);
+        modal_frame.renderScrimAndPanel(renderer, host, modal, modal_r);
 
         self.renderText(renderer, modal, host.ui_scale, title_tex, message_tex);
         self.renderButtons(renderer, modal, host.ui_scale, host.theme, cancel_tex, confirm_tex);

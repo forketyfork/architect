@@ -85,7 +85,7 @@ pub const SessionState = struct {
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
     stream: ?vt_stream.StreamType,
-    output_buf: [4096]u8,
+    output_buf: [65536]u8,
     render_epoch: u64 = 1,
     spawned: bool = false,
     dead: bool = false,
@@ -357,9 +357,6 @@ pub const SessionState = struct {
         DivisionByZero,
         GraphemeAllocOutOfMemory,
         GraphemeMapOutOfMemory,
-        HyperlinkMapOutOfMemory,
-        HyperlinkSetNeedsRehash,
-        HyperlinkSetOutOfMemory,
         NeedsRehash,
         OutOfMemory,
         OutOfSpace,
@@ -410,8 +407,14 @@ pub const SessionState = struct {
         return .disarm;
     }
 
+    /// Polling fallback for exit detection. Sessions spawned with an xev loop
+    /// (the common case) get event-driven exit detection from `processExitCallback`
+    /// via `process_watcher`, so this is a no-op for them. Sessions spawned without
+    /// a loop (e.g. `restart()`, which calls `ensureSpawned()` with no loop) have no
+    /// watcher and rely on this per-frame `waitpid(WNOHANG)` poll instead.
     pub fn checkAlive(self: *SessionState) void {
         if (!self.spawned or self.dead) return;
+        if (self.process_watcher != null) return;
 
         if (self.shell) |shell| {
             var status: c_int = 0;
@@ -568,14 +571,25 @@ pub const SessionState = struct {
         }
     }
 
+    /// Per-call cap on bytes read from the PTY. Without a cap, a fast producer
+    /// (e.g. `cat`-ing a huge file) can keep the drain loop below going until
+    /// the PTY would block, holding the frame loop hostage and starving
+    /// keystroke/input processing for the duration. Once the cap is hit,
+    /// remaining data stays buffered in the kernel and is picked up on the
+    /// next call (the runtime calls processOutput once per frame; the
+    /// quit-time drain path in runtime.zig calls it in a loop instead).
+    const max_process_output_bytes_per_call: usize = 1 << 20;
+
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
         if (!shouldProcessOutput(self.spawned, self.dead, self.quit_capture_active)) return;
 
         const shell = &(self.shell orelse return);
         const stream = &(self.stream orelse return);
 
-        while (true) {
-            const n = shell.read(&self.output_buf) catch |err| switch (err) {
+        var bytes_consumed: usize = 0;
+        while (shouldContinueDraining(bytes_consumed, max_process_output_bytes_per_call)) {
+            const read_len = cappedReadLen(self.output_buf.len, bytes_consumed, max_process_output_bytes_per_call);
+            const n = shell.read(self.output_buf[0..read_len]) catch |err| switch (err) {
                 error.WouldBlock => return,
                 // Linux PTYs can report EIO after the slave side closes.
                 // Treat it as terminal EOF so normal dead sessions don't fail the runtime loop.
@@ -584,6 +598,7 @@ pub const SessionState = struct {
             };
 
             if (n == 0) return;
+            bytes_consumed += n;
 
             if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
                 self.agent_icon = kind;
@@ -594,24 +609,14 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
-            // Process byte-by-byte so a hyperlink capacity error on byte N doesn't
-            // silently discard bytes N+1..end of the PTY read. Hyperlink errors drop
-            // only that byte's side effect; normal output/control sequences continue.
-            for (self.output_buf[0..n]) |byte| {
-                stream.next(byte) catch |err| switch (err) {
-                    error.HyperlinkSetOutOfMemory,
-                    error.HyperlinkSetNeedsRehash,
-                    error.HyperlinkMapOutOfMemory,
-                    => log.warn("session {d}: OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{ self.id, err }),
-                    else => return err,
-                };
-            }
+            try stream.nextSlice(self.output_buf[0..n]);
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
 
-            // Keep draining until the PTY would block to avoid frame-bounded
-            // throttling of bursty output (e.g. startup logos).
+            // Keep draining until the PTY would block (or the byte budget is
+            // hit) to avoid frame-bounded throttling of bursty output (e.g.
+            // startup logos).
         }
     }
 
@@ -621,8 +626,23 @@ pub const SessionState = struct {
         return quit_capture_active;
     }
 
+    /// True when the drain loop in processOutput should attempt another read.
+    /// Extracted for testability; see max_process_output_bytes_per_call for why
+    /// the budget exists.
+    fn shouldContinueDraining(bytes_consumed: usize, budget: usize) bool {
+        return bytes_consumed < budget;
+    }
+
+    /// Length for the next drain read: the full buffer, or the remaining byte
+    /// budget when that is smaller, so the final read of a processOutput call
+    /// cannot overshoot the per-call cap. Callers must ensure
+    /// `bytes_consumed < budget` (the drain loop condition guarantees it).
+    fn cappedReadLen(buf_len: usize, bytes_consumed: usize, budget: usize) usize {
+        return @min(buf_len, budget - bytes_consumed);
+    }
+
     /// Mark the session as failed after an unrecoverable output-processing error
-    /// (e.g. ghostty-vt resource exhaustion like `HyperlinkSetOutOfMemory`). Sends
+    /// (e.g. ghostty-vt resource exhaustion like `StyleSetOutOfMemory`). Sends
     /// SIGTERM to the still-running child so it stops consuming resources behind a
     /// "[Process completed]" UI, drops queued stdin so `flushPendingWrites` does
     /// not retry every frame, then flips `dead` and bumps the render epoch. The
@@ -1097,6 +1117,58 @@ test "SessionState assigns incrementing ids" {
     try std.testing.expectEqualStrings("1", std.mem.sliceTo(second.session_id_z[0..], 0));
 }
 
+test "checkAlive skips waitpid polling when a process watcher owns exit detection" {
+    const allocator = std.testing.allocator;
+    const theme = colors_mod.Theme.default();
+    const size = pty_mod.winsize{
+        .ws_row = 24,
+        .ws_col = 80,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    const pid = try posix.fork();
+    if (pid == 0) {
+        std.c._exit(0);
+    }
+    defer _ = std.c.waitpid(pid, null, 0);
+    // Give the forked child a moment to exit and become reapable.
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+
+    const pipe_fds = try posix.pipe();
+    // pty.deinit() only closes the master fd; close the slave ourselves.
+    defer posix.close(pipe_fds[0]);
+
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
+    defer session.deinit(allocator);
+
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.shell = shell_mod.Shell{
+        .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
+        .child_pid = pid,
+    };
+
+    session.process_watcher = try xev.Process.init(pid);
+    session.checkAlive();
+    try std.testing.expect(!session.dead);
+    try std.testing.expectEqual(@as(u64, 1), session.render_epoch);
+
+    session.process_watcher.?.deinit();
+    session.process_watcher = null;
+
+    session.checkAlive();
+    try std.testing.expect(session.dead);
+    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
+
+    // Prevent teardown from re-killing/re-reaping the already-exited child.
+    session.spawned = false;
+    if (session.shell) |*shell| shell.child_pid = -1;
+}
+
 test "despawn keeps active wait context alive until callback reclaims it" {
     const allocator = std.testing.allocator;
     const theme = colors_mod.Theme.default();
@@ -1191,6 +1263,21 @@ test "shouldProcessOutput drains dead sessions only during quit capture" {
     try std.testing.expect(SessionState.shouldProcessOutput(true, false, false));
     try std.testing.expect(!SessionState.shouldProcessOutput(true, true, false));
     try std.testing.expect(SessionState.shouldProcessOutput(true, true, true));
+}
+
+test "shouldContinueDraining stops once the byte budget is reached" {
+    try std.testing.expect(SessionState.shouldContinueDraining(0, 1024));
+    try std.testing.expect(SessionState.shouldContinueDraining(1023, 1024));
+    try std.testing.expect(!SessionState.shouldContinueDraining(1024, 1024));
+    try std.testing.expect(!SessionState.shouldContinueDraining(2048, 1024));
+    try std.testing.expect(!SessionState.shouldContinueDraining(0, 0));
+}
+
+test "cappedReadLen limits the final read to the remaining byte budget" {
+    try std.testing.expectEqual(@as(usize, 512), SessionState.cappedReadLen(512, 0, 1024));
+    try std.testing.expectEqual(@as(usize, 512), SessionState.cappedReadLen(512, 512, 1024));
+    try std.testing.expectEqual(@as(usize, 100), SessionState.cappedReadLen(512, 924, 1024));
+    try std.testing.expectEqual(@as(usize, 1), SessionState.cappedReadLen(512, 1023, 1024));
 }
 
 test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {

@@ -17,11 +17,11 @@ build:
 test:
     zig build test
 
-run:
-    zig build run
+run *args:
+    zig build run -- {{args}}
 
-run-release:
-    zig build run -Doptimize=ReleaseFast
+run-release *args:
+    zig build run -Doptimize=ReleaseFast -- {{args}}
 
 lint:
     #!/usr/bin/env bash
@@ -45,6 +45,8 @@ lint:
     if [ ${#py_files[@]} -ne 0 ]; then
         ruff check "${py_files[@]}"
     fi
+
+    ./scripts/check-test-registry.sh
 
     zig fmt --check src/
 
