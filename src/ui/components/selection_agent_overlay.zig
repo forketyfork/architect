@@ -298,6 +298,7 @@ pub const SelectionAgentOverlayComponent = struct {
                 return true;
             },
             c.SDL_EVENT_TEXT_INPUT => {
+                if (self.agent_dropdown.open) return true;
                 _ = self.prompt.insert(self.allocator, std.mem.span(event.text.text), host.now_ms);
                 return true;
             },
@@ -1157,4 +1158,45 @@ test "context preview texture window stays bounded for large selections" {
     const bottom = contextTextureWindow(500_000, 19, 10, 115, 9_500_000);
     try std.testing.expect(bottom.end <= 500_000);
     try std.testing.expect(bottom.end - bottom.first <= 11);
+}
+
+test "text input while the agent dropdown is open does not leak into the prompt" {
+    var component = SelectionAgentOverlayComponent{
+        .allocator = std.testing.allocator,
+        .visible = true,
+        .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
+    };
+    defer component.prompt.deinit(std.testing.allocator);
+    defer component.agent_dropdown.deinit();
+    component.agent_dropdown.openMenu();
+
+    var host = types.UiHost{
+        .now_ms = 0,
+        .window_w = 800,
+        .window_h = 600,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 100,
+        .cell_h = 100,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Full,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &[_]types.SessionUiInfo{},
+        .theme = undefined,
+    };
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    var text_event: c.SDL_Event = undefined;
+    @memset(std.mem.asBytes(&text_event), 0);
+    text_event.type = c.SDL_EVENT_TEXT_INPUT;
+    text_event.text.text = "a";
+
+    try std.testing.expect(SelectionAgentOverlayComponent.handleEvent(&component, &host, &text_event, &actions));
+    try std.testing.expect(component.prompt.isEmpty());
+    try std.testing.expect(component.agent_dropdown.open);
 }

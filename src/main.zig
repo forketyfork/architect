@@ -54,6 +54,7 @@ test {
     _ = @import("session/state.zig");
     _ = @import("shell.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
+    _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");
     _ = @import("ui/components/expanding_overlay.zig");
     _ = @import("ui/components/markdown_parser.zig");

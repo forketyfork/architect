@@ -1271,16 +1271,21 @@ pub const DiffOverlayComponent = struct {
                 const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
                 const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT)) != 0;
 
+                // An open dropdown is keyboard-modal: it must consume Up/Down/Enter/Escape
+                // before the comment editor gets a chance to swallow them.
+                if (self.agent_dropdown.open) {
+                    if (self.agent_dropdown.handleKey(key, &agent_dropdown_items) == .selected) {
+                        self.applyAgentDropdownSelection(host, actions);
+                    }
+                    return true;
+                }
+
                 // Editing text input: handle special keys
                 const editor_interactive = self.editing != null and
                     (self.comment_anim == null or self.comment_anim.? != .editor_closing);
                 if (editor_interactive) {
                     if (key == c.SDLK_ESCAPE) {
-                        if (self.agent_dropdown.open) {
-                            self.agent_dropdown.close();
-                        } else {
-                            self.cancelEditing(host.now_ms);
-                        }
+                        self.cancelEditing(host.now_ms);
                         return true;
                     }
                     if (key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER) {
@@ -1295,13 +1300,6 @@ pub const DiffOverlayComponent = struct {
                     }
                     if (self.editing) |*ed| {
                         _ = ed.input.handleKey(self.allocator, key, mod, host.now_ms);
-                    }
-                    return true;
-                }
-
-                if (self.agent_dropdown.open) {
-                    if (self.agent_dropdown.handleKey(key, &agent_dropdown_items) == .selected) {
-                        self.applyAgentDropdownSelection(host, actions);
                     }
                     return true;
                 }
@@ -1328,6 +1326,7 @@ pub const DiffOverlayComponent = struct {
                 return true;
             },
             c.SDL_EVENT_TEXT_INPUT => {
+                if (self.agent_dropdown.open) return true;
                 if (self.editing) |*ed| {
                     const is_closing = if (self.comment_anim) |a| a == .editor_closing else false;
                     if (!is_closing) {
@@ -3563,3 +3562,103 @@ pub const DiffOverlayComponent = struct {
         .wantsFrame = wantsFrameFn,
     };
 };
+
+fn testUiHost() types.UiHost {
+    return .{
+        .now_ms = 0,
+        .window_w = 800,
+        .window_h = 600,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 100,
+        .cell_h = 100,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Full,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &[_]types.SessionUiInfo{},
+        .theme = undefined,
+    };
+}
+
+test "diff overlay agent dropdown takes keyboard priority over an open comment editor" {
+    var component = DiffOverlayComponent{
+        .allocator = std.testing.allocator,
+        .overlay = .{ .visible = true },
+        .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
+        .editing = .{
+            .target_display_row = 0,
+            .key = .{ .file_path = "file.zig", .line_number = 1 },
+            .input = newCommentInput(),
+            .existing_index = null,
+        },
+    };
+    defer component.agent_dropdown.deinit();
+    defer component.editing.?.input.deinit(std.testing.allocator);
+    component.agent_dropdown.openMenu();
+
+    var host = testUiHost();
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    var key_event: c.SDL_Event = undefined;
+    @memset(std.mem.asBytes(&key_event), 0);
+    key_event.type = c.SDL_EVENT_KEY_DOWN;
+    key_event.key.key = c.SDLK_RETURN;
+
+    try std.testing.expect(DiffOverlayComponent.handleEventFn(&component, &host, &key_event, &actions));
+
+    // Confirming the highlighted item ("Paste directly") sends the (empty)
+    // comment set; free the queued action's owned payload the same way
+    // app/runtime.zig's action loop does.
+    while (actions.pop()) |action| {
+        switch (action) {
+            .SendDiffComments => |dc| {
+                std.testing.allocator.free(dc.comments_text);
+                if (dc.agent_command) |cmd| std.testing.allocator.free(cmd);
+            },
+            else => {},
+        }
+    }
+
+    // The dropdown, not the comment editor, must consume Enter: the editor
+    // stays untouched (no submit/cancel animation started) and the dropdown
+    // closes having confirmed its highlighted item ("Paste directly", index 0).
+    try std.testing.expect(component.editing != null);
+    try std.testing.expect(component.comment_anim == null);
+    try std.testing.expect(!component.agent_dropdown.open);
+    try std.testing.expectEqual(@as(usize, 0), component.agent_dropdown.selected);
+}
+
+test "diff overlay text input while the agent dropdown is open does not leak into the comment editor" {
+    var component = DiffOverlayComponent{
+        .allocator = std.testing.allocator,
+        .overlay = .{ .visible = true },
+        .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
+        .editing = .{
+            .target_display_row = 0,
+            .key = .{ .file_path = "file.zig", .line_number = 1 },
+            .input = newCommentInput(),
+            .existing_index = null,
+        },
+    };
+    defer component.agent_dropdown.deinit();
+    defer component.editing.?.input.deinit(std.testing.allocator);
+    component.agent_dropdown.openMenu();
+
+    var host = testUiHost();
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    var text_event: c.SDL_Event = undefined;
+    @memset(std.mem.asBytes(&text_event), 0);
+    text_event.type = c.SDL_EVENT_TEXT_INPUT;
+    text_event.text.text = "a";
+
+    try std.testing.expect(DiffOverlayComponent.handleEventFn(&component, &host, &text_event, &actions));
+    try std.testing.expectEqual(@as(usize, 0), component.editing.?.input.text().len);
+    try std.testing.expect(component.agent_dropdown.open);
+}
