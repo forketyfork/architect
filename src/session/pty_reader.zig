@@ -78,23 +78,23 @@ pub const PtyOutputBuffer = struct {
 
         var progressed = false;
         while (true) {
-            if (self.len == self.data.len) return .full;
+            if (self.len == self.data.len) return if (progressed) .progressed else .full;
             const free_slice = self.contiguousFreeSlice();
             const n = posix.read(fd, free_slice) catch |err| switch (err) {
                 error.WouldBlock => return if (progressed) .progressed else .idle,
                 // PTYs report EIO once the slave side is gone; treat it as EOF.
                 error.InputOutput => {
                     self.eof = true;
-                    return .closed;
+                    return if (progressed) .progressed else .closed;
                 },
                 else => |other| {
                     self.read_error = other;
-                    return .closed;
+                    return if (progressed) .progressed else .closed;
                 },
             };
             if (n == 0) {
                 self.eof = true;
-                return .closed;
+                return if (progressed) .progressed else .closed;
             }
             self.len += n;
             progressed = true;
@@ -392,6 +392,7 @@ test "PtyOutputBuffer reports full and resumes after the consumer drains" {
     defer posix.close(fds[1]);
 
     _ = try posix.write(fds[1], "abcdef");
+    try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.full, buffer.pumpFd(fds[0]));
     try std.testing.expect(!buffer.canAcceptBytes());
 
@@ -416,7 +417,7 @@ test "PtyOutputBuffer records EOF when the write end closes" {
     _ = try posix.write(fds[1], "tail");
     posix.close(fds[1]);
 
-    _ = buffer.pumpFd(fds[0]);
+    try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.closed, buffer.pumpFd(fds[0]));
     try std.testing.expect(!buffer.canAcceptBytes());
 
