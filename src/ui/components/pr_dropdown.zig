@@ -14,7 +14,12 @@ const search_utils = @import("search_utils.zig");
 const font_cache_mod = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.pr_dropdown);
-const gh_output_log_preview_limit: usize = 4 * 1024;
+const gh_output_log_preview_limit: usize = 2 * 1024;
+
+const GhOutputPreview = struct {
+    len: usize,
+    consumed: usize,
+};
 
 const TextTex = search_utils.TextTex;
 
@@ -1485,13 +1490,44 @@ fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
 }
 
 fn logGhOutputPreview(comptime stream_name: []const u8, bytes: []const u8) void {
-    const preview_len: usize = @min(bytes.len, gh_output_log_preview_limit);
-    log.err("gh {s} output: bytes={d} truncated={} preview={f}", .{
+    var preview_buffer: [gh_output_log_preview_limit]u8 = undefined;
+    const preview = formatGhOutputPreview(bytes, &preview_buffer);
+    log.err("gh {s} output: bytes={d} preview_bytes={d} truncated={} preview={s}", .{
         stream_name,
         bytes.len,
-        bytes.len > preview_len,
-        std.ascii.hexEscape(bytes[0..preview_len], .lower),
+        preview.len,
+        preview.consumed < bytes.len,
+        preview_buffer[0..preview.len],
     });
+}
+
+fn formatGhOutputPreview(bytes: []const u8, buffer: []u8) GhOutputPreview {
+    const hex_digits = "0123456789abcdef";
+    var output_len: usize = 0;
+    var consumed: usize = 0;
+
+    while (consumed < bytes.len) : (consumed += 1) {
+        const byte = bytes[consumed];
+        if (byte == '"' or byte == '\\') {
+            if (buffer.len - output_len < 2) break;
+            buffer[output_len] = '\\';
+            buffer[output_len + 1] = byte;
+            output_len += 2;
+        } else if (std.ascii.isPrint(byte)) {
+            if (output_len == buffer.len) break;
+            buffer[output_len] = byte;
+            output_len += 1;
+        } else {
+            if (buffer.len - output_len < 4) break;
+            buffer[output_len] = '\\';
+            buffer[output_len + 1] = 'x';
+            buffer[output_len + 2] = hex_digits[byte >> 4];
+            buffer[output_len + 3] = hex_digits[byte & 0x0f];
+            output_len += 4;
+        }
+    }
+
+    return .{ .len = output_len, .consumed = consumed };
 }
 
 fn buildFetchError(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) FetchResult {
@@ -1665,6 +1701,17 @@ test "parseGhJson — invalid JSON yields error" {
     defer freeFetchResult(std.testing.allocator, &result);
     try std.testing.expectEqual(@as(FetchStatus, .failed), result.status);
     try std.testing.expect(result.error_message != null);
+}
+
+test "gh output preview escapes bytes and stays bounded" {
+    var input: [gh_output_log_preview_limit]u8 = undefined;
+    @memset(&input, 0);
+    var output: [gh_output_log_preview_limit]u8 = undefined;
+
+    const preview = formatGhOutputPreview(&input, &output);
+    try std.testing.expectEqual(gh_output_log_preview_limit, preview.len);
+    try std.testing.expectEqual(gh_output_log_preview_limit / 4, preview.consumed);
+    try std.testing.expectEqualStrings("\\x00\\x00", output[0..8]);
 }
 
 test "fetch results only match the focused repository" {
