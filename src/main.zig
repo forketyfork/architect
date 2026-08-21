@@ -50,7 +50,7 @@ test {
     _ = @import("platform/sdl.zig");
     _ = @import("render/renderer.zig");
     _ = @import("session/notify.zig");
-    _ = @import("session/pty_watcher.zig");
+    _ = @import("session/pty_reader.zig");
     _ = @import("session/state.zig");
     _ = @import("shell.zig");
     _ = @import("ui/components/diff_comment_layout.zig");

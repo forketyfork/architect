@@ -50,6 +50,23 @@ real transcript history can. Architect renders that repaint live, the way
 Ghostty does: whatever the app draws is what appears on screen, and the
 picture converges once the app finishes redrawing.
 
+## Chatty small-write producers (JVM/JLine TUIs)
+
+JLine-based TUIs (e.g. Junie CLI) repaint the full screen every frame inside
+a DEC-2026 window (`ESC[?2026h … ESC[?2026l`) as ~150 small (~190-byte)
+`write()` syscalls, up to ~19fps. Before the dedicated PTY reader thread
+(2026-08), the frame-paced drain stopped at the first EWOULDBLOCK, so drain
+boundaries landed mid-window ~97% of the time: the renderer's sync hold
+suppressed nearly every repaint (2–9 effective fps), the kernel PTY buffer
+backed up, and the producer's writes blocked 250–800 ms per frame — the
+user-visible ~1s/keypress lag. Diagnostics that pinned it: the producer's
+own write-latency telemetry (`[tui-perf] write p95` in `~/.junie/logs`), a
+PTY harness capturing chunk sizes and 2026 markers per read, and per-read
+DRAIN/SYNC-HOLD debug logging in an isolated instance. The key control was
+that with the window occluded (rendering suppressed), the old drain kept up
+and writes took 2 ms — proof the drain was render-paced, not slow. Producers
+that write whole frames in one syscall (codex, claude) never exhibited this.
+
 ## Measured costs (ghostty-vt 1.3.1, Apple Silicon)
 
 | Operation | Debug | ReleaseSafe/ReleaseFast |
