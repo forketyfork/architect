@@ -9,6 +9,7 @@ const colors_mod = @import("../colors.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
+const pty_reader_mod = @import("pty_reader.zig");
 const mac = if (builtin.os.tag == .macos)
     @cImport({
         @cInclude("sys/types.h");
@@ -86,6 +87,10 @@ pub const SessionState = struct {
     terminal: ?ghostty_vt.Terminal,
     stream: ?vt_stream.StreamType,
     output_buf: [65536]u8,
+    /// Reader thread this session registers its PTY with.
+    pty_reader: ?*pty_reader_mod.PtyReader,
+    /// Ring buffer the reader thread fills and processOutput consumes.
+    pty_buffer: ?*pty_reader_mod.PtyOutputBuffer,
     render_epoch: u64 = 1,
     spawned: bool = false,
     dead: bool = false,
@@ -166,6 +171,7 @@ pub const SessionState = struct {
         size: pty_mod.winsize,
         notify_sock: [:0]const u8,
         theme: colors_mod.Theme,
+        reader: ?*pty_reader_mod.PtyReader,
     ) InitError!SessionState {
         const session_id_buf = [_:0]u8{0} ** session_id_buf_len;
 
@@ -176,6 +182,8 @@ pub const SessionState = struct {
             .terminal = null,
             .stream = null,
             .output_buf = undefined,
+            .pty_reader = reader,
+            .pty_buffer = null,
             .spawned = false,
             .shell_path = shell_path,
             .pty_size = size,
@@ -208,9 +216,12 @@ pub const SessionState = struct {
             self.notify_sock_z,
             working_dir,
         );
+        var shell_owned = true;
         errdefer {
-            var s = shell;
-            s.deinit();
+            if (shell_owned) {
+                var s = shell;
+                s.deinit();
+            }
         }
 
         var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
@@ -220,13 +231,24 @@ pub const SessionState = struct {
             .default_modes = .{ .grapheme_cluster = true },
             .colors = terminalColorsFromTheme(self.theme),
         });
-        errdefer terminal.deinit(self.allocator);
+        var terminal_owned = true;
+        errdefer {
+            if (terminal_owned) terminal.deinit(self.allocator);
+        }
 
         try makeNonBlocking(shell.pty.master);
+
+        var state_transferred = false;
+        errdefer {
+            if (state_transferred) self.teardown(self.allocator, .destroy_immediately);
+        }
 
         self.shell = shell;
         self.terminal = terminal;
         self.spawned = true;
+        shell_owned = false;
+        terminal_owned = false;
+        state_transferred = true;
         const stream = vt_stream.initStream(
             self.allocator,
             &self.terminal.?,
@@ -234,6 +256,10 @@ pub const SessionState = struct {
         );
         self.stream = stream;
         self.markDirty();
+
+        const buffer = try pty_reader_mod.PtyOutputBuffer.create(self.allocator);
+        self.pty_buffer = buffer;
+        if (self.pty_reader) |reader| reader.register(shell.pty.master, buffer);
 
         if (loop_opt) |loop| {
             var process = try xev.Process.init(shell.child_pid);
@@ -332,6 +358,8 @@ pub const SessionState = struct {
         // Wrap intentionally: process_generation is a bounded counter and may overflow.
         self.process_generation +%= 1;
 
+        self.releasePtyBuffer(allocator);
+
         if (self.shell) |*shell| {
             if (self.spawned and !self.dead) {
                 _ = std.c.kill(shell.child_pid, std.c.SIG.TERM);
@@ -351,6 +379,16 @@ pub const SessionState = struct {
         self.spawned = false;
         self.dead = false;
         self.cwd_settled = false;
+    }
+
+    fn releasePtyBuffer(self: *SessionState, allocator: std.mem.Allocator) void {
+        if (self.pty_buffer) |buffer| {
+            if (self.pty_reader) |reader| {
+                if (self.shell) |shell| reader.retire(shell.pty.master);
+            }
+            buffer.destroy(allocator);
+            self.pty_buffer = null;
+        }
     }
 
     pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
@@ -461,6 +499,7 @@ pub const SessionState = struct {
         self.process_wait_ctx = null;
         // Wrap intentionally: generation just invalidates prior watchers.
         self.process_generation +%= 1;
+        self.releasePtyBuffer(self.allocator);
         if (self.stream) |*stream| {
             stream.deinit();
             self.stream = null;
@@ -571,33 +610,25 @@ pub const SessionState = struct {
         }
     }
 
-    /// Per-call cap on bytes read from the PTY. Without a cap, a fast producer
-    /// (e.g. `cat`-ing a huge file) can keep the drain loop below going until
-    /// the PTY would block, holding the frame loop hostage and starving
-    /// keystroke/input processing for the duration. Once the cap is hit,
-    /// remaining data stays buffered in the kernel and is picked up on the
-    /// next call (the runtime calls processOutput once per frame; the
-    /// quit-time drain path in runtime.zig calls it in a loop instead).
+    /// Per-call cap on bytes consumed from the reader ring. Kernel-side PTY
+    /// draining happens on the reader thread, while this cap keeps VT parsing
+    /// from holding the frame loop hostage when a producer emits a burst.
     const max_process_output_bytes_per_call: usize = 1 << 20;
 
     pub fn processOutput(self: *SessionState) ProcessOutputError!void {
         if (!shouldProcessOutput(self.spawned, self.dead, self.quit_capture_active)) return;
 
-        const shell = &(self.shell orelse return);
+        const buffer = self.pty_buffer orelse return;
         const stream = &(self.stream orelse return);
 
         var bytes_consumed: usize = 0;
         while (shouldContinueDraining(bytes_consumed, max_process_output_bytes_per_call)) {
             const read_len = cappedReadLen(self.output_buf.len, bytes_consumed, max_process_output_bytes_per_call);
-            const n = shell.read(self.output_buf[0..read_len]) catch |err| switch (err) {
-                error.WouldBlock => return,
-                // Linux PTYs can report EIO after the slave side closes.
-                // Treat it as terminal EOF so normal dead sessions don't fail the runtime loop.
-                error.InputOutput => return,
-                else => return err,
-            };
-
-            if (n == 0) return;
+            const n = buffer.consume(self.output_buf[0..read_len]);
+            if (n == 0) {
+                if (buffer.takePendingReadError()) |err| return err;
+                return;
+            }
             bytes_consumed += n;
 
             if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
@@ -1104,13 +1135,13 @@ test "SessionState assigns incrementing ids" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer first.deinit(allocator);
     first.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 0), first.id);
     try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
 
-    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme);
+    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme, null);
     defer second.deinit(allocator);
     second.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 1), second.id);
@@ -1140,7 +1171,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     // pty.deinit() only closes the master fd; close the slave ourselves.
     defer posix.close(pipe_fds[0]);
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
     // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
     defer session.deinit(allocator);
 
@@ -1180,7 +1211,7 @@ test "despawn keeps active wait context alive until callback reclaims it" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     const wait_ctx = try allocator.create(SessionState.WaitContext);
@@ -1214,7 +1245,7 @@ test "resetForRespawn clears agent metadata" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     session.agent_kind = .codex;
@@ -1278,6 +1309,56 @@ test "cappedReadLen limits the final read to the remaining byte budget" {
     try std.testing.expectEqual(@as(usize, 512), SessionState.cappedReadLen(512, 512, 1024));
     try std.testing.expectEqual(@as(usize, 100), SessionState.cappedReadLen(512, 924, 1024));
     try std.testing.expectEqual(@as(usize, 1), SessionState.cappedReadLen(512, 1023, 1024));
+}
+
+test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer in one call" {
+    const allocator = std.testing.allocator;
+    const size = pty_mod.winsize{
+        .ws_row = 24,
+        .ws_col = 80,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
+    defer session.deinit(allocator);
+
+    const pipe_fds = try posix.pipe();
+    defer posix.close(pipe_fds[1]);
+    try makeNonBlocking(pipe_fds[0]);
+
+    session.shell = .{
+        .pty = .{ .master = pipe_fds[0], .slave = pipe_fds[1] },
+        .child_pid = 0,
+    };
+    session.terminal = try ghostty_vt.Terminal.init(allocator, .{ .cols = 80, .rows = 24 });
+    if (session.terminal) |*terminal| {
+        if (session.shell) |*shell| {
+            session.stream = vt_stream.initStream(allocator, terminal, shell);
+        } else return error.TestUnexpectedResult;
+    } else return error.TestUnexpectedResult;
+    session.pty_buffer = try pty_reader_mod.PtyOutputBuffer.create(allocator);
+    session.spawned = true;
+    session.dead = true;
+    session.quit_capture_active = true;
+
+    _ = try posix.write(pipe_fds[1], "\x1b[?2026h\x1b[H");
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        _ = try posix.write(pipe_fds[1], "chunk-of-a-frame ");
+    }
+    _ = try posix.write(pipe_fds[1], "\x1b[?2026l");
+
+    try std.testing.expectEqual(
+        pty_reader_mod.PumpOutcome.progressed,
+        session.pty_buffer.?.pumpFd(pipe_fds[0]),
+    );
+    try session.processOutput();
+
+    if (session.terminal) |*terminal| {
+        try std.testing.expect(!terminal.modes.get(.synchronized_output));
+    } else return error.TestUnexpectedResult;
 }
 
 test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {

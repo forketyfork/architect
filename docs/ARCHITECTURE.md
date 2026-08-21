@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, a PTY-readability watcher, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: both idle and active-frame pacing block in SDL until either a wake-worthy event arrives or the relevant deadline expires, so PTY output, keystrokes, notification/control socket activity, and window events all interrupt the wait immediately instead of waiting out a fixed timeout. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
+Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, a PTY reader thread that drains session output into per-session ring buffers at wire speed, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: both idle and active-frame pacing block in SDL until either a wake-worthy event arrives or the relevant deadline expires, so PTY output, keystrokes, notification/control socket activity, and window events all interrupt the wait immediately instead of waiting out a fixed timeout. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
 
 ## Component Diagram
 
@@ -28,7 +28,7 @@ graph TD
     subgraph Session Layer
         SS["session/state.zig<br/><i>PTY, ghostty-vt, process watcher</i>"]
         SN["session/notify.zig<br/><i>Background socket thread</i>"]
-        PW["session/pty_watcher.zig<br/><i>Background PTY-readability poll thread</i>"]
+        PW["session/pty_reader.zig<br/><i>Background PTY reader thread (poll + ring buffers)</i>"]
         SESSION_MODS["shell, pty, vt_stream, cwd"]
     end
 
@@ -59,7 +59,7 @@ graph TD
     SS --> SESSION_MODS
     SN -.->|"thread-safe queue"| RT
     CTRL -.->|"thread-safe queue"| RT
-    PW -.->|"wake event + fd list"| RT
+    PW -.->|"wake event + ring buffers"| RT
     REN --> FONT
     REN --> GFX
     UR --> UI_CORE
@@ -91,7 +91,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY-readability watcher (`session/pty_watcher.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification listener, control listener, and PTY watcher also post a custom SDL wake event after queueing work (or observing readable/hung-up PTY fds) so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY watcher polls the master fds of all spawned sessions with a ~100ms timeout; the runtime refreshes its fd list once per frame (cheap `ptyMasterFd()` scan over all slots) and clears a shared `wake_pending` flag right before draining session output. While `wake_pending` is set the watcher backs off with short sleeps instead of re-polling and re-pushing wakes, so a burst of PTY output cannot spin the watcher thread ahead of the main thread's drain.
+- Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY reader (`session/pty_reader.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification listener, control listener, and PTY reader also post a custom SDL wake event after queueing work or draining PTY bytes, so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY reader polls the master fds of all spawned sessions with a ~100ms timeout and, when one becomes readable, drains it into that session's mutex-guarded ring buffer (`PtyOutputBuffer`, 1 MiB) — so producer processes are never backpressured by render pacing, and DEC-2026 sync windows close in the buffer as fast as the producer writes them. Sessions register their fd+buffer on spawn and retire it during teardown; reads happen only under the registry mutex, so `retire()` returning guarantees the reader can no longer touch the fd or buffer. The main thread's `processOutput` consumes from the buffer (VT parsing stays main-thread-only) and clears a shared `wake_pending` flag at the top of each frame; the reader posts at most one SDL wake event per frame via that flag.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins. Every change site only marks a dirty flag and records the time it first became dirty (`markPersistenceDirty`); the actual TOML write happens at most once per frame and only once the dirty state is at least 500ms old (`shouldSavePersistenceNow`), so a window drag or resize does not trigger a synchronous file write per mouse tick. The dirty timestamp is set once per dirty period (not refreshed by later changes), which caps the deferral at the debounce window even under continuous events.
@@ -180,11 +180,10 @@ These patterns are mandatory for all new code. They are derived from the archite
                                        |
                                        v
                     +--------------------------------------+
-                    |   Refresh PTY watcher fd list,        |
-                    |   clear wake_pending flag             |
+                    |   Clear PTY wake_pending flag          |
                     |   Drain session output -> ghostty-vt  |
                     |   Drain notification queue             |
-                    |   (socket/PTY-watcher threads can     |
+                    |   (socket/PTY-reader threads can       |
                     |    post a wake event)                 |
                     +------------------+-------------------+
                                        |
@@ -410,9 +409,9 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
-| `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()`, `drainOutputForMs()` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
+| `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit, and main-thread ring-buffer consumption | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `processOutput()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()` | `shell`, `pty`, `pty_reader`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
-| `session/pty_watcher.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and posts a wake event when one becomes readable (or hangs up/errors); mutex-guarded fd list refreshed once per frame by the runtime | `PtyWatcher`, `start()`, `updateFds()` | std (poll, thread) |
+| `session/pty_reader.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and drains readable ones into per-session SPSC ring buffers; registry with retire handshake so teardown can safely close fds | `PtyReader`, `PtyOutputBuffer`, `start()`, `register()`, `retire()` | std (poll, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting, first-launch onboarding hint | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |

@@ -15,7 +15,7 @@ const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
-const pty_watcher = @import("../session/pty_watcher.zig");
+const pty_reader = @import("../session/pty_reader.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
@@ -1430,9 +1430,9 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
     var notify_stop = std.atomic.Value(bool).init(false);
     var control_stop = std.atomic.Value(bool).init(false);
-    var pty_watcher_stop = std.atomic.Value(bool).init(false);
+    var pty_reader_stop = std.atomic.Value(bool).init(false);
     var pty_wake_pending = std.atomic.Value(bool).init(false);
-    var pty_watcher_state = pty_watcher.PtyWatcher{};
+    var pty_reader_state = pty_reader.PtyReader{};
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1560,9 +1560,9 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
     }
-    const pty_watcher_thread = try pty_watcher.start(
-        &pty_watcher_state,
-        &pty_watcher_stop,
+    const pty_reader_thread = try pty_reader.start(
+        &pty_reader_state,
+        &pty_reader_stop,
         &pty_wake_pending,
         .{
             .context = &sdl,
@@ -1570,8 +1570,8 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         },
     );
     defer {
-        pty_watcher_stop.store(true, .seq_cst);
-        pty_watcher_thread.join();
+        pty_reader_stop.store(true, .seq_cst);
+        pty_reader_thread.join();
     }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
@@ -1689,7 +1689,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
     // Initialize all session slots
     for (0..grid_layout.max_terminals) |i| {
-        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock, theme);
+        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock, theme, &pty_reader_state);
         sessions[i] = &sessions_storage[i];
         init_count += 1;
     }
@@ -2590,14 +2590,6 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         }
 
         pty_wake_pending.store(false, .seq_cst);
-        var pty_fds: [grid_layout.max_terminals]posix.fd_t = undefined;
-        var pty_fd_count: usize = 0;
-        for (sessions) |session| {
-            const pty_fd = session.ptyMasterFd() orelse continue;
-            pty_fds[pty_fd_count] = pty_fd;
-            pty_fd_count += 1;
-        }
-        pty_watcher_state.updateFds(pty_fds[0..pty_fd_count]);
 
         for (sessions) |session| {
             if (relaunch_trace_frames > 0 and session.spawned) {

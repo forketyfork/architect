@@ -361,7 +361,7 @@ fn initSpawnedTestSession(
     terminal.width_px = @intCast(pty_size.ws_xpixel);
     terminal.height_px = @intCast(pty_size.ws_ypixel);
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default());
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default(), null);
     session.shell = .{
         .pty = pty,
         .child_pid = 0,

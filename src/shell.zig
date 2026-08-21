@@ -1112,10 +1112,6 @@ pub const Shell = struct {
         self.* = undefined;
     }
 
-    pub fn read(self: *Shell, buffer: []u8) !usize {
-        return posix.read(self.pty.master, buffer);
-    }
-
     pub fn write(self: *Shell, data: []const u8) !usize {
         var written: usize = 0;
         var waited_ns: u64 = 0;
