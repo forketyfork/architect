@@ -3274,7 +3274,10 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 session_interaction_component.setAttention(pr_action.session, false, now);
 
                 var toast_buf: [64]u8 = undefined;
-                const toast_msg = std.fmt.bufPrint(&toast_buf, "Checking out PR #{d}…", .{pr_action.pr_number}) catch "Checking out PR…";
+                const toast_msg = std.fmt.bufPrint(&toast_buf, "Checking out PR #{d}…", .{pr_action.pr_number}) catch |err| blk: {
+                    log.warn("failed to format PR checkout toast: {}", .{err});
+                    break :blk "Checking out PR…";
+                };
                 ui.showToast(toast_msg, now);
             },
         };

@@ -4,6 +4,7 @@ const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
+const text_edit = @import("../text_edit.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
@@ -39,14 +40,30 @@ const FetchResult = struct {
 const FetchContext = struct {
     allocator: std.mem.Allocator,
     cwd: []const u8,
-    mutex: *std.Thread.Mutex,
-    result_slot: *?FetchResult,
-    done_flag: *std.atomic.Value(bool),
+    mutex: std.Thread.Mutex = .{},
+    result: ?FetchResult = null,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     fn deinit(self: *FetchContext) void {
+        if (self.result) |*result| {
+            freeFetchResult(self.allocator, result);
+        }
         self.allocator.free(self.cwd);
         self.allocator.destroy(self);
     }
+
+    fn takeResult(self: *FetchContext) ?FetchResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const result = self.result;
+        self.result = null;
+        return result;
+    }
+};
+
+const FetchJob = struct {
+    thread: std.Thread,
+    context: *FetchContext,
 };
 
 pub const PRDropdownComponent = struct {
@@ -68,18 +85,15 @@ pub const PRDropdownComponent = struct {
     last_fetch_ms: i64 = 0,
     last_fetched_repo: ?[]const u8 = null,
 
-    // Background fetch plumbing
-    fetch_thread: ?std.Thread = null,
-    fetch_mutex: std.Thread.Mutex = .{},
-    fetch_pending_result: ?FetchResult = null,
-    fetch_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    fetch_ctx: ?*FetchContext = null,
+    // Background fetch plumbing. Jobs retain their repository key until the
+    // worker is joined, so results can be discarded when focus has moved on.
+    fetch_jobs: std.ArrayList(FetchJob) = .empty,
 
     // Filter / selection
     filtered_indices: std.ArrayList(usize) = .{},
     selected_index: usize = 0,
     hovered_entry: ?usize = null,
-    search_query: std.ArrayList(u8) = .{},
+    search_query: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },
 
     // Rendering cache
     cache: ?*Cache = null,
@@ -131,19 +145,11 @@ pub const PRDropdownComponent = struct {
     fn deinit(self_ptr: *anyopaque, _: *c.SDL_Renderer) void {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
 
-        // Wait for any in-flight fetch so we can free its memory safely.
-        if (self.fetch_thread) |t| {
-            t.join();
-            self.fetch_thread = null;
+        for (self.fetch_jobs.items) |*job| {
+            job.thread.join();
+            job.context.deinit();
         }
-        if (self.fetch_ctx) |ctx| {
-            ctx.deinit();
-            self.fetch_ctx = null;
-        }
-        if (self.fetch_pending_result) |*res| {
-            freeFetchResult(self.allocator, res);
-            self.fetch_pending_result = null;
-        }
+        self.fetch_jobs.deinit(self.allocator);
 
         self.destroyCache();
         self.clearPrs();
@@ -200,11 +206,9 @@ pub const PRDropdownComponent = struct {
 
                 if (self.overlay.state != .Open) return false;
 
-                if (key == c.SDLK_BACKSPACE) {
-                    if (self.search_query.items.len > 0) {
-                        self.search_query.items.len -= 1;
-                        self.refilter();
-                    }
+                const edit = self.search_query.handleKey(self.allocator, key, mod, host.now_ms);
+                if (edit.consumed) {
+                    if (edit.text_changed) self.refilter();
                     return true;
                 }
 
@@ -259,10 +263,7 @@ pub const PRDropdownComponent = struct {
             c.SDL_EVENT_TEXT_INPUT => {
                 if (self.overlay.state == .Open) {
                     const text = std.mem.span(event.text.text);
-                    self.search_query.appendSlice(self.allocator, text) catch |err| {
-                        log.warn("failed to append search input: {}", .{err});
-                    };
-                    self.refilter();
+                    if (self.search_query.insert(self.allocator, text, host.now_ms)) self.refilter();
                     return true;
                 }
             },
@@ -331,11 +332,16 @@ pub const PRDropdownComponent = struct {
             // If the overlay is open and we're still in a github repo, refresh.
             if (self.is_github_repo and
                 self.overlay.state != .Closed and
-                self.fetch_thread == null and
                 self.fetchIsStale(host.now_ms))
             {
                 self.startFetch(host.now_ms);
             }
+        }
+
+        // A checkout changes HEAD without changing the shell's cwd. Keep the
+        // collapsed pill's branch badge in sync with that change.
+        if (self.is_github_repo) {
+            self.refreshCurrentBranch();
         }
 
         // Close overlay if no longer applicable.
@@ -354,10 +360,9 @@ pub const PRDropdownComponent = struct {
             }
         }
 
-        // Pick up background fetch results.
-        if (self.fetch_done.load(.acquire)) {
-            self.collectFetchResult();
-        }
+        // Pick up completed background fetch results, including results that
+        // belong to a repository that is no longer focused.
+        self.collectFetchResults();
 
         // Advance the expand/collapse animation state machine.
         if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
@@ -467,7 +472,7 @@ pub const PRDropdownComponent = struct {
             host,
             search_bar_rect,
             font_cache,
-            self.search_query.items,
+            &self.search_query,
             self.filtered_indices.items.len,
             if (self.filtered_indices.items.len > 0) self.selected_index else null,
         ) catch |err| {
@@ -492,7 +497,7 @@ pub const PRDropdownComponent = struct {
             log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
             break :blk null;
         };
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search_query.text(), " \t");
 
         for (cache.entries, 0..) |entry_tex, idx| {
             const is_selected = idx == self.selected_index;
@@ -650,14 +655,14 @@ pub const PRDropdownComponent = struct {
         self.overlay.startExpanding(now_ms);
         // Start a fetch if cache is empty or stale.
         const stale = self.fetchIsStale(now_ms);
-        if (stale and self.fetch_thread == null and self.is_github_repo) {
+        if (stale and self.is_github_repo) {
             self.startFetch(now_ms);
         }
     }
 
     fn closeOverlay(self: *PRDropdownComponent, now_ms: i64) void {
         self.overlay.startCollapsing(now_ms);
-        self.search_query.clearRetainingCapacity();
+        self.search_query.clear();
         self.refilter();
     }
 
@@ -676,7 +681,7 @@ pub const PRDropdownComponent = struct {
         self.filtered_indices.clearRetainingCapacity();
         self.destroyCache();
 
-        const query = std.mem.trim(u8, self.search_query.items, " \t");
+        const query = std.mem.trim(u8, self.search_query.text(), " \t");
 
         for (self.prs.items, 0..) |pr, idx| {
             if (self.filtered_indices.items.len >= max_display) break;
@@ -689,7 +694,10 @@ pub const PRDropdownComponent = struct {
             }
             // Search across title, branch, and number.
             var num_buf: [16]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&num_buf, "#{d}", .{pr.number}) catch num_buf[0..0];
+            const num_str = std.fmt.bufPrint(&num_buf, "#{d}", .{pr.number}) catch |err| blk: {
+                log.warn("failed to format PR number {d}: {}", .{ pr.number, err });
+                break :blk num_buf[0..0];
+            };
             if (search_utils.findCaseInsensitive(pr.title, query, 0) != null or
                 search_utils.findCaseInsensitive(pr.branch, query, 0) != null or
                 search_utils.findCaseInsensitive(num_str, query, 0) != null)
@@ -709,42 +717,94 @@ pub const PRDropdownComponent = struct {
     // -- Repo detection (fast, main-thread, .git config + HEAD parsing) --
 
     fn applyCwd(self: *PRDropdownComponent, new_cwd: ?[]const u8) void {
+        var new_repo_root: ?[]u8 = null;
+        var new_branch: ?[]u8 = null;
+        var new_is_github_repo = false;
+
+        if (new_cwd) |cwd| {
+            new_repo_root = findRepoRoot(self.allocator, cwd) catch |err| blk: {
+                log.warn("failed to find repository for {s}: {}", .{ cwd, err });
+                break :blk null;
+            };
+            if (new_repo_root) |root| {
+                new_is_github_repo = detectGithubOrigin(self.allocator, root) catch |err| blk: {
+                    log.warn("failed to inspect GitHub origin for {s}: {}", .{ root, err });
+                    break :blk false;
+                };
+                if (new_is_github_repo) {
+                    new_branch = readCurrentBranch(self.allocator, root) catch |err| blk: {
+                        log.warn("failed to read branch for {s}: {}", .{ root, err });
+                        break :blk null;
+                    };
+                }
+            }
+        }
+
+        const same_repo = optionalSlicesEqual(self.repo_root, new_repo_root);
+        const keep_results = same_repo and self.is_github_repo and new_is_github_repo;
+
         if (self.last_cwd_seen) |s| self.allocator.free(s);
         self.last_cwd_seen = null;
         if (new_cwd) |c2| {
-            self.last_cwd_seen = self.allocator.dupe(u8, c2) catch null;
+            self.last_cwd_seen = self.allocator.dupe(u8, c2) catch |err| blk: {
+                log.warn("failed to remember focused cwd: {}", .{err});
+                break :blk null;
+            };
         }
 
         if (self.repo_root) |s| self.allocator.free(s);
-        self.repo_root = null;
+        self.repo_root = new_repo_root;
+        new_repo_root = null;
         if (self.current_branch) |s| self.allocator.free(s);
-        self.current_branch = null;
-        self.is_github_repo = false;
+        self.current_branch = new_branch;
+        new_branch = null;
+        self.is_github_repo = new_is_github_repo;
         self.current_pr_number = null;
 
-        const cwd = new_cwd orelse return;
-        const repo = findRepoRoot(self.allocator, cwd) catch null;
-        if (repo) |r| {
-            self.repo_root = r;
-            const is_gh = detectGithubOrigin(self.allocator, r) catch false;
-            self.is_github_repo = is_gh;
-            const branch = readCurrentBranch(self.allocator, r) catch null;
-            self.current_branch = branch;
-            self.updateCurrentPrNumber();
+        if (!keep_results) {
+            self.clearPrs();
+            self.fetch_status = .idle;
+            self.last_fetch_ms = 0;
+            if (self.last_fetched_repo) |s| self.allocator.free(s);
+            self.last_fetched_repo = null;
+            if (self.fetch_error) |s| self.allocator.free(s);
+            self.fetch_error = null;
         }
 
+        self.updateCurrentPrNumber();
+        self.destroyCache();
+
+        if (new_repo_root) |root| self.allocator.free(root);
+        if (new_branch) |branch| self.allocator.free(branch);
+    }
+
+    fn refreshCurrentBranch(self: *PRDropdownComponent) void {
+        const root = self.repo_root orelse return;
+        const new_branch = readCurrentBranch(self.allocator, root) catch |err| {
+            log.warn("failed to refresh branch for {s}: {}", .{ root, err });
+            return;
+        };
+        if (optionalSlicesEqual(self.current_branch, new_branch)) {
+            if (new_branch) |branch| self.allocator.free(branch);
+            return;
+        }
+
+        if (self.current_branch) |branch| self.allocator.free(branch);
+        self.current_branch = new_branch;
+        self.updateCurrentPrNumber();
         self.destroyCache();
     }
 
     fn updateCurrentPrNumber(self: *PRDropdownComponent) void {
-        self.current_pr_number = null;
-        const branch = self.current_branch orelse return;
-        for (self.prs.items) |pr| {
-            if (std.mem.eql(u8, pr.branch, branch)) {
-                self.current_pr_number = pr.number;
-                return;
-            }
+        self.current_pr_number = prNumberForBranch(self.current_branch, self.prs.items);
+    }
+
+    fn prNumberForBranch(branch: ?[]const u8, prs: []const PullRequest) ?u32 {
+        const current_branch = branch orelse return null;
+        for (prs) |pr| {
+            if (std.mem.eql(u8, pr.branch, current_branch)) return pr.number;
         }
+        return null;
     }
 
     fn cwdChanged(prev: ?[]const u8, next: ?[]const u8) bool {
@@ -753,26 +813,42 @@ pub const PRDropdownComponent = struct {
         return !std.mem.eql(u8, prev.?, next.?);
     }
 
+    fn optionalSlicesEqual(left: ?[]const u8, right: ?[]const u8) bool {
+        if (left == null and right == null) return true;
+        if (left == null or right == null) return false;
+        return std.mem.eql(u8, left.?, right.?);
+    }
+
+    fn fetchResultMatchesRepo(fetch_repo: []const u8, current_repo: ?[]const u8, is_github_repo: bool) bool {
+        return is_github_repo and optionalSlicesEqual(fetch_repo, current_repo);
+    }
+
     // -- Fetch lifecycle --
 
     fn startFetch(self: *PRDropdownComponent, now_ms: i64) void {
-        const cwd = self.repo_root orelse return;
-        const cwd_copy = self.allocator.dupe(u8, cwd) catch return;
+        const repo_root = self.repo_root orelse return;
+        if (self.hasFetchForRepo(repo_root)) return;
+
+        const cwd_copy = self.allocator.dupe(u8, repo_root) catch |err| {
+            log.warn("failed to copy repository path for PR fetch: {}", .{err});
+            return;
+        };
 
         const ctx = self.allocator.create(FetchContext) catch {
             self.allocator.free(cwd_copy);
+            log.warn("failed to allocate PR fetch context", .{});
             return;
         };
         ctx.* = .{
             .allocator = self.allocator,
             .cwd = cwd_copy,
-            .mutex = &self.fetch_mutex,
-            .result_slot = &self.fetch_pending_result,
-            .done_flag = &self.fetch_done,
         };
 
-        self.fetch_done.store(false, .release);
-        self.fetch_ctx = ctx;
+        self.fetch_jobs.ensureUnusedCapacity(self.allocator, 1) catch |err| {
+            log.warn("failed to reserve PR fetch job: {}", .{err});
+            ctx.deinit();
+            return;
+        };
         self.fetch_status = .fetching;
         self.last_fetch_ms = now_ms;
 
@@ -780,48 +856,51 @@ pub const PRDropdownComponent = struct {
             log.warn("failed to spawn pr fetch thread: {}", .{err});
             self.fetch_status = .failed;
             ctx.deinit();
-            self.fetch_ctx = null;
             return;
         };
-        self.fetch_thread = thread;
+        self.fetch_jobs.appendAssumeCapacity(.{ .thread = thread, .context = ctx });
     }
 
     fn fetchThreadMain(ctx: *FetchContext) void {
         const result = runGhPrList(ctx.allocator, ctx.cwd);
         ctx.mutex.lock();
-        // Replace any previously-pending (but never collected) result. This should
-        // be impossible (we don't start a fetch while one is in flight), but be
-        // defensive so we never leak.
-        if (ctx.result_slot.*) |*prev| {
-            freeFetchResult(ctx.allocator, prev);
-        }
-        ctx.result_slot.* = result;
+        ctx.result = result;
         ctx.mutex.unlock();
-        ctx.done_flag.store(true, .release);
+        ctx.done.store(true, .release);
     }
 
-    fn collectFetchResult(self: *PRDropdownComponent) void {
-        if (self.fetch_thread) |t| {
-            t.join();
-            self.fetch_thread = null;
+    fn hasFetchForRepo(self: *PRDropdownComponent, repo_root: []const u8) bool {
+        for (self.fetch_jobs.items) |job| {
+            if (std.mem.eql(u8, job.context.cwd, repo_root)) return true;
         }
-        self.fetch_done.store(false, .release);
+        return false;
+    }
 
-        var picked: ?FetchResult = null;
-        self.fetch_mutex.lock();
-        picked = self.fetch_pending_result;
-        self.fetch_pending_result = null;
-        self.fetch_mutex.unlock();
+    fn collectFetchResults(self: *PRDropdownComponent) void {
+        var index: usize = 0;
+        while (index < self.fetch_jobs.items.len) {
+            if (!self.fetch_jobs.items[index].context.done.load(.acquire)) {
+                index += 1;
+                continue;
+            }
 
-        const ctx = self.fetch_ctx;
-        self.fetch_ctx = null;
+            var job = self.fetch_jobs.swapRemove(index);
+            job.thread.join();
+            const result = job.context.takeResult();
 
-        const result = picked orelse {
-            if (ctx) |ctx_ptr| ctx_ptr.deinit();
-            return;
-        };
+            if (result) |fetch_result| {
+                if (fetchResultMatchesRepo(job.context.cwd, self.repo_root, self.is_github_repo)) {
+                    self.applyFetchResult(fetch_result);
+                } else {
+                    var stale_result = fetch_result;
+                    freeFetchResult(self.allocator, &stale_result);
+                }
+            }
+            job.context.deinit();
+        }
+    }
 
-        // Move the result into component state.
+    fn applyFetchResult(self: *PRDropdownComponent, result: FetchResult) void {
         self.clearPrs();
         self.fetch_status = result.status;
         if (self.fetch_error) |s| self.allocator.free(s);
@@ -839,15 +918,16 @@ pub const PRDropdownComponent = struct {
 
         if (self.last_fetched_repo) |s| self.allocator.free(s);
         self.last_fetched_repo = null;
-        if (self.repo_root) |r| {
-            self.last_fetched_repo = self.allocator.dupe(u8, r) catch null;
+        if (self.repo_root) |repo_root| {
+            self.last_fetched_repo = self.allocator.dupe(u8, repo_root) catch |err| blk: {
+                log.warn("failed to remember fetched repository: {}", .{err});
+                break :blk null;
+            };
         }
 
         self.updateCurrentPrNumber();
         self.refilter();
         self.first_frame.markTransition();
-
-        if (ctx) |ctx_ptr| ctx_ptr.deinit();
     }
 
     fn emitCheckout(_: *PRDropdownComponent, actions: *types.UiActionQueue, session_idx: usize, pr: PullRequest) void {
@@ -877,7 +957,7 @@ pub const PRDropdownComponent = struct {
                 cache.ui_scale == ui_scale and
                 cache.entries.len == entry_count and
                 cache.font_generation == cache_store.generation and
-                cache.query_len == self.search_query.items.len and
+                cache.query_len == self.search_query.text().len and
                 cache.filtered_count == entry_count and
                 cache.status == self.fetch_status)
             {
@@ -909,7 +989,10 @@ pub const PRDropdownComponent = struct {
         const status_text = self.statusLineText();
         if (status_text) |st| {
             const muted = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
-            status_line = makeTextTexture(renderer, entry_fonts.regular, st, muted) catch null;
+            status_line = makeTextTexture(renderer, entry_fonts.regular, st, muted) catch |err| blk: {
+                log.warn("failed to render PR status line: {}", .{err});
+                break :blk null;
+            };
         }
 
         const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
@@ -988,7 +1071,7 @@ pub const PRDropdownComponent = struct {
             .entries = entries,
             .theme_fg = fg,
             .font_generation = cache_store.generation,
-            .query_len = self.search_query.items.len,
+            .query_len = self.search_query.text().len,
             .filtered_count = entry_count,
             .status = self.fetch_status,
         };
@@ -1028,7 +1111,9 @@ pub const PRDropdownComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
-        if (self.fetch_done.load(.acquire)) return true;
+        for (self.fetch_jobs.items) |job| {
+            if (job.context.done.load(.acquire)) return true;
+        }
         return self.overlay.isAnimating() or self.first_frame.wantsFrame() or self.overlay.state == .Open;
     }
 
@@ -1343,19 +1428,19 @@ fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
     };
 
     var stdout_buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch {
-        _ = child.kill() catch {};
+        _ = child.kill() catch |err| log.warn("failed to stop gh after stdout allocation failure: {}", .{err});
         return buildFetchError(allocator, "Out of memory reading gh output", .{});
     };
     defer stdout_buf.deinit(allocator);
     var stderr_buf = std.ArrayList(u8).initCapacity(allocator, 256) catch {
-        _ = child.kill() catch {};
+        _ = child.kill() catch |err| log.warn("failed to stop gh after stderr allocation failure: {}", .{err});
         return buildFetchError(allocator, "Out of memory reading gh output", .{});
     };
     defer stderr_buf.deinit(allocator);
 
     child.collectOutput(allocator, &stdout_buf, &stderr_buf, 4 * 1024 * 1024) catch |err| {
-        _ = child.kill() catch {};
-        _ = child.wait() catch {};
+        _ = child.kill() catch |kill_err| log.warn("failed to stop gh after output failure: {}", .{kill_err});
+        _ = child.wait() catch |wait_err| log.warn("failed to reap gh after output failure: {}", .{wait_err});
         return buildFetchError(allocator, "Failed to read gh output: {s}", .{@errorName(err)});
     };
 
@@ -1380,7 +1465,10 @@ fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
 }
 
 fn buildFetchError(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) FetchResult {
-    const msg = std.fmt.allocPrint(allocator, fmt, args) catch null;
+    const msg = std.fmt.allocPrint(allocator, fmt, args) catch |err| blk: {
+        log.warn("failed to allocate PR fetch error message: {}", .{err});
+        break :blk null;
+    };
     return .{
         .status = .failed,
         .prs = &[_]PullRequest{},
@@ -1424,7 +1512,10 @@ pub fn parseGhJson(allocator: std.mem.Allocator, bytes: []const u8) FetchResult 
         const branch_val = obj.get("headRefName") orelse continue;
         if (title_val != .string or branch_val != .string) continue;
 
-        const title_copy = allocator.dupe(u8, title_val.string) catch continue;
+        const title_copy = allocator.dupe(u8, title_val.string) catch |err| {
+            log.warn("failed to copy pull request title: {}", .{err});
+            continue;
+        };
         const branch_copy = allocator.dupe(u8, branch_val.string) catch {
             allocator.free(title_copy);
             continue;
@@ -1544,4 +1635,23 @@ test "parseGhJson — invalid JSON yields error" {
     defer freeFetchResult(std.testing.allocator, &result);
     try std.testing.expectEqual(@as(FetchStatus, .failed), result.status);
     try std.testing.expect(result.error_message != null);
+}
+
+test "fetch results only match the focused repository" {
+    try std.testing.expect(PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/a", true));
+    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/b", true));
+    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", null, true));
+    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/a", false));
+}
+
+test "current PR number follows the current branch" {
+    const prs = [_]PullRequest{
+        .{ .number = 10, .title = "one", .branch = "feature/one" },
+        .{ .number = 20, .title = "two", .branch = "feature/two" },
+    };
+
+    try std.testing.expectEqual(@as(?u32, 10), PRDropdownComponent.prNumberForBranch("feature/one", &prs));
+    try std.testing.expectEqual(@as(?u32, 20), PRDropdownComponent.prNumberForBranch("feature/two", &prs));
+    try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch("main", &prs));
+    try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch(null, &prs));
 }
