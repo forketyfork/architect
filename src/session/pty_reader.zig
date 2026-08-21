@@ -6,6 +6,7 @@ const grid_layout = @import("../app/grid_layout.zig");
 const log = std.log.scoped(.pty_reader);
 
 const poll_timeout_ms: i32 = 100;
+const full_buffer_retry_ns: u64 = 2 * std.time.ns_per_ms;
 const poll_error_backoff_ns: u64 = 10 * std.time.ns_per_ms;
 
 /// Bytes buffered per session between the reader thread and the main
@@ -34,6 +35,12 @@ pub const PumpOutcome = enum {
 /// for bounded, non-blocking work: the producer reads an O_NONBLOCK fd into
 /// free ring space, and the consumer copies bytes out.
 pub const PtyOutputBuffer = struct {
+    const PollState = enum {
+        ready,
+        full,
+        closed,
+    };
+
     mutex: std.Thread.Mutex = .{},
     data: []u8,
     head: usize = 0,
@@ -124,9 +131,15 @@ pub const PtyOutputBuffer = struct {
     }
 
     pub fn canAcceptBytes(self: *PtyOutputBuffer) bool {
+        return self.pollState() == .ready;
+    }
+
+    fn pollState(self: *PtyOutputBuffer) PollState {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return !self.eof and self.read_error == null and self.len < self.data.len;
+        if (self.eof or self.read_error != null) return .closed;
+        if (self.len == self.data.len) return .full;
+        return .ready;
     }
 
     fn contiguousFreeSlice(self: *PtyOutputBuffer) []u8 {
@@ -140,6 +153,11 @@ pub const PtyOutputBuffer = struct {
 const Entry = struct {
     fd: posix.fd_t,
     buffer: *PtyOutputBuffer,
+};
+
+const PollSnapshot = struct {
+    count: usize,
+    has_full_buffer: bool,
 };
 
 const wake_worthy_events: i16 = posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR | posix.POLL.NVAL;
@@ -176,16 +194,27 @@ pub const PtyReader = struct {
         }
     }
 
-    fn snapshotPollfds(self: *PtyReader, out: *[grid_layout.max_terminals]posix.pollfd) usize {
+    /// Snapshot pollable fds and report whether a zero-length snapshot was
+    /// caused by full buffers. Closed buffers do not need a short retry.
+    fn snapshotPollfds(
+        self: *PtyReader,
+        out: *[grid_layout.max_terminals]posix.pollfd,
+    ) PollSnapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
         var count: usize = 0;
+        var has_full_buffer = false;
         for (self.entries[0..self.entry_count]) |entry| {
-            if (!entry.buffer.canAcceptBytes()) continue;
-            out[count] = .{ .fd = entry.fd, .events = posix.POLL.IN, .revents = 0 };
-            count += 1;
+            switch (entry.buffer.pollState()) {
+                .ready => {
+                    out[count] = .{ .fd = entry.fd, .events = posix.POLL.IN, .revents = 0 };
+                    count += 1;
+                },
+                .full => has_full_buffer = true,
+                .closed => {},
+            }
         }
-        return count;
+        return .{ .count = count, .has_full_buffer = has_full_buffer };
     }
 
     fn pumpReadyFds(self: *PtyReader, pollfds: []const posix.pollfd) bool {
@@ -236,20 +265,24 @@ fn run(ctx: ReaderContext) void {
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
 
     while (!ctx.stop.load(.seq_cst)) {
-        const count = ctx.reader.snapshotPollfds(&pollfds);
-        if (count == 0) {
-            std.Thread.sleep(@as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms);
+        const snapshot = ctx.reader.snapshotPollfds(&pollfds);
+        if (snapshot.count == 0) {
+            const retry_ns = if (snapshot.has_full_buffer)
+                full_buffer_retry_ns
+            else
+                @as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms;
+            std.Thread.sleep(retry_ns);
             continue;
         }
 
-        const ready = posix.poll(pollfds[0..count], poll_timeout_ms) catch |err| {
+        const ready = posix.poll(pollfds[0..snapshot.count], poll_timeout_ms) catch |err| {
             log.debug("poll failed: {}", .{err});
             std.Thread.sleep(poll_error_backoff_ns);
             continue;
         };
         if (ready == 0) continue;
 
-        if (ctx.reader.pumpReadyFds(pollfds[0..count])) {
+        if (ctx.reader.pumpReadyFds(pollfds[0..snapshot.count])) {
             if (!ctx.wake_pending.swap(true, .seq_cst)) {
                 if (ctx.runtime_wake) |waker| waker.notify();
             }
@@ -426,11 +459,42 @@ test "PtyReader register/retire updates the poll snapshot" {
     var reader = PtyReader{};
     reader.register(7, buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
-    try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(&pollfds));
+    try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(&pollfds).count);
     try std.testing.expectEqual(@as(posix.fd_t, 7), pollfds[0].fd);
 
     reader.retire(7);
-    try std.testing.expectEqual(@as(usize, 0), reader.snapshotPollfds(&pollfds));
+    try std.testing.expectEqual(@as(usize, 0), reader.snapshotPollfds(&pollfds).count);
+}
+
+test "PtyReader snapshot distinguishes full and closed buffers" {
+    const allocator = std.testing.allocator;
+    const full_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    defer full_buffer.destroy(allocator);
+    const closed_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    defer closed_buffer.destroy(allocator);
+
+    full_buffer.mutex.lock();
+    full_buffer.len = full_buffer.data.len;
+    full_buffer.mutex.unlock();
+    closed_buffer.mutex.lock();
+    closed_buffer.eof = true;
+    closed_buffer.mutex.unlock();
+
+    var reader = PtyReader{};
+    reader.register(7, full_buffer);
+    reader.register(8, closed_buffer);
+    var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
+
+    var snapshot = reader.snapshotPollfds(&pollfds);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.count);
+    try std.testing.expect(snapshot.has_full_buffer);
+
+    var drain: [1]u8 = undefined;
+    _ = full_buffer.consume(&drain);
+    snapshot = reader.snapshotPollfds(&pollfds);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.count);
+    try std.testing.expect(!snapshot.has_full_buffer);
+    try std.testing.expectEqual(@as(posix.fd_t, 7), pollfds[0].fd);
 }
 
 test "PtyReader thread drains a pipe into the buffer and posts one wake" {
