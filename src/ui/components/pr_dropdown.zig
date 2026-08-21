@@ -14,6 +14,7 @@ const search_utils = @import("search_utils.zig");
 const font_cache_mod = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.pr_dropdown);
+const gh_output_log_preview_limit: usize = 4 * 1024;
 
 const TextTex = search_utils.TextTex;
 
@@ -1418,33 +1419,39 @@ fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
 
     child.spawn() catch |err| {
         if (err == error.FileNotFound) {
+            log.err("gh CLI not found while listing pull requests: cwd={s}", .{cwd});
             return FetchResult{
                 .status = .gh_missing,
                 .prs = &[_]PullRequest{},
                 .error_message = null,
             };
         }
+        log.err("failed to launch gh while listing pull requests: cwd={s} error={s}", .{ cwd, @errorName(err) });
         return buildFetchError(allocator, "Failed to launch gh: {s}", .{@errorName(err)});
     };
 
     var stdout_buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch {
+        log.err("failed to allocate gh stdout buffer: cwd={s}", .{cwd});
         _ = child.kill() catch |err| log.warn("failed to stop gh after stdout allocation failure: {}", .{err});
         return buildFetchError(allocator, "Out of memory reading gh output", .{});
     };
     defer stdout_buf.deinit(allocator);
     var stderr_buf = std.ArrayList(u8).initCapacity(allocator, 256) catch {
+        log.err("failed to allocate gh stderr buffer: cwd={s}", .{cwd});
         _ = child.kill() catch |err| log.warn("failed to stop gh after stderr allocation failure: {}", .{err});
         return buildFetchError(allocator, "Out of memory reading gh output", .{});
     };
     defer stderr_buf.deinit(allocator);
 
     child.collectOutput(allocator, &stdout_buf, &stderr_buf, 4 * 1024 * 1024) catch |err| {
+        log.err("failed to collect gh output: cwd={s} error={s}", .{ cwd, @errorName(err) });
         _ = child.kill() catch |kill_err| log.warn("failed to stop gh after output failure: {}", .{kill_err});
         _ = child.wait() catch |wait_err| log.warn("failed to reap gh after output failure: {}", .{wait_err});
         return buildFetchError(allocator, "Failed to read gh output: {s}", .{@errorName(err)});
     };
 
     const term = child.wait() catch |err| {
+        log.err("failed to wait for gh: cwd={s} error={s}", .{ cwd, @errorName(err) });
         return buildFetchError(allocator, "Failed to wait for gh: {s}", .{@errorName(err)});
     };
 
@@ -1452,16 +1459,39 @@ fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
         .Exited => |code| {
             if (code != 0) {
                 const stderr_msg = std.mem.trim(u8, stderr_buf.items, " \t\r\n");
+                log.err("gh pr list failed: cwd={s} exit_code={d}", .{ cwd, code });
+                logGhOutputPreview("stderr", stderr_buf.items);
                 if (stderr_msg.len > 0) {
                     return buildFetchError(allocator, "gh exited {d}: {s}", .{ code, stderr_msg });
                 }
                 return buildFetchError(allocator, "gh exited with code {d}", .{code});
             }
         },
-        else => return buildFetchError(allocator, "gh terminated abnormally", .{}),
+        else => {
+            log.err("gh terminated abnormally: cwd={s}", .{cwd});
+            return buildFetchError(allocator, "gh terminated abnormally", .{});
+        },
     }
 
-    return parseGhJson(allocator, stdout_buf.items);
+    const result = parseGhJson(allocator, stdout_buf.items);
+    if (result.status == .failed) {
+        log.err("gh PR list processing failed: cwd={s} error={s}", .{
+            cwd,
+            result.error_message orelse "unknown parsing error",
+        });
+        logGhOutputPreview("stdout", stdout_buf.items);
+    }
+    return result;
+}
+
+fn logGhOutputPreview(comptime stream_name: []const u8, bytes: []const u8) void {
+    const preview_len: usize = @min(bytes.len, gh_output_log_preview_limit);
+    log.err("gh {s} output: bytes={d} truncated={} preview={f}", .{
+        stream_name,
+        bytes.len,
+        bytes.len > preview_len,
+        std.ascii.hexEscape(bytes[0..preview_len], .lower),
+    });
 }
 
 fn buildFetchError(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) FetchResult {
