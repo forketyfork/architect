@@ -114,6 +114,7 @@ pub const PRDropdownComponent = struct {
     const line_height: c_int = 28;
     const max_display: usize = 10;
     const search_bar_height: c_int = 28;
+    const glyph_horizontal_padding: c_int = 8;
     /// Time before a successful fetch is considered stale and re-fetched on open.
     const fetch_ttl_ms: i64 = 30_000;
     const title = "Pull Requests";
@@ -122,6 +123,11 @@ pub const PRDropdownComponent = struct {
         hotkey: TextTex,
         label: TextTex,
         displayed_text: []const u8,
+    };
+
+    const GlyphSize = struct {
+        width: f32,
+        height: f32,
     };
 
     const Cache = struct {
@@ -437,13 +443,26 @@ pub const PRDropdownComponent = struct {
         var tw: f32 = 0;
         var th: f32 = 0;
         _ = c.SDL_GetTextureSize(texture, &tw, &th);
+        const glyph_size = if (self.current_pr_number != null)
+            fitPrGlyphSize(rect.w, ui_scale, .{ .width = tw, .height = th })
+        else
+            GlyphSize{ .width = tw, .height = th };
         const dest = c.SDL_FRect{
-            .x = @floatFromInt(rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(tw)), 2)),
-            .y = @floatFromInt(rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(th)), 2)),
-            .w = tw,
-            .h = th,
+            .x = @floatFromInt(rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(glyph_size.width)), 2)),
+            .y = @floatFromInt(rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(glyph_size.height)), 2)),
+            .w = glyph_size.width,
+            .h = glyph_size.height,
         };
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest);
+    }
+
+    fn fitPrGlyphSize(rect_width: c_int, ui_scale: f32, size: GlyphSize) GlyphSize {
+        const max_width: c_int = @max(1, rect_width - dpi.scale(glyph_horizontal_padding, ui_scale));
+        const max_width_f: f32 = @floatFromInt(max_width);
+        if (size.width <= max_width_f) return size;
+
+        const scale = max_width_f / size.width;
+        return .{ .width = max_width_f, .height = size.height * scale };
     }
 
     fn renderOverlay(self: *PRDropdownComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
@@ -1782,4 +1801,14 @@ test "current PR number follows the current branch" {
     try std.testing.expectEqual(@as(?u32, 20), PRDropdownComponent.prNumberForBranch("feature/two", &prs));
     try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch("main", &prs));
     try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch(null, &prs));
+}
+
+test "PR id glyph scales to fit the pill" {
+    const fitted = PRDropdownComponent.fitPrGlyphSize(40, 1, .{ .width = 50, .height = 25 });
+    try std.testing.expectEqual(@as(f32, 32), fitted.width);
+    try std.testing.expectEqual(@as(f32, 16), fitted.height);
+
+    const short = PRDropdownComponent.fitPrGlyphSize(40, 1, .{ .width = 24, .height = 12 });
+    try std.testing.expectEqual(@as(f32, 24), short.width);
+    try std.testing.expectEqual(@as(f32, 12), short.height);
 }
