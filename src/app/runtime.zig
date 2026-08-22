@@ -1807,7 +1807,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     const pr_dropdown_component = ui_mod.UiComponent{
         .ptr = pr_dropdown_comp_ptr,
         .vtable = &ui_mod.pr_dropdown.PRDropdownComponent.vtable,
-        .z_index = 1000,
+        .z_index = ui_mod.pr_dropdown.PRDropdownComponent.component_z_index,
     };
     try ui.register(pr_dropdown_component);
 

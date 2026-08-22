@@ -109,6 +109,7 @@ pub const PRDropdownComponent = struct {
 
     pub const button_size_small: c_int = 40;
     pub const button_size_large: c_int = 480;
+    pub const component_z_index: i32 = 999;
     const button_margin: c_int = 20;
     const button_animation_duration_ms: i64 = 200;
     const line_height: c_int = 28;
@@ -150,7 +151,7 @@ pub const PRDropdownComponent = struct {
         return UiComponent{
             .ptr = comp,
             .vtable = &vtable,
-            .z_index = 1000,
+            .z_index = component_z_index,
         };
     }
 
@@ -341,11 +342,9 @@ pub const PRDropdownComponent = struct {
         const new_cwd = host.focused_cwd;
         if (cwdChanged(self.last_cwd_seen, new_cwd)) {
             self.applyCwd(new_cwd);
-            // If the overlay is open and we're still in a github repo, refresh.
-            if (self.is_github_repo and
-                self.overlay.state != .Closed and
-                self.fetchIsStale(host.now_ms))
-            {
+            // Fetch on repo entry even while collapsed so the pill can resolve
+            // the checked-out branch's PR number.
+            if (shouldFetchOnRepoEntry(self.is_github_repo, self.fetch_status)) {
                 self.startFetch(host.now_ms);
             }
         }
@@ -700,6 +699,10 @@ pub const PRDropdownComponent = struct {
             }
         }
         return (now_ms - self.last_fetch_ms) > fetch_ttl_ms;
+    }
+
+    fn shouldFetchOnRepoEntry(is_github_repo: bool, fetch_status: FetchStatus) bool {
+        return is_github_repo and fetch_status == .idle;
     }
 
     fn refilter(self: *PRDropdownComponent) void {
@@ -1791,6 +1794,13 @@ test "fetch results only match the focused repository" {
     try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/a", false));
 }
 
+test "entering a GitHub repo fetches PRs for the collapsed badge" {
+    try std.testing.expect(PRDropdownComponent.shouldFetchOnRepoEntry(true, .idle));
+    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(true, .fetching));
+    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(true, .ok));
+    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(false, .idle));
+}
+
 test "current PR number follows the current branch" {
     const prs = [_]PullRequest{
         .{ .number = 10, .title = "one", .branch = "feature/one" },
@@ -1801,6 +1811,10 @@ test "current PR number follows the current branch" {
     try std.testing.expectEqual(@as(?u32, 20), PRDropdownComponent.prNumberForBranch("feature/two", &prs));
     try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch("main", &prs));
     try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch(null, &prs));
+}
+
+test "PR dropdown renders below sibling pill overlays" {
+    try std.testing.expect(PRDropdownComponent.component_z_index < 1000);
 }
 
 test "PR id glyph scales to fit the pill" {

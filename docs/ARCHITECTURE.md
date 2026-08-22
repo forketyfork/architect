@@ -299,12 +299,16 @@ PTY write() -> shell process stdin
 ### Pull Request Listing Path
 
 ```
-Cmd+P pressed -> pr_dropdown component
+Focused cwd changes -> pr_dropdown component
     | check .git/config -> origin URL contains "github.com"?
     | check .git/HEAD -> current branch
     v
-PRDropdownComponent.openOverlay()
-    | startFetch() creates a repository-keyed worker job
+GitHub repo -> startFetch() creates a repository-keyed worker job even while
+the overlay is collapsed, so the pill can resolve the current branch badge
+    |
+    v
+Cmd+P pressed -> PRDropdownComponent.openOverlay()
+    | startFetch() creates a repository-keyed worker job when data is stale
     v
 Worker thread: gh pr list --state open --json number,title,headRefName
     | parse JSON
