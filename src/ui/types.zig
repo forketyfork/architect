@@ -60,6 +60,7 @@ pub const UiAction = union(enum) {
     LaunchAgentWithContext: LaunchAgentWithContextAction,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
+    CheckoutPullRequest: CheckoutPullRequestAction,
 };
 
 pub const OpenSelectionAgentAction = struct {
@@ -112,6 +113,13 @@ pub const SendDiffCommentsAction = struct {
 pub const OpenStoryAction = struct {
     /// Heap-allocated path; ownership transfers to runtime, which frees after use.
     path: []const u8,
+};
+
+pub const CheckoutPullRequestAction = struct {
+    session: usize,
+    pr_number: u32,
+    /// Heap-allocated branch name; ownership transfers to runtime, which frees after use.
+    branch: []const u8,
 };
 
 pub const UiAssets = struct {

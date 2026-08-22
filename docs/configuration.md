@@ -159,6 +159,8 @@ Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a ti
 
 Event markers (startup/shutdown and grid/full view transitions) are always recorded at `INFO` level.
 
+Pull request fetch failures are recorded at `ERROR` level in the `pr_dropdown` scope. ANSI terminal color sequences emitted by `gh` are removed before its JSON output is parsed. Failures include the repository path, `gh` exit or parse error, and an escaped stdout/stderr preview capped at 2 KiB after escaping per stream, keeping each structured log line below the logger's 4 KiB limit.
+
 Pass `--log-dir <path>` on the command line to write `architect.log` (and its rotated archives) to a custom directory instead of the default location, e.g. `zig build run -- --log-dir /path/to/logs` or `just run --log-dir /path/to/logs`.
 
 ### Worktree Configuration

@@ -61,6 +61,11 @@ test {
     _ = @import("ui/components/markdown_renderer.zig");
     _ = @import("ui/components/quit_blocking_overlay.zig");
     _ = @import("ui/components/recent_folders_overlay.zig");
+    _ = @import("ui/components/pr_dropdown.zig");
+    _ = @import("ui/components/pr_dropdown_fetch.zig");
+    _ = @import("ui/components/pr_dropdown_model.zig");
+    _ = @import("ui/components/pr_dropdown_repo.zig");
+    _ = @import("ui/components/pr_dropdown_view.zig");
     _ = @import("ui/components/scrollbar.zig");
     _ = @import("ui/components/search_utils.zig");
     _ = @import("ui/components/selection_agent_overlay.zig");
