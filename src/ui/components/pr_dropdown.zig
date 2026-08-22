@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("../../c.zig");
-const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -9,39 +8,16 @@ const UiComponent = @import("../component.zig").UiComponent;
 const dpi = @import("../../dpi.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
-const flowing_line = @import("flowing_line.zig");
 const search_utils = @import("search_utils.zig");
-const font_cache_mod = @import("../../font_cache.zig");
+const model = @import("pr_dropdown_model.zig");
+const repo = @import("pr_dropdown_repo.zig");
+const fetch = @import("pr_dropdown_fetch.zig");
+const view = @import("pr_dropdown_view.zig");
 
 const log = std.log.scoped(.pr_dropdown);
-const gh_output_log_preview_limit: usize = 2 * 1024;
-
-const GhOutputPreview = struct {
-    len: usize,
-    consumed: usize,
-};
-
-const TextTex = search_utils.TextTex;
-
-pub const PullRequest = struct {
-    number: u32,
-    title: []const u8,
-    branch: []const u8,
-};
-
-const FetchStatus = enum {
-    idle,
-    fetching,
-    ok,
-    failed,
-    gh_missing,
-};
-
-const FetchResult = struct {
-    status: FetchStatus,
-    prs: []const PullRequest,
-    error_message: ?[]const u8 = null,
-};
+pub const PullRequest = model.PullRequest;
+const FetchStatus = model.FetchStatus;
+const FetchResult = model.FetchResult;
 
 const FetchContext = struct {
     allocator: std.mem.Allocator,
@@ -52,7 +28,7 @@ const FetchContext = struct {
 
     fn deinit(self: *FetchContext) void {
         if (self.result) |*result| {
-            freeFetchResult(self.allocator, result);
+            model.freeFetchResult(self.allocator, result);
         }
         self.allocator.free(self.cwd);
         self.allocator.destroy(self);
@@ -102,7 +78,7 @@ pub const PRDropdownComponent = struct {
     search_query: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },
 
     // Rendering cache
-    cache: ?*Cache = null,
+    cache: ?*view.Cache = null,
     escape_pressed: bool = false,
     focused_busy: bool = false,
     flow_animation_start_ms: i64 = 0,
@@ -115,35 +91,8 @@ pub const PRDropdownComponent = struct {
     const line_height: c_int = 28;
     const max_display: usize = 10;
     const search_bar_height: c_int = 28;
-    const glyph_horizontal_padding: c_int = 8;
     /// Time before a successful fetch is considered stale and re-fetched on open.
     const fetch_ttl_ms: i64 = 30_000;
-    const title = "Pull Requests";
-
-    const EntryTex = struct {
-        hotkey: TextTex,
-        label: TextTex,
-        displayed_text: []const u8,
-    };
-
-    const GlyphSize = struct {
-        width: f32,
-        height: f32,
-    };
-
-    const Cache = struct {
-        ui_scale: f32,
-        title_font_size: c_int,
-        entry_font_size: c_int,
-        title: TextTex,
-        status_line: ?TextTex,
-        entries: []EntryTex,
-        theme_fg: c.SDL_Color,
-        font_generation: u64,
-        query_len: usize,
-        filtered_count: usize,
-        status: FetchStatus,
-    };
 
     pub fn create(allocator: std.mem.Allocator) !UiComponent {
         const comp = try allocator.create(PRDropdownComponent);
@@ -340,11 +289,11 @@ pub const PRDropdownComponent = struct {
 
         // Re-detect the repo when the focused cwd changes.
         const new_cwd = host.focused_cwd;
-        if (cwdChanged(self.last_cwd_seen, new_cwd)) {
+        if (model.cwdChanged(self.last_cwd_seen, new_cwd)) {
             self.applyCwd(new_cwd);
             // Fetch on repo entry even while collapsed so the pill can resolve
             // the checked-out branch's PR number.
-            if (shouldFetchOnRepoEntry(self.is_github_repo, self.fetch_status)) {
+            if (model.shouldFetchOnRepoEntry(self.is_github_repo, self.fetch_status)) {
                 self.startFetch(host.now_ms);
             }
         }
@@ -410,247 +359,27 @@ pub const PRDropdownComponent = struct {
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         if (self.overlay.state != .Closed) {
-            _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
+            if (view.ensureCache(self.renderState(), &self.cache, renderer, ui_host.ui_scale, assets, ui_host.theme)) |cache| {
+                self.overlay.setContentHeight(cache.content_height);
+            }
         }
 
         switch (self.overlay.state) {
-            .Closed, .Collapsing, .Expanding => self.renderGlyph(renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
-            .Open => self.renderOverlay(renderer, ui_host, rect, ui_host.ui_scale, assets, ui_host.theme),
+            .Closed, .Collapsing, .Expanding => view.renderGlyph(renderer, rect, ui_host.ui_scale, self.current_pr_number, assets, ui_host.theme),
+            .Open => if (self.cache) |cache| view.renderOverlay(
+                renderer,
+                ui_host,
+                rect,
+                ui_host.ui_scale,
+                assets,
+                ui_host.theme,
+                cache,
+                self.renderState(),
+                self.flow_animation_start_ms,
+            ),
         }
 
         self.first_frame.markDrawn();
-    }
-
-    fn renderGlyph(self: *PRDropdownComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
-        const cache = assets.font_cache orelse return;
-        const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
-        const fonts = cache.get(font_size) catch return;
-
-        var label_buf: [16]u8 = undefined;
-        const label = if (self.current_pr_number) |n|
-            std.fmt.bufPrint(&label_buf, "#{d}", .{n}) catch "⌘P"
-        else
-            "⌘P";
-
-        const fg = theme.foreground;
-        const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const surface = c.TTF_RenderText_Blended(fonts.regular, label.ptr, @intCast(label.len), fg_color) orelse return;
-        defer c.SDL_DestroySurface(surface);
-        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
-        defer c.SDL_DestroyTexture(texture);
-
-        var tw: f32 = 0;
-        var th: f32 = 0;
-        _ = c.SDL_GetTextureSize(texture, &tw, &th);
-        const glyph_size = if (self.current_pr_number != null)
-            fitPrGlyphSize(rect.w, ui_scale, .{ .width = tw, .height = th })
-        else
-            GlyphSize{ .width = tw, .height = th };
-        const dest = c.SDL_FRect{
-            .x = @floatFromInt(rect.x + @divFloor(rect.w - @as(c_int, @intFromFloat(glyph_size.width)), 2)),
-            .y = @floatFromInt(rect.y + @divFloor(rect.h - @as(c_int, @intFromFloat(glyph_size.height)), 2)),
-            .w = glyph_size.width,
-            .h = glyph_size.height,
-        };
-        _ = c.SDL_RenderTexture(renderer, texture, null, &dest);
-    }
-
-    fn fitPrGlyphSize(rect_width: c_int, ui_scale: f32, size: GlyphSize) GlyphSize {
-        const max_width: c_int = @max(1, rect_width - dpi.scale(glyph_horizontal_padding, ui_scale));
-        const max_width_f: f32 = @floatFromInt(max_width);
-        if (size.width <= max_width_f) return size;
-
-        const scale = max_width_f / size.width;
-        return .{ .width = max_width_f, .height = size.height * scale };
-    }
-
-    fn renderOverlay(self: *PRDropdownComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {
-        const cache = self.ensureCache(renderer, ui_scale, assets, theme) orelse return;
-
-        const scaled_margin: c_int = dpi.scale(button_margin, ui_scale);
-        const scaled_line_height: c_int = dpi.scale(line_height, ui_scale);
-        var y_offset: c_int = rect.y + scaled_margin;
-
-        // Title
-        const title_tex = cache.title;
-        const title_x = rect.x + @divFloor(rect.w - title_tex.w, 2);
-        _ = c.SDL_RenderTexture(renderer, title_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(title_x),
-            .y = @floatFromInt(y_offset),
-            .w = @floatFromInt(title_tex.w),
-            .h = @floatFromInt(title_tex.h),
-        });
-        y_offset += title_tex.h + dpi.scale(8, ui_scale);
-
-        // Search bar
-        const font_cache = assets.font_cache orelse return;
-        const search_bar_rect = geom.Rect{
-            .x = rect.x + scaled_margin,
-            .y = y_offset,
-            .w = rect.w - 2 * scaled_margin,
-            .h = dpi.scale(search_bar_height, ui_scale),
-        };
-        search_utils.renderSearchBar(
-            self.allocator,
-            renderer,
-            host,
-            search_bar_rect,
-            font_cache,
-            &self.search_query,
-            self.filtered_indices.items.len,
-            if (self.filtered_indices.items.len > 0) self.selected_index else null,
-        ) catch |err| {
-            log.warn("failed to render search bar: {}", .{err});
-        };
-        y_offset += dpi.scale(search_bar_height, ui_scale) + dpi.scale(8, ui_scale);
-
-        // Status line (e.g. "Loading…", "gh CLI not installed", error)
-        if (cache.status_line) |status_tex| {
-            _ = c.SDL_RenderTexture(renderer, status_tex.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + scaled_margin),
-                .y = @floatFromInt(y_offset),
-                .w = @floatFromInt(status_tex.w),
-                .h = @floatFromInt(status_tex.h),
-            });
-            y_offset += status_tex.h + dpi.scale(8, ui_scale);
-        }
-
-        // Entries
-        const entry_font_size: c_int = dpi.scale(16, ui_scale);
-        const entry_fonts = font_cache.get(entry_font_size) catch |err| blk: {
-            log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
-            break :blk null;
-        };
-        const query = std.mem.trim(u8, self.search_query.text(), " \t");
-
-        for (cache.entries, 0..) |entry_tex, idx| {
-            const is_selected = idx == self.selected_index;
-            const is_hovered = if (self.hovered_entry) |h| h == idx else false;
-
-            if (is_selected or is_hovered) {
-                const highlight_y = @as(f32, @floatFromInt(y_offset - dpi.scale(4, ui_scale)));
-                const highlight_h = @as(f32, @floatFromInt(scaled_line_height));
-                const fade_width: f32 = @as(f32, @floatFromInt(dpi.scale(40, ui_scale)));
-                const rect_x: f32 = @floatFromInt(rect.x);
-                const rect_w: f32 = @floatFromInt(rect.w);
-
-                const center_rect = c.SDL_FRect{
-                    .x = rect_x + fade_width,
-                    .y = highlight_y,
-                    .w = rect_w - 2.0 * fade_width,
-                    .h = highlight_h,
-                };
-                const acc = theme.accent;
-                const alpha: u8 = if (is_selected) 60 else 40;
-                _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, alpha);
-                _ = c.SDL_RenderFillRect(renderer, &center_rect);
-
-                const strips_count = 6;
-                var i: usize = 0;
-                while (i < strips_count) : (i += 1) {
-                    const progress = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(strips_count));
-                    const strip_w = fade_width / @as(f32, @floatFromInt(strips_count));
-
-                    const left_alpha = @as(u8, @intFromFloat(@as(f32, @floatFromInt(alpha)) * progress));
-                    const left_strip = c.SDL_FRect{
-                        .x = rect_x + @as(f32, @floatFromInt(i)) * strip_w,
-                        .y = highlight_y,
-                        .w = strip_w,
-                        .h = highlight_h,
-                    };
-                    _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, left_alpha);
-                    _ = c.SDL_RenderFillRect(renderer, &left_strip);
-
-                    const right_alpha = @as(u8, @intFromFloat(@as(f32, @floatFromInt(alpha)) * (1.0 - progress)));
-                    const right_strip = c.SDL_FRect{
-                        .x = rect_x + rect_w - fade_width + @as(f32, @floatFromInt(i)) * strip_w,
-                        .y = highlight_y,
-                        .w = strip_w,
-                        .h = highlight_h,
-                    };
-                    _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, right_alpha);
-                    _ = c.SDL_RenderFillRect(renderer, &right_strip);
-                }
-            }
-
-            _ = c.SDL_RenderTexture(renderer, entry_tex.hotkey.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + scaled_margin),
-                .y = @floatFromInt(y_offset),
-                .w = @floatFromInt(entry_tex.hotkey.w),
-                .h = @floatFromInt(entry_tex.hotkey.h),
-            });
-
-            const label_x = rect.x + scaled_margin + entry_tex.hotkey.w + dpi.scale(10, ui_scale);
-            _ = c.SDL_RenderTexture(renderer, entry_tex.label.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(label_x),
-                .y = @floatFromInt(y_offset),
-                .w = @floatFromInt(entry_tex.label.w),
-                .h = @floatFromInt(entry_tex.label.h),
-            });
-
-            if (query.len > 0 and entry_fonts != null) {
-                self.renderLabelHighlights(
-                    renderer,
-                    host,
-                    entry_fonts.?,
-                    label_x,
-                    y_offset,
-                    scaled_line_height,
-                    ui_scale,
-                    entry_tex.displayed_text,
-                    query,
-                );
-            }
-
-            if (is_selected) {
-                const flow_y = y_offset + @divFloor(entry_tex.label.h, 2);
-                flowing_line.render(renderer, self.flow_animation_start_ms, host.now_ms, rect, flow_y, ui_scale, theme);
-            }
-
-            y_offset += scaled_line_height;
-        }
-    }
-
-    fn renderLabelHighlights(
-        _: *PRDropdownComponent,
-        renderer: *c.SDL_Renderer,
-        host: *const types.UiHost,
-        entry_fonts: *font_cache_mod.FontSet,
-        label_x: c_int,
-        y_offset: c_int,
-        lh: c_int,
-        ui_scale: f32,
-        display_text: []const u8,
-        query: []const u8,
-    ) void {
-        var pos: usize = 0;
-        while (search_utils.findCaseInsensitive(display_text, query, pos)) |found| {
-            const before_text = display_text[0..found];
-            const match_text = display_text[found .. found + query.len];
-
-            var before_w: c_int = 0;
-            var before_h: c_int = 0;
-            if (before_text.len > 0) {
-                _ = c.TTF_GetStringSize(entry_fonts.regular, @ptrCast(before_text.ptr), before_text.len, &before_w, &before_h);
-            }
-            var match_w: c_int = 0;
-            var match_h: c_int = 0;
-            _ = c.TTF_GetStringSize(entry_fonts.regular, @ptrCast(match_text.ptr), match_text.len, &match_w, &match_h);
-
-            const highlight_x = label_x + before_w;
-            const highlight_y = y_offset + dpi.scale(2, ui_scale);
-            const highlight_h = lh - dpi.scale(6, ui_scale);
-
-            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-            _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 120);
-            _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                .x = @floatFromInt(highlight_x),
-                .y = @floatFromInt(highlight_y),
-                .w = @floatFromInt(match_w),
-                .h = @floatFromInt(highlight_h),
-            });
-            pos = found + 1;
-        }
     }
 
     fn entryIndexAtPoint(self: *PRDropdownComponent, host: *const types.UiHost, y: c_int) ?usize {
@@ -701,10 +430,6 @@ pub const PRDropdownComponent = struct {
         return (now_ms - self.last_fetch_ms) > fetch_ttl_ms;
     }
 
-    fn shouldFetchOnRepoEntry(is_github_repo: bool, fetch_status: FetchStatus) bool {
-        return is_github_repo and fetch_status == .idle;
-    }
-
     fn refilter(self: *PRDropdownComponent) void {
         self.filtered_indices.clearRetainingCapacity();
         self.destroyCache();
@@ -750,17 +475,17 @@ pub const PRDropdownComponent = struct {
         var new_is_github_repo = false;
 
         if (new_cwd) |cwd| {
-            new_repo_root = findRepoRoot(self.allocator, cwd) catch |err| blk: {
+            new_repo_root = repo.findRepoRoot(self.allocator, cwd) catch |err| blk: {
                 log.warn("failed to find repository for {s}: {}", .{ cwd, err });
                 break :blk null;
             };
             if (new_repo_root) |root| {
-                new_is_github_repo = detectGithubOrigin(self.allocator, root) catch |err| blk: {
+                new_is_github_repo = repo.detectGithubOrigin(self.allocator, root) catch |err| blk: {
                     log.warn("failed to inspect GitHub origin for {s}: {}", .{ root, err });
                     break :blk false;
                 };
                 if (new_is_github_repo) {
-                    new_branch = readCurrentBranch(self.allocator, root) catch |err| blk: {
+                    new_branch = repo.readCurrentBranch(self.allocator, root) catch |err| blk: {
                         log.warn("failed to read branch for {s}: {}", .{ root, err });
                         break :blk null;
                     };
@@ -768,7 +493,7 @@ pub const PRDropdownComponent = struct {
             }
         }
 
-        const same_repo = optionalSlicesEqual(self.repo_root, new_repo_root);
+        const same_repo = model.optionalSlicesEqual(self.repo_root, new_repo_root);
         const keep_results = same_repo and self.is_github_repo and new_is_github_repo;
 
         if (self.last_cwd_seen) |s| self.allocator.free(s);
@@ -808,11 +533,11 @@ pub const PRDropdownComponent = struct {
 
     fn refreshCurrentBranch(self: *PRDropdownComponent) void {
         const root = self.repo_root orelse return;
-        const new_branch = readCurrentBranch(self.allocator, root) catch |err| {
+        const new_branch = repo.readCurrentBranch(self.allocator, root) catch |err| {
             log.warn("failed to refresh branch for {s}: {}", .{ root, err });
             return;
         };
-        if (optionalSlicesEqual(self.current_branch, new_branch)) {
+        if (model.optionalSlicesEqual(self.current_branch, new_branch)) {
             if (new_branch) |branch| self.allocator.free(branch);
             return;
         }
@@ -824,31 +549,7 @@ pub const PRDropdownComponent = struct {
     }
 
     fn updateCurrentPrNumber(self: *PRDropdownComponent) void {
-        self.current_pr_number = prNumberForBranch(self.current_branch, self.prs.items);
-    }
-
-    fn prNumberForBranch(branch: ?[]const u8, prs: []const PullRequest) ?u32 {
-        const current_branch = branch orelse return null;
-        for (prs) |pr| {
-            if (std.mem.eql(u8, pr.branch, current_branch)) return pr.number;
-        }
-        return null;
-    }
-
-    fn cwdChanged(prev: ?[]const u8, next: ?[]const u8) bool {
-        if (prev == null and next == null) return false;
-        if (prev == null or next == null) return true;
-        return !std.mem.eql(u8, prev.?, next.?);
-    }
-
-    fn optionalSlicesEqual(left: ?[]const u8, right: ?[]const u8) bool {
-        if (left == null and right == null) return true;
-        if (left == null or right == null) return false;
-        return std.mem.eql(u8, left.?, right.?);
-    }
-
-    fn fetchResultMatchesRepo(fetch_repo: []const u8, current_repo: ?[]const u8, is_github_repo: bool) bool {
-        return is_github_repo and optionalSlicesEqual(fetch_repo, current_repo);
+        self.current_pr_number = model.prNumberForBranch(self.current_branch, self.prs.items);
     }
 
     // -- Fetch lifecycle --
@@ -890,7 +591,7 @@ pub const PRDropdownComponent = struct {
     }
 
     fn fetchThreadMain(ctx: *FetchContext) void {
-        const result = runGhPrList(ctx.allocator, ctx.cwd);
+        const result = fetch.runGhPrList(ctx.allocator, ctx.cwd);
         ctx.mutex.lock();
         ctx.result = result;
         ctx.mutex.unlock();
@@ -917,11 +618,11 @@ pub const PRDropdownComponent = struct {
             const result = job.context.takeResult();
 
             if (result) |fetch_result| {
-                if (fetchResultMatchesRepo(job.context.cwd, self.repo_root, self.is_github_repo)) {
+                if (model.fetchResultMatchesRepo(job.context.cwd, self.repo_root, self.is_github_repo)) {
                     self.applyFetchResult(fetch_result);
                 } else {
                     var stale_result = fetch_result;
-                    freeFetchResult(self.allocator, &stale_result);
+                    model.freeFetchResult(self.allocator, &stale_result);
                 }
             }
             job.context.deinit();
@@ -969,172 +670,21 @@ pub const PRDropdownComponent = struct {
         };
     }
 
-    // -- Cache --
-
-    fn ensureCache(self: *PRDropdownComponent, renderer: *c.SDL_Renderer, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) ?*Cache {
-        const cache_store = assets.font_cache orelse return null;
-        const title_font_size: c_int = dpi.scale(20, ui_scale);
-        const entry_font_size: c_int = dpi.scale(16, ui_scale);
-        const fg = theme.foreground;
-        const entry_count = self.filtered_indices.items.len;
-
-        if (self.cache) |cache| {
-            if (cache.title_font_size == title_font_size and
-                cache.entry_font_size == entry_font_size and
-                cache.theme_fg.r == fg.r and cache.theme_fg.g == fg.g and cache.theme_fg.b == fg.b and
-                cache.ui_scale == ui_scale and
-                cache.entries.len == entry_count and
-                cache.font_generation == cache_store.generation and
-                cache.query_len == self.search_query.text().len and
-                cache.filtered_count == entry_count and
-                cache.status == self.fetch_status)
-            {
-                return cache;
-            }
-            self.destroyCache();
-        }
-
-        const cache = self.allocator.create(Cache) catch return null;
-        errdefer self.allocator.destroy(cache);
-
-        const title_fonts = cache_store.get(title_font_size) catch {
-            self.allocator.destroy(cache);
-            return null;
-        };
-        const entry_fonts = cache_store.get(entry_font_size) catch {
-            self.allocator.destroy(cache);
-            return null;
-        };
-
-        const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, title, title_color) catch {
-            self.allocator.destroy(cache);
-            return null;
-        };
-
-        // Build optional status line.
-        var status_line: ?TextTex = null;
-        const status_text = self.statusLineText();
-        if (status_text) |st| {
-            const muted = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
-            status_line = makeTextTexture(renderer, entry_fonts.regular, st, muted) catch |err| blk: {
-                log.warn("failed to render PR status line: {}", .{err});
-                break :blk null;
-            };
-        }
-
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
-        const entry_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
-
-        const entries = self.allocator.alloc(EntryTex, entry_count) catch {
-            c.SDL_DestroyTexture(title_tex.tex);
-            if (status_line) |st| c.SDL_DestroyTexture(st.tex);
-            self.allocator.destroy(cache);
-            return null;
-        };
-        errdefer self.allocator.free(entries);
-
-        const padding = dpi.scale(20, ui_scale);
-        const overlay_width = dpi.scale(button_size_large, ui_scale);
-        const hotkey_spacing = dpi.scale(10, ui_scale);
-
-        for (0..entry_count) |idx| {
-            const source_idx = self.filtered_indices.items[idx];
-            const pr = self.prs.items[source_idx];
-
-            var key_buf: [8]u8 = undefined;
-            const digit: u8 = @as(u8, @intCast((idx + 1) % 10));
-            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
-                log.warn("failed to format hotkey: {}", .{err});
-                break :blk key_buf[0..0];
-            };
-            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
-                destroyEntryTextures(self.allocator, entries[0..idx]);
-                self.allocator.free(entries);
-                c.SDL_DestroyTexture(title_tex.tex);
-                if (status_line) |st| c.SDL_DestroyTexture(st.tex);
-                self.allocator.destroy(cache);
-                return null;
-            };
-
-            var label_buf: [512]u8 = undefined;
-            const full_label = std.fmt.bufPrint(&label_buf, "#{d}  {s}", .{ pr.number, pr.title }) catch blk: {
-                break :blk std.fmt.bufPrint(&label_buf, "#{d}", .{pr.number}) catch label_buf[0..0];
-            };
-
-            const max_label_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing;
-            var truncated_buf: [512]u8 = undefined;
-            const display_label = truncateTextRight(full_label, entry_fonts.regular, max_label_width, &truncated_buf) catch |err| blk: {
-                log.warn("failed to truncate label: {}", .{err});
-                break :blk full_label;
-            };
-            const label_tex = makeTextTexture(renderer, entry_fonts.regular, display_label, entry_color) catch {
-                c.SDL_DestroyTexture(key_tex.tex);
-                destroyEntryTextures(self.allocator, entries[0..idx]);
-                self.allocator.free(entries);
-                c.SDL_DestroyTexture(title_tex.tex);
-                if (status_line) |st| c.SDL_DestroyTexture(st.tex);
-                self.allocator.destroy(cache);
-                return null;
-            };
-            const stored_text = self.allocator.dupe(u8, display_label) catch {
-                c.SDL_DestroyTexture(label_tex.tex);
-                c.SDL_DestroyTexture(key_tex.tex);
-                destroyEntryTextures(self.allocator, entries[0..idx]);
-                self.allocator.free(entries);
-                c.SDL_DestroyTexture(title_tex.tex);
-                if (status_line) |st| c.SDL_DestroyTexture(st.tex);
-                self.allocator.destroy(cache);
-                return null;
-            };
-            entries[idx] = .{ .hotkey = key_tex, .label = label_tex, .displayed_text = stored_text };
-        }
-
-        cache.* = .{
-            .ui_scale = ui_scale,
-            .title_font_size = title_font_size,
-            .entry_font_size = entry_font_size,
-            .title = title_tex,
-            .status_line = status_line,
-            .entries = entries,
-            .theme_fg = fg,
-            .font_generation = cache_store.generation,
-            .query_len = self.search_query.text().len,
-            .filtered_count = entry_count,
-            .status = self.fetch_status,
-        };
-
-        self.cache = cache;
-
-        const scaled_lh: c_int = dpi.scale(line_height, ui_scale);
-        const scaled_padding: c_int = dpi.scale(2 * button_margin, ui_scale);
-        const search_h = dpi.scale(search_bar_height, ui_scale) + dpi.scale(8, ui_scale);
-        const status_h: c_int = if (status_line) |st| st.h + dpi.scale(8, ui_scale) else 0;
-        const content_height = scaled_padding + title_tex.h + dpi.scale(8, ui_scale) + search_h + status_h + @as(c_int, @intCast(entry_count)) * scaled_lh;
-        self.overlay.setContentHeight(content_height);
-
-        return cache;
-    }
-
-    fn statusLineText(self: *PRDropdownComponent) ?[]const u8 {
-        return switch (self.fetch_status) {
-            .idle => "Press ⌘P to refresh.",
-            .fetching => "Loading pull requests…",
-            .ok => if (self.prs.items.len == 0) "No open pull requests." else null,
-            .failed => self.fetch_error orelse "Failed to fetch pull requests.",
-            .gh_missing => "Install GitHub CLI (`gh`) to list pull requests.",
+    fn renderState(self: *PRDropdownComponent) view.RenderState {
+        return .{
+            .allocator = self.allocator,
+            .prs = self.prs.items,
+            .filtered_indices = self.filtered_indices.items,
+            .search_query = &self.search_query,
+            .selected_index = self.selected_index,
+            .hovered_entry = self.hovered_entry,
+            .fetch_status = self.fetch_status,
+            .fetch_error = self.fetch_error,
         };
     }
 
     fn destroyCache(self: *PRDropdownComponent) void {
-        if (self.cache) |cache| {
-            c.SDL_DestroyTexture(cache.title.tex);
-            if (cache.status_line) |st| c.SDL_DestroyTexture(st.tex);
-            destroyEntryTextures(self.allocator, cache.entries);
-            self.allocator.free(cache.entries);
-            self.allocator.destroy(cache);
-            self.cache = null;
-        }
+        view.destroyCache(self.allocator, &self.cache);
     }
 
     fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
@@ -1159,670 +709,6 @@ pub const PRDropdownComponent = struct {
     };
 };
 
-fn freeFetchResult(allocator: std.mem.Allocator, result: *FetchResult) void {
-    for (result.prs) |pr| {
-        allocator.free(pr.title);
-        allocator.free(pr.branch);
-    }
-    allocator.free(result.prs);
-    if (result.error_message) |m| allocator.free(m);
-    result.prs = &[_]PullRequest{};
-    result.error_message = null;
-}
-
-fn makeTextTexture(
-    renderer: *c.SDL_Renderer,
-    font: *c.TTF_Font,
-    text: []const u8,
-    color: c.SDL_Color,
-) !TextTex {
-    if (text.len == 0) return error.EmptyText;
-    var buf: [512]u8 = undefined;
-    if (text.len >= buf.len) return error.TextTooLong;
-    @memcpy(buf[0..text.len], text);
-    buf[text.len] = 0;
-    const surface = c.TTF_RenderText_Blended(font, @ptrCast(&buf), text.len, color) orelse return error.SurfaceFailed;
-    defer c.SDL_DestroySurface(surface);
-    const tex = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return error.TextureFailed;
-    var w: f32 = 0;
-    var h: f32 = 0;
-    _ = c.SDL_GetTextureSize(tex, &w, &h);
-    _ = c.SDL_SetTextureBlendMode(tex, c.SDL_BLENDMODE_BLEND);
-    return TextTex{ .tex = tex, .w = @intFromFloat(w), .h = @intFromFloat(h) };
-}
-
-fn destroyEntryTextures(allocator: std.mem.Allocator, entries: []PRDropdownComponent.EntryTex) void {
-    for (entries) |entry| {
-        c.SDL_DestroyTexture(entry.hotkey.tex);
-        c.SDL_DestroyTexture(entry.label.tex);
-        allocator.free(entry.displayed_text);
-    }
-}
-
-fn truncateTextRight(text: []const u8, font: *c.TTF_Font, max_width: c_int, buf: []u8) ![]const u8 {
-    const ellipsis = "…";
-    var text_w: c_int = 0;
-    var text_h: c_int = 0;
-    _ = c.TTF_GetStringSize(font, text.ptr, text.len, &text_w, &text_h);
-    if (text_w <= max_width) {
-        if (text.len >= buf.len) return error.TextTooLong;
-        @memcpy(buf[0..text.len], text);
-        return buf[0..text.len];
-    }
-
-    var end: usize = text.len;
-    while (end > 0) {
-        // Avoid splitting multi-byte UTF-8 sequences.
-        while (end > 0 and (text[end - 1] & 0b1100_0000) == 0b1000_0000) {
-            end -= 1;
-        }
-        if (end == 0) break;
-        end -= 1;
-        const candidate_len = end + ellipsis.len;
-        if (candidate_len >= buf.len) continue;
-        @memcpy(buf[0..end], text[0..end]);
-        @memcpy(buf[end .. end + ellipsis.len], ellipsis);
-        var test_w: c_int = 0;
-        var test_h: c_int = 0;
-        _ = c.TTF_GetStringSize(font, buf.ptr, candidate_len, &test_w, &test_h);
-        if (test_w <= max_width) return buf[0..candidate_len];
-    }
-    if (ellipsis.len < buf.len) {
-        @memcpy(buf[0..ellipsis.len], ellipsis);
-        return buf[0..ellipsis.len];
-    }
-    return text[0..@min(text.len, buf.len)];
-}
-
-// -- Filesystem helpers: locate repo root and parse origin URL / HEAD --
-
-/// Walk upward from `cwd` looking for a `.git` directory (or `.git` file for worktrees).
-/// Returns a newly-allocated absolute path to the directory containing `.git`.
-pub fn findRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
-    var current = try allocator.dupe(u8, cwd);
-    errdefer allocator.free(current);
-
-    while (true) {
-        const dot_git = try std.fs.path.join(allocator, &.{ current, ".git" });
-        defer allocator.free(dot_git);
-
-        var found = false;
-        if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
-            var dir = dir_const;
-            dir.close();
-            found = true;
-        } else |_| {
-            if (std.fs.openFileAbsolute(dot_git, .{})) |file| {
-                file.close();
-                found = true;
-            } else |_| {}
-        }
-        if (found) return current;
-
-        const parent = std.fs.path.dirname(current) orelse {
-            allocator.free(current);
-            return null;
-        };
-        if (std.mem.eql(u8, parent, current)) {
-            allocator.free(current);
-            return null;
-        }
-        const parent_copy = try allocator.dupe(u8, parent);
-        allocator.free(current);
-        current = parent_copy;
-    }
-}
-
-/// Look at the git config and decide whether `[remote "origin"]` points at github.com.
-/// Resolves `.git` files (worktrees) so it finds the main repo's config.
-pub fn detectGithubOrigin(allocator: std.mem.Allocator, repo_root: []const u8) !bool {
-    const cfg_path = try resolveConfigPath(allocator, repo_root);
-    defer allocator.free(cfg_path);
-
-    var file = std.fs.openFileAbsolute(cfg_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return false,
-        else => return err,
-    };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 256 * 1024);
-    defer allocator.free(bytes);
-
-    return originUrlIsGithub(bytes);
-}
-
-fn resolveConfigPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]u8 {
-    const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
-    defer allocator.free(dot_git);
-
-    if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
-        var dir = dir_const;
-        dir.close();
-        return std.fs.path.join(allocator, &.{ dot_git, "config" });
-    } else |_| {}
-
-    var file = std.fs.openFileAbsolute(dot_git, .{}) catch {
-        return std.fs.path.join(allocator, &.{ dot_git, "config" });
-    };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
-    defer allocator.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (!std.mem.startsWith(u8, trimmed, "gitdir:")) {
-        return std.fs.path.join(allocator, &.{ dot_git, "config" });
-    }
-    const gitdir_rel = std.mem.trim(u8, trimmed["gitdir:".len..], " \t");
-    const gitdir_abs = if (std.fs.path.isAbsolute(gitdir_rel))
-        try allocator.dupe(u8, gitdir_rel)
-    else
-        try std.fs.path.resolve(allocator, &.{ repo_root, gitdir_rel });
-    defer allocator.free(gitdir_abs);
-
-    // For a worktree, gitdir is `<main>/.git/worktrees/<name>`. The config lives
-    // at `<main>/.git/config`. Read `commondir` to find the main gitdir.
-    const commondir_path = try std.fs.path.join(allocator, &.{ gitdir_abs, "commondir" });
-    defer allocator.free(commondir_path);
-    if (std.fs.openFileAbsolute(commondir_path, .{})) |cf| {
-        defer cf.close();
-        const cb = try cf.readToEndAlloc(allocator, 4096);
-        defer allocator.free(cb);
-        const ct = std.mem.trim(u8, cb, " \t\r\n");
-        if (ct.len > 0) {
-            if (std.fs.path.isAbsolute(ct)) {
-                return std.fs.path.join(allocator, &.{ ct, "config" });
-            }
-            return std.fs.path.resolve(allocator, &.{ gitdir_abs, ct, "config" });
-        }
-    } else |_| {}
-    return std.fs.path.join(allocator, &.{ gitdir_abs, "config" });
-}
-
-pub fn originUrlIsGithub(config_bytes: []const u8) bool {
-    var in_origin_section = false;
-    var line_iter = std.mem.splitScalar(u8, config_bytes, '\n');
-    while (line_iter.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0) continue;
-        if (line[0] == ';' or line[0] == '#') continue;
-
-        if (line.len >= 2 and line[0] == '[' and line[line.len - 1] == ']') {
-            const inside = line[1 .. line.len - 1];
-            in_origin_section = sectionMatchesOrigin(inside);
-            continue;
-        }
-
-        if (!in_origin_section) continue;
-        // Look for `url = ...`
-        const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq_idx], " \t");
-        if (!std.ascii.eqlIgnoreCase(key, "url")) continue;
-        const value = std.mem.trim(u8, line[eq_idx + 1 ..], " \t\"");
-        if (urlPointsToGithub(value)) return true;
-    }
-    return false;
-}
-
-fn sectionMatchesOrigin(section: []const u8) bool {
-    // Match `remote "origin"` (allowing arbitrary whitespace and quote style).
-    const trimmed = std.mem.trim(u8, section, " \t");
-    if (!std.mem.startsWith(u8, trimmed, "remote")) return false;
-    const rest = std.mem.trim(u8, trimmed["remote".len..], " \t");
-    if (rest.len < 2) return false;
-    const first = rest[0];
-    const last = rest[rest.len - 1];
-    if (!((first == '"' and last == '"') or (first == '\'' and last == '\''))) return false;
-    const name = rest[1 .. rest.len - 1];
-    return std.mem.eql(u8, name, "origin");
-}
-
-fn urlPointsToGithub(url: []const u8) bool {
-    // Accept both https://github.com/... and git@github.com:... (and ssh variants).
-    if (std.mem.indexOf(u8, url, "github.com") == null) return false;
-    return true;
-}
-
-/// Read HEAD and return the current branch name (or null if detached HEAD).
-/// Handles both regular repos (`.git/HEAD`) and worktrees (`.git` is a file
-/// pointing at `gitdir: <path>`; HEAD lives at `<gitdir>/HEAD`).
-pub fn readCurrentBranch(allocator: std.mem.Allocator, repo_root: []const u8) !?[]u8 {
-    const head_path = try resolveHeadPath(allocator, repo_root);
-    defer allocator.free(head_path);
-
-    var file = std.fs.openFileAbsolute(head_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return null,
-        else => return err,
-    };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
-    defer allocator.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    const prefix = "ref: refs/heads/";
-    if (!std.mem.startsWith(u8, trimmed, prefix)) return null;
-    const branch = trimmed[prefix.len..];
-    if (branch.len == 0) return null;
-    return try allocator.dupe(u8, branch);
-}
-
-fn resolveHeadPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]u8 {
-    const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
-    defer allocator.free(dot_git);
-
-    // Regular repo: `.git` is a directory.
-    if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
-        var dir = dir_const;
-        dir.close();
-        return std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
-    } else |_| {}
-
-    // Worktree: `.git` is a file with `gitdir: <path>` body.
-    var file = std.fs.openFileAbsolute(dot_git, .{}) catch {
-        return std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
-    };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
-    defer allocator.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (!std.mem.startsWith(u8, trimmed, "gitdir:")) {
-        return std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
-    }
-    const gitdir_rel = std.mem.trim(u8, trimmed["gitdir:".len..], " \t");
-    if (std.fs.path.isAbsolute(gitdir_rel)) {
-        return std.fs.path.join(allocator, &.{ gitdir_rel, "HEAD" });
-    }
-    return std.fs.path.resolve(allocator, &.{ repo_root, gitdir_rel, "HEAD" });
-}
-
-// -- gh CLI invocation --
-
-fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) FetchResult {
-    const argv = [_][]const u8{
-        "gh",      "pr",     "list",
-        "--state", "open",   "--limit",
-        "30",      "--json", "number,title,headRefName",
-    };
-    var child = std.process.Child.init(&argv, allocator);
-    child.cwd = cwd;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
-        if (err == error.FileNotFound) {
-            log.err("gh CLI not found while listing pull requests: cwd={s}", .{cwd});
-            return FetchResult{
-                .status = .gh_missing,
-                .prs = &[_]PullRequest{},
-                .error_message = null,
-            };
-        }
-        log.err("failed to launch gh while listing pull requests: cwd={s} error={s}", .{ cwd, @errorName(err) });
-        return buildFetchError(allocator, "Failed to launch gh: {s}", .{@errorName(err)});
-    };
-
-    var stdout_buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch {
-        log.err("failed to allocate gh stdout buffer: cwd={s}", .{cwd});
-        _ = child.kill() catch |err| log.warn("failed to stop gh after stdout allocation failure: {}", .{err});
-        return buildFetchError(allocator, "Out of memory reading gh output", .{});
-    };
-    defer stdout_buf.deinit(allocator);
-    var stderr_buf = std.ArrayList(u8).initCapacity(allocator, 256) catch {
-        log.err("failed to allocate gh stderr buffer: cwd={s}", .{cwd});
-        _ = child.kill() catch |err| log.warn("failed to stop gh after stderr allocation failure: {}", .{err});
-        return buildFetchError(allocator, "Out of memory reading gh output", .{});
-    };
-    defer stderr_buf.deinit(allocator);
-
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 4 * 1024 * 1024) catch |err| {
-        log.err("failed to collect gh output: cwd={s} error={s}", .{ cwd, @errorName(err) });
-        _ = child.kill() catch |kill_err| log.warn("failed to stop gh after output failure: {}", .{kill_err});
-        _ = child.wait() catch |wait_err| log.warn("failed to reap gh after output failure: {}", .{wait_err});
-        return buildFetchError(allocator, "Failed to read gh output: {s}", .{@errorName(err)});
-    };
-
-    const term = child.wait() catch |err| {
-        log.err("failed to wait for gh: cwd={s} error={s}", .{ cwd, @errorName(err) });
-        return buildFetchError(allocator, "Failed to wait for gh: {s}", .{@errorName(err)});
-    };
-
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) {
-                const stderr_msg = std.mem.trim(u8, stderr_buf.items, " \t\r\n");
-                log.err("gh pr list failed: cwd={s} exit_code={d}", .{ cwd, code });
-                logGhOutputPreview("stderr", stderr_buf.items);
-                if (stderr_msg.len > 0) {
-                    return buildFetchError(allocator, "gh exited {d}: {s}", .{ code, stderr_msg });
-                }
-                return buildFetchError(allocator, "gh exited with code {d}", .{code});
-            }
-        },
-        else => {
-            log.err("gh terminated abnormally: cwd={s}", .{cwd});
-            return buildFetchError(allocator, "gh terminated abnormally", .{});
-        },
-    }
-
-    const result = parseGhJson(allocator, stdout_buf.items);
-    if (result.status == .failed) {
-        log.err("gh PR list processing failed: cwd={s} error={s}", .{
-            cwd,
-            result.error_message orelse "unknown parsing error",
-        });
-        logGhOutputPreview("stdout", stdout_buf.items);
-    }
-    return result;
-}
-
-fn logGhOutputPreview(comptime stream_name: []const u8, bytes: []const u8) void {
-    var preview_buffer: [gh_output_log_preview_limit]u8 = undefined;
-    const preview = formatGhOutputPreview(bytes, &preview_buffer);
-    log.err("gh {s} output: bytes={d} preview_bytes={d} truncated={} preview={s}", .{
-        stream_name,
-        bytes.len,
-        preview.len,
-        preview.consumed < bytes.len,
-        preview_buffer[0..preview.len],
-    });
-}
-
-fn formatGhOutputPreview(bytes: []const u8, buffer: []u8) GhOutputPreview {
-    const hex_digits = "0123456789abcdef";
-    var output_len: usize = 0;
-    var consumed: usize = 0;
-
-    while (consumed < bytes.len) : (consumed += 1) {
-        const byte = bytes[consumed];
-        if (byte == '"' or byte == '\\') {
-            if (buffer.len - output_len < 2) break;
-            buffer[output_len] = '\\';
-            buffer[output_len + 1] = byte;
-            output_len += 2;
-        } else if (std.ascii.isPrint(byte)) {
-            if (output_len == buffer.len) break;
-            buffer[output_len] = byte;
-            output_len += 1;
-        } else {
-            if (buffer.len - output_len < 4) break;
-            buffer[output_len] = '\\';
-            buffer[output_len + 1] = 'x';
-            buffer[output_len + 2] = hex_digits[byte >> 4];
-            buffer[output_len + 3] = hex_digits[byte & 0x0f];
-            output_len += 4;
-        }
-    }
-
-    return .{ .len = output_len, .consumed = consumed };
-}
-
-fn buildFetchError(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) FetchResult {
-    const msg = std.fmt.allocPrint(allocator, fmt, args) catch |err| blk: {
-        log.warn("failed to allocate PR fetch error message: {}", .{err});
-        break :blk null;
-    };
-    return .{
-        .status = .failed,
-        .prs = &[_]PullRequest{},
-        .error_message = msg,
-    };
-}
-
-fn stripGhAnsiCsiSequences(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    const first_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) orelse return bytes;
-    const cleaned = try allocator.alloc(u8, bytes.len);
-    @memcpy(cleaned[0..first_escape], bytes[0..first_escape]);
-
-    var input_index = first_escape;
-    var output_index = first_escape;
-    while (input_index < bytes.len) {
-        if (bytes[input_index] == 0x1b and input_index + 1 < bytes.len and bytes[input_index + 1] == '[') {
-            input_index += 2;
-            while (input_index < bytes.len) : (input_index += 1) {
-                const byte = bytes[input_index];
-                if (byte >= 0x40 and byte <= 0x7e) {
-                    input_index += 1;
-                    break;
-                }
-            }
-            continue;
-        }
-
-        cleaned[output_index] = bytes[input_index];
-        output_index += 1;
-        input_index += 1;
-    }
-
-    return cleaned[0..output_index];
-}
-
-pub fn parseGhJson(allocator: std.mem.Allocator, bytes: []const u8) FetchResult {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_alloc = arena.allocator();
-
-    const json_bytes = stripGhAnsiCsiSequences(arena_alloc, bytes) catch |err| {
-        log.warn("failed to normalize gh JSON output: {}", .{err});
-        return buildFetchError(allocator, "Out of memory parsing gh JSON", .{});
-    };
-    const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, json_bytes, .{}) catch {
-        return buildFetchError(allocator, "Failed to parse gh JSON output", .{});
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    if (root != .array) {
-        return buildFetchError(allocator, "Unexpected gh JSON shape (expected array)", .{});
-    }
-    const arr = root.array;
-
-    var prs = std.ArrayList(PullRequest).empty;
-    var ok = false;
-    defer if (!ok) {
-        for (prs.items) |pr| {
-            allocator.free(pr.title);
-            allocator.free(pr.branch);
-        }
-        prs.deinit(allocator);
-    };
-
-    for (arr.items) |item| {
-        if (item != .object) continue;
-        const obj = item.object;
-        const number_val = obj.get("number") orelse continue;
-        if (number_val != .integer) continue;
-        if (number_val.integer <= 0 or number_val.integer > std.math.maxInt(u32)) continue;
-        const title_val = obj.get("title") orelse continue;
-        const branch_val = obj.get("headRefName") orelse continue;
-        if (title_val != .string or branch_val != .string) continue;
-
-        const title_copy = allocator.dupe(u8, title_val.string) catch |err| {
-            log.warn("failed to copy pull request title: {}", .{err});
-            continue;
-        };
-        const branch_copy = allocator.dupe(u8, branch_val.string) catch {
-            allocator.free(title_copy);
-            continue;
-        };
-        prs.append(allocator, .{
-            .number = @intCast(number_val.integer),
-            .title = title_copy,
-            .branch = branch_copy,
-        }) catch {
-            allocator.free(title_copy);
-            allocator.free(branch_copy);
-            continue;
-        };
-    }
-
-    const owned = prs.toOwnedSlice(allocator) catch {
-        return buildFetchError(allocator, "Out of memory parsing PR list", .{});
-    };
-    ok = true;
-    return .{ .status = .ok, .prs = owned, .error_message = null };
-}
-
-// --- Tests ---
-
-test "originUrlIsGithub — https origin matches" {
-    const cfg =
-        \\[core]
-        \\    bare = false
-        \\[remote "origin"]
-        \\    url = https://github.com/foo/bar.git
-        \\    fetch = +refs/heads/*:refs/remotes/origin/*
-    ;
-    try std.testing.expect(originUrlIsGithub(cfg));
-}
-
-test "originUrlIsGithub — ssh origin matches" {
-    const cfg =
-        \\[remote "origin"]
-        \\    url = git@github.com:foo/bar.git
-    ;
-    try std.testing.expect(originUrlIsGithub(cfg));
-}
-
-test "originUrlIsGithub — non-github origin returns false" {
-    const cfg =
-        \\[remote "origin"]
-        \\    url = https://gitlab.com/foo/bar.git
-    ;
-    try std.testing.expect(!originUrlIsGithub(cfg));
-}
-
-test "originUrlIsGithub — github URL only in non-origin remote returns false" {
-    const cfg =
-        \\[remote "upstream"]
-        \\    url = https://github.com/foo/bar.git
-        \\[remote "origin"]
-        \\    url = https://gitlab.com/foo/bar.git
-    ;
-    try std.testing.expect(!originUrlIsGithub(cfg));
-}
-
-test "originUrlIsGithub — comments and blank lines are tolerated" {
-    const cfg =
-        \\# my config
-        \\
-        \\[remote "origin"]
-        \\    ; comment
-        \\    url = https://github.com/foo/bar.git
-    ;
-    try std.testing.expect(originUrlIsGithub(cfg));
-}
-
-test "parseGhJson — parses a basic list" {
-    const sample =
-        \\[
-        \\  {"number": 42, "title": "Add foo", "headRefName": "feature/foo"},
-        \\  {"number": 17, "title": "Fix bar", "headRefName": "bugfix/bar"}
-        \\]
-    ;
-    var result = parseGhJson(std.testing.allocator, sample);
-    defer freeFetchResult(std.testing.allocator, &result);
-
-    try std.testing.expectEqual(@as(FetchStatus, .ok), result.status);
-    try std.testing.expectEqual(@as(usize, 2), result.prs.len);
-    try std.testing.expectEqual(@as(u32, 42), result.prs[0].number);
-    try std.testing.expectEqualStrings("Add foo", result.prs[0].title);
-    try std.testing.expectEqualStrings("feature/foo", result.prs[0].branch);
-    try std.testing.expectEqual(@as(u32, 17), result.prs[1].number);
-}
-
-test "parseGhJson — skips malformed entries" {
-    const sample =
-        \\[
-        \\  {"number": 1, "title": "Good", "headRefName": "main"},
-        \\  {"number": "not a number", "title": "Bad", "headRefName": "x"},
-        \\  {"number": 2, "title": "Also good", "headRefName": "feature"}
-        \\]
-    ;
-    var result = parseGhJson(std.testing.allocator, sample);
-    defer freeFetchResult(std.testing.allocator, &result);
-
-    try std.testing.expectEqual(@as(FetchStatus, .ok), result.status);
-    try std.testing.expectEqual(@as(usize, 2), result.prs.len);
-    try std.testing.expectEqual(@as(u32, 1), result.prs[0].number);
-    try std.testing.expectEqual(@as(u32, 2), result.prs[1].number);
-}
-
-test "parseGhJson — empty list" {
-    var result = parseGhJson(std.testing.allocator, "[]");
-    defer freeFetchResult(std.testing.allocator, &result);
-    try std.testing.expectEqual(@as(FetchStatus, .ok), result.status);
-    try std.testing.expectEqual(@as(usize, 0), result.prs.len);
-}
-
-test "parseGhJson — invalid JSON yields error" {
-    var result = parseGhJson(std.testing.allocator, "{ not json");
-    defer freeFetchResult(std.testing.allocator, &result);
-    try std.testing.expectEqual(@as(FetchStatus, .failed), result.status);
-    try std.testing.expect(result.error_message != null);
-}
-
-test "parseGhJson — strips gh terminal color sequences" {
-    const sample =
-        "\x1b[1;37m[\x1b[m\n" ++
-        "  \x1b[1;37m{\x1b[m\n" ++
-        "    \x1b[1;34m\"headRefName\"\x1b[m\x1b[1;37m:\x1b[m \x1b[32m\"feature/foo\"\x1b[m\x1b[1;37m,\x1b[m\n" ++
-        "    \x1b[1;34m\"number\"\x1b[m\x1b[1;37m:\x1b[m 42\x1b[1;37m,\x1b[m\n" ++
-        "    \x1b[1;34m\"title\"\x1b[m\x1b[1;37m:\x1b[m \x1b[32m\"Add foo\"\x1b[m\n" ++
-        "  \x1b[1;37m}\x1b[m\n" ++
-        "\x1b[1;37m]\x1b[m\n";
-    var result = parseGhJson(std.testing.allocator, sample);
-    defer freeFetchResult(std.testing.allocator, &result);
-
-    try std.testing.expectEqual(@as(FetchStatus, .ok), result.status);
-    try std.testing.expectEqual(@as(usize, 1), result.prs.len);
-    try std.testing.expectEqual(@as(u32, 42), result.prs[0].number);
-    try std.testing.expectEqualStrings("Add foo", result.prs[0].title);
-    try std.testing.expectEqualStrings("feature/foo", result.prs[0].branch);
-}
-
-test "gh output preview escapes bytes and stays bounded" {
-    var input: [gh_output_log_preview_limit]u8 = undefined;
-    @memset(&input, 0);
-    var output: [gh_output_log_preview_limit]u8 = undefined;
-
-    const preview = formatGhOutputPreview(&input, &output);
-    try std.testing.expectEqual(gh_output_log_preview_limit, preview.len);
-    try std.testing.expectEqual(gh_output_log_preview_limit / 4, preview.consumed);
-    try std.testing.expectEqualStrings("\\x00\\x00", output[0..8]);
-}
-
-test "fetch results only match the focused repository" {
-    try std.testing.expect(PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/a", true));
-    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/b", true));
-    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", null, true));
-    try std.testing.expect(!PRDropdownComponent.fetchResultMatchesRepo("/repo/a", "/repo/a", false));
-}
-
-test "entering a GitHub repo fetches PRs for the collapsed badge" {
-    try std.testing.expect(PRDropdownComponent.shouldFetchOnRepoEntry(true, .idle));
-    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(true, .fetching));
-    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(true, .ok));
-    try std.testing.expect(!PRDropdownComponent.shouldFetchOnRepoEntry(false, .idle));
-}
-
-test "current PR number follows the current branch" {
-    const prs = [_]PullRequest{
-        .{ .number = 10, .title = "one", .branch = "feature/one" },
-        .{ .number = 20, .title = "two", .branch = "feature/two" },
-    };
-
-    try std.testing.expectEqual(@as(?u32, 10), PRDropdownComponent.prNumberForBranch("feature/one", &prs));
-    try std.testing.expectEqual(@as(?u32, 20), PRDropdownComponent.prNumberForBranch("feature/two", &prs));
-    try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch("main", &prs));
-    try std.testing.expectEqual(@as(?u32, null), PRDropdownComponent.prNumberForBranch(null, &prs));
-}
-
 test "PR dropdown renders below sibling pill overlays" {
     try std.testing.expect(PRDropdownComponent.component_z_index < 1000);
-}
-
-test "PR id glyph scales to fit the pill" {
-    const fitted = PRDropdownComponent.fitPrGlyphSize(40, 1, .{ .width = 50, .height = 25 });
-    try std.testing.expectEqual(@as(f32, 32), fitted.width);
-    try std.testing.expectEqual(@as(f32, 16), fitted.height);
-
-    const short = PRDropdownComponent.fitPrGlyphSize(40, 1, .{ .width = 24, .height = 12 });
-    try std.testing.expectEqual(@as(f32, 24), short.width);
-    try std.testing.expectEqual(@as(f32, 12), short.height);
 }
