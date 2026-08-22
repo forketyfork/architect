@@ -1542,12 +1542,44 @@ fn buildFetchError(allocator: std.mem.Allocator, comptime fmt: []const u8, args:
     };
 }
 
+fn stripGhAnsiCsiSequences(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const first_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) orelse return bytes;
+    const cleaned = try allocator.alloc(u8, bytes.len);
+    @memcpy(cleaned[0..first_escape], bytes[0..first_escape]);
+
+    var input_index = first_escape;
+    var output_index = first_escape;
+    while (input_index < bytes.len) {
+        if (bytes[input_index] == 0x1b and input_index + 1 < bytes.len and bytes[input_index + 1] == '[') {
+            input_index += 2;
+            while (input_index < bytes.len) : (input_index += 1) {
+                const byte = bytes[input_index];
+                if (byte >= 0x40 and byte <= 0x7e) {
+                    input_index += 1;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        cleaned[output_index] = bytes[input_index];
+        output_index += 1;
+        input_index += 1;
+    }
+
+    return cleaned[0..output_index];
+}
+
 pub fn parseGhJson(allocator: std.mem.Allocator, bytes: []const u8) FetchResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, bytes, .{}) catch {
+    const json_bytes = stripGhAnsiCsiSequences(arena_alloc, bytes) catch |err| {
+        log.warn("failed to normalize gh JSON output: {}", .{err});
+        return buildFetchError(allocator, "Out of memory parsing gh JSON", .{});
+    };
+    const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, json_bytes, .{}) catch {
         return buildFetchError(allocator, "Failed to parse gh JSON output", .{});
     };
     defer parsed.deinit();
@@ -1701,6 +1733,25 @@ test "parseGhJson — invalid JSON yields error" {
     defer freeFetchResult(std.testing.allocator, &result);
     try std.testing.expectEqual(@as(FetchStatus, .failed), result.status);
     try std.testing.expect(result.error_message != null);
+}
+
+test "parseGhJson — strips gh terminal color sequences" {
+    const sample =
+        "\x1b[1;37m[\x1b[m\n" ++
+        "  \x1b[1;37m{\x1b[m\n" ++
+        "    \x1b[1;34m\"headRefName\"\x1b[m\x1b[1;37m:\x1b[m \x1b[32m\"feature/foo\"\x1b[m\x1b[1;37m,\x1b[m\n" ++
+        "    \x1b[1;34m\"number\"\x1b[m\x1b[1;37m:\x1b[m 42\x1b[1;37m,\x1b[m\n" ++
+        "    \x1b[1;34m\"title\"\x1b[m\x1b[1;37m:\x1b[m \x1b[32m\"Add foo\"\x1b[m\n" ++
+        "  \x1b[1;37m}\x1b[m\n" ++
+        "\x1b[1;37m]\x1b[m\n";
+    var result = parseGhJson(std.testing.allocator, sample);
+    defer freeFetchResult(std.testing.allocator, &result);
+
+    try std.testing.expectEqual(@as(FetchStatus, .ok), result.status);
+    try std.testing.expectEqual(@as(usize, 1), result.prs.len);
+    try std.testing.expectEqual(@as(u32, 42), result.prs[0].number);
+    try std.testing.expectEqualStrings("Add foo", result.prs[0].title);
+    try std.testing.expectEqualStrings("feature/foo", result.prs[0].branch);
 }
 
 test "gh output preview escapes bytes and stays bounded" {
