@@ -31,6 +31,9 @@ lint:
     while IFS= read -r -d '' file; do
         sh_files+=("$file")
     done < <(find scripts -type f -name '*.sh' -print0)
+    while IFS= read -r -d '' file; do
+        sh_files+=("$file")
+    done < <(find .air/cloud -type f -name '*.sh' -print0)
     if [ -f scripts/verify-setup.sh ]; then
         sh_files+=("scripts/verify-setup.sh")
     fi
