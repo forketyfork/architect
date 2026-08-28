@@ -7,8 +7,12 @@ set -uo pipefail
 
 log() { printf '[air-startup] %s\n' "$*"; }
 
+log "id: $(id)"
+log "sudo -l (permitted commands, if any):"
+sudo -n -l 2>&1 | tail -20 || true
+
 if command -v nix >/dev/null 2>&1 && nix --version >/dev/null 2>&1; then
-  log "nix already present: $(nix --version)"
+  log "nix already present on PATH: $(nix --version)"
 else
   log "installing Nix (Determinate installer, no-daemon single-user mode)"
   if curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
@@ -27,17 +31,23 @@ fi
 if [ -z "$NIX_BIN" ]; then
   log "ERROR: no nix binary found after install attempt"
 else
-  # The no-daemon installer leaves /nix/var/nix owned by root, which blocks
-  # an unprivileged workspace user from running builds. Fix ownership when
-  # this script has the privilege to do so (root, or passwordless sudo).
+  # /nix may already exist root-owned (pre-baked into the base image, or a
+  # prior partial install), which blocks an unprivileged workspace user from
+  # running builds regardless of whether THIS script had to install nix
+  # itself. Always attempt the ownership fix, not just after a fresh install.
   if [ -d /nix ]; then
     target_user="${SUDO_USER:-${USER:-$(id -un)}}"
-    if [ "$(id -u)" -eq 0 ]; then
+    current_owner="$(stat -c '%U' /nix/var/nix 2>/dev/null || stat -f '%Su' /nix/var/nix 2>/dev/null || echo unknown)"
+    log "/nix/var/nix currently owned by: $current_owner; target user: $target_user"
+    if [ "$current_owner" = "$target_user" ]; then
+      log "/nix/var/nix already owned by $target_user; no chown needed"
+    elif [ "$(id -u)" -eq 0 ]; then
+      log "running as root; chowning /nix to $target_user"
       chown -R "$target_user" /nix 2>&1 | tail -5 || true
-    elif sudo -n true 2>/dev/null; then
-      sudo -n chown -R "$target_user" /nix 2>&1 | tail -5 || true
+    elif sudo -n chown -R "$target_user" /nix 2>&1 | tail -5; then
+      log "sudo chown succeeded"
     else
-      log "not root and no passwordless sudo; leaving /nix ownership as-is"
+      log "not root and sudo chown failed/unavailable; leaving /nix ownership as-is (build will likely fail with a permission error)"
     fi
   fi
 
