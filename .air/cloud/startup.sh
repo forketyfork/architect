@@ -1,83 +1,111 @@
 #!/usr/bin/env bash
-# AIR Cloud workspace provisioning script (see FLEET_WORKSPACE_SETUP_SCRIPT).
-# Runs once per fresh sandbox, before the coding agent session starts.
-# Prepares Nix (with flakes) so `nix develop` / `just build|test|lint` work
-# for Architect without every task re-installing the toolchain from scratch.
-set -uo pipefail
+# Provision Architect in AIR Cloud without Nix, apt, sudo, or root access.
+# Zig supplies the C compiler used for the two SDL builds; all other tools are
+# portable user-space archives. SDL 3.4.10 is parsed from the project's overlay
+# so this remains aligned with the normal development environment.
+set -euo pipefail
 
 log() { printf '[air-startup] %s\n' "$*"; }
+die() { printf '[air-startup] ERROR: %s\n' "$*" >&2; exit 1; }
 
-log "id: $(id)"
-log "sudo -l (permitted commands, if any):"
-sudo -n -l 2>&1 | tail -20 || true
+project_dir="${FLEET_WORKSPACE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
+home_dir="${HOME:?HOME is required}"
+prefix="$home_dir/.local"
+bin_dir="$prefix/bin"
+src_dir="$prefix/src"
+sdl_prefix="$prefix/sdl3-prefix"
+profile="$home_dir/.profile"
+mkdir -p "$bin_dir" "$src_dir" "$sdl_prefix"
 
-if command -v nix >/dev/null 2>&1 && nix --version >/dev/null 2>&1; then
-  log "nix already present on PATH: $(nix --version)"
-else
-  log "installing Nix (Determinate installer, no-daemon single-user mode)"
-  if curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
-      | sh -s -- install linux --init none --no-confirm; then
-    log "nix-installer completed"
-  else
-    log "nix-installer exited non-zero; continuing to check whether nix is usable anyway"
+download() {
+  local url="$1" dest="$2"
+  if [ ! -s "$dest" ]; then
+    log "downloading $(basename "$dest")"
+    curl --fail --location --retry 3 --silent --show-error -o "$dest" "$url"
   fi
+}
+extract_tar() {
+  # Python's stdlib supports .xz even when the minimal image has no xz binary.
+  python3 -c 'import sys,tarfile; tarfile.open(sys.argv[1], "r:*").extractall(sys.argv[2], filter="data")' "$1" "$2"
+}
+
+zig_version="$(sed -n 's/.*minimum_zig_version = "\([0-9][0-9.]*\)".*/\1/p' "$project_dir/build.zig.zon")"
+[ -n "$zig_version" ] || die "could not read minimum_zig_version"
+zig_archive="$src_dir/zig-x86_64-linux-$zig_version.tar.xz"
+download "https://ziglang.org/download/$zig_version/zig-x86_64-linux-$zig_version.tar.xz" "$zig_archive"
+zig_dir="$prefix/zig-$zig_version"
+if [ ! -x "$zig_dir/zig" ]; then
+  rm -rf "$zig_dir.tmp"
+  mkdir "$zig_dir.tmp"
+  extract_tar "$zig_archive" "$zig_dir.tmp"
+  mv "$zig_dir.tmp/zig-x86_64-linux-$zig_version" "$zig_dir"
+  rmdir "$zig_dir.tmp"
+fi
+ln -sfn "$zig_dir/zig" "$bin_dir/zig"
+export PATH="$bin_dir:$PATH"
+if [ ! -x "$bin_dir/zig-ar" ]; then
+  printf '#!/usr/bin/env bash\nexec "%s" ar "$@"\n' "$zig_dir/zig" > "$bin_dir/zig-ar"
+  printf '#!/usr/bin/env bash\nexec "%s" ranlib "$@"\n' "$zig_dir/zig" > "$bin_dir/zig-ranlib"
+  chmod +x "$bin_dir/zig-ar" "$bin_dir/zig-ranlib"
 fi
 
-NIX_BIN="$(command -v nix || true)"
-if [ -z "$NIX_BIN" ]; then
-  NIX_BIN=$(find /nix/store -maxdepth 4 -type f -path '*/bin/nix' 2>/dev/null | head -1)
+cmake_version=3.31.8
+cmake_archive="$src_dir/cmake-$cmake_version-linux-x86_64.tar.gz"
+download "https://github.com/Kitware/CMake/releases/download/v$cmake_version/cmake-$cmake_version-linux-x86_64.tar.gz" "$cmake_archive"
+cmake_dir="$prefix/cmake-$cmake_version"
+if [ ! -x "$cmake_dir/bin/cmake" ]; then
+  extract_tar "$cmake_archive" "$prefix"
+  mv "$prefix/cmake-$cmake_version-linux-x86_64" "$cmake_dir"
+fi
+export PATH="$cmake_dir/bin:$PATH"
+
+ninja_version=1.12.1
+ninja_archive="$src_dir/ninja-linux.zip"
+download "https://github.com/ninja-build/ninja/releases/download/v$ninja_version/ninja-linux.zip" "$ninja_archive"
+if [ ! -x "$bin_dir/ninja" ]; then
+  python3 -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract("ninja",sys.argv[2])' "$ninja_archive" "$bin_dir"
+  chmod +x "$bin_dir/ninja"
 fi
 
-if [ -z "$NIX_BIN" ]; then
-  log "ERROR: no nix binary found after install attempt"
-else
-  # /nix may already exist root-owned (pre-baked into the base image, or a
-  # prior partial install), which blocks an unprivileged workspace user from
-  # running builds regardless of whether THIS script had to install nix
-  # itself. Always attempt the ownership fix, not just after a fresh install.
-  if [ -d /nix ]; then
-    target_user="${SUDO_USER:-${USER:-$(id -un)}}"
-    current_owner="$(stat -c '%U' /nix/var/nix 2>/dev/null || stat -f '%Su' /nix/var/nix 2>/dev/null || echo unknown)"
-    log "/nix/var/nix currently owned by: $current_owner; target user: $target_user"
-    if [ "$current_owner" = "$target_user" ]; then
-      log "/nix/var/nix already owned by $target_user; no chown needed"
-    elif [ "$(id -u)" -eq 0 ]; then
-      log "running as root; chowning /nix to $target_user"
-      chown -R "$target_user" /nix 2>&1 | tail -5 || true
-    elif sudo -n chown -R "$target_user" /nix 2>&1 | tail -5; then
-      log "sudo chown succeeded"
-    else
-      log "not root and sudo chown failed/unavailable; leaving /nix ownership as-is (build will likely fail with a permission error)"
-    fi
+download_archive_bin() {
+  local name="$1" archive="$2" url="$3"; local target="$bin_dir/$name"
+  if [ ! -x "$target" ]; then
+    download "$url" "$src_dir/$archive"
+    mkdir -p "$src_dir/$name"; extract_tar "$src_dir/$archive" "$src_dir/$name"
+    cp "$src_dir/$name"/*/"$name" "$target" 2>/dev/null || cp "$src_dir/$name/$name" "$target"
+    chmod +x "$target"
   fi
+}
+download_archive_bin just just-1.40.0.tar.gz "https://github.com/casey/just/releases/download/1.40.0/just-1.40.0-x86_64-unknown-linux-musl.tar.gz"
+download_archive_bin shellcheck shellcheck-0.10.0.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz"
+download_archive_bin ruff ruff-0.12.10.tar.gz "https://github.com/astral-sh/ruff/releases/download/0.12.10/ruff-x86_64-unknown-linux-gnu.tar.gz"
 
-  NIX_CONF_DIR="${HOME:-/root}/.config/nix"
-  mkdir -p "$NIX_CONF_DIR"
-  grep -q '^experimental-features' "$NIX_CONF_DIR/nix.conf" 2>/dev/null \
-    || printf 'experimental-features = nix-command flakes\n' >> "$NIX_CONF_DIR/nix.conf"
-
-  log "verifying dev shell entry"
-  if [ -f "${FLEET_WORKSPACE_PROJECT_DIR:-.}/flake.nix" ]; then
-    ( cd "${FLEET_WORKSPACE_PROJECT_DIR:-.}" && "$NIX_BIN" develop --command zig version ) \
-      && log "dev shell OK" || log "dev shell entry failed (see above)"
+sdl_version="$(sed -n 's/.*version = "\([0-9][0-9.]*\)".*/\1/p' "$project_dir/overlays/sdl3-3-4-10.nix" | head -1)"
+[ -n "$sdl_version" ] || sdl_version=3.4.10
+build_sdl() {
+  local name="$1" url="$2" source="$src_dir/$1" build="$src_dir/$1-build"
+  shift 2
+  if [ ! -f "$sdl_prefix/.${name}.installed" ]; then
+    download "$url" "$src_dir/$name.tar.gz"
+    rm -rf "$source" "$build" "$source.tmp"; mkdir -p "$source.tmp" "$build"
+    extract_tar "$src_dir/$name.tar.gz" "$source.tmp"
+    mkdir "$source"; cp -a "$source.tmp"/*/. "$source"/
+    ( cd "$build"; CC="$zig_dir/zig cc" CXX="$zig_dir/zig c++" cmake -G Ninja "$source" -DCMAKE_AR="$bin_dir/zig-ar" -DCMAKE_RANLIB="$bin_dir/zig-ranlib" "$@"; cmake --build .; cmake --install . )
+    touch "$sdl_prefix/.${name}.installed"
   fi
-fi
+}
+build_sdl SDL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-$sdl_version.tar.gz" \
+  -DCMAKE_INSTALL_PREFIX="$sdl_prefix" -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF \
+  -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF \
+  -DSDL_JACK=OFF -DSDL_SNDIO=OFF -DSDL_KMSDRM=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
+  -DSDL_VULKAN=OFF -DSDL_CAMERA=OFF -DSDL_HIDAPI=OFF -DSDL_VIDEO_DRIVER_DUMMY=ON \
+  -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_INSTALL=ON
+build_sdl SDL_ttf "https://github.com/libsdl-org/SDL_ttf/archive/refs/tags/release-3.2.2.tar.gz" \
+  -DCMAKE_INSTALL_PREFIX="$sdl_prefix" -DSDLTTF_VENDORED=ON -DSDLTTF_SAMPLES=OFF -DSDLTTF_TESTS=OFF
 
-# Best-effort: raise this repo's Codex sessions to the highest reasoning
-# effort. Only takes effect if config.toml is written before the Codex CLI
-# process starts, and only if no config.toml already exists (never clobber
-# an existing one, e.g. auth-related content).
-if [ -n "${CODEX_HOME:-}" ]; then
-  mkdir -p "$CODEX_HOME"
-  if [ ! -f "$CODEX_HOME/config.toml" ]; then
-    printf 'model_reasoning_effort = "xhigh"\n' > "$CODEX_HOME/config.toml"
-    log "wrote $CODEX_HOME/config.toml with model_reasoning_effort = xhigh"
-  elif ! grep -q 'model_reasoning_effort' "$CODEX_HOME/config.toml"; then
-    printf 'model_reasoning_effort = "xhigh"\n' >> "$CODEX_HOME/config.toml"
-    log "appended model_reasoning_effort = xhigh to existing $CODEX_HOME/config.toml"
-  else
-    log "$CODEX_HOME/config.toml already sets model_reasoning_effort; leaving it alone"
-  fi
-fi
+export SDL3_INCLUDE_PATH="$sdl_prefix/include/SDL3"
+export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include/SDL3"
+profile_line='# Architect AIR Cloud toolchain\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include/SDL3"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include/SDL3"'
+grep -q 'SDL3_INCLUDE_PATH=' "$profile" 2>/dev/null || printf '%b\n' "$profile_line" >> "$profile"
 
-log "startup script finished"
+log "ready: zig $(zig version), cmake $(cmake --version | head -1)"
