@@ -1,6 +1,6 @@
-# Zig 0.16.0 Migration Implementation Plan
+# Task: Zig 0.16.0 Migration
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Migrate Architect from Zig 0.15.2 to Zig 0.16.0 through a staged dependency, API, toolchain, and documentation update.
 
 **Goal:** Move Architect from Zig 0.15.2 to Zig 0.16.0 as a hard cutover, landing every 0.15.2-compatible piece on `main` first so the irreversible toolchain flip is a small, reviewable change.
 
@@ -9,6 +9,11 @@
 **Tech Stack:** Zig 0.16.0, SDL3 + SDL3_ttf via `@cImport`, ghostty-vt, libxev, zig-toml, zwanzig (lint), Nix flakes (mitchellh/zig-overlay), `just`, GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-zig-0-16-migration-design.md`
+
+**Execution phases:**
+- **Phase 0 — Risk verification:** Task 1 is a throwaway Zig 0.16.0 spike that records dependency, translate-c, compiler-error, and SDK findings.
+- **Phase 1 — Prep on Zig 0.15.2:** Tasks 2–5 are independently mergeable preparation PRs that keep the current toolchain green.
+- **Phase 2 — The flip:** Tasks 6–15 run on one Zig 0.16.0 branch and PR; Tasks 6–12 remove migration error classes, Task 13 reaches the green gate, and Tasks 14–15 finish platform and documentation validation.
 
 ## Global Constraints
 
@@ -55,11 +60,9 @@ Tasks 6 through 15 live on **one branch and one PR**. Architect cannot build on 
 
 ---
 
-## Phase 0 — Risk verification
+## Step 1: Prove the 0.16 dependency graph and SDL3 translate-c (throwaway spike)
 
-### Task 1: Prove the 0.16 dependency graph and SDL3 translate-c (throwaway spike)
-
-Nothing in Phase 1 is worth writing if the 0.16 dependency graph cannot resolve or if `@cImport` on SDL3's headers breaks under 0.16's Aro-based translate-c. This task produces **facts and hashes**, not code. Every source patch made here is discarded.
+Nothing in the prep work is worth writing if the 0.16 dependency graph cannot resolve or if `@cImport` on SDL3's headers breaks under 0.16's Aro-based translate-c. This task produces **facts and hashes**, not code. Every source patch made here is discarded.
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` (the only artifact kept)
@@ -242,11 +245,9 @@ Use the `managing-github` skill. This PR contains one new doc and no code.
 
 ---
 
-## Phase 1 — Prep on Zig 0.15.2
+Tasks 2–5 compile, test, and lint under the **current** toolchain. Each task is a mergeable PR against `main`.
 
-Everything in this phase compiles, tests, and lints under the **current** toolchain. Each task is a mergeable PR against `main`.
-
-### Task 2: Move linking onto the modules in `build.zig`
+## Step 2: Move linking onto the modules in `build.zig`
 
 Zig 0.16 removes `linkSystemLibrary`, `linkLibC`, `linkFramework`, `addIncludePath`, `addLibraryPath`, and `addFrameworkPath` from `std.Build.Step.Compile`; they live only on `std.Build.Module`. Both spellings exist in 0.15.2, so this is a pure refactor today.
 
@@ -400,7 +401,7 @@ Use the `managing-github` skill.
 
 ---
 
-### Task 3: Introduce `src/env.zig` and drop `GeneralPurposeAllocator`
+## Step 3: Introduce `src/env.zig` and drop `GeneralPurposeAllocator`
 
 Zig 0.16 removes `std.posix.getenv` and `std.heap.GeneralPurposeAllocator`. `std.Io` cannot supply environment access (`lib/std/Io.zig` has no `Environ` surface at all), so environment reads get a dedicated module rather than a second threaded context.
 
@@ -606,7 +607,7 @@ Use the `managing-github` skill.
 
 ---
 
-### Task 4: Introduce `src/clock.zig` for timestamps and sleeps
+## Step 4: Introduce `src/clock.zig` for timestamps and sleeps
 
 Zig 0.16 removes `std.time.timestamp`, `milliTimestamp`, `nanoTimestamp`, and `std.Thread.sleep`. All 27 sites move behind one module now, so Task 7 only rewrites this file's internals plus adds an `io` argument.
 
@@ -807,7 +808,7 @@ the 27 sites now keeps that change out of every caller."
 
 ---
 
-### Task 5: Introduce `src/proc.zig` for command execution
+## Step 5: Introduce `src/proc.zig` for command execution
 
 Zig 0.16 keeps `std.process.Child` as a type but reduces its methods to `kill(io)` and `wait(io)`. `Child.init`, `spawn`, `spawnAndWait`, and `collectOutput` are gone; `std.process.spawn(io, opts)` and `std.process.run(gpa, io, opts)` replace them. Four of the seven sites share one pattern — run a command, collect stdout and stderr, inspect the term — which maps exactly onto `std.process.run`.
 
@@ -1142,8 +1143,6 @@ Use the `managing-github` skill. This PR contains Task 4 and Task 5.
 
 ---
 
-## Phase 2 — The flip
-
 **One branch, one PR, tasks 6 through 15.** Architect cannot build on both toolchains, so `zig build` will fail throughout Tasks 6–12. Each task's gate is the disappearance of a *specific error class* from the captured build log, not a green build. Task 13 is the green gate.
 
 Create the branch once, at the start of Task 6:
@@ -1153,7 +1152,7 @@ git checkout main && git pull origin main
 git checkout -b feat/zig-0-16
 ```
 
-Throughout Phase 2, capture the build log with:
+Throughout the flip, capture the build log with:
 
 ```bash
 nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true
@@ -1195,7 +1194,7 @@ Every filesystem transformation in Tasks 6, 10, and 11 comes from this table, ve
 
 ---
 
-### Task 6: Flip the toolchain, dependency pins, and `build.zig`
+## Step 6: Flip the toolchain, dependency pins, and `build.zig`
 
 **Files:**
 - Modify: `flake.nix:49`, `build.zig.zon`, `build.zig`
@@ -1341,7 +1340,7 @@ the migration."
 
 ---
 
-### Task 7: Convert the entry points and the three wrapper modules
+## Step 7: Convert the entry points and the three wrapper modules
 
 **Files:**
 - Modify: `src/main.zig:14-25`, `src/mcp/main.zig:18-21`, `src/env.zig`, `src/clock.zig`, `src/proc.zig`
@@ -1592,7 +1591,7 @@ env, clock, and proc now take the io context that Zig 0.16 requires."
 
 ---
 
-### Task 8: Thread `io` through the app and session layers
+## Step 8: Thread `io` through the app and session layers
 
 `io` follows the paths `allocator` already follows. Work outward from `runtime.run`, which received `init.io` in Task 7, and let the compiler drive: each "expected 3 arguments, found 2" error names the next signature to widen.
 
@@ -1691,7 +1690,7 @@ git commit -m "refactor(app): thread io through the app and session layers"
 
 ---
 
-### Task 9: Thread `io` through the UI layer
+## Step 9: Thread `io` through the UI layer
 
 Six components do filesystem, subprocess, or synchronization work and therefore need `io`. They receive it in their own `init`, which `src/app/runtime.zig` calls with `io` already in scope — so `UiRoot` needs no `io` of its own, and must not be given one speculatively.
 
@@ -1768,7 +1767,7 @@ git commit -m "refactor(ui): thread io through the components that need it"
 
 ---
 
-### Task 10: Convert the filesystem calls in the core files
+## Step 10: Convert the filesystem calls in the core files
 
 65 of the 84 source filesystem sites live in six non-UI files. Use the API mapping table above for every transformation.
 
@@ -1863,7 +1862,7 @@ git commit -m "refactor: move core filesystem calls to std.Io.Dir and std.Io.Fil
 
 ---
 
-### Task 11: Convert the filesystem calls in the UI components
+## Step 11: Convert the filesystem calls in the UI components
 
 The remaining 19 source sites.
 
@@ -1903,7 +1902,7 @@ git commit -m "refactor(ui): move component filesystem calls to std.Io.Dir"
 
 ---
 
-### Task 12: Convert the mutexes and condition variables
+## Step 12: Convert the mutexes and condition variables
 
 **Files:**
 - Modify: `src/logging.zig:19`, `src/ui/components/pr_dropdown.zig:25`, `src/app/control.zig:92`, `src/app/control.zig:93`, `src/app/control.zig:123`, `src/session/notify.zig:25`, `src/session/pty_reader.zig:44`, `src/session/pty_reader.zig:173`
@@ -1985,9 +1984,9 @@ model, so a fallible lock would add error paths with no correct recovery."
 
 ---
 
-### Task 13: Reach a green build, tests, and lint
+## Step 13: Reach a green build, tests, and lint
 
-This is the first task in Phase 2 whose gate is a fully green build.
+This is the first task in the flip whose gate is a fully green build.
 
 **Files:**
 - Modify: whatever the remaining diagnostics name
@@ -2064,7 +2063,7 @@ Expected: exit 0, no output.
 
 ---
 
-### Task 14: Resolve the macOS SDK workaround
+## Step 14: Resolve the macOS SDK workaround
 
 **Files:**
 - Modify: `flake.nix:81-84`, and possibly delete `scripts/setup-macos-sdk-workaround.sh`
@@ -2128,7 +2127,7 @@ git commit -m "build: resolve the macOS SDK workaround for Zig 0.16.0"
 
 ---
 
-### Task 15: Update the documentation and verify the app by hand
+## Step 15: Update the documentation and verify the app by hand
 
 `CLAUDE.md` requires documentation updates in the same change as the code. This task also carries the manual verification that no automated check can reach, because Architect is an SDL3 application.
 
