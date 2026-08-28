@@ -239,7 +239,7 @@ Run: `nix develop --command just test`
 Run: `nix develop --command just lint`
 Expected: all pass. The spike must leave `main`'s toolchain untouched.
 
-- [ ] **Step 13: Open the inventory PR**
+- [x] **Step 13: Open the inventory PR**
 
 Use the `managing-github` skill. This PR contains one new doc and no code.
 
