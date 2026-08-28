@@ -90,7 +90,14 @@ build_sdl() {
     rm -rf "$source" "$build" "$source.tmp"; mkdir -p "$source.tmp" "$build"
     extract_tar "$src_dir/$name.tar.gz" "$source.tmp"
     mkdir "$source"; cp -a "$source.tmp"/*/. "$source"/
-    ( cd "$build"; CC="$zig_dir/zig cc" CXX="$zig_dir/zig c++" cmake -G Ninja "$source" -DCMAKE_AR="$bin_dir/zig-ar" -DCMAKE_RANLIB="$bin_dir/zig-ranlib" "$@"; cmake --build .; cmake --install . )
+    if [ "$name" = SDL_ttf ]; then
+      ( cd "$source/external" && ./download.sh )
+    fi
+    local cmake_prefix_args=()
+    if [ "$name" = SDL_ttf ]; then
+      cmake_prefix_args=(-DCMAKE_PREFIX_PATH="$sdl_prefix")
+    fi
+    ( cd "$build"; CC="$zig_dir/zig cc" CXX="$zig_dir/zig c++" cmake -G Ninja "$source" -DCMAKE_AR="$bin_dir/zig-ar" -DCMAKE_RANLIB="$bin_dir/zig-ranlib" "${cmake_prefix_args[@]}" "$@"; cmake --build .; cmake --install . )
     touch "$sdl_prefix/.${name}.installed"
   fi
 }
@@ -103,9 +110,14 @@ build_sdl SDL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-$sdl_
 build_sdl SDL_ttf "https://github.com/libsdl-org/SDL_ttf/archive/refs/tags/release-3.2.2.tar.gz" \
   -DCMAKE_INSTALL_PREFIX="$sdl_prefix" -DSDLTTF_VENDORED=ON -DSDLTTF_SAMPLES=OFF -DSDLTTF_TESTS=OFF
 
-export SDL3_INCLUDE_PATH="$sdl_prefix/include/SDL3"
-export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include/SDL3"
-profile_line='# Architect AIR Cloud toolchain\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include/SDL3"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include/SDL3"'
-grep -q 'SDL3_INCLUDE_PATH=' "$profile" 2>/dev/null || printf '%b\n' "$profile_line" >> "$profile"
+export SDL3_INCLUDE_PATH="$sdl_prefix/include"
+export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include"
+# Zig 0.15's HTTP client cannot reliably use AIR Cloud's injected proxy, while
+# direct HTTPS works. Clear it after all curl/git provisioning has finished.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+sed -i '/^# Architect AIR Cloud toolchain$/,/^unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy$/d' "$profile"
+profile_line='# Architect AIR Cloud toolchain\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\ncase ":${LD_LIBRARY_PATH:-}:" in *":$HOME/.local/sdl3-prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$HOME/.local/sdl3-prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\nunset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy'
+printf '%b\n' "$profile_line" >> "$profile"
+case ":${LD_LIBRARY_PATH:-}:" in *":$sdl_prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$sdl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac
 
 log "ready: zig $(zig version), cmake $(cmake --version | head -1)"
