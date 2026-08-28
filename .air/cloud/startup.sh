@@ -120,6 +120,7 @@ export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include"
 # Zig 0.15's HTTP client cannot reliably use AIR Cloud's injected proxy, while
 # direct HTTPS works. Clear it after all curl/git provisioning has finished.
 unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+touch "$profile"
 sed -i '/^# Architect AIR Cloud toolchain$/,/^unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy$/d' "$profile"
 profile_line='# Architect AIR Cloud toolchain\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\ncase ":${LD_LIBRARY_PATH:-}:" in *":$HOME/.local/sdl3-prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$HOME/.local/sdl3-prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\nunset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy'
 printf '%b\n' "$profile_line" >> "$profile"
