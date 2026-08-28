@@ -43,26 +43,35 @@ scope:
    `std.ArrayList` references already use `.empty` plus allocator-per-method
    (mandated by `CLAUDE.md`), so the estimated "~110 references" of migration
    work is zero.
-2. **The blast radius is 20 of 89 source files, not 89.** Of 135 `std.fs.`
-   references in `src/` plus `build.zig`, 77 are `std.fs.path.*`,
-   `std.fs.max_path_bytes`, or `std.fs.max_name_bytes`, all of which survive
-   (`lib/std/fs.zig` in 0.16 is 21 lines and retains exactly `path`, the base64
-   alphabets, `max_path_bytes`, and `max_name_bytes`). The remaining 58 real
-   filesystem sites live in 9 files.
+2. **The blast radius is 20 of 89 source files, not 89.** Of 178 `fs.`
+   references in `src/` plus `build.zig` (counting both the `std.fs.` spelling
+   and the `const fs = std.fs;` aliases in `src/config.zig`, `src/logging.zig`,
+   and `src/session/state.zig`), 93 are `fs.path.*`, `fs.max_path_bytes`, or
+   `fs.max_name_bytes`, all of which survive (`lib/std/fs.zig` in 0.16 is 21
+   lines and retains exactly `path`, the base64 alphabets, `max_path_bytes`, and
+   `max_name_bytes`). The remaining 85 real filesystem sites live in 11 source
+   files plus `build.zig`.
+
+   The same aliasing applies to `const posix = std.posix;`, which hides 11 of
+   the 23 `getenv` sites. Any inventory grep for this migration must match
+   `\b(std\.)?fs\.` and `\b(std\.)?posix\.`, not just the `std.`-qualified
+   spelling, and must exclude `max_path_bytes` with the trailing underscore in
+   the character class — `fs\.[A-Za-z]+` truncates it to `fs.max` and lets it
+   through.
 
 ### Breaking-change inventory
 
 | Concern | 0.16 replacement | Sites | Files |
 | --- | --- | --- | --- |
-| `std.fs.{openFileAbsolute,openDirAbsolute,makeDirAbsolute,createFileAbsolute,accessAbsolute,deleteFileAbsolute,cwd,File,Dir}` | `std.Io.Dir` / `std.Io.File`, each taking `io` | 58 | 9 |
-| `std.posix.getenv` (removed) | `std.process.Environ.getPosix`; `b.graph.environ_map` in build scripts | 12 + 4 in `build.zig` | 9 + build.zig |
+| `std.fs.{openFileAbsolute,openDirAbsolute,makeDirAbsolute,createFileAbsolute,accessAbsolute,deleteFileAbsolute,renameAbsolute,cwd,File,Dir}` | `std.Io.Dir` / `std.Io.File`, each taking `io` | 84 | 11 |
+| `std.posix.getenv` (removed) | `std.process.Environ.getPosix`; `b.graph.environ_map` in build scripts | 23 + 4 in `build.zig` | 11 + build.zig |
 | `std.time.timestamp` / `milliTimestamp` / `nanoTimestamp` (removed) | `std.Io.Timestamp.now(io, clock)` / `std.Io.Clock` | 13 | 6 |
 | `std.Thread.sleep` (removed) | `std.Io.sleep(io, duration, clock)` | 14 | 6 |
 | `std.process.Child.init` / `Child.run` | `std.process.spawn(io, opts)` / `std.process.run(gpa, io, opts)` | 7 + 1 in `build.zig` | 6 + build.zig |
 | `std.Thread.Mutex` / `std.Thread.Condition` (removed) | `std.Io.Mutex` / `std.Io.Condition`; `lock`/`unlock`/`wait` all take `io` | 8 | 5 |
 | `std.heap.GeneralPurposeAllocator` (removed) | `std.heap.DebugAllocator` | 2 | 2 |
 | `Compile.linkSystemLibrary` / `linkLibC` / `linkFramework` / `addIncludePath` / `addLibraryPath` / `addFrameworkPath` (removed) | the same methods on `std.Build.Module`; `link_libc` is a Module field | 11 | build.zig |
-| **Union of source files needing edits** | | **~95** | **20 of 89** |
+| **Union of source files needing edits** | | **~151** | **20 of 89** |
 
 The 20 files: `src/app/control.zig`, `src/app/layout.zig`, `src/app/runtime.zig`,
 `src/app/worktree.zig`, `src/config.zig`, `src/font_paths.zig`,
@@ -75,11 +84,12 @@ The 20 files: `src/app/control.zig`, `src/app/layout.zig`, `src/app/runtime.zig`
 `src/ui/components/story_overlay.zig`,
 `src/ui/components/worktree_overlay.zig`.
 
-Filesystem sites are concentrated: `src/shell.zig` (16), `src/mcp/main.zig` (11),
+Filesystem sites are concentrated: `src/shell.zig` (16), `src/config.zig` (14),
+`src/mcp/main.zig` (13), `src/logging.zig` (11),
 `src/ui/components/pr_dropdown_repo.zig` (9), `src/font_paths.zig` (6),
 `src/app/control.zig` (5), `src/ui/components/worktree_overlay.zig` (4),
 `src/ui/components/diff_overlay.zig` (4), `src/ui/components/story_overlay.zig`
-(1), `src/app/runtime.zig` (1).
+(1), `src/app/runtime.zig` (1), and `build.zig` (1).
 
 ### Things that do not change
 
@@ -173,7 +183,7 @@ backing `Environ`.
 `Io.Threaded.environString` (`Io/Threaded.zig:16925`), is implementation-specific
 and therefore not usable through the `Io` interface.
 
-Threading `std.process.Environ` as a second context through nine files would
+Threading `std.process.Environ` as a second context through eleven files would
 double the plumbing for data that is process-global and immutable. `src/env.zig`
 therefore holds the process `Environ`, initialized exactly once in `main` before
 any thread is spawned, and exposes:
@@ -211,8 +221,8 @@ into two files so the flip diff shrinks; they are permanent modules, not
 migration scaffolding, and they belong to the shared-utility tier alongside
 `src/geom.zig` and `src/gfx/primitives.zig`.
 
-Filesystem calls get **no** wrapper module. The 58 sites are spread across only
-9 files and their argument shapes vary too much for a wrapper to pay for itself;
+Filesystem calls get **no** wrapper module. The 84 sites are spread across only
+11 files and their argument shapes vary too much for a wrapper to pay for itself;
 they are rewritten in place to `std.Io.Dir`/`std.Io.File` during the flip.
 
 ### Synchronization
@@ -268,7 +278,7 @@ on 0.15.2.
 **Prep 2 — allocator and environment.** `GeneralPurposeAllocator` becomes
 `DebugAllocator` at `src/app/runtime.zig:1410` and `src/mcp/main.zig:19`.
 Introduce `src/env.zig` with a 0.15 internal (`std.posix.getenv`) and route all
-12 call sites through it.
+23 call sites through it.
 
 **Prep 3 — `src/clock.zig` and `src/proc.zig`.** Introduce both with 0.15
 internals and move the 13 timestamp and 7 subprocess sites onto them.
@@ -279,7 +289,7 @@ placeholder `io` that 0.15 has no type for, so it folds into the flip.
 **Flip — one change.** `flake.nix` and `build.zig.zon` (toolchain plus the three
 dependency pins, hashes regenerated with `zig fetch` under 0.16); entry points
 take `std.process.Init`; `io` threaded through structs and signatures;
-`env.zig`, `clock.zig`, and `proc.zig` internals rewritten; the 58 filesystem
+`env.zig`, `clock.zig`, and `proc.zig` internals rewritten; the 84 filesystem
 sites rewritten; the 8 synchronization primitives and 14 sleeps converted; the
 SDK-workaround removal attempt.
 
