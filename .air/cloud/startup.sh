@@ -7,6 +7,7 @@ set -euo pipefail
 
 log() { printf '[air-startup] %s\n' "$*"; }
 die() { printf '[air-startup] ERROR: %s\n' "$*" >&2; exit 1; }
+seconds_now() { date +%s; }
 
 project_dir="${FLEET_WORKSPACE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 home_dir="${HOME:?HOME is required}"
@@ -32,7 +33,9 @@ extract_tar() {
 zig_version="$(sed -n 's/.*minimum_zig_version = "\([0-9][0-9.]*\)".*/\1/p' "$project_dir/build.zig.zon")"
 [ -n "$zig_version" ] || die "could not read minimum_zig_version"
 zig_archive="$src_dir/zig-x86_64-linux-$zig_version.tar.xz"
+zig_download_started="$(seconds_now)"
 download "https://ziglang.org/download/$zig_version/zig-x86_64-linux-$zig_version.tar.xz" "$zig_archive"
+log "Zig download completed in $(( $(seconds_now) - zig_download_started ))s"
 zig_dir="$prefix/zig-$zig_version"
 if [ ! -x "$zig_dir/zig" ]; then
   rm -rf "$zig_dir.tmp"
@@ -86,6 +89,7 @@ build_sdl() {
   local name="$1" url="$2" source="$src_dir/$1" build="$src_dir/$1-build"
   shift 2
   if [ ! -f "$sdl_prefix/.${name}.installed" ]; then
+    local build_started="$(seconds_now)"
     download "$url" "$src_dir/$name.tar.gz"
     rm -rf "$source" "$build" "$source.tmp"; mkdir -p "$source.tmp" "$build"
     extract_tar "$src_dir/$name.tar.gz" "$source.tmp"
@@ -99,6 +103,7 @@ build_sdl() {
     fi
     ( cd "$build"; CC="$zig_dir/zig cc" CXX="$zig_dir/zig c++" cmake -G Ninja "$source" -DCMAKE_AR="$bin_dir/zig-ar" -DCMAKE_RANLIB="$bin_dir/zig-ranlib" "${cmake_prefix_args[@]}" "$@"; cmake --build .; cmake --install . )
     touch "$sdl_prefix/.${name}.installed"
+    log "$name build and install completed in $(( $(seconds_now) - build_started ))s"
   fi
 }
 build_sdl SDL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-$sdl_version.tar.gz" \
