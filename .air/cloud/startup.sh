@@ -70,7 +70,7 @@ fi
 export PATH="$cmake_dir/bin:$PATH"
 
 ninja_version=1.12.1
-ninja_archive="$src_dir/ninja-linux.zip"
+ninja_archive="$src_dir/ninja-$ninja_version-linux.zip"
 download "https://github.com/ninja-build/ninja/releases/download/v$ninja_version/ninja-linux.zip" "$ninja_archive"
 if [ ! -x "$bin_dir/ninja" ] || [ "$("$bin_dir/ninja" --version 2>/dev/null || true)" != "$ninja_version" ]; then
   python3 -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract("ninja",sys.argv[2])' "$ninja_archive" "$bin_dir"
@@ -107,13 +107,14 @@ sdl_ttf_version=3.2.2
 build_sdl() {
   local name="$1" version="$2" url="$3" source="$src_dir/$1" build="$src_dir/$1-build"
   local marker="$sdl_prefix/.${name}.installed"
+  local archive="$src_dir/$name-$version.tar.gz"
   local build_started
   shift 3
   if [ "$(cat "$marker" 2>/dev/null || true)" != "$version" ]; then
     build_started="$(seconds_now)"
-    download "$url" "$src_dir/$name.tar.gz"
+    download "$url" "$archive"
     rm -rf "$source" "$build" "$source.tmp"; mkdir -p "$source.tmp" "$build"
-    extract_tar "$src_dir/$name.tar.gz" "$source.tmp"
+    extract_tar "$archive" "$source.tmp"
     mkdir "$source"; cp -a "$source.tmp"/*/. "$source"/
     if [ "$name" = SDL_ttf ]; then
       ( cd "$source/external" && ./download.sh )
@@ -142,10 +143,9 @@ export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include"
 # direct HTTPS works. Clear it after all curl/git provisioning has finished.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 touch "$profile"
-sed -i '/^# Architect AIR Cloud toolchain$/,/^unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy$/d' "$profile"
-sed -i '/^# Architect AIR Cloud toolchain$/,/^unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy$/d' "$profile"
+sed -i '/^# >>> Architect AIR Cloud toolchain >>>$/,/^# <<< Architect AIR Cloud toolchain <<</d' "$profile"
 # shellcheck disable=SC2016 # This is deliberately expanded when the profile is sourced.
-profile_line='# Architect AIR Cloud toolchain\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\ncase ":${LD_LIBRARY_PATH:-}:" in *":$HOME/.local/sdl3-prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$HOME/.local/sdl3-prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\nunset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy'
+profile_line='# >>> Architect AIR Cloud toolchain >>>\nexport PATH="$HOME/.local/bin:$HOME/.local/cmake-3.31.8/bin:$PATH"\nexport SDL3_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\nexport SDL3_TTF_INCLUDE_PATH="$HOME/.local/sdl3-prefix/include"\ncase ":${LD_LIBRARY_PATH:-}:" in *":$HOME/.local/sdl3-prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$HOME/.local/sdl3-prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\nunset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy\n# <<< Architect AIR Cloud toolchain <<<'
 printf '%b\n' "$profile_line" >> "$profile"
 case ":${LD_LIBRARY_PATH:-}:" in *":$sdl_prefix/lib:"*) ;; *) export LD_LIBRARY_PATH="$sdl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac
 
