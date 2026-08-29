@@ -212,7 +212,7 @@ grep -o "error: [^\n]*" .tmp/zig016-build-errors.txt | sort | uniq -c | sort -rn
 
 Record the total count and the grouped breakdown. Note any `std.Io.Writer` diagnostics (Risk 5) at the 12 existing `std.Io.*` sites.
 
-- [x] **Step 9: Answer the SDK-workaround question**
+- [ ] **Step 9: Answer the SDK-workaround question** — not testable on this Linux AIR Cloud sandbox; genuinely unanswered, needs a macOS host (see inventory doc's "macOS SDK workaround" section). Task 14 must resolve this before it can proceed.
 
 The `.#zig016` shell above deliberately omits `scripts/setup-macos-sdk-workaround.sh`. If Steps 5–8 linked successfully without it, record "0.16 linker does not need the arm64e SDK workaround on this host". If linking failed with arm64e/SDK diagnostics, record the diagnostics and the conclusion that the workaround must stay. Task 14 consumes this.
 
