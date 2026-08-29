@@ -72,7 +72,7 @@ Nothing in the prep work is worth writing if the 0.16 dependency graph cannot re
 - Consumes: nothing
 - Produces: the four verified `build.zig.zon` dependency hashes used verbatim by Task 6; a decision on the macOS SDK workaround used by Task 14; a full `zig build` error inventory that later flip tasks check their progress against
 
-- [ ] **Step 1: Create a throwaway branch**
+- [x] **Step 1: Create a throwaway branch**
 
 ```bash
 git checkout main && git pull origin main
@@ -126,7 +126,7 @@ The cache redirect into `.tmp/` matters: the default cache locations may be read
 Run: `nix develop .#zig016 --command zig version`
 Expected: `0.16.0`
 
-- [ ] **Step 4: Regenerate all four dependency hashes**
+- [x] **Step 4: Regenerate all four dependency hashes**
 
 Edit `build.zig.zon` to set `.minimum_zig_version = "0.16.0"` and replace the four dependency URLs, then let `zig fetch` compute each hash. This is the step that answers Risk 3 (whether 0.16 accepts 0.15-era hash strings at all).
 
@@ -147,7 +147,7 @@ nix develop .#zig016 --command bash -c '
 
 Record each printed hash in the inventory doc. Expected: four hash strings of the form `<name>-<version>-<base64>`.
 
-- [ ] **Step 5: Answer Risk 1 — does `@cImport` on SDL3 still work?**
+- [x] **Step 5: Answer Risk 1 — does `@cImport` on SDL3 still work?**
 
 This is the highest-value question in the spike, and `src/c.zig` re-exports 224 symbols that depend on it. Isolate it from every other error class with a standalone probe rather than a full build:
 
@@ -181,7 +181,7 @@ nix develop .#zig016 --command bash -c '
 Expected on success: no output from the compiler, and `.tmp/cimport-probe/probe` exists.
 If it fails: record every diagnostic verbatim in the inventory doc. **Stop the whole migration here and report to the user** — a translate-c failure on SDL3 headers changes what this migration is, and the plan from Task 2 onward assumes `src/c.zig` keeps its shape.
 
-- [ ] **Step 6: Answer Risk 2 — does ghostty `main` resolve and expose `ghostty-vt`?**
+- [x] **Step 6: Answer Risk 2 — does ghostty `main` resolve and expose `ghostty-vt`?**
 
 ```bash
 nix develop .#zig016 --command bash -c 'zig build 2>&1 | tee .tmp/zig016-build-errors.txt' || true
@@ -190,7 +190,7 @@ grep -n "ghostty" .tmp/zig016-build-errors.txt || echo "no ghostty errors"
 
 Expected: errors in Architect's own source (`build.zig` first, since `std.fs.openDirAbsolute` and `std.posix.getenv` are gone), but **no** error about resolving the `ghostty` dependency or about `dep.module("ghostty-vt")` being absent. Any ghostty-resolution or ghostty-vt-API error is a blocker: record it and report to the user.
 
-- [ ] **Step 7: Answer Risk 4 — does zig-toml's `zig-0.16` branch match Architect's usage?**
+- [x] **Step 7: Answer Risk 4 — does zig-toml's `zig-0.16` branch match Architect's usage?**
 
 Once `build.zig` errors are patched enough for the compiler to reach `src/config.zig`, check the toml diagnostics specifically:
 
@@ -200,7 +200,7 @@ grep -n "toml" .tmp/zig016-build-errors.txt || echo "no toml errors"
 
 Record any parser API drift. Pay particular attention to whether `Parser`, `parseString`/`parseFile`, and the result type's `deinit` keep their shapes, since `CLAUDE.md` records two live hazards there: parser-owned maps must not outlive `result.deinit()`, and persisted map keys *and* values must both be duplicated.
 
-- [ ] **Step 8: Answer Risk 5 and produce the full error inventory**
+- [x] **Step 8: Answer Risk 5 and produce the full error inventory**
 
 Patch `build.zig` minimally (throwaway) until the compiler gets past it, then capture the complete error set for `src/`:
 
@@ -212,15 +212,15 @@ grep -o "error: [^\n]*" .tmp/zig016-build-errors.txt | sort | uniq -c | sort -rn
 
 Record the total count and the grouped breakdown. Note any `std.Io.Writer` diagnostics (Risk 5) at the 12 existing `std.Io.*` sites.
 
-- [ ] **Step 9: Answer the SDK-workaround question**
+- [ ] **Step 9: Answer the SDK-workaround question** — not testable on this Linux AIR Cloud sandbox; genuinely unanswered, needs a macOS host (see inventory doc's "macOS SDK workaround" section). Task 14 must resolve this before it can proceed.
 
 The `.#zig016` shell above deliberately omits `scripts/setup-macos-sdk-workaround.sh`. If Steps 5–8 linked successfully without it, record "0.16 linker does not need the arm64e SDK workaround on this host". If linking failed with arm64e/SDK diagnostics, record the diagnostics and the conclusion that the workaround must stay. Task 14 consumes this.
 
-- [ ] **Step 10: Write the inventory doc**
+- [x] **Step 10: Write the inventory doc**
 
 Create `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` containing: the environment used; the four verified hashes; the Risk 1–5 verdicts with verbatim diagnostics; the grouped error inventory from Step 8; and the SDK-workaround conclusion.
 
-- [ ] **Step 11: Discard every source patch, keep only the inventory**
+- [x] **Step 11: Discard every source patch, keep only the inventory**
 
 ```bash
 git stash list
@@ -232,14 +232,14 @@ git commit -m "docs: record Zig 0.16.0 breakage inventory from spike"
 
 Expected: `git status --short` shows only the inventory doc. `flake.nix`, `build.zig.zon`, `build.zig`, and `src/` are all clean.
 
-- [ ] **Step 12: Verify 0.15.2 is still green on this branch**
+- [x] **Step 12: Verify 0.15.2 is still green on this branch**
 
 Run: `nix develop --command just build`
 Run: `nix develop --command just test`
 Run: `nix develop --command just lint`
 Expected: all pass. The spike must leave `main`'s toolchain untouched.
 
-- [ ] **Step 13: Open the inventory PR**
+- [x] **Step 13: Open the inventory PR**
 
 Use the `managing-github` skill. This PR contains one new doc and no code.
 
