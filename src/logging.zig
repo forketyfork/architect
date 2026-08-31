@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
-const posix = std.posix;
 const env = @import("env.zig");
 const time_c = @cImport({
     @cInclude("time.h");
