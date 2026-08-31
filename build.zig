@@ -16,11 +16,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     const mcp_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     const control_mod = b.createModule(.{
         .root_source_file = b.path("src/app/control.zig"),
@@ -68,35 +70,33 @@ pub fn build(b: *std.Build) void {
         .root_module = mcp_mod,
     });
 
-    exe.linkSystemLibrary("SDL3");
-    exe.linkSystemLibrary("SDL3_ttf");
-    exe.linkLibC();
-    mcp_exe.linkLibC();
+    exe_mod.linkSystemLibrary("SDL3", .{});
+    exe_mod.linkSystemLibrary("SDL3_ttf", .{});
 
     if (target.result.os.tag == .macos) {
         exe.headerpad_max_install_names = true;
         mcp_exe.headerpad_max_install_names = true;
 
-        exe.linkSystemLibrary("proc");
-        exe.linkFramework("Carbon");
-        exe.linkFramework("CoreFoundation");
-        exe.linkFramework("AppKit");
+        exe_mod.linkSystemLibrary("proc", .{});
+        exe_mod.linkFramework("Carbon", .{});
+        exe_mod.linkFramework("CoreFoundation", .{});
+        exe_mod.linkFramework("AppKit", .{});
 
         if (findSdkRoot(b)) |sdk_root| {
             const framework_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
-            exe.addFrameworkPath(.{ .cwd_relative = framework_path });
+            exe_mod.addFrameworkPath(.{ .cwd_relative = framework_path });
         }
     }
 
-    if (std.posix.getenv("SDL3_INCLUDE_PATH")) |sdl3_include| {
-        exe.addIncludePath(.{ .cwd_relative = sdl3_include });
+    if (b.graph.env_map.get("SDL3_INCLUDE_PATH")) |sdl3_include| {
+        exe_mod.addIncludePath(.{ .cwd_relative = sdl3_include });
         const lib_path = b.fmt("{s}/../lib", .{sdl3_include});
-        exe.addLibraryPath(.{ .cwd_relative = lib_path });
+        exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
     }
-    if (std.posix.getenv("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
-        exe.addIncludePath(.{ .cwd_relative = sdl3_ttf_include });
+    if (b.graph.env_map.get("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
+        exe_mod.addIncludePath(.{ .cwd_relative = sdl3_ttf_include });
         const ttf_lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
-        exe.addLibraryPath(.{ .cwd_relative = ttf_lib_path });
+        exe_mod.addLibraryPath(.{ .cwd_relative = ttf_lib_path });
     }
 
     b.installArtifact(exe);
@@ -118,7 +118,6 @@ pub fn build(b: *std.Build) void {
     const mcp_unit_tests = b.addTest(.{
         .root_module = mcp_mod,
     });
-    mcp_unit_tests.linkLibC();
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const run_mcp_unit_tests = b.addRunArtifact(mcp_unit_tests);
@@ -148,7 +147,7 @@ pub fn build(b: *std.Build) void {
 // Prefer the active developer selection over hardcoded SDK locations so
 // macOS SDK overrides in the dev shell stay local to the environment.
 fn findSdkRoot(b: *std.Build) ?[]const u8 {
-    if (std.posix.getenv("SDKROOT")) |sdk_root| {
+    if (b.graph.env_map.get("SDKROOT")) |sdk_root| {
         return sdk_root;
     }
 
@@ -175,7 +174,7 @@ fn findSdkRoot(b: *std.Build) ?[]const u8 {
 }
 
 fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
-    const developer_dir = std.posix.getenv("DEVELOPER_DIR") orelse return null;
+    const developer_dir = b.graph.env_map.get("DEVELOPER_DIR") orelse return null;
     const candidates = [_][]const u8{
         b.fmt("{s}/SDKs/MacOSX.sdk", .{developer_dir}),
         b.fmt("{s}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk", .{developer_dir}),

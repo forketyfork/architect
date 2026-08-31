@@ -258,7 +258,7 @@ Zig 0.16 removes `linkSystemLibrary`, `linkLibC`, `linkFramework`, `addIncludePa
 - Consumes: nothing
 - Produces: `exe_mod` and `mcp_mod` carry all linkage; no `Compile`-level link calls remain
 
-- [ ] **Step 1: Set `link_libc` at module creation**
+- [x] **Step 1: Set `link_libc` at module creation**
 
 In `build.zig`, add `.link_libc = true` to both `b.createModule` calls:
 
@@ -277,7 +277,7 @@ In `build.zig`, add `.link_libc = true` to both `b.createModule` calls:
     });
 ```
 
-- [ ] **Step 2: Move the system libraries and frameworks onto `exe_mod`**
+- [x] **Step 2: Move the system libraries and frameworks onto `exe_mod`**
 
 Replace the block that currently starts at `exe.linkSystemLibrary("SDL3");` with the module-based spelling. Note `Module.linkSystemLibrary` and `Module.linkFramework` both take an options struct, so pass `.{}`. `headerpad_max_install_names` stays on the `Compile` steps — it is still a `Compile` field in 0.16.
 
@@ -303,7 +303,7 @@ Replace the block that currently starts at `exe.linkSystemLibrary("SDL3");` with
 
 The two `exe.linkLibC();` and `mcp_exe.linkLibC();` lines are deleted — Step 1 replaced them.
 
-- [ ] **Step 3: Move the SDL include and library paths onto `exe_mod`, and read env through the build graph**
+- [x] **Step 3: Move the SDL include and library paths onto `exe_mod`, and read env through the build graph**
 
 `std.posix.getenv` is gone in 0.16; `std.Build.Graph` carries an env map in both versions (`env_map` in 0.15.2, renamed to `environ_map` in 0.16 — Task 6 does the rename). Use the 0.15.2 spelling now:
 
@@ -320,7 +320,7 @@ The two `exe.linkLibC();` and `mcp_exe.linkLibC();` lines are deleted — Step 1
     }
 ```
 
-- [ ] **Step 4: Convert the two remaining `std.posix.getenv` calls in the SDK helpers**
+- [x] **Step 4: Convert the two remaining `std.posix.getenv` calls in the SDK helpers**
 
 `findSdkRoot` and `findDeveloperDirSdkRoot` both already take `b`, so they can reach the graph:
 
@@ -336,7 +336,7 @@ fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
     const developer_dir = b.graph.env_map.get("DEVELOPER_DIR") orelse return null;
 ```
 
-- [ ] **Step 5: Drop the now-redundant test-step libc call**
+- [x] **Step 5: Drop the now-redundant test-step libc call**
 
 `mcp_unit_tests` is built from `mcp_mod`, which Step 1 gave `link_libc = true`, so delete the line:
 
@@ -348,7 +348,7 @@ fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
 
 (the `mcp_unit_tests.linkLibC();` line that followed is removed)
 
-- [ ] **Step 6: Verify no `Compile`-level link calls survive**
+- [x] **Step 6: Verify no `Compile`-level link calls survive**
 
 Run: `grep -nE '\b(exe|mcp_exe|exe_unit_tests|mcp_unit_tests)\.(linkSystemLibrary|linkLibC|linkFramework|addIncludePath|addLibraryPath|addFrameworkPath)\b' build.zig`
 Expected: no output.
@@ -356,7 +356,7 @@ Expected: no output.
 Run: `grep -n 'std\.posix\.getenv' build.zig`
 Expected: no output.
 
-- [ ] **Step 7: Verify the build still links SDL3 correctly**
+- [x] **Step 7: Verify the build still links SDL3 correctly**
 
 A build-script refactor has no unit test; its validation is that the binary still links what it needs. Run the build and inspect the result:
 
@@ -369,7 +369,7 @@ Expected: both `libSDL3` and `libSDL3_ttf` appear. If either is missing, Step 2 
 Run (macOS): `otool -L zig-out/bin/architect | grep -cE 'Carbon|CoreFoundation|AppKit'`
 Expected: `3`.
 
-- [ ] **Step 8: Verify tests and lint**
+- [x] **Step 8: Verify tests and lint**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped.
@@ -382,7 +382,7 @@ Expected: exit 0.
 Run: `nix develop --command zig build run`
 Expected: the window opens with a working terminal grid. Close it. If the SDL include paths regressed, the build would have failed at Step 7, but a runtime dynamic-link failure would only show here.
 
-- [ ] **Step 10: Format and commit**
+- [x] **Step 10: Format and commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -395,7 +395,7 @@ this lands ahead of the toolchain bump. Environment reads move to
 b.graph.env_map because std.posix.getenv is also removed in 0.16."
 ```
 
-- [ ] **Step 11: Open the PR**
+- [x] **Step 11: Open the PR**
 
 Use the `managing-github` skill.
 
