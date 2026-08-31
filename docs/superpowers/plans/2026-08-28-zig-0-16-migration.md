@@ -601,7 +601,7 @@ std.heap.GeneralPurposeAllocator. DebugAllocator is what
 GeneralPurposeAllocator already aliases in 0.15.2, so this is a rename."
 ```
 
-- [ ] **Step 13: Open the PR**
+- [x] **Step 13: Open the PR**
 
 Use the `managing-github` skill.
 
