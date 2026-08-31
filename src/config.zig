@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const env = @import("env.zig");
 const toml = @import("toml");
 
 pub const min_grid_font_scale: f32 = 0.5;
@@ -540,7 +541,7 @@ pub const Persistence = struct {
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        const home = env.get("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
     }
 
@@ -804,7 +805,7 @@ pub const Config = struct {
     }
 
     pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        const home = env.get("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
     }
 

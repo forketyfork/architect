@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const env = @import("../env.zig");
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
 
@@ -47,7 +48,7 @@ pub const NotificationQueue = struct {
 pub const GetNotifySocketPathError = std.mem.Allocator.Error;
 
 pub fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathError![:0]u8 {
-    const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const base = env.get("XDG_RUNTIME_DIR") orelse "/tmp";
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
     defer allocator.free(socket_name);

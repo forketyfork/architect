@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
 const posix = std.posix;
+const env = @import("env.zig");
 const time_c = @cImport({
     @cInclude("time.h");
 });
@@ -47,7 +48,7 @@ fn isEnabled(min_level: std.log.Level, level: std.log.Level) bool {
 }
 
 fn defaultLogDirectoryPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = env.get("HOME") orelse return error.HomeNotFound;
     if (builtin.os.tag == .macos) {
         return fs.path.join(allocator, &[_][]const u8{ home, "Library", "Logs", "Architect" });
     }

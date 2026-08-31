@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const env = @import("../env.zig");
 const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
@@ -766,7 +767,7 @@ pub const SessionState = struct {
             return;
         }
 
-        if (std.posix.getenv("HOME")) |home_z| {
+        if (env.get("HOME")) |home_z| {
             try self.replaceCwdPath(std.mem.sliceTo(home_z, 0));
         }
     }

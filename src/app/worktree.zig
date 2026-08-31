@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("../env.zig");
 const session_state = @import("../session/state.zig");
 
 const SessionState = session_state.SessionState;
@@ -43,7 +44,7 @@ pub fn changeSessionDirectory(session: *SessionState, allocator: std.mem.Allocat
 /// The repo subpath is relative to $HOME when possible, or the full path minus
 /// leading `/` otherwise, to avoid collisions between repos with the same basename.
 pub fn resolveWorktreeDir(allocator: std.mem.Allocator, repo_root: []const u8, name: []const u8, config_dir: ?[]const u8) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = env.get("HOME") orelse return error.HomeNotFound;
     const repo_subpath = repoSubpath(home, repo_root);
 
     const resolved_dir = try resolveConfigDir(allocator, home, config_dir);
