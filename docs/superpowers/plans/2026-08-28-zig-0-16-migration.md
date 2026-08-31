@@ -395,7 +395,7 @@ this lands ahead of the toolchain bump. Environment reads move to
 b.graph.env_map because std.posix.getenv is also removed in 0.16."
 ```
 
-- [ ] **Step 11: Open the PR**
+- [x] **Step 11: Open the PR**
 
 Use the `managing-github` skill.
 
