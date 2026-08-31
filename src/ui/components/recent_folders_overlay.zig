@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const env = @import("../../env.zig");
 const colors = @import("../../colors.zig");
 const config = @import("../../config.zig");
 const geom = @import("../../geom.zig");
@@ -724,7 +725,7 @@ pub const RecentFoldersOverlayComponent = struct {
     }
 
     fn makeDisplayPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-        const home = std.posix.getenv("HOME");
+        const home = env.get("HOME");
         if (home) |h| {
             if (std.mem.startsWith(u8, path, h)) {
                 const suffix = path[h.len..];

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 
 const log = std.log.scoped(.font_paths);
 
@@ -110,7 +111,7 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
         "/Library/Fonts",
     };
 
-    const home = std.posix.getenv("HOME");
+    const home = env.get("HOME");
     const style_suffix = style;
 
     for (search_dirs) |dir| {

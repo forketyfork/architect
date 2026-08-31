@@ -4,6 +4,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
 const posix = std.posix;
+const env = @import("../env.zig");
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
@@ -1407,7 +1408,7 @@ fn startQuitFlow(
 }
 
 pub fn run(log_dir_override: ?[]const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1488,7 +1489,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
     // Initialize recent folders with home directory if empty
     if (persistence.recent_folders.items.len == 0) {
-        if (std.posix.getenv("HOME")) |home| {
+        if (env.get("HOME")) |home| {
             persistence.appendRecentFolder(allocator, home) catch |err| {
                 log.warn("failed to initialize recent folders with home: {}", .{err});
             };
@@ -1648,7 +1649,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
     std.debug.print("Grid cell terminal size: {d}x{d}; full size: {d}x{d}\n", .{ initial_sizes.grid.cols, initial_sizes.grid.rows, full_cols, full_rows });
 
-    const shell_path = std.posix.getenv("SHELL") orelse "/bin/zsh";
+    const shell_path = env.get("SHELL") orelse "/bin/zsh";
     std.debug.print("Starting with {d}x{d} grid: {s}\n", .{ grid.cols, grid.rows, shell_path });
 
     var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));

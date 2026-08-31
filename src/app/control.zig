@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const atomic = std.atomic;
+const env = @import("../env.zig");
 
 const log = std.log.scoped(.control);
 
@@ -275,7 +276,7 @@ const ControlRuntimeDir = struct {
 };
 
 fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
-    if (std.posix.getenv("XDG_RUNTIME_DIR")) |runtime_dir| {
+    if (env.get("XDG_RUNTIME_DIR")) |runtime_dir| {
         return .{
             .path = try allocator.dupe(u8, runtime_dir),
             .managed = false,
@@ -289,7 +290,7 @@ fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
 }
 
 fn fallbackControlRuntimeDirAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.posix.getenv("HOME")) |home| {
+    if (env.get("HOME")) |home| {
         if (builtin.os.tag == .macos) {
             return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "Architect", "runtime" });
         }

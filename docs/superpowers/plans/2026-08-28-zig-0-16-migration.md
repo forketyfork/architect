@@ -431,7 +431,7 @@ Zig 0.16 removes `std.posix.getenv` and `std.heap.GeneralPurposeAllocator`. `std
 - Consumes: nothing
 - Produces: `env.get(key: []const u8) ?[:0]const u8` — the exact return type `std.posix.getenv` had, so no call site needs any coercion change. Task 7 adds `env.init` and swaps the internals.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/env.zig` with only the test, so it fails to compile for the right reason:
 
@@ -458,7 +458,7 @@ test "get returns null for a variable that is not set" {
 }
 ```
 
-- [ ] **Step 2: Register the new file in the test registry**
+- [x] **Step 2: Register the new file in the test registry**
 
 Zig only collects tests from files reachable through `src/main.zig`'s `test` block. Add the import in alphabetical position:
 
@@ -469,12 +469,12 @@ Zig only collects tests from files reachable through `src/main.zig`'s `test` blo
     _ = @import("font.zig");
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [x] **Step 3: Run the test to verify it fails**
 
 Run: `nix develop --command zig build test 2>&1 | tail -20`
 Expected: FAIL with `use of undeclared identifier 'get'`.
 
-- [ ] **Step 4: Write the minimal implementation**
+- [x] **Step 4: Write the minimal implementation**
 
 Add to `src/env.zig`, above the tests:
 
@@ -495,12 +495,12 @@ pub fn get(key: []const u8) ?[:0]const u8 {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped.
 
-- [ ] **Step 6: Commit the module**
+- [x] **Step 6: Commit the module**
 
 ```bash
 nix develop --command zig fmt src/
@@ -508,7 +508,7 @@ git add src/env.zig src/main.zig
 git commit -m "feat(env): add process environment accessor module"
 ```
 
-- [ ] **Step 7: Route all 12 call sites through `env.get`**
+- [x] **Step 7: Route all 12 call sites through `env.get`**
 
 For each file, add the import next to the existing imports and replace the call. The return type is identical, so nothing else changes.
 
@@ -541,7 +541,7 @@ Then replace every `std.posix.getenv(` **and** every aliased `posix.getenv(` wit
 
 Leave `src/session/state.zig:770`'s `std.mem.sliceTo(home_z, 0)` exactly as it is. It is redundant but harmless, and removing it would be an unrelated change.
 
-- [ ] **Step 8: Verify no call site was missed**
+- [x] **Step 8: Verify no call site was missed**
 
 Use the alias-aware pattern — `std.posix.getenv` alone would report success while 11 aliased sites remain:
 
@@ -554,7 +554,7 @@ Expected: `23`.
 Run: `grep -rl 'env\.get(' src | wc -l`
 Expected: `11`.
 
-- [ ] **Step 9: Replace `GeneralPurposeAllocator` with `DebugAllocator`**
+- [x] **Step 9: Replace `GeneralPurposeAllocator` with `DebugAllocator`**
 
 `std.heap.GeneralPurposeAllocator` is merely an alias for `std.heap.DebugAllocator` in 0.15.2 (`heap.zig:26`) and is removed in 0.16.
 
@@ -573,7 +573,7 @@ Expected: `11`.
 Run: `grep -rn 'GeneralPurposeAllocator' src build.zig`
 Expected: no output.
 
-- [ ] **Step 10: Verify build, tests, and lint**
+- [x] **Step 10: Verify build, tests, and lint**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -589,7 +589,7 @@ Expected: exit 0.
 Run: `nix develop --command zig build run`
 Expected: the window opens. Confirm specifically that config loading worked (no "HomeNotFound" in the log), that the recent-folders overlay lists the home directory, and that `~` abbreviation still appears in the worktree overlay's paths — those are the three user-visible consumers of `env.get`.
 
-- [ ] **Step 12: Format and commit**
+- [x] **Step 12: Format and commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -601,7 +601,7 @@ std.heap.GeneralPurposeAllocator. DebugAllocator is what
 GeneralPurposeAllocator already aliases in 0.15.2, so this is a rename."
 ```
 
-- [ ] **Step 13: Open the PR**
+- [x] **Step 13: Open the PR**
 
 Use the `managing-github` skill.
 

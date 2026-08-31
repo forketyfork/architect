@@ -41,6 +41,7 @@ test {
     _ = @import("cli_args.zig");
     _ = @import("colors.zig");
     _ = @import("config.zig");
+    _ = @import("env.zig");
     _ = @import("font.zig");
     _ = @import("gfx/shimmer.zig");
     _ = @import("input/mapper.zig");

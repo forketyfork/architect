@@ -3,6 +3,7 @@
 const std = @import("std");
 const assets = @import("assets");
 const posix = std.posix;
+const env = @import("env.zig");
 const pty_mod = @import("pty.zig");
 const libc = @cImport({
     @cInclude("stdlib.h");
@@ -636,7 +637,7 @@ const architect_zsh_login_script =
 ;
 
 fn setDefaultEnv(name: [:0]const u8, value: [:0]const u8) void {
-    if (posix.getenv(name) != null) return;
+    if (env.get(name) != null) return;
     if (libc.setenv(name, value, 1) != 0) {
         std.c._exit(1);
     }
@@ -655,7 +656,7 @@ pub fn ensureTerminfoSetup() void {
     terminfo_setup_done = true;
 
     // Install to ~/.cache/architect/terminfo
-    const home = posix.getenv("HOME") orelse {
+    const home = env.get("HOME") orelse {
         log.warn("HOME not set, cannot install terminfo, falling back to {s}", .{fallback_term});
         return;
     };
@@ -765,8 +766,8 @@ fn ensureArchitectCommandSetup() void {
     if (architect_command_setup_done) return;
     architect_command_setup_done = true;
 
-    const runtime_dir = posix.getenv("XDG_RUNTIME_DIR");
-    const home = posix.getenv("HOME");
+    const runtime_dir = env.get("XDG_RUNTIME_DIR");
+    const home = env.get("HOME");
     const base_dir_z: [:0]const u8 = if (runtime_dir) |dir|
         std.fmt.bufPrintZ(&architect_command_base_buf, "{s}/architect", .{dir}) catch |err| {
             log.warn("failed to format architect runtime path: {}", .{err});
@@ -934,7 +935,7 @@ fn configureZshPathInjection(shell_path: []const u8) void {
     setEnv("ARCHITECT_COMMAND_DIR", command_dir_z);
 
     const empty_zdotdir: [:0]const u8 = "";
-    const original_zdotdir = posix.getenv("ZDOTDIR") orelse empty_zdotdir;
+    const original_zdotdir = env.get("ZDOTDIR") orelse empty_zdotdir;
     setEnv("ARCHITECT_ZDOTDIR_ORIG", original_zdotdir);
 
     const base_dir_z = architect_command_base_z orelse return;
@@ -962,7 +963,7 @@ fn ensureArchitectCommandPath() void {
     const dir_z = architect_command_dir_z orelse return;
     const dir = std.mem.sliceTo(dir_z, 0);
 
-    const path_env = posix.getenv("PATH") orelse "";
+    const path_env = env.get("PATH") orelse "";
     const path_slice = std.mem.sliceTo(path_env, 0);
     if (pathContainsEntry(path_slice, dir)) return;
 
@@ -993,7 +994,7 @@ fn ensureArchitectCommandPath() void {
 }
 
 fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
-    const path_env = posix.getenv("PATH") orelse return null;
+    const path_env = env.get("PATH") orelse return null;
     const path_env_slice = std.mem.sliceTo(path_env, 0);
     var it = std.mem.splitScalar(u8, path_env_slice, ':');
     while (it.next()) |dir| {
@@ -1073,7 +1074,7 @@ pub const Shell = struct {
 
             // Change to specified directory or home directory before spawning shell.
             // Try working_dir first, fall back to HOME.
-            const target_dir = working_dir orelse posix.getenv("HOME");
+            const target_dir = working_dir orelse env.get("HOME");
             if (target_dir) |dir| {
                 // zwanzig-disable: empty-catch-engine
                 // Errors are intentionally ignored: we're in a forked child process where
@@ -1094,7 +1095,7 @@ pub const Shell = struct {
 
         if (!warned_env_defaults) {
             warned_env_defaults = true;
-            if (posix.getenv("TERM") == null or posix.getenv("LANG") == null) {
+            if (env.get("TERM") == null or env.get("LANG") == null) {
                 log.warn("TERM/LANG missing in parent env; child shells will receive defaults ({s}, {s})", .{ fallback_term, default_lang });
             }
         }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const env = @import("../../env.zig");
 const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
@@ -637,7 +638,7 @@ pub const WorktreeOverlayComponent = struct {
             if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);
             return rel;
         }
-        const home = std.posix.getenv("HOME") orelse return self.allocator.dupe(u8, abs);
+        const home = env.get("HOME") orelse return self.allocator.dupe(u8, abs);
         if (std.mem.startsWith(u8, abs, home) and abs.len > home.len and abs[home.len] == '/') {
             return std.fmt.allocPrint(self.allocator, "~{s}", .{abs[home.len..]});
         }
