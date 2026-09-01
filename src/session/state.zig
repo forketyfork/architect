@@ -101,6 +101,7 @@ pub const SessionState = struct {
     session_id_z: [session_id_buf_len:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
     theme: colors_mod.Theme,
     cwd_path: ?[]const u8 = null,
     /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
@@ -168,6 +169,7 @@ pub const SessionState = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
+        io: std.Io,
         slot_index: usize,
         shell_path: []const u8,
         size: pty_mod.winsize,
@@ -192,6 +194,7 @@ pub const SessionState = struct {
             .session_id_z = session_id_buf,
             .notify_sock_z = notify_sock,
             .allocator = allocator,
+            .io = io,
             .theme = theme,
         };
     }
@@ -212,6 +215,7 @@ pub const SessionState = struct {
         self.assignNewSessionId();
 
         const shell = try shell_mod.Shell.spawn(
+            self.io,
             self.shell_path,
             self.pty_size,
             &self.session_id_z,
@@ -643,7 +647,7 @@ pub const SessionState = struct {
             }
             const was_synchronized_output = self.synchronizedOutputActive();
             try stream.nextSlice(self.output_buf[0..n]);
-            const processed_at_ms = clock.nowMillis();
+            const processed_at_ms = clock.nowMillis(self.io);
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
 
@@ -1137,13 +1141,13 @@ test "SessionState assigns incrementing ids" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var first = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer first.deinit(allocator);
     first.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 0), first.id);
     try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
 
-    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme, null);
+    var second = try SessionState.init(allocator, std.testing.io, 1, "/bin/zsh", size, notify_sock, theme, null);
     defer second.deinit(allocator);
     second.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 1), second.id);
@@ -1152,6 +1156,8 @@ test "SessionState assigns incrementing ids" {
 
 test "checkAlive skips waitpid polling when a process watcher owns exit detection" {
     const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
     const theme = colors_mod.Theme.default();
     const size = pty_mod.winsize{
         .ws_row = 24,
@@ -1167,13 +1173,13 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     }
     defer _ = std.c.waitpid(pid, null, 0);
     // Give the forked child a moment to exit and become reapable.
-    clock.sleepNanos(50 * std.time.ns_per_ms);
+    clock.sleepNanos(threaded.io(), 50 * std.time.ns_per_ms);
 
     const pipe_fds = try posix.pipe();
     // pty.deinit() only closes the master fd; close the slave ourselves.
     defer posix.close(pipe_fds[0]);
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, threaded.io(), 0, "/bin/zsh", size, notify_sock, theme, null);
     // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
     defer session.deinit(allocator);
 
@@ -1181,6 +1187,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     session.dead = false;
     session.render_epoch = 1;
     session.shell = shell_mod.Shell{
+        .io = threaded.io(),
         .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
         .child_pid = pid,
     };
@@ -1213,7 +1220,7 @@ test "despawn keeps active wait context alive until callback reclaims it" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     const wait_ctx = try allocator.create(SessionState.WaitContext);
@@ -1247,7 +1254,7 @@ test "resetForRespawn clears agent metadata" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     session.agent_kind = .codex;
@@ -1323,7 +1330,7 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
     defer session.deinit(allocator);
 
     const pipe_fds = try posix.pipe();

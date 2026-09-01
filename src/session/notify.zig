@@ -58,6 +58,7 @@ pub fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathErro
 
 const NotifyContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
@@ -108,6 +109,7 @@ pub const StartNotifyThreadError = std.Thread.SpawnError;
 
 pub fn startNotifyThread(
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
@@ -201,7 +203,7 @@ pub fn startNotifyThread(
             while (!ctx.stop.load(.seq_cst)) {
                 const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
                     error.WouldBlock => {
-                        clock.sleepNanos(std.time.ns_per_ms * 10);
+                        clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                         continue;
                     },
                     else => {
@@ -254,6 +256,7 @@ pub fn startNotifyThread(
 
     const ctx = NotifyContext{
         .allocator = allocator,
+        .io = io,
         .socket_path = socket_path,
         .queue = queue,
         .stop = stop,

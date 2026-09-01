@@ -20,6 +20,7 @@ const LoggerState = struct {
     mutex: std.Thread.Mutex = .{},
     initialized: bool = false,
     allocator: ?std.mem.Allocator = null,
+    io: ?std.Io = null,
     directory_path: ?[]u8 = null,
     file: ?fs.File = null,
     current_size: u64 = 0,
@@ -151,7 +152,7 @@ fn rotateLocked(s: *LoggerState) !void {
 
     var active_path_buf: [fs.max_path_bytes]u8 = undefined;
     const active_path = try buildPath(&active_path_buf, directory_path, active_log_filename);
-    const now_secs = clock.nowSeconds();
+    const now_secs = clock.nowSeconds(s.io orelse return error.LoggerNotInitialized);
     var suffix_buf: [32]u8 = undefined;
     const suffix = try rotationSuffix(now_secs, &suffix_buf);
 
@@ -195,7 +196,7 @@ fn writeRecordLocked(
     if (!force_write and !isEnabled(s.min_level, level)) return;
 
     var timestamp_buf: [32]u8 = undefined;
-    const timestamp = try timestampToLocalIso8601(clock.nowSeconds(), &timestamp_buf);
+    const timestamp = try timestampToLocalIso8601(clock.nowSeconds(s.io orelse return error.LoggerNotInitialized), &timestamp_buf);
 
     var line_buf: [8192]u8 = undefined;
     const line = blk: {
@@ -257,7 +258,7 @@ fn emitLoggingInternalError(err: anyerror) void {
     nosuspend stderr_writer.print("file logging failed: {}\n", .{err}) catch return;
 }
 
-pub fn init(allocator: std.mem.Allocator, options: InitOptions) !void {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, options: InitOptions) !void {
     state.mutex.lock();
     defer state.mutex.unlock();
 
@@ -280,6 +281,7 @@ pub fn init(allocator: std.mem.Allocator, options: InitOptions) !void {
     const active = try openActiveLogFile(directory_path);
 
     state.allocator = allocator;
+    state.io = io;
     state.directory_path = directory_path;
     state.file = active.file;
     state.current_size = active.size;
@@ -309,6 +311,7 @@ pub fn deinit() void {
 
     state.initialized = false;
     state.allocator = null;
+    state.io = null;
     state.directory_path = null;
     state.file = null;
     state.current_size = 0;
@@ -411,7 +414,7 @@ test "logFn respects minimum level filtering" {
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try init(allocator, .{
+    try init(allocator, std.testing.io, .{
         .directory_override = tmp_path,
         .min_level = .warn,
         .max_file_size_bytes = 1024 * 1024,
@@ -436,7 +439,7 @@ test "log line includes timestamp, level, scope, and message fields" {
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try init(allocator, .{
+    try init(allocator, std.testing.io, .{
         .directory_override = tmp_path,
         .min_level = .debug,
     });
@@ -469,7 +472,7 @@ test "rotation archives old file once size limit is exceeded" {
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try init(allocator, .{
+    try init(allocator, std.testing.io, .{
         .directory_override = tmp_path,
         .min_level = .debug,
         .max_file_size_bytes = 256,
@@ -512,7 +515,7 @@ test "init resolves a relative directory_override to an absolute log directory" 
         std.debug.print("failed to clean up test log directory: {}\n", .{err});
     };
 
-    try init(allocator, .{
+    try init(allocator, std.testing.io, .{
         .directory_override = relative_dir,
         .min_level = .info,
     });
@@ -540,7 +543,7 @@ test "startup, shutdown, and explicit events are emitted with info level" {
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
 
-    try init(allocator, .{
+    try init(allocator, std.testing.io, .{
         .directory_override = tmp_path,
         .min_level = .err,
     });

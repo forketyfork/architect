@@ -407,6 +407,7 @@ test "stream answers OSC 10 and OSC 11 color queries" {
     defer std.posix.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -442,6 +443,7 @@ test "stream answers synchronized output mode report queries" {
     defer std.posix.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -479,6 +481,7 @@ test "stream answers unknown mode report queries" {
     defer std.posix.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -530,6 +533,7 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
     defer std.posix.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -561,6 +565,7 @@ test "stream processes OSC 8 hyperlinks via nextSlice without error" {
     defer std.posix.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],

@@ -13,8 +13,9 @@ pub const FontPaths = struct {
     symbol_fallback_secondary: ?[:0]const u8,
     emoji_fallback: ?[:0]const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator, font_family: ?[]const u8) !FontPaths {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, font_family: ?[]const u8) !FontPaths {
         if (builtin.os.tag != .macos) {
             log.err("Only macOS is supported", .{});
             return error.UnsupportedPlatform;
@@ -22,54 +23,55 @@ pub const FontPaths = struct {
 
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
+        paths.io = io;
 
         const selected_family = if (font_family) |ff| if (ff.len > 0) ff else default_font_family else default_font_family;
 
-        if (findSystemFont(allocator, selected_family, "Regular")) |regular_path| {
+        if (findSystemFont(allocator, io, selected_family, "Regular")) |regular_path| {
             paths.regular = regular_path;
         } else |_| {
             if (font_family) |requested| {
                 log.warn("Font family '{s}' not found, falling back to {s}", .{ requested, default_font_family });
             }
-            paths.regular = try findSystemFont(allocator, default_font_family, "Regular");
+            paths.regular = try findSystemFont(allocator, io, default_font_family, "Regular");
         }
 
         const regular_is_ttc = std.mem.endsWith(u8, paths.regular, ".ttc");
 
-        if (findSystemFont(allocator, selected_family, "Bold")) |bold_path| {
+        if (findSystemFont(allocator, io, selected_family, "Bold")) |bold_path| {
             paths.bold = bold_path;
         } else |_| {
             if (regular_is_ttc) {
                 log.info("Using TTC file for Bold variant: {s}", .{paths.regular});
                 paths.bold = try allocator.dupeZ(u8, paths.regular);
             } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
-                paths.bold = findSystemFont(allocator, default_font_family, "Bold") catch try allocator.dupeZ(u8, paths.regular);
+                paths.bold = findSystemFont(allocator, io, default_font_family, "Bold") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold = try allocator.dupeZ(u8, paths.regular);
             }
         }
 
-        if (findSystemFont(allocator, selected_family, "Italic")) |italic_path| {
+        if (findSystemFont(allocator, io, selected_family, "Italic")) |italic_path| {
             paths.italic = italic_path;
         } else |_| {
             if (regular_is_ttc) {
                 log.info("Using TTC file for Italic variant: {s}", .{paths.regular});
                 paths.italic = try allocator.dupeZ(u8, paths.regular);
             } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
-                paths.italic = findSystemFont(allocator, default_font_family, "Italic") catch try allocator.dupeZ(u8, paths.regular);
+                paths.italic = findSystemFont(allocator, io, default_font_family, "Italic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.italic = try allocator.dupeZ(u8, paths.regular);
             }
         }
 
-        if (findSystemFont(allocator, selected_family, "BoldItalic")) |bold_italic_path| {
+        if (findSystemFont(allocator, io, selected_family, "BoldItalic")) |bold_italic_path| {
             paths.bold_italic = bold_italic_path;
         } else |_| {
             if (regular_is_ttc) {
                 log.info("Using TTC file for BoldItalic variant: {s}", .{paths.regular});
                 paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
             } else if (font_family != null and !std.mem.eql(u8, selected_family, default_font_family)) {
-                paths.bold_italic = findSystemFont(allocator, default_font_family, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
+                paths.bold_italic = findSystemFont(allocator, io, default_font_family, "BoldItalic") catch try allocator.dupeZ(u8, paths.regular);
             } else {
                 paths.bold_italic = try allocator.dupeZ(u8, paths.regular);
             }
@@ -105,7 +107,7 @@ pub const FontPaths = struct {
 
 const default_font_family = "SFNSMono";
 
-fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {
+fn findSystemFont(allocator: std.mem.Allocator, io: std.Io, font_family: []const u8, style: []const u8) ![:0]const u8 {
     const search_dirs = [_][]const u8{
         "/System/Library/Fonts",
         "/Library/Fonts",
@@ -115,7 +117,7 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
     const style_suffix = style;
 
     for (search_dirs) |dir| {
-        if (searchFontInDirectory(allocator, dir, font_family, style_suffix)) |path| {
+        if (searchFontInDirectory(allocator, io, dir, font_family, style_suffix)) |path| {
             return path;
         } else |_| {}
     }
@@ -124,7 +126,7 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
         const user_fonts_dir = try std.fmt.allocPrint(allocator, "{s}/Library/Fonts", .{h});
         defer allocator.free(user_fonts_dir);
 
-        if (searchFontInDirectory(allocator, user_fonts_dir, font_family, style_suffix)) |path| {
+        if (searchFontInDirectory(allocator, io, user_fonts_dir, font_family, style_suffix)) |path| {
             return path;
         } else |_| {}
     }
@@ -133,7 +135,8 @@ fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: 
     return error.FontNotFound;
 }
 
-fn searchFontInDirectory(allocator: std.mem.Allocator, dir_path: []const u8, font_family: []const u8, style_suffix: []const u8) ![:0]const u8 {
+fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, font_family: []const u8, style_suffix: []const u8) ![:0]const u8 {
+    _ = io;
     const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
 
     for (extensions) |ext| {

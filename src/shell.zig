@@ -1013,6 +1013,7 @@ fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
 }
 
 pub const Shell = struct {
+    io: std.Io,
     pty: pty_mod.Pty,
     child_pid: std.c.pid_t,
 
@@ -1024,7 +1025,7 @@ pub const Shell = struct {
     const name_session: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
     const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
+    pub fn spawn(io: std.Io, shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
         ensureTerminfoSetup();
         ensureArchitectCommandSetup();
@@ -1105,6 +1106,7 @@ pub const Shell = struct {
         posix.close(pty_instance.slave);
 
         return .{
+            .io = io,
             .pty = pty_instance,
             .child_pid = pid,
         };
@@ -1129,7 +1131,7 @@ pub const Shell = struct {
                     if (waited_ns >= max_wait_ns) {
                         return if (written > 0) written else err;
                     }
-                    clock.sleepNanos(backoff_ns);
+                    clock.sleepNanos(self.io, backoff_ns);
                     waited_ns += backoff_ns;
                     continue;
                 },
@@ -1165,6 +1167,8 @@ test "pathContainsEntry" {
 test "bundled terminfo compiles to legacy short-int format" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1183,7 +1187,7 @@ test "bundled terminfo compiles to legacy short-int format" {
 
     const tic_path = findExecutableInPath("tic") orelse return error.SkipZigTest;
 
-    const term = try proc.spawnDetached(allocator, &.{ tic_path, "-x", "-o", tmp_path, src_path });
+    const term = try proc.spawnDetached(allocator, threaded.io(), &.{ tic_path, "-x", "-o", tmp_path, src_path });
     try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 
     // tic stores the compiled entry in either `78/xterm-ghostty` (hashed,

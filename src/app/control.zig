@@ -245,10 +245,10 @@ fn duplicateValidatedString(
     return try allocator.dupe(u8, value);
 }
 
-pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
-    var base = try controlRuntimeDirAlloc(allocator);
+pub fn getControlSocketPath(allocator: std.mem.Allocator, io: std.Io) ![:0]u8 {
+    var base = try controlRuntimeDirAlloc(allocator, io);
     defer base.deinit(allocator);
-    try ensureControlRuntimeDir(base);
+    try ensureControlRuntimeDir(io, base);
 
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_control_{d}.sock", .{pid});
@@ -256,10 +256,10 @@ pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
     return try std.fs.path.joinZ(allocator, &.{ base.path, socket_name });
 }
 
-pub fn getControlDiscoveryPath(allocator: std.mem.Allocator) ![]u8 {
-    var base = try controlRuntimeDirAlloc(allocator);
+pub fn getControlDiscoveryPath(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    var base = try controlRuntimeDirAlloc(allocator, io);
     defer base.deinit(allocator);
-    try ensureControlRuntimeDir(base);
+    try ensureControlRuntimeDir(io, base);
 
     const file_name = try controlDiscoveryFileNameAlloc(allocator);
     defer allocator.free(file_name);
@@ -276,7 +276,8 @@ const ControlRuntimeDir = struct {
     }
 };
 
-fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
+fn controlRuntimeDirAlloc(allocator: std.mem.Allocator, io: std.Io) !ControlRuntimeDir {
+    _ = io;
     if (env.get("XDG_RUNTIME_DIR")) |runtime_dir| {
         return .{
             .path = try allocator.dupe(u8, runtime_dir),
@@ -301,7 +302,8 @@ fn fallbackControlRuntimeDirAlloc(allocator: std.mem.Allocator) ![]u8 {
     return try std.fmt.allocPrint(allocator, "/tmp/architect-{d}", .{posix.getuid()});
 }
 
-fn ensureControlRuntimeDir(runtime_dir: ControlRuntimeDir) !void {
+fn ensureControlRuntimeDir(io: std.Io, runtime_dir: ControlRuntimeDir) !void {
+    _ = io;
     if (!runtime_dir.managed) return;
 
     try std.fs.cwd().makePath(runtime_dir.path);
@@ -326,6 +328,7 @@ fn isOwnControlDiscoveryFileName(file_name: []const u8, prefix: []const u8) bool
 
 const ControlContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
     queue: *SpawnQueue,
@@ -335,6 +338,7 @@ const ControlContext = struct {
 
 pub fn startControlThread(
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
     queue: *SpawnQueue,
@@ -348,6 +352,7 @@ pub fn startControlThread(
 
     const ctx = ControlContext{
         .allocator = allocator,
+        .io = io,
         .socket_path = socket_path,
         .discovery_path = discovery_path,
         .queue = queue,
@@ -357,7 +362,8 @@ pub fn startControlThread(
     return try std.Thread.spawn(.{}, controlThreadMain, .{ctx});
 }
 
-pub fn cleanupControlFiles(socket_path: [:0]const u8, discovery_path: []const u8) void {
+pub fn cleanupControlFiles(io: std.Io, socket_path: [:0]const u8, discovery_path: []const u8) void {
+    _ = io;
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink control socket during cleanup: {}", .{err}),
@@ -394,7 +400,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
         log.warn("failed to chmod control socket: {}", .{err});
     };
-    writeDiscoveryFile(ctx.allocator, ctx.discovery_path, sock_path) catch |err| {
+    writeDiscoveryFile(ctx.allocator, ctx.io, ctx.discovery_path, sock_path) catch |err| {
         log.warn("failed to write control discovery file: {}", .{err});
     };
 
@@ -403,7 +409,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     while (!ctx.stop.load(.seq_cst)) {
         const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
             error.WouldBlock => {
-                clock.sleepNanos(std.time.ns_per_ms * 10);
+                clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                 continue;
             },
             else => {
@@ -412,7 +418,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
             },
         };
         setFdNonBlocking(conn_fd, "control connection");
-        handleControlConnection(ctx.allocator, conn_fd, ctx.queue, ctx.runtime_wake);
+        handleControlConnection(ctx.allocator, ctx.io, conn_fd, ctx.queue, ctx.runtime_wake);
         posix.close(conn_fd);
     }
 }
@@ -432,11 +438,12 @@ fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
 
 fn handleControlConnection(
     allocator: std.mem.Allocator,
+    io: std.Io,
     conn_fd: posix.fd_t,
     queue: *SpawnQueue,
     runtime_wake: ?RuntimeWake,
 ) void {
-    const bytes = readLineFromFdWithTimeout(allocator, conn_fd, max_message_bytes, control_request_read_timeout_ms) catch |err| {
+    const bytes = readLineFromFdWithTimeout(allocator, io, conn_fd, max_message_bytes, control_request_read_timeout_ms) catch |err| {
         log.debug("failed to read control request: {}", .{err});
         writeControlResponse(conn_fd, .{ .failure = .{
             .code = .invalid_request,
@@ -508,7 +515,8 @@ pub fn parseErrorMessage(err: ParseSpawnRequestError) []const u8 {
     };
 }
 
-fn writeDiscoveryFile(allocator: std.mem.Allocator, path: []const u8, socket_path: []const u8) !void {
+fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, socket_path: []const u8) !void {
+    _ = io;
     const payload = try discoveryPayloadAlloc(allocator, socket_path);
     defer allocator.free(payload);
 
@@ -566,12 +574,13 @@ fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8) 
     return try allocator.dupe(u8, out.written());
 }
 
-fn readLineFromFd(allocator: std.mem.Allocator, fd: posix.fd_t, max_bytes: usize) ![]u8 {
-    return try readLineFromFdWithTimeout(allocator, fd, max_bytes, null);
+fn readLineFromFd(allocator: std.mem.Allocator, io: std.Io, fd: posix.fd_t, max_bytes: usize) ![]u8 {
+    return try readLineFromFdWithTimeout(allocator, io, fd, max_bytes, null);
 }
 
 fn readLineFromFdWithTimeout(
     allocator: std.mem.Allocator,
+    io: std.Io,
     fd: posix.fd_t,
     max_bytes: usize,
     timeout_ms: ?i64,
@@ -579,11 +588,11 @@ fn readLineFromFdWithTimeout(
     var buffer: std.ArrayList(u8) = .empty;
     errdefer buffer.deinit(allocator);
 
-    const deadline_ms = if (timeout_ms) |ms| clock.nowMillis() + ms else null;
+    const deadline_ms = if (timeout_ms) |ms| clock.nowMillis(io) + ms else null;
     var tmp: [512]u8 = undefined;
     while (true) {
         if (deadline_ms) |deadline| {
-            const now = clock.nowMillis();
+            const now = clock.nowMillis(io);
             if (now >= deadline) return error.TimedOut;
 
             const remaining_ms = deadline - now;
@@ -688,9 +697,10 @@ pub fn controlResponseAlloc(allocator: std.mem.Allocator, response: SpawnRespons
 
 pub fn connectAndSendSpawnRequest(
     allocator: std.mem.Allocator,
+    io: std.Io,
     request: SpawnRequest,
 ) !OwnedSpawnResponse {
-    var connection = connectToNewestControlSocket(allocator) catch |err| switch (err) {
+    var connection = connectToNewestControlSocket(allocator, io) catch |err| switch (err) {
         error.NoControlDiscoveryFile => return staticFailure(.app_not_running, "Architect is not running"),
         error.NoLiveControlSocket => return staticFailure(.app_not_running, "Architect is not accepting control requests"),
         else => return err,
@@ -701,7 +711,7 @@ pub fn connectAndSendSpawnRequest(
     defer allocator.free(payload);
     try writeAllFd(connection.fd, payload);
 
-    const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
+    const response_bytes = try readLineFromFd(allocator, io, connection.fd, max_message_bytes);
     defer allocator.free(response_bytes);
     return try parseControlResponse(allocator, response_bytes);
 }
@@ -727,8 +737,8 @@ const DiscoveryCandidate = struct {
     }
 };
 
-fn connectToNewestControlSocket(allocator: std.mem.Allocator) !ControlConnection {
-    var candidates = try discoverControlCandidates(allocator);
+fn connectToNewestControlSocket(allocator: std.mem.Allocator, io: std.Io) !ControlConnection {
+    var candidates = try discoverControlCandidates(allocator, io);
     defer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
@@ -755,14 +765,14 @@ fn connectToNewestControlSocket(allocator: std.mem.Allocator) !ControlConnection
     return error.NoLiveControlSocket;
 }
 
-fn discoverControlCandidates(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(DiscoveryCandidate) {
+fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.ArrayListUnmanaged(DiscoveryCandidate) {
     var candidates: std.ArrayListUnmanaged(DiscoveryCandidate) = .empty;
     errdefer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
     }
 
-    var runtime_dir = try controlRuntimeDirAlloc(allocator);
+    var runtime_dir = try controlRuntimeDirAlloc(allocator, io);
     defer runtime_dir.deinit(allocator);
 
     var dir = std.fs.openDirAbsolute(runtime_dir.path, .{ .iterate = true }) catch |err| switch (err) {

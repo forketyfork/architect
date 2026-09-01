@@ -239,6 +239,7 @@ pub const PtyReader = struct {
 };
 
 const ReaderContext = struct {
+    io: std.Io,
     reader: *PtyReader,
     stop: *atomic.Value(bool),
     wake_pending: *atomic.Value(bool),
@@ -248,12 +249,14 @@ const ReaderContext = struct {
 pub const StartError = std.Thread.SpawnError;
 
 pub fn start(
+    io: std.Io,
     reader: *PtyReader,
     stop: *atomic.Value(bool),
     wake_pending: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) StartError!std.Thread {
     const ctx = ReaderContext{
+        .io = io,
         .reader = reader,
         .stop = stop,
         .wake_pending = wake_pending,
@@ -272,13 +275,13 @@ fn run(ctx: ReaderContext) void {
                 full_buffer_retry_ns
             else
                 @as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms;
-            clock.sleepNanos(retry_ns);
+            clock.sleepNanos(ctx.io, retry_ns);
             continue;
         }
 
         const ready = posix.poll(pollfds[0..snapshot.count], poll_timeout_ms) catch |err| {
             log.debug("poll failed: {}", .{err});
-            clock.sleepNanos(poll_error_backoff_ns);
+            clock.sleepNanos(ctx.io, poll_error_backoff_ns);
             continue;
         };
         if (ready == 0) continue;
@@ -300,11 +303,11 @@ fn makeNonBlockingPipe() ![2]posix.fd_t {
     return fds;
 }
 
-fn waitForBufferBytes(buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
+fn waitForBufferBytes(io: std.Io, buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
     var waited_ms: u64 = 0;
     while (waited_ms < timeout_ms) : (waited_ms += 5) {
         if (bufferHasBytes(buffer)) return true;
-        clock.sleepNanos(5 * std.time.ns_per_ms);
+        clock.sleepNanos(io, 5 * std.time.ns_per_ms);
     }
     return bufferHasBytes(buffer);
 }
@@ -501,6 +504,8 @@ test "PtyReader snapshot distinguishes full and closed buffers" {
 
 test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
     const buffer = try PtyOutputBuffer.create(allocator);
     defer buffer.destroy(allocator);
 
@@ -513,7 +518,7 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     var wake_pending = atomic.Value(bool).init(false);
     var wake_count = atomic.Value(usize).init(0);
 
-    const thread = try start(&reader, &stop, &wake_pending, .{
+    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, .{
         .context = &wake_count,
         .callback = incrementWakeCount,
     });
@@ -525,24 +530,26 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     reader.register(fds[0], buffer);
     _ = try posix.write(fds[1], "ping");
 
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expect(wake_pending.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     _ = try posix.write(fds[1], "pong");
-    clock.sleepNanos(300 * std.time.ns_per_ms);
+    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     var out: [16]u8 = undefined;
     _ = buffer.consume(&out);
     wake_pending.store(false, .seq_cst);
     _ = try posix.write(fds[1], "again");
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expectEqual(@as(usize, 2), wake_count.load(.seq_cst));
 }
 
 test "PtyReader.retire prevents any further reads of the fd" {
     const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
     const buffer = try PtyOutputBuffer.create(allocator);
     defer buffer.destroy(allocator);
 
@@ -554,7 +561,7 @@ test "PtyReader.retire prevents any further reads of the fd" {
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
 
-    const thread = try start(&reader, &stop, &wake_pending, null);
+    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, null);
     defer {
         stop.store(true, .seq_cst);
         thread.join();
@@ -562,12 +569,12 @@ test "PtyReader.retire prevents any further reads of the fd" {
 
     reader.register(fds[0], buffer);
     _ = try posix.write(fds[1], "before");
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     var out: [32]u8 = undefined;
     _ = buffer.consume(&out);
 
     reader.retire(fds[0]);
     _ = try posix.write(fds[1], "after");
-    clock.sleepNanos(300 * std.time.ns_per_ms);
+    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expect(!bufferHasBytes(buffer));
 }

@@ -71,6 +71,7 @@ pub fn scaleEventToRender(event: *const c.SDL_Event, scale_x: f32, scale_y: f32)
 }
 
 pub fn calculateHoveredSession(
+    io: std.Io,
     mouse_x: c_int,
     mouse_y: c_int,
     anim_state: *const AnimationState,
@@ -92,7 +93,7 @@ pub fn calculateHoveredSession(
         },
         .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => anim_state.focused_session,
         .Expanding, .Collapsing => {
-            const rect = anim_state.getCurrentRect(clock.nowMillis());
+            const rect = anim_state.getCurrentRect(clock.nowMillis(io));
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
                 mouse_y >= rect.y and mouse_y < rect.y + rect.h)
             {
@@ -362,8 +363,9 @@ fn initSpawnedTestSession(
     terminal.width_px = @intCast(pty_size.ws_xpixel);
     terminal.height_px = @intCast(pty_size.ws_ypixel);
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default(), null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", pty_size, "sock", colors_mod.Theme.default(), null);
     session.shell = .{
+        .io = std.testing.io,
         .pty = pty,
         .child_pid = 0,
     };

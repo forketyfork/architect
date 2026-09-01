@@ -354,8 +354,9 @@ pub const Persistence = struct {
         onboarding_shown: ?bool = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator) Persistence {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Persistence {
         _ = allocator;
+        _ = io;
         return .{};
     }
 
@@ -366,13 +367,13 @@ pub const Persistence = struct {
         self.recent_folders.deinit(allocator);
     }
 
-    pub fn load(allocator: std.mem.Allocator) !Persistence {
+    pub fn load(allocator: std.mem.Allocator, io: std.Io) !Persistence {
         const persistence_path = try getPersistencePath(allocator);
         defer allocator.free(persistence_path);
 
         const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
             return switch (err) {
-                error.FileNotFound => Persistence.init(allocator),
+                error.FileNotFound => Persistence.init(allocator, io),
                 else => err,
             };
         };
@@ -381,7 +382,7 @@ pub const Persistence = struct {
         const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
         defer allocator.free(contents);
 
-        var persistence = Persistence.init(allocator);
+        var persistence = Persistence.init(allocator, io);
 
         // Try V3 format first (recent_folders as table with counts)
         var parser_v3 = toml.Parser(TomlPersistenceV3).init(allocator);
@@ -447,7 +448,7 @@ pub const Persistence = struct {
 
         var result_v1 = parser_v1.parseString(contents) catch |err| {
             std.log.err("Failed to parse persistence TOML: {any}", .{err});
-            return Persistence.init(allocator);
+            return Persistence.init(allocator, io);
         };
         defer result_v1.deinit();
 
@@ -462,7 +463,7 @@ pub const Persistence = struct {
         return persistence;
     }
 
-    pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
+    pub fn save(self: Persistence, allocator: std.mem.Allocator, io: std.Io) !void {
         const persistence_path = try getPersistencePath(allocator);
         defer allocator.free(persistence_path);
 
@@ -472,16 +473,16 @@ pub const Persistence = struct {
             else => return err,
         };
 
-        try self.saveToPath(allocator, persistence_path);
+        try self.saveToPath(allocator, io, persistence_path);
     }
 
-    pub fn saveToPath(self: Persistence, allocator: std.mem.Allocator, path: []const u8) !void {
+    pub fn saveToPath(self: Persistence, allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
         var writer = std.Io.Writer.Allocating.init(allocator);
         defer writer.deinit();
         try self.serializeToWriter(&writer.writer);
         const serialized = writer.written();
 
-        try writeFileAtomicallyAbsolute(path, serialized);
+        try writeFileAtomicallyAbsolute(io, path, serialized);
     }
 
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
@@ -770,7 +771,8 @@ fn parseTerminalKey(key: []const u8) ?struct { row: usize, col: usize } {
     return .{ .row = row - 1, .col = col - 1 };
 }
 
-fn writeFileAtomicallyAbsolute(path: []const u8, contents: []const u8) !void {
+fn writeFileAtomicallyAbsolute(io: std.Io, path: []const u8, contents: []const u8) !void {
+    _ = io;
     const dir_path = fs.path.dirname(path) orelse return error.InvalidPath;
     var dir = try fs.openDirAbsolute(dir_path, .{});
     defer dir.close();
@@ -797,11 +799,11 @@ pub const Config = struct {
     logging: LoggingConfig = .{},
     worktree: WorktreeConfig = .{},
 
-    pub fn load(allocator: std.mem.Allocator) LoadError!Config {
+    pub fn load(allocator: std.mem.Allocator, io: std.Io) LoadError!Config {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
-        return loadTomlConfig(allocator, config_path);
+        return loadTomlConfig(allocator, io, config_path);
     }
 
     pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
@@ -809,7 +811,7 @@ pub const Config = struct {
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
     }
 
-    pub fn createDefaultConfigFile(allocator: std.mem.Allocator) SaveError!void {
+    pub fn createDefaultConfigFile(allocator: std.mem.Allocator, io: std.Io) SaveError!void {
         const config_path = try getConfigPath(allocator);
         defer allocator.free(config_path);
 
@@ -885,10 +887,11 @@ pub const Config = struct {
             \\
         ;
 
-        try writeFileAtomicallyAbsolute(config_path, template);
+        try writeFileAtomicallyAbsolute(io, config_path, template);
     }
 
-    fn loadTomlConfig(allocator: std.mem.Allocator, config_path: []const u8) LoadError!Config {
+    fn loadTomlConfig(allocator: std.mem.Allocator, io: std.Io, config_path: []const u8) LoadError!Config {
+        _ = io;
         const file = fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.ConfigNotFound,
             else => return err,
@@ -1125,7 +1128,7 @@ test "parseTerminalKey decodes 1-based coordinates" {
 
 test "Persistence.appendTerminalEntry preserves order and fields" {
     const allocator = std.testing.allocator;
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     try persistence.appendTerminalEntry(allocator, "/one", null, null);
@@ -1141,7 +1144,7 @@ test "Persistence.appendTerminalEntry preserves order and fields" {
 
 test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
     const allocator = std.testing.allocator;
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     var legacy = toml.HashMap([]const u8){ .map = std.StringHashMap([]const u8).init(allocator) };
@@ -1185,7 +1188,7 @@ test "Persistence save/load round-trip preserves all fields" {
     const test_file = try fs.path.join(allocator, &[_][]const u8{ tmp_path, "test_persistence.toml" });
     defer allocator.free(test_file);
 
-    var original = Persistence.init(allocator);
+    var original = Persistence.init(allocator, std.testing.io);
     defer original.deinit(allocator);
 
     original.window.width = 1920;
@@ -1198,9 +1201,9 @@ test "Persistence save/load round-trip preserves all fields" {
     try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def");
     try original.appendTerminalEntry(allocator, "/tmp/test", null, null);
 
-    try original.saveToPath(allocator, test_file);
+    try original.saveToPath(allocator, std.testing.io, test_file);
 
-    var loaded = Persistence.init(allocator);
+    var loaded = Persistence.init(allocator, std.testing.io);
     defer loaded.deinit(allocator);
 
     const file = try fs.openFileAbsolute(test_file, .{});
@@ -1256,7 +1259,7 @@ test "Persistence save/load round-trip preserves all fields" {
 }
 
 test "Persistence treats missing onboarding state as already shown" {
-    var persistence = Persistence.init(std.testing.allocator);
+    var persistence = Persistence.init(std.testing.allocator, std.testing.io);
     defer persistence.deinit(std.testing.allocator);
 
     try std.testing.expect(!persistence.onboarding_shown);
@@ -1286,7 +1289,7 @@ test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
         \\y = 20
         \\
     ;
-    try writeFileAtomicallyAbsolute(test_file, initial);
+    try writeFileAtomicallyAbsolute(std.testing.io, test_file, initial);
 
     const replaced =
         \\font_size = 16
@@ -1297,7 +1300,7 @@ test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
         \\y = 200
         \\
     ;
-    try writeFileAtomicallyAbsolute(test_file, replaced);
+    try writeFileAtomicallyAbsolute(std.testing.io, test_file, replaced);
 
     const file = try fs.openFileAbsolute(test_file, .{});
     defer file.close();
@@ -1320,7 +1323,7 @@ test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
 test "Persistence.removeRecentFolder removes the named entry" {
     const allocator = std.testing.allocator;
 
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     try persistence.appendRecentFolder(allocator, "/");
@@ -1336,7 +1339,7 @@ test "Persistence.removeRecentFolder removes the named entry" {
 test "Persistence.appendRecentFolder stores more than 10 directories" {
     const allocator = std.testing.allocator;
 
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     // Add 10 directories with count > 1 to fill the old cap
@@ -1369,7 +1372,7 @@ test "Persistence.appendRecentFolder stores more than 10 directories" {
 test "Persistence.appendRecentFolder evicts oldest entry when cap is reached" {
     const allocator = std.testing.allocator;
 
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     // Fill to max capacity with single-visit directories
@@ -1399,7 +1402,7 @@ test "Persistence.appendRecentFolder evicts oldest entry when cap is reached" {
 test "Persistence.appendRecentFolder skipping logic: removeRecentFolder leaves other entries intact" {
     const allocator = std.testing.allocator;
 
-    var persistence = Persistence.init(allocator);
+    var persistence = Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     try persistence.appendRecentFolder(allocator, "/");

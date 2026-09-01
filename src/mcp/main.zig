@@ -20,7 +20,6 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void {
-    _ = io;
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
@@ -40,7 +39,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, st
 
             if (byte == '\n') {
                 if (buffer.items.len > 0) {
-                    try handleMessage(allocator, stdout_file, buffer.items);
+                    try handleMessage(allocator, io, stdout_file, buffer.items);
                     buffer.clearRetainingCapacity();
                 }
                 continue;
@@ -57,12 +56,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, st
     }
 
     if (!discarding_oversized_line and buffer.items.len > 0) {
-        try handleMessage(allocator, stdout_file, buffer.items);
+        try handleMessage(allocator, io, stdout_file, buffer.items);
     }
 }
 
 fn handleMessage(
     allocator: std.mem.Allocator,
+    io: std.Io,
     stdout_file: std.fs.File,
     bytes: []const u8,
 ) !void {
@@ -102,7 +102,7 @@ fn handleMessage(
     } else if (std.mem.eql(u8, method_value.string, "tools/list")) {
         try writeToolsListResult(allocator, stdout_file, id_value);
     } else if (std.mem.eql(u8, method_value.string, "tools/call")) {
-        try handleToolsCall(allocator, stdout_file, id_value, object.get("params"));
+        try handleToolsCall(allocator, io, stdout_file, id_value, object.get("params"));
     } else {
         try writeJsonRpcError(allocator, stdout_file, id_value, .method_not_found, "method not found");
     }
@@ -110,6 +110,7 @@ fn handleMessage(
 
 fn handleToolsCall(
     allocator: std.mem.Allocator,
+    io: std.Io,
     stdout_file: std.fs.File,
     id_value: ?std.json.Value,
     params_value: ?std.json.Value,
@@ -148,7 +149,7 @@ fn handleToolsCall(
     };
     defer request.deinit(allocator);
 
-    var response = control.connectAndSendSpawnRequest(allocator, request) catch |err| {
+    var response = control.connectAndSendSpawnRequest(allocator, io, request) catch |err| {
         var message_buf: [160]u8 = undefined;
         const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
             log.debug("failed to format Architect contact error: {}", .{fmt_err});

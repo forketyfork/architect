@@ -1614,7 +1614,7 @@ env, clock, and proc now take the io context that Zig 0.16 requires."
 - Consumes: `clock.*(io, ...)`, `proc.*(allocator, io, ...)` from Task 7
 - Produces: every struct in these files that owns an `allocator` field also owns an `io: std.Io` field, placed immediately after it; every function that takes an `allocator` parameter and reaches a `clock`, `proc`, or filesystem call also takes `io: std.Io` immediately after it. `runtime.run(io: std.Io, log_dir_override: ?[]const u8) !void`.
 
-- [ ] **Step 1: Widen `runtime.run`**
+- [x] **Step 1: Widen `runtime.run`**
 
 ```zig
 pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
@@ -1622,7 +1622,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
 
 Task 7 Step 1 already calls it this way.
 
-- [ ] **Step 2: Add the `io` field to every struct that owns an `allocator`**
+- [x] **Step 2: Add the `io` field to every struct that owns an `allocator`**
 
 The convention, applied uniformly: `io` goes immediately after `allocator`, and every `init` that takes an allocator takes `io` immediately after it. For example, in `src/session/state.zig`:
 
@@ -1637,7 +1637,7 @@ pub const SessionState = struct {
 
 (place `io` next to wherever `allocator` already sits in each struct — do not reorder the other fields)
 
-- [ ] **Step 3: Thread `io` into thread-context structs**
+- [x] **Step 3: Thread `io` into thread-context structs**
 
 Spawned threads outlive their spawner's stack frame, so `io` must be *stored*, not borrowed. Every context struct passed to `std.Thread.spawn` gains an `io` field. The affected spawn sites are `src/app/control.zig:355`, `src/app/runtime.zig:1232`, `src/app/runtime.zig:1306`, `src/session/notify.zig:260`, `src/session/pty_reader.zig:261`, `src/ui/components/pr_dropdown.zig:584`, and `src/os/open.zig:47`.
 
@@ -1652,7 +1652,7 @@ Spawned threads outlive their spawner's stack frame, so `io` must be *stored*, n
 
 `std.Io` is a fat pointer (vtable plus userdata) and the `std.Io.Threaded` instance it points at lives for the whole process, so storing a copy per context is safe.
 
-- [ ] **Step 4: Widen the `clock` call sites**
+- [x] **Step 4: Widen the `clock` call sites**
 
 All 27 sites from Task 4 now need `io` as the first argument. Where the enclosing function is a method on a struct that gained an `io` field in Step 2, use `self.io`; otherwise use the function's new `io` parameter. For example `src/app/layout.zig:94`:
 
@@ -1666,7 +1666,7 @@ and `src/session/state.zig:644`:
             const processed_at_ms = clock.nowMillis(self.io);
 ```
 
-- [ ] **Step 5: Widen the `proc` call sites in this layer**
+- [x] **Step 5: Widen the `proc` call sites in this layer**
 
 `src/app/runtime.zig:2958`:
 
@@ -1685,14 +1685,14 @@ and `src/session/state.zig:644`:
     try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 ```
 
-- [ ] **Step 6: Verify the error class shrank**
+- [x] **Step 6: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'clock\.(now|sleep)|proc\.(run|spawnDetached)' .tmp/flip-errors.txt`
 Expected: no output. Remaining errors should be filesystem and mutex errors only, plus UI-layer `io` plumbing.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 nix develop --command zig fmt src/
