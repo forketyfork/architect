@@ -50,6 +50,7 @@ test {
     _ = @import("metrics.zig");
     _ = @import("pty.zig");
     _ = @import("platform/sdl.zig");
+    _ = @import("proc.zig");
     _ = @import("render/renderer.zig");
     _ = @import("session/notify.zig");
     _ = @import("session/pty_reader.zig");
