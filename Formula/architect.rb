@@ -12,8 +12,13 @@ class Architect < Formula
   depends_on "sdl3_ttf"
 
   def install
-    system "zig", "build",
-           "-Doptimize=ReleaseFast"
+    # Zig 0.16.0 cannot translate Apple headers against the arm64e-only SDK
+    # shipped with recent macOS toolchains. Source the helper in the same
+    # shell as the build so its SDK selection reaches every compiler step.
+    system "sh", "-c",
+           '. "$1" && exec zig build -Doptimize=ReleaseFast',
+           "architect-homebrew-build",
+           (buildpath/"scripts/setup-macos-sdk-workaround.sh").to_s
 
     app_name = "Architect"
     app_path = prefix/"#{app_name}.app"

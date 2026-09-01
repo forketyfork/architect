@@ -92,6 +92,9 @@ open Architect.app
 xcode-select --install
 ```
 
+The formula automatically selects the compatible macOS SDK when Zig 0.16.0
+encounters the arm64e-only SDK shipped with newer macOS toolchains.
+
 Install via Homebrew (builds from source):
 ```bash
 # Tap the repository (note: requires full repo URL since the formula is in the main repo)
