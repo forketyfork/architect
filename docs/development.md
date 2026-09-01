@@ -31,6 +31,8 @@ This document covers local setup, build/test commands, and release steps.
 
    Keep this workaround until a macOS host confirms that Zig handles the arm64e-only SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
 
+   The Homebrew formula sources the same helper while building from source, so Homebrew installs receive the SDK selection even though they do not run inside the Nix development shell.
+
 3. Verify the environment:
    ```bash
    zig version  # Should show 0.16.0+ (compatible with ghostty-vt)
