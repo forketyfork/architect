@@ -6,6 +6,7 @@ const xev = @import("xev");
 const posix = std.posix;
 const clock = @import("../clock.zig");
 const env = @import("../env.zig");
+const proc = @import("../proc.zig");
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
@@ -2955,16 +2956,15 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     defer allocator.free(config_path);
                     if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
 
-                    const result = switch (builtin.os.tag) {
-                        .macos => blk: {
-                            var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
-                            break :blk child.spawn();
-                        },
-                        else => open_url.openUrl(allocator, config_path),
-                    };
-                    result catch |err| {
-                        std.debug.print("Failed to open config file: {}\n", .{err});
-                    };
+                    if (builtin.os.tag == .macos) {
+                        _ = proc.spawnDetached(allocator, &.{ "open", "-t", config_path }) catch |err| {
+                            std.debug.print("Failed to open config file: {}\n", .{err});
+                        };
+                    } else {
+                        open_url.openUrl(allocator, config_path) catch |err| {
+                            std.debug.print("Failed to open config file: {}\n", .{err});
+                        };
+                    }
                     ui.showToast("Opening config file", now);
                 } else |err| {
                     std.debug.print("Failed to get config path: {}\n", .{err});
