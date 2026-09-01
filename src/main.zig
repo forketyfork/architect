@@ -39,6 +39,7 @@ test {
     _ = @import("app/terminal_actions.zig");
     _ = @import("app/terminal_history.zig");
     _ = @import("cli_args.zig");
+    _ = @import("clock.zig");
     _ = @import("colors.zig");
     _ = @import("config.zig");
     _ = @import("env.zig");
