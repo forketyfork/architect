@@ -1,0 +1,14 @@
+.{
+    .name = .zwanzig,
+    .version = "0.15.1",
+    .fingerprint = 0x82777a3c96d925a2,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
