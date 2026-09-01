@@ -11,6 +11,7 @@ zig-cache/
 zig-out/
 .zig-cache/
 .cache/
+zig-pkg/
 
 # zwanzig linter cache
 .zwanzig-cache/

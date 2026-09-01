@@ -139,7 +139,7 @@ build_sdl SDL_ttf "$sdl_ttf_version" "https://github.com/libsdl-org/SDL_ttf/arch
 
 export SDL3_INCLUDE_PATH="$sdl_prefix/include"
 export SDL3_TTF_INCLUDE_PATH="$sdl_prefix/include"
-# Zig 0.15's HTTP client cannot reliably use AIR Cloud's injected proxy, while
+# Zig's HTTP client cannot reliably use AIR Cloud's injected proxy, while
 # direct HTTPS works. Clear it after all curl/git provisioning has finished.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 touch "$profile"
