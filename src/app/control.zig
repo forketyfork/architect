@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const atomic = std.atomic;
+const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 
 const log = std.log.scoped(.control);
@@ -402,7 +403,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     while (!ctx.stop.load(.seq_cst)) {
         const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
             error.WouldBlock => {
-                std.Thread.sleep(std.time.ns_per_ms * 10);
+                clock.sleepNanos(std.time.ns_per_ms * 10);
                 continue;
             },
             else => {
@@ -578,11 +579,11 @@ fn readLineFromFdWithTimeout(
     var buffer: std.ArrayList(u8) = .empty;
     errdefer buffer.deinit(allocator);
 
-    const deadline_ms = if (timeout_ms) |ms| std.time.milliTimestamp() + ms else null;
+    const deadline_ms = if (timeout_ms) |ms| clock.nowMillis() + ms else null;
     var tmp: [512]u8 = undefined;
     while (true) {
         if (deadline_ms) |deadline| {
-            const now = std.time.milliTimestamp();
+            const now = clock.nowMillis();
             if (now >= deadline) return error.TimedOut;
 
             const remaining_ms = deadline - now;

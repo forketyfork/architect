@@ -1,5 +1,6 @@
 const std = @import("std");
 const app_state = @import("app_state.zig");
+const clock = @import("../clock.zig");
 const c = @import("../c.zig");
 const font_mod = @import("../font.zig");
 const ghostty_vt = @import("ghostty-vt");
@@ -91,7 +92,7 @@ pub fn calculateHoveredSession(
         },
         .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => anim_state.focused_session,
         .Expanding, .Collapsing => {
-            const rect = anim_state.getCurrentRect(std.time.milliTimestamp());
+            const rect = anim_state.getCurrentRect(clock.nowMillis());
             if (mouse_x >= rect.x and mouse_x < rect.x + rect.w and
                 mouse_y >= rect.y and mouse_y < rect.y + rect.h)
             {

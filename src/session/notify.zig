@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
@@ -200,7 +201,7 @@ pub fn startNotifyThread(
             while (!ctx.stop.load(.seq_cst)) {
                 const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
                     error.WouldBlock => {
-                        std.Thread.sleep(std.time.ns_per_ms * 10);
+                        clock.sleepNanos(std.time.ns_per_ms * 10);
                         continue;
                     },
                     else => {

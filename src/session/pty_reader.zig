@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const atomic = std.atomic;
+const clock = @import("../clock.zig");
 const grid_layout = @import("../app/grid_layout.zig");
 
 const log = std.log.scoped(.pty_reader);
@@ -271,13 +272,13 @@ fn run(ctx: ReaderContext) void {
                 full_buffer_retry_ns
             else
                 @as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms;
-            std.Thread.sleep(retry_ns);
+            clock.sleepNanos(retry_ns);
             continue;
         }
 
         const ready = posix.poll(pollfds[0..snapshot.count], poll_timeout_ms) catch |err| {
             log.debug("poll failed: {}", .{err});
-            std.Thread.sleep(poll_error_backoff_ns);
+            clock.sleepNanos(poll_error_backoff_ns);
             continue;
         };
         if (ready == 0) continue;
@@ -303,7 +304,7 @@ fn waitForBufferBytes(buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
     var waited_ms: u64 = 0;
     while (waited_ms < timeout_ms) : (waited_ms += 5) {
         if (bufferHasBytes(buffer)) return true;
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        clock.sleepNanos(5 * std.time.ns_per_ms);
     }
     return bufferHasBytes(buffer);
 }
@@ -529,7 +530,7 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     _ = try posix.write(fds[1], "pong");
-    std.Thread.sleep(300 * std.time.ns_per_ms);
+    clock.sleepNanos(300 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     var out: [16]u8 = undefined;
@@ -567,6 +568,6 @@ test "PtyReader.retire prevents any further reads of the fd" {
 
     reader.retire(fds[0]);
     _ = try posix.write(fds[1], "after");
-    std.Thread.sleep(300 * std.time.ns_per_ms);
+    clock.sleepNanos(300 * std.time.ns_per_ms);
     try std.testing.expect(!bufferHasBytes(buffer));
 }

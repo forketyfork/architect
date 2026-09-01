@@ -3,6 +3,7 @@
 const std = @import("std");
 const assets = @import("assets");
 const posix = std.posix;
+const clock = @import("clock.zig");
 const env = @import("env.zig");
 const pty_mod = @import("pty.zig");
 const libc = @cImport({
@@ -1127,7 +1128,7 @@ pub const Shell = struct {
                     if (waited_ns >= max_wait_ns) {
                         return if (written > 0) written else err;
                     }
-                    std.Thread.sleep(backoff_ns);
+                    clock.sleepNanos(backoff_ns);
                     waited_ns += backoff_ns;
                     continue;
                 },

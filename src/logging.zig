@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
+const clock = @import("clock.zig");
 const env = @import("env.zig");
 const time_c = @cImport({
     @cInclude("time.h");
@@ -150,7 +151,7 @@ fn rotateLocked(s: *LoggerState) !void {
 
     var active_path_buf: [fs.max_path_bytes]u8 = undefined;
     const active_path = try buildPath(&active_path_buf, directory_path, active_log_filename);
-    const now_secs = std.time.timestamp();
+    const now_secs = clock.nowSeconds();
     var suffix_buf: [32]u8 = undefined;
     const suffix = try rotationSuffix(now_secs, &suffix_buf);
 
@@ -194,7 +195,7 @@ fn writeRecordLocked(
     if (!force_write and !isEnabled(s.min_level, level)) return;
 
     var timestamp_buf: [32]u8 = undefined;
-    const timestamp = try timestampToLocalIso8601(std.time.timestamp(), &timestamp_buf);
+    const timestamp = try timestampToLocalIso8601(clock.nowSeconds(), &timestamp_buf);
 
     var line_buf: [8192]u8 = undefined;
     const line = blk: {
