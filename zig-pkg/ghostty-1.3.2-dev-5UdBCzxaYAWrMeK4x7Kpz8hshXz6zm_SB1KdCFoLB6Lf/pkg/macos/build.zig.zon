@@ -1,0 +1,14 @@
+.{
+    .name = .macos,
+    .version = "0.1.0",
+    .fingerprint = 0x45e2f6107d5b2b2c,
+    .paths = .{""},
+    .dependencies = .{
+        .apple_sdk = .{ .path = "../apple-sdk" },
+        .translate_c = .{
+            .url = "https://deps.files.ghostty.org/translate_c-80f8b6e4f45a303268717d8e5f4f91d7837138bb.tar.gz",
+            .hash = "translate_c-0.0.0-Q_BUWmU6BwB_9JKG2l2W7i_mhmYWeRseTGBEHi_YlV5f",
+            .lazy = true,
+        },
+    },
+}
