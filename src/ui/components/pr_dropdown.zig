@@ -63,7 +63,7 @@ pub const PRDropdownComponent = struct {
     current_pr_number: ?u32 = null,
 
     // Fetched PRs (owned by this component)
-    prs: std.ArrayList(PullRequest) = .{},
+    prs: std.ArrayList(PullRequest) = .empty,
     fetch_status: FetchStatus = .idle,
     fetch_error: ?[]const u8 = null,
     last_fetch_ms: i64 = 0,
@@ -74,7 +74,7 @@ pub const PRDropdownComponent = struct {
     fetch_jobs: std.ArrayList(FetchJob) = .empty,
 
     // Filter / selection
-    filtered_indices: std.ArrayList(usize) = .{},
+    filtered_indices: std.ArrayList(usize) = .empty,
     selected_index: usize = 0,
     hovered_entry: ?usize = null,
     search_query: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },

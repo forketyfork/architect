@@ -70,14 +70,14 @@ pub const ReaderOverlayComponent = struct {
     pinned_to_bottom: bool = true,
 
     raw_text: ?[]u8 = null,
-    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .{},
-    lines: std.ArrayList(markdown_renderer.RenderLine) = .{},
+    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .empty,
+    lines: std.ArrayList(markdown_renderer.RenderLine) = .empty,
 
     search_active: bool = false,
     search: text_edit.TextInput = .{ .separators = text_edit.prose_separators, .accepts = text_edit.isSingleLineChar },
-    matches: std.ArrayList(SearchMatch) = .{},
+    matches: std.ArrayList(SearchMatch) = .empty,
     selected_match: ?usize = null,
-    link_hits: std.ArrayList(LinkHit) = .{},
+    link_hits: std.ArrayList(LinkHit) = .empty,
     hovered_link: ?usize = null,
     jump_button_hovered: bool = false,
 
@@ -165,8 +165,8 @@ pub const ReaderOverlayComponent = struct {
         self.clearLinkHits();
         markdown_parser.freeBlocks(self.allocator, &self.blocks);
         markdown_renderer.freeLines(self.allocator, &self.lines);
-        self.blocks = .{};
-        self.lines = .{};
+        self.blocks = .empty;
+        self.lines = .empty;
         self.last_render_epoch = 0;
     }
 
@@ -190,7 +190,7 @@ pub const ReaderOverlayComponent = struct {
         markdown_parser.freeBlocks(self.allocator, &self.blocks);
         self.blocks = markdown_parser.parse(self.allocator, extracted) catch |err| {
             log.warn("failed to parse markdown from terminal output: {}", .{err});
-            self.blocks = .{};
+            self.blocks = .empty;
             return;
         };
 
@@ -206,7 +206,7 @@ pub const ReaderOverlayComponent = struct {
         markdown_renderer.freeLines(self.allocator, &self.lines);
         self.lines = markdown_renderer.buildLines(self.allocator, self.blocks.items, self.wrap_cols) catch |err| {
             log.warn("failed to build markdown layout: {}", .{err});
-            self.lines = .{};
+            self.lines = .empty;
             return;
         };
 

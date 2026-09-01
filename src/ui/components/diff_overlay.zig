@@ -132,15 +132,15 @@ pub const DiffOverlayComponent = struct {
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
-    files: std.ArrayList(DiffFile) = .{},
+    files: std.ArrayList(DiffFile) = .empty,
     raw_output: ?[]u8 = null,
-    display_rows: std.ArrayList(DisplayRow) = .{},
+    display_rows: std.ArrayList(DisplayRow) = .empty,
     cache: ?*Cache = null,
     last_repo_root: ?[]u8 = null,
 
     hovered_file: ?usize = null,
 
-    comments: std.ArrayList(DiffComment) = .{},
+    comments: std.ArrayList(DiffComment) = .empty,
     editing: ?EditingComment = null,
     agent_dropdown: dropdown_menu.DropdownMenu,
     send_button_hovered: bool = false,
@@ -556,7 +556,7 @@ pub const DiffOverlayComponent = struct {
         }) catch |err| {
             log.warn("failed to run git command: {}", .{err});
             return switch (err) {
-                error.StdoutStreamTooLong, error.StderrStreamTooLong => error.OutputTooLarge,
+                error.StreamTooLong => error.OutputTooLarge,
                 error.OutOfMemory => error.OutputAllocFailed,
                 else => error.ReadFailed,
             };
@@ -609,12 +609,12 @@ pub const DiffOverlayComponent = struct {
 
             if (std.mem.startsWith(u8, line_text, "diff --git ")) {
                 const path = extractFilePath(line_text);
-                var hunks = std.ArrayList(DiffHunk){};
+                var hunks: std.ArrayList(DiffHunk) = .empty;
                 _ = &hunks;
                 self.files.append(self.allocator, .{
                     .path = path,
                     .collapsed = false,
-                    .hunks = .{},
+                    .hunks = .empty,
                 }) catch |err| {
                     log.warn("failed to append file: {}", .{err});
                     pos = if (line_end < output.len) line_end + 1 else output.len;
@@ -643,7 +643,7 @@ pub const DiffOverlayComponent = struct {
                         .header_text = line_text,
                         .old_start = parsed.old_start,
                         .new_start = parsed.new_start,
-                        .lines = .{},
+                        .lines = .empty,
                     }) catch |err| {
                         log.warn("failed to append hunk: {}", .{err});
                         pos = if (line_end < output.len) line_end + 1 else output.len;
@@ -739,7 +739,7 @@ pub const DiffOverlayComponent = struct {
             file.hunks.deinit(self.allocator);
         }
         self.files.deinit(self.allocator);
-        self.files = .{};
+        self.files = .empty;
         self.hovered_file = null;
         self.freeComments();
         self.cancelEditingImmediate();
@@ -2323,7 +2323,7 @@ pub const DiffOverlayComponent = struct {
             self.allocator.free(comment.text);
         }
         self.comments.deinit(self.allocator);
-        self.comments = .{};
+        self.comments = .empty;
     }
 
     fn cancelEditing(self: *DiffOverlayComponent, now_ms: i64) void {
@@ -2634,7 +2634,7 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn formatCommentsForAgent(self: *DiffOverlayComponent) ?[]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         var first = true;
         for (self.comments.items) |comment| {
             if (comment.sent) continue;
@@ -2780,7 +2780,7 @@ pub const DiffOverlayComponent = struct {
         const file_path = std.fs.path.join(self.allocator, &.{ dir_path, "diff_comments.json" }) catch return;
         defer self.allocator.free(file_path);
 
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
         buf.appendSlice(self.allocator, "[\n") catch return;
         var first = true;
@@ -2919,7 +2919,7 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn parseJsonString(self: *DiffOverlayComponent, content: []const u8, pos: *usize) ?[]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         while (pos.* < content.len and content[pos.*] != '"') {
             if (content[pos.*] == '\\' and pos.* + 1 < content.len) {
                 pos.* += 1;

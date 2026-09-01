@@ -4,6 +4,7 @@ const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.notify);
 
@@ -25,7 +26,7 @@ pub const StoryNotification = struct {
 
 pub const NotificationQueue = struct {
     mutex: std.Io.Mutex = .init,
-    items: std.ArrayListUnmanaged(Notification) = .{},
+    items: std.ArrayList(Notification) = .empty,
 
     pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
@@ -37,11 +38,11 @@ pub const NotificationQueue = struct {
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *NotificationQueue, io: std.Io) std.ArrayListUnmanaged(Notification) {
+    pub fn drainAll(self: *NotificationQueue, io: std.Io) std.ArrayList(Notification) {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const items = self.items;
-        self.items = .{};
+        self.items = .empty;
         return items;
     }
 };
@@ -116,7 +117,7 @@ pub fn startNotifyThread(
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) StartNotifyThreadError!std.Thread {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink notify socket: {}", .{err}),
     };
@@ -177,32 +178,30 @@ pub fn startNotifyThread(
         }
 
         fn run(ctx: NotifyContext) !void {
-            const addr = try std.net.Address.initUnix(ctx.socket_path);
-            const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-            defer posix.close(fd);
-
-            try posix.bind(fd, &addr.any, addr.getOsSockLen());
-            try posix.listen(fd, 16);
+            const address = try std.Io.net.UnixAddress.init(ctx.socket_path);
+            var server = try address.listen(ctx.io, .{ .kernel_backlog = 16 });
+            defer server.deinit(ctx.io);
+            const fd = server.socket.handle;
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+            std.Io.Dir.cwd().setFilePermissions(ctx.io, sock_path, .fromMode(0o600), .{}) catch |err| {
                 log.warn("failed to chmod notify socket: {}", .{err});
             };
 
             // Make accept non-blocking so the loop can observe stop requests.
-            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| blk: {
+            const flags = posix_util.fcntl(fd, posix.F.GETFL, 0) catch |err| blk: {
                 log.warn("failed to get socket flags: {}", .{err});
                 break :blk null;
             };
             if (flags) |f| {
                 var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                 o_flags.NONBLOCK = true;
-                if (posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                if (posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
                     log.warn("failed to set socket non-blocking: {}", .{err});
                 }
             }
 
             while (!ctx.stop.load(.seq_cst)) {
-                const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
+                const connection = server.accept(ctx.io) catch |err| switch (err) {
                     error.WouldBlock => {
                         clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                         continue;
@@ -212,21 +211,22 @@ pub fn startNotifyThread(
                         continue;
                     },
                 };
-                defer posix.close(conn_fd);
+                defer connection.close(ctx.io);
+                const conn_fd = connection.socket.handle;
 
-                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
+                const conn_flags = posix_util.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
                     log.debug("failed to get connection flags: {}", .{err});
                     break :blk null;
                 };
                 if (conn_flags) |f| {
                     var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                     o_flags.NONBLOCK = true;
-                    if (posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                    if (posix_util.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
                         log.warn("failed to set connection non-blocking: {}", .{err});
                     }
                 }
 
-                var buffer = std.ArrayList(u8){};
+                var buffer: std.ArrayList(u8) = .empty;
                 defer buffer.deinit(ctx.allocator);
 
                 var tmp: [512]u8 = undefined;

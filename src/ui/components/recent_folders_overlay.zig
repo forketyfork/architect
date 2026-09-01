@@ -25,8 +25,8 @@ pub const RecentFoldersOverlayComponent = struct {
     first_frame: FirstFrameGuard = .{},
     badge: GlyphBadge = .{ .text = "⌘O" },
 
-    all_folders: std.ArrayList(Folder) = .{},
-    filtered_indices: std.ArrayList(usize) = .{},
+    all_folders: std.ArrayList(Folder) = .empty,
+    filtered_indices: std.ArrayList(usize) = .empty,
     selected_index: usize = 0,
     hovered_entry: ?usize = null,
     escape_pressed: bool = false,

@@ -129,7 +129,7 @@ pub const UiAssets = struct {
 
 pub const UiActionQueue = struct {
     allocator: std.mem.Allocator,
-    list: std.ArrayList(UiAction) = .{},
+    list: std.ArrayList(UiAction) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) UiActionQueue {
         return .{ .allocator = allocator };

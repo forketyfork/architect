@@ -17,6 +17,7 @@ const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
+const posix_util = @import("../posix_util.zig");
 const notify = @import("../session/notify.zig");
 const pty_reader = @import("../session/pty_reader.zig");
 const session_state = @import("../session/state.zig");
@@ -3624,9 +3625,10 @@ test "drainPendingSessionSends waits for the deadline, then writes the pending t
     // A pipe stands in for the PTY: `Shell.write` writes to `pty.master`, so the
     // test can read the other end to observe exactly what was sent, instead of
     // trusting a fabricated session whose `sendInput` would silently no-op.
-    const pipe_fds = try posix.pipe();
-    defer posix.close(pipe_fds[0]);
-    defer posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var session: SessionState = undefined;
     session.id = 1;

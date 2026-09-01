@@ -23,7 +23,7 @@ pub const WorktreeOverlayComponent = struct {
     first_frame: FirstFrameGuard = .{},
     badge: GlyphBadge = .{ .text = "⌘T" },
 
-    worktrees: std.ArrayList(Worktree) = .{},
+    worktrees: std.ArrayList(Worktree) = .empty,
     last_cwd: ?[]const u8 = null,
     display_base: ?[]const u8 = null,
     needs_refresh: bool = true,
@@ -633,7 +633,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn makeDisplayPath(self: *WorktreeOverlayComponent, base: []const u8, abs: []const u8) ![]const u8 {
         if (std.mem.startsWith(u8, abs, base)) {
-            const rel = std.fs.path.relative(self.allocator, base, abs) catch {
+            const rel = std.fs.path.relative(self.allocator, ".", null, base, abs) catch {
                 return self.allocator.dupe(u8, abs);
             };
             if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);

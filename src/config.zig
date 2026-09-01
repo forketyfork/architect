@@ -326,8 +326,8 @@ pub const Persistence = struct {
 
     window: WindowConfig = .{},
     font_size: c_int = 14,
-    terminal_entries: std.ArrayListUnmanaged(TerminalEntry) = .{},
-    recent_folders: std.ArrayListUnmanaged(RecentFolder) = .{},
+    terminal_entries: std.ArrayList(TerminalEntry) = .empty,
+    recent_folders: std.ArrayList(RecentFolder) = .empty,
     visit_counter: u32 = 0,
     onboarding_shown: bool = false,
 
@@ -770,7 +770,7 @@ fn parseTerminalKey(key: []const u8) ?struct { row: usize, col: usize } {
     return .{ .row = row - 1, .col = col - 1 };
 }
 
-fn writeFileAtomicallyAbsolute(io: std.Io, path: []const u8, contents: []const u8) !void {
+fn writeFileAtomicallyAbsolute(io: std.Io, path: []const u8, contents: []const u8) SaveError!void {
     const dir_path = fs.path.dirname(path) orelse return error.InvalidPath;
     var dir = try Dir.openDirAbsolute(io, dir_path, .{});
     defer dir.close(io);
@@ -942,9 +942,14 @@ pub const LoadError = error{
 } || Dir.ReadFileAllocError;
 
 pub const SaveError = error{
+    BrokenPipe,
+    DeviceBusy,
+    FileTooBig,
     HomeNotFound,
     InvalidPath,
     InvalidConfig,
+    LockViolation,
+    NotOpenForWriting,
     OutOfMemory,
     WriteFailed,
 } || Dir.CreateDirError || Dir.OpenError || Dir.CreateFileAtomicError || std.Io.Writer.Error || File.SyncError || Dir.RenameError;

@@ -4,6 +4,7 @@ const posix = std.posix;
 const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const env = @import("../env.zig");
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.control);
 
@@ -123,7 +124,7 @@ pub const PendingSpawn = struct {
 
 pub const SpawnQueue = struct {
     mutex: std.Io.Mutex = .init,
-    items: std.ArrayListUnmanaged(PendingSpawn) = .empty,
+    items: std.ArrayList(PendingSpawn) = .empty,
 
     pub fn deinit(self: *SpawnQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
@@ -135,7 +136,7 @@ pub const SpawnQueue = struct {
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *SpawnQueue, io: std.Io) std.ArrayListUnmanaged(PendingSpawn) {
+    pub fn drainAll(self: *SpawnQueue, io: std.Io) std.ArrayList(PendingSpawn) {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const items = self.items;
@@ -306,7 +307,12 @@ fn ensureControlRuntimeDir(io: std.Io, runtime_dir: ControlRuntimeDir) !void {
     if (!runtime_dir.managed) return;
 
     try std.Io.Dir.cwd().createDirPath(io, runtime_dir.path);
-    try posix.fchmodat(posix.AT.FDCWD, runtime_dir.path, 0o700, 0);
+    try std.Io.Dir.cwd().setFilePermissions(
+        io,
+        runtime_dir.path,
+        .fromMode(0o700),
+        .{},
+    );
 }
 
 fn controlDiscoveryFileNameAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -344,7 +350,7 @@ pub fn startControlThread(
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) std.Thread.SpawnError!std.Thread {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink control socket: {}", .{err}),
     };
@@ -362,7 +368,7 @@ pub fn startControlThread(
 }
 
 pub fn cleanupControlFiles(io: std.Io, socket_path: [:0]const u8, discovery_path: []const u8) void {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink control socket during cleanup: {}", .{err}),
     };
@@ -395,7 +401,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     const fd = server.socket.handle;
 
     const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-    std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(ctx.io, sock_path, .fromMode(0o600), .{}) catch |err| {
         log.warn("failed to chmod control socket: {}", .{err});
     };
     writeDiscoveryFile(ctx.allocator, ctx.io, ctx.discovery_path, sock_path) catch |err| {
@@ -423,14 +429,14 @@ fn controlThreadMain(ctx: ControlContext) !void {
 }
 
 fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
-    const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| {
+    const flags = posix_util.fcntl(fd, posix.F.GETFL, 0) catch |err| {
         log.warn("failed to get {s} flags: {}", .{ context, err });
         return;
     };
 
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    if (posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+    if (posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
         log.warn("failed to set {s} non-blocking: {}", .{ context, err });
     }
 }
@@ -524,22 +530,24 @@ fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8
     var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
     defer dir.close(io);
 
+    var random_suffix: u64 = undefined;
+    std.Io.random(io, std.mem.asBytes(&random_suffix));
     const temp_name = try std.fmt.allocPrint(
         allocator,
         ".{s}.{x}.tmp",
-        .{ base_name, std.crypto.random.int(u64) },
+        .{ base_name, random_suffix },
     );
     defer allocator.free(temp_name);
 
     var file = try dir.createFile(io, temp_name, .{
         .exclusive = true,
-        .mode = 0o600,
+        .permissions = .fromMode(0o600),
     });
     var file_open = true;
     errdefer if (file_open) file.close(io);
     errdefer deleteTempDiscoveryFile(io, &dir, temp_name);
 
-    try posix.fchmod(file.handle, 0o600);
+    try file.setPermissions(io, .fromMode(0o600));
     try file.writeStreamingAll(io, payload);
     try file.sync(io);
     file.close(io);
@@ -606,6 +614,7 @@ fn readLineFromFdWithTimeout(
 
         const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = true } };
         const n = file.readStreaming(io, &.{&tmp}) catch |err| switch (err) {
+            error.EndOfStream => break,
             error.WouldBlock => continue,
             else => return err,
         };
@@ -760,8 +769,8 @@ fn connectToNewestControlSocket(allocator: std.mem.Allocator, io: std.Io) !Contr
     return error.NoLiveControlSocket;
 }
 
-fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.ArrayListUnmanaged(DiscoveryCandidate) {
-    var candidates: std.ArrayListUnmanaged(DiscoveryCandidate) = .empty;
+fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.ArrayList(DiscoveryCandidate) {
+    var candidates: std.ArrayList(DiscoveryCandidate) = .empty;
     errdefer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
@@ -973,9 +982,9 @@ test "fallback control runtime directory does not use TMPDIR" {
 
 test "newestDiscoveryCandidateIndex picks the highest mtime" {
     const candidates = [_]DiscoveryCandidate{
-        .{ .socket_path = "/tmp/old.sock", .mtime = 10 },
-        .{ .socket_path = "/tmp/new.sock", .mtime = 30 },
-        .{ .socket_path = "/tmp/mid.sock", .mtime = 20 },
+        .{ .socket_path = "/tmp/old.sock", .mtime = .fromNanoseconds(10) },
+        .{ .socket_path = "/tmp/new.sock", .mtime = .fromNanoseconds(30) },
+        .{ .socket_path = "/tmp/mid.sock", .mtime = .fromNanoseconds(20) },
     };
 
     try std.testing.expectEqual(@as(usize, 1), newestDiscoveryCandidateIndex(&candidates));

@@ -7,6 +7,7 @@ const clock = @import("clock.zig");
 const env = @import("env.zig");
 const proc = @import("proc.zig");
 const pty_mod = @import("pty.zig");
+const posix_util = @import("posix_util.zig");
 const libc = @cImport({
     @cInclude("stdlib.h");
 });
@@ -825,7 +826,7 @@ fn ensureArchitectCommandSetup(io: std.Io) void {
     };
 
     const script_path = std.mem.sliceTo(script_path_z, 0);
-    posix.fchmodat(posix.AT.FDCWD, script_path, 0o755, 0) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(io, script_path, .fromMode(0o755), .{}) catch |err| {
         log.warn("failed to chmod architect command: {}", .{err});
     };
 
@@ -1046,9 +1047,9 @@ pub const Shell = struct {
             // Match ghostty's order: dup2 first so stdin/stdout/stderr point at the
             // slave before childPreExec rebinds the controlling terminal and closes
             // the original master/slave fds.
-            posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
 
             if (libc.setenv(name_session.ptr, session_id, 1) != 0) {
                 std.c._exit(1);
@@ -1083,7 +1084,7 @@ pub const Shell = struct {
                 // Errors are intentionally ignored: we're in a forked child process where
                 // logging is impractical, and chdir failure is non-fatal (shell starts in
                 // the parent's cwd instead).
-                posix.chdir(dir) catch {};
+                _ = std.c.chdir(dir);
             }
 
             pty_instance.childPreExec() catch std.c._exit(1);
@@ -1103,7 +1104,7 @@ pub const Shell = struct {
             }
         }
 
-        posix.close(pty_instance.slave);
+        _ = std.c.close(pty_instance.slave);
 
         return .{
             .io = io,
@@ -1122,9 +1123,10 @@ pub const Shell = struct {
         var waited_ns: u64 = 0;
         const max_wait_ns: u64 = 50 * std.time.ns_per_ms;
         const backoff_ns: u64 = 1 * std.time.ns_per_ms;
+        const pty_file: std.Io.File = .{ .handle = self.pty.master, .flags = .{ .nonblocking = true } };
 
         while (written < data.len) {
-            const n = posix.write(self.pty.master, data[written..]) catch |err| switch (err) {
+            const n = pty_file.writeStreaming(self.io, &.{}, &.{data[written..]}, 1) catch |err| switch (err) {
                 error.WouldBlock => {
                     // PTY is full; retry for a short bounded window so pastes
                     // complete, but avoid indefinitely stalling the UI thread.

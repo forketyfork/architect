@@ -498,7 +498,7 @@ fn renderSessionContent(
 
         const current_row_pin = row_pin orelse continue;
         row_pin = current_row_pin.down(1);
-        const row_cells = current_row_pin.node.data.getCells(current_row_pin.rowAndCell().row);
+        const row_cells = current_row_pin.node.page().getCells(current_row_pin.rowAndCell().row);
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
@@ -506,7 +506,7 @@ fn renderSessionContent(
             const cell = &row_cells[col];
             var cell_pin = current_row_pin;
             cell_pin.x = @intCast(col);
-            const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint else 0;
+            const cp: u21 = if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme) cell.content.codepoint.data else 0;
             const glyph_width_cells: c_int = switch (cell.wide) {
                 .wide => 2,
                 else => 1,
@@ -614,7 +614,7 @@ fn renderSessionContent(
                 cluster_len += 1;
 
                 if (cell.hasGrapheme()) {
-                    if (current_row_pin.node.data.lookupGrapheme(cell)) |extra| {
+                    if (current_row_pin.node.page().lookupGrapheme(cell)) |extra| {
                         for (extra) |gcp| {
                             if (cluster_len >= cluster_buf.len) break;
                             cluster_buf[cluster_len] = gcp;
@@ -1290,10 +1290,10 @@ test "getCellColor uses the live terminal palette for indexed colors" {
 test "row pin stepping matches per-cell getCell for content, wide flag, and style" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 4,
-        .max_scrollback = 0,
+        .max_scrollback_bytes = 0,
     });
     defer terminal.deinit(allocator);
 
@@ -1306,7 +1306,7 @@ test "row pin stepping matches per-cell getCell for content, wide flag, and styl
     var row: usize = 0;
     while (row < @as(usize, terminal.rows)) : (row += 1) {
         const row_rac = row_pin.rowAndCell();
-        const row_cells = row_pin.node.data.getCells(row_rac.row);
+        const row_cells = row_pin.node.page().getCells(row_rac.row);
 
         var col: usize = 0;
         while (col < @as(usize, terminal.cols)) : (col += 1) {
@@ -1317,7 +1317,7 @@ test "row pin stepping matches per-cell getCell for content, wide flag, and styl
             try std.testing.expectEqual(reference.cell.content_tag, walked_cell.content_tag);
             try std.testing.expectEqual(reference.cell.wide, walked_cell.wide);
             if (reference.cell.content_tag == .codepoint or reference.cell.content_tag == .codepoint_grapheme) {
-                try std.testing.expectEqual(reference.cell.content.codepoint, walked_cell.content.codepoint);
+                try std.testing.expectEqual(reference.cell.content.codepoint.data, walked_cell.content.codepoint.data);
             }
 
             const reference_style = reference.style();

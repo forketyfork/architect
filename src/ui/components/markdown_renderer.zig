@@ -234,7 +234,7 @@ pub fn freeLines(allocator: std.mem.Allocator, lines: *std.ArrayList(RenderLine)
         allocator.free(line.plain_text);
     }
     lines.deinit(allocator);
-    lines.* = .{};
+    lines.* = .empty;
 }
 
 fn freeTableCells(allocator: std.mem.Allocator, table_cells: []TableCell) void {
@@ -380,7 +380,7 @@ fn flushCurrentLine(
 
     const plain = try joinRunText(allocator, current.items);
     const runs = try current.toOwnedSlice(allocator);
-    current.* = .{};
+    current.* = .empty;
 
     try lines.append(allocator, .{
         .kind = .text,

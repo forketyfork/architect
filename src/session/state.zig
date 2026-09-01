@@ -12,6 +12,7 @@ const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
 const pty_reader_mod = @import("pty_reader.zig");
+const posix_util = @import("../posix_util.zig");
 const mac = if (builtin.os.tag == .macos)
     @cImport({
         @cInclude("sys/types.h");
@@ -111,7 +112,7 @@ pub const SessionState = struct {
     /// Set to true once updateCwd observes a non-root directory. Prevents the transient `/`
     /// that the shell briefly reports during startup from polluting recent_folders.
     cwd_settled: bool = false,
-    pending_write: std.ArrayListUnmanaged(u8) = .empty,
+    pending_write: std.ArrayList(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
     /// Context for disambiguating process exit callbacks. Includes its own completion struct
@@ -132,7 +133,7 @@ pub const SessionState = struct {
     agent_metadata_captured: bool = false,
     /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
     /// stale UUIDs from earlier scrollback.
-    quit_capture: std.ArrayListUnmanaged(u8) = .empty,
+    quit_capture: std.ArrayList(u8) = .empty,
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
@@ -230,10 +231,10 @@ pub const SessionState = struct {
             }
         }
 
-        var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
+        var terminal = try ghostty_vt.Terminal.init(self.io, self.allocator, .{
             .cols = self.pty_size.ws_col,
             .rows = self.pty_size.ws_row,
-            .max_scrollback = 10_000_000,
+            .max_scrollback_bytes = 10_000_000,
             .default_modes = .{ .grapheme_cluster = true },
             .colors = terminalColorsFromTheme(self.theme),
         });
@@ -397,7 +398,7 @@ pub const SessionState = struct {
         }
     }
 
-    pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
+    pub const ProcessOutputError = posix.ReadError || std.Io.File.Writer.Error || error{
         DivisionByZero,
         GraphemeAllocOutOfMemory,
         GraphemeMapOutOfMemory,
@@ -646,7 +647,7 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
-            try stream.nextSlice(self.output_buf[0..n]);
+            stream.nextSlice(self.output_buf[0..n]);
             const processed_at_ms = clock.nowMillis(self.io);
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
@@ -814,11 +815,9 @@ pub const SessionState = struct {
         if (getForegroundPgrp(shell.child_pid)) |fg| return fg;
 
         const slave_path_z = ptsname(shell.pty.master) orelse return null;
-        const slave_path = std.mem.sliceTo(slave_path_z, 0);
-        const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
-            return null;
-        };
-        defer posix.close(fd);
+        const fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
+        if (fd == -1) return null;
+        defer _ = std.c.close(fd);
         const fg_pgrp = tcgetpgrp(fd);
         if (fg_pgrp <= 0) return null;
         return @intCast(fg_pgrp);
@@ -1016,7 +1015,7 @@ fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
     return info.kp_eproc.e_tpgid;
 }
 
-pub const MakeNonBlockingError = posix.FcntlError;
+pub const MakeNonBlockingError = posix_util.FcntlError;
 
 test "synchronized output timeout clears stuck terminal mode" {
     const allocator = std.testing.allocator;
@@ -1026,10 +1025,10 @@ test "synchronized output timeout clears stuck terminal mode" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1050,10 +1049,10 @@ test "synchronized output timeout resets when mode is already clear" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1071,10 +1070,10 @@ test "synchronized output timeout waits for output to go quiet" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1050;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1094,10 +1093,10 @@ test "synchronized output keeps future last-output sample" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1101;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1116,10 +1115,10 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 5099;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1167,7 +1166,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    const pid = try posix.fork();
+    const pid = try posix_util.fork();
     if (pid == 0) {
         std.c._exit(0);
     }
@@ -1175,9 +1174,10 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     // Give the forked child a moment to exit and become reapable.
     clock.sleepNanos(threaded.io(), 50 * std.time.ns_per_ms);
 
-    const pipe_fds = try posix.pipe();
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
     // pty.deinit() only closes the master fd; close the slave ourselves.
-    defer posix.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[0]);
 
     var session = try SessionState.init(allocator, threaded.io(), 0, "/bin/zsh", size, notify_sock, theme, null);
     // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
@@ -1269,13 +1269,13 @@ test "resetForRespawn clears agent metadata" {
 }
 
 fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
-    const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+    const flags = try posix_util.fcntl(fd, posix.F.GETFL, 0);
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
+    _ = try posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
-fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
+fn maybeShrinkPendingWrite(buf: *std.ArrayList(u8), allocator: std.mem.Allocator) void {
     if (buf.items.len == 0 and buf.capacity > pending_write_shrink_threshold) {
         buf.shrinkAndFree(allocator, 0);
     }
@@ -1283,7 +1283,7 @@ fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.
 
 test "pending write shrinks when empty and over threshold" {
     const allocator = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
     try buf.ensureTotalCapacity(allocator, pending_write_shrink_threshold + 10);
@@ -1333,15 +1333,17 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
     defer session.deinit(allocator);
 
-    const pipe_fds = try posix.pipe();
-    defer posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[1]);
     try makeNonBlocking(pipe_fds[0]);
 
     session.shell = .{
+        .io = session.io,
         .pty = .{ .master = pipe_fds[0], .slave = pipe_fds[1] },
         .child_pid = 0,
     };
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{ .cols = 80, .rows = 24 });
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
     if (session.terminal) |*terminal| {
         if (session.shell) |*shell| {
             session.stream = vt_stream.initStream(allocator, terminal, shell);
@@ -1352,12 +1354,12 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     session.dead = true;
     session.quit_capture_active = true;
 
-    _ = try posix.write(pipe_fds[1], "\x1b[?2026h\x1b[H");
+    _ = try posix_util.write(pipe_fds[1], "\x1b[?2026h\x1b[H");
     var i: usize = 0;
     while (i < 40) : (i += 1) {
-        _ = try posix.write(pipe_fds[1], "chunk-of-a-frame ");
+        _ = try posix_util.write(pipe_fds[1], "chunk-of-a-frame ");
     }
-    _ = try posix.write(pipe_fds[1], "\x1b[?2026l");
+    _ = try posix_util.write(pipe_fds[1], "\x1b[?2026l");
 
     try std.testing.expectEqual(
         pty_reader_mod.PumpOutcome.progressed,

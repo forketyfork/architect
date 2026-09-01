@@ -264,7 +264,7 @@ fn resizeTerminal(
     rows: u16,
     size: pty_mod.winsize,
 ) !void {
-    try terminal.resize(allocator, cols, rows);
+    try terminal.resize(allocator, .{ .cols = cols, .rows = rows });
     terminal.width_px = @intCast(size.ws_xpixel);
     terminal.height_px = @intCast(size.ws_ypixel);
     // Spec-allowed by DEC mode 2026: clear synchronized output on resize so the
@@ -337,7 +337,7 @@ const TestSessionFixture = struct {
     fn deinit(self: *TestSessionFixture, allocator: std.mem.Allocator) void {
         self.session.dead = true;
         self.session.deinit(allocator);
-        std.posix.close(self.slave_fd);
+        _ = std.c.close(self.slave_fd);
     }
 };
 
@@ -351,13 +351,13 @@ fn initSpawnedTestSession(
     const slave_fd = pty.slave;
     errdefer {
         pty.deinit();
-        std.posix.close(slave_fd);
+        _ = std.c.close(slave_fd);
     }
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = terminal_cols,
         .rows = terminal_rows,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     errdefer terminal.deinit(allocator);
     terminal.width_px = @intCast(pty_size.ws_xpixel);
@@ -529,10 +529,10 @@ test "applyTerminalResize reports no change when the cell count already matches"
 test "terminal resize preserves prompt contents when shell does not redraw" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer terminal.deinit(allocator);
 
@@ -561,10 +561,10 @@ test "terminal resize preserves prompt contents when shell does not redraw" {
 test "terminal resize clears semantic prompt when shell redraws prompt" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer terminal.deinit(allocator);
 

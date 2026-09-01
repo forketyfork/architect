@@ -26,7 +26,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, st
     var discarding_oversized_line = false;
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try stdin_file.readStreaming(io, &.{&chunk});
+        const n = stdin_file.readStreaming(io, &.{&chunk}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
         if (n == 0) break;
 
         for (chunk[0..n]) |byte| {

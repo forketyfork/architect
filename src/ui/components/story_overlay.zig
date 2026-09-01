@@ -47,22 +47,22 @@ pub const StoryOverlayComponent = struct {
     scrollbar_state: scrollbar.State = .{},
 
     raw_content: ?[]u8 = null,
-    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .{},
-    lines: std.ArrayList(markdown_renderer.RenderLine) = .{},
+    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .empty,
+    lines: std.ArrayList(markdown_renderer.RenderLine) = .empty,
     file_path: ?[]u8 = null,
 
     wrap_cols: usize = 0,
 
-    anchor_positions: std.ArrayList(AnchorPosition) = .{},
+    anchor_positions: std.ArrayList(AnchorPosition) = .empty,
     hovered_anchor: ?u8 = null,
     hover_start_ms: i64 = 0,
 
     search_active: bool = false,
     search: text_edit.TextInput = .{ .separators = text_edit.prose_separators, .accepts = text_edit.isSingleLineChar },
-    matches: std.ArrayList(SearchMatch) = .{},
+    matches: std.ArrayList(SearchMatch) = .empty,
     selected_match: ?usize = null,
 
-    link_hits: std.ArrayList(LinkHit) = .{},
+    link_hits: std.ArrayList(LinkHit) = .empty,
     hovered_link: ?usize = null,
 
     pointer_cursor: ?*c.SDL_Cursor = null,
@@ -147,7 +147,7 @@ pub const StoryOverlayComponent = struct {
         markdown_parser.freeBlocks(self.allocator, &self.blocks);
         self.blocks = markdown_parser.parseStory(self.allocator, self.raw_content orelse "") catch |err| {
             log.warn("failed to parse story markdown: {}", .{err});
-            self.blocks = .{};
+            self.blocks = .empty;
             return;
         };
 
@@ -160,7 +160,7 @@ pub const StoryOverlayComponent = struct {
         const effective_wrap = if (self.wrap_cols > 0) self.wrap_cols else 120;
         self.lines = markdown_renderer.buildLines(self.allocator, self.blocks.items, effective_wrap) catch |err| {
             log.warn("failed to build story layout: {}", .{err});
-            self.lines = .{};
+            self.lines = .empty;
             return;
         };
         self.rebuildSearchMatches();

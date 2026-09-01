@@ -23,7 +23,7 @@ const LoggerState = struct {
     initialized: bool = false,
     allocator: ?std.mem.Allocator = null,
     io: ?std.Io = null,
-    directory_path: ?[]u8 = null,
+    directory_path: ?[:0]u8 = null,
     file: ?File = null,
     current_size: u64 = 0,
     min_level: std.log.Level = .info,
@@ -154,22 +154,21 @@ fn rotateLocked(s: *LoggerState) !void {
     existing_file.close(io);
     s.file = null;
 
-    var active_path_buf: [fs.max_path_bytes]u8 = undefined;
-    const active_path = try buildPath(&active_path_buf, directory_path, active_log_filename);
+    var directory = try Dir.openDirAbsolute(io, directory_path, .{});
+    defer directory.close(io);
+
     const now_secs = clock.nowSeconds(io);
     var suffix_buf: [32]u8 = undefined;
     const suffix = try rotationSuffix(now_secs, &suffix_buf);
 
     var archive_name_buf: [128]u8 = undefined;
-    var archive_path_buf: [fs.max_path_bytes]u8 = undefined;
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
         const archive_name = if (attempt == 0)
             try std.fmt.bufPrint(&archive_name_buf, "architect-{s}.log", .{suffix})
         else
             try std.fmt.bufPrint(&archive_name_buf, "architect-{s}-{d}.log", .{ suffix, attempt });
-        const archive_path = try buildPath(&archive_path_buf, directory_path, archive_name);
-        Dir.renameAbsolute(active_path, archive_path, io) catch |err| switch (err) {
+        directory.renamePreserve(active_log_filename, directory, archive_name, io) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
             error.FileNotFound => break,
             else => return err,
@@ -207,29 +206,23 @@ fn writeRecordLocked(
         var writer = std.Io.Writer.fixed(&line_buf);
         writer.print("{s} level={s} scope={s} msg=\"", .{ timestamp, logLevelLabel(level), scope_name }) catch |err| switch (err) {
             error.WriteFailed => break :blk "1970-01-01T00:00:00Z level=ERROR scope=logging msg=\"failed to format log line\"\n",
-            else => return err,
         };
         writeEscapedMessage(&writer, message) catch |err| switch (err) {
             error.WriteFailed => {},
-            else => return err,
         };
         writer.writeByte('"') catch |err| switch (err) {
             error.WriteFailed => {},
-            else => return err,
         };
         if (extra_data) |extra| {
             writer.writeByte(' ') catch |err| switch (err) {
                 error.WriteFailed => {},
-                else => return err,
             };
             writer.writeAll(extra) catch |err| switch (err) {
                 error.WriteFailed => {},
-                else => return err,
             };
         }
         writer.writeByte('\n') catch |err| switch (err) {
             error.WriteFailed => {},
-            else => return err,
         };
         break :blk writer.buffered();
     };
@@ -257,9 +250,9 @@ fn writeEventLocked(
 
 fn emitLoggingInternalError(err: anyerror) void {
     var stderr_buf: [128]u8 = undefined;
-    var stderr_writer = std.debug.lockStderrWriter(&stderr_buf);
-    defer std.debug.unlockStderrWriter();
-    nosuspend stderr_writer.print("file logging failed: {}\n", .{err}) catch return;
+    const stderr = std.debug.lockStderr(&stderr_buf);
+    defer std.debug.unlockStderr();
+    nosuspend stderr.file_writer.interface.print("file logging failed: {}\n", .{err}) catch return;
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, options: InitOptions) !void {

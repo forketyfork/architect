@@ -3,6 +3,7 @@ const posix = std.posix;
 const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const grid_layout = @import("../app/grid_layout.zig");
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.pty_reader);
 
@@ -301,13 +302,12 @@ fn run(ctx: ReaderContext) void {
     }
 }
 
-fn makeNonBlockingPipe() ![2]posix.fd_t {
-    const fds = try posix.pipe();
-    const flags = try posix.fcntl(fds[0], posix.F.GETFL, 0);
+fn makeNonBlockingPipe(fds: *[2]posix.fd_t) !void {
+    try posix_util.pipe(fds);
+    const flags = try posix_util.fcntl(fds[0], posix.F.GETFL, 0);
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    _ = try posix.fcntl(fds[0], posix.F.SETFL, @as(u32, @bitCast(o_flags)));
-    return fds;
+    _ = try posix_util.fcntl(fds[0], posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
 fn waitForBufferBytes(io: std.Io, buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
@@ -344,12 +344,13 @@ test "PtyOutputBuffer pumps a pipe and consumes in order" {
     const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "hello ");
-    _ = try posix.write(fds[1], "world");
+    _ = try posix_util.write(fds[1], "hello ");
+    _ = try posix_util.write(fds[1], "world");
 
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
 
@@ -364,9 +365,10 @@ test "PtyOutputBuffer returns idle when the fd has no data" {
     const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     try std.testing.expectEqual(PumpOutcome.idle, buffer.pumpFd(fds[0]));
 }
@@ -376,18 +378,19 @@ test "PtyOutputBuffer wraps around a small ring without corrupting bytes" {
     const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 8);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     var out: [8]u8 = undefined;
 
-    _ = try posix.write(fds[1], "abcdef");
+    _ = try posix_util.write(fds[1], "abcdef");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(@as(usize, 4), buffer.consume(out[0..4]));
     try std.testing.expectEqualSlices(u8, "abcd", out[0..4]);
 
-    _ = try posix.write(fds[1], "ghijk");
+    _ = try posix_util.write(fds[1], "ghijk");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     const n = buffer.consume(&out);
     try std.testing.expectEqualSlices(u8, "efghijk", out[0..n]);
@@ -398,11 +401,12 @@ test "PtyOutputBuffer reports full and resumes after the consumer drains" {
     const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "abcdef");
+    _ = try posix_util.write(fds[1], "abcdef");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.full, buffer.pumpFd(fds[0]));
     try std.testing.expect(!buffer.canAcceptBytes());
@@ -422,11 +426,12 @@ test "PtyOutputBuffer records EOF when the write end closes" {
     const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
 
-    _ = try posix.write(fds[1], "tail");
-    posix.close(fds[1]);
+    _ = try posix_util.write(fds[1], "tail");
+    _ = std.c.close(fds[1]);
 
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.closed, buffer.pumpFd(fds[0]));
@@ -443,11 +448,12 @@ test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
     const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "data");
+    _ = try posix_util.write(fds[1], "data");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
 
     {
@@ -516,9 +522,10 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
@@ -535,20 +542,20 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     }
 
     reader.register(fds[0], buffer);
-    _ = try posix.write(fds[1], "ping");
+    _ = try posix_util.write(fds[1], "ping");
 
     try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expect(wake_pending.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
-    _ = try posix.write(fds[1], "pong");
+    _ = try posix_util.write(fds[1], "pong");
     clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     var out: [16]u8 = undefined;
     _ = buffer.consume(&out);
     wake_pending.store(false, .seq_cst);
-    _ = try posix.write(fds[1], "again");
+    _ = try posix_util.write(fds[1], "again");
     try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expectEqual(@as(usize, 2), wake_count.load(.seq_cst));
 }
@@ -560,9 +567,10 @@ test "PtyReader.retire prevents any further reads of the fd" {
     const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
@@ -575,13 +583,13 @@ test "PtyReader.retire prevents any further reads of the fd" {
     }
 
     reader.register(fds[0], buffer);
-    _ = try posix.write(fds[1], "before");
+    _ = try posix_util.write(fds[1], "before");
     try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     var out: [32]u8 = undefined;
     _ = buffer.consume(&out);
 
     reader.retire(fds[0]);
-    _ = try posix.write(fds[1], "after");
+    _ = try posix_util.write(fds[1], "after");
     clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expect(!bufferHasBytes(buffer));
 }
