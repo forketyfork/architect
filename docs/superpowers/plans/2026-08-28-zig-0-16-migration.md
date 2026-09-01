@@ -2088,7 +2088,7 @@ Expected: exit 0, no output.
 - Consumes: the Task 1 Step 9 conclusion
 - Produces: either a removed workaround or an updated comment naming 0.16.0
 
-- [ ] **Step 1: Read the Task 1 conclusion**
+- [x] **Step 1: Read the Task 1 conclusion**
 
 Open `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` and find the SDK-workaround verdict. Do not re-derive it.
 
@@ -2110,7 +2110,7 @@ Expected: only `scripts/setup-macos-sdk-workaround.sh` itself and any docs menti
 
 If nothing else references it, delete the script and remove the repo note about it from `CLAUDE.md` (Task 15 covers the doc edit). If the release workflow references it, leave the script and stop — that is a separate change.
 
-- [ ] **Step 2b: If Task 1 concluded the workaround is still needed — update its comment**
+- [x] **Step 2b: If Task 1 concluded the workaround is still needed — update its comment**
 
 ```nix
             # Zig 0.16.0 cannot link correctly against the arm64e-only macOS 26.4 SDK stubs.
@@ -2119,7 +2119,7 @@ If nothing else references it, delete the script and remove the repo note about 
             . "$project_root/scripts/setup-macos-sdk-workaround.sh"
 ```
 
-- [ ] **Step 3: Verify the shell still builds the project**
+- [x] **Step 3: Verify the shell still builds the project**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -2129,12 +2129,12 @@ Expected: exit 0. Run this unpiped.
 
 If removal broke linking, the Task 1 conclusion was wrong for this host. Restore the workaround, take branch 2b instead, and record the discrepancy in the inventory doc.
 
-- [ ] **Step 4: Verify the release build path**
+- [x] **Step 4: Verify the release build path**
 
 Run: `nix develop --command zig build -Doptimize=ReleaseFast`
 Expected: exit 0. Release builds use a different link configuration than Debug, and the SDK workaround affects linking specifically.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add flake.nix scripts/ 2>/dev/null

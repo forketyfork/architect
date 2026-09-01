@@ -78,8 +78,8 @@
             # some dependency but we need to rely on system Xcode tools
             export PATH=$(echo "$PATH" | ${pkgs.gawk}/bin/awk -v RS=: -v ORS=: '$0 !~ /xcrun/ || $0 == "/usr/bin" {print}' | ${pkgs.gnused}/bin/sed 's/:$//')
 
-            # Zig 0.15.2 cannot link correctly against the arm64e-only macOS 26.4 SDK stubs.
-            # Remove this once we move off Zig 0.15.2 or the upstream fix lands.
+            # Zig 0.16.0 cannot link correctly against the arm64e-only macOS 26.4 SDK stubs.
+            # Remove this once the upstream fix lands.
             project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
             . "$project_root/scripts/setup-macos-sdk-workaround.sh"
           '');
