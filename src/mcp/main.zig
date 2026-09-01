@@ -15,13 +15,12 @@ const JsonRpcErrorCode = enum(i32) {
     internal_error = -32603,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    try run(gpa.allocator(), std.fs.File.stdin(), std.fs.File.stdout());
+pub fn main(init: std.process.Init) !void {
+    try run(init.gpa, init.io, std.Io.File.stdin(), std.Io.File.stdout());
 }
 
-pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: std.fs.File) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void {
+    _ = io;
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 

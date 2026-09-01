@@ -1366,7 +1366,7 @@ the migration."
   - `proc.run(allocator: std.mem.Allocator, io: std.Io, options: RunOptions) !RunResult`, `proc.spawnDetached(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !Term`
   - `proc.Term` is unchanged (`exited`/`signal`/`stopped`/`unknown`, `signal: u32`)
 
-- [ ] **Step 1: Convert `src/main.zig` to take `std.process.Init`**
+- [x] **Step 1: Convert `src/main.zig` to take `std.process.Init`**
 
 `std.process.Init` supplies `io`, `gpa`, `arena`, and `environ_map`; `std.process.argsAlloc` is gone and arguments arrive through `init.minimal.args`.
 
@@ -1394,7 +1394,7 @@ Add `const env = @import("env.zig");` to the imports.
 
 If `std.process.Args.Iterator`'s exact method name differs from `next()`, read `lib/std/process/Args.zig` in the 0.16 lib directory (`$(dirname $(readlink -f $(which zig)))/../lib/std/process/Args.zig`) and use the real name. Do not guess.
 
-- [ ] **Step 2: Convert `src/mcp/main.zig`**
+- [x] **Step 2: Convert `src/mcp/main.zig`**
 
 ```zig
 pub fn main(init: std.process.Init) !void {
@@ -1406,7 +1406,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, st
 
 `init.gpa` replaces the `DebugAllocator` entirely, so the `var gpa` / `defer _ = gpa.deinit()` lines are deleted.
 
-- [ ] **Step 3: Convert `src/env.zig` internals**
+- [x] **Step 3: Convert `src/env.zig` internals**
 
 ```zig
 var process_environ: ?std.process.Environ = null;
@@ -1426,7 +1426,7 @@ pub fn get(key: []const u8) ?[:0]const u8 {
 
 The panic is deliberate: a read before initialization is a programming error with no correct recovery, and returning `null` would silently hide it.
 
-- [ ] **Step 4: Fix `src/env.zig`'s tests for the new initialization requirement**
+- [x] **Step 4: Fix `src/env.zig`'s tests for the new initialization requirement**
 
 The tests call `get` without a `main`, so they must initialize first. The test binary's environment is reachable through `std.process.Environ`:
 
@@ -1452,7 +1452,7 @@ test "get returns null for a variable that is not set" {
 
 `.global` is the process-wide environ block; confirm the exact spelling against `lib/std/process/Environ.zig:35` (`pub const GlobalBlock`) in the installed 0.16 lib directory and use whatever constructor it actually provides. Do not guess.
 
-- [ ] **Step 5: Convert `src/clock.zig` internals**
+- [x] **Step 5: Convert `src/clock.zig` internals**
 
 ```zig
 pub fn nowSeconds(io: std.Io) i64 {
@@ -1480,7 +1480,7 @@ pub fn sleepNanos(io: std.Io, nanoseconds: u64) void {
 
 `Timestamp.nanoseconds` is `i96`; `toNanoseconds()` returns `i96`, which widens losslessly to the `i128` callers expect.
 
-- [ ] **Step 6: Update `src/clock.zig`'s tests to pass `io`**
+- [x] **Step 6: Update `src/clock.zig`'s tests to pass `io`**
 
 Tests need their own `Io`. Create one per test:
 
@@ -1524,7 +1524,7 @@ test "sleepNanos advances the clock by at least the requested span" {
 }
 ```
 
-- [ ] **Step 7: Convert `src/proc.zig` internals**
+- [x] **Step 7: Convert `src/proc.zig` internals**
 
 `std.process.run` covers the collect-output shape exactly, including `cwd` and output limits. `std.process.spawn` plus `Child.wait` covers the spawn-and-wait shape.
 
@@ -1563,7 +1563,7 @@ pub fn spawnDetached(allocator: std.mem.Allocator, io: std.Io, argv: []const []c
 
 `spawnDetached` keeps its `allocator` parameter (discarded) so the four call sites do not change shape; drop the parameter only if a reviewer asks.
 
-- [ ] **Step 8: Update `src/proc.zig`'s tests to pass `io`**
+- [x] **Step 8: Update `src/proc.zig`'s tests to pass `io`**
 
 Prefix each test with the same `std.Io.Threaded` setup shown in Step 6 and thread `io` into every `run` / `spawnDetached` call. For example:
 
@@ -1584,14 +1584,14 @@ test "run collects stdout and reports a zero exit" {
 }
 ```
 
-- [ ] **Step 9: Verify the error class shrank**
+- [x] **Step 9: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'argsAlloc|GeneralPurposeAllocator|std\.time\.(timestamp|milliTimestamp|nanoTimestamp)|std\.Thread\.sleep' .tmp/flip-errors.txt`
 Expected: no output. The entry-point, allocator, time, and sleep error classes are gone; the remaining errors are missing-`io` errors at the call sites Tasks 8–12 fix.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 nix develop --command zig fmt src/

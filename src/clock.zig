@@ -11,26 +11,32 @@ const std = @import("std");
 /// functions did. `nowNanos` is used for frame pacing, which would be better
 /// served by a monotonic clock, but switching it is a behavior change and is
 /// deliberately out of scope for the toolchain migration.
-pub fn nowSeconds() i64 {
-    return std.time.timestamp();
+pub fn nowSeconds(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toSeconds();
 }
 
-pub fn nowMillis() i64 {
-    return std.time.milliTimestamp();
+pub fn nowMillis(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toMilliseconds();
 }
 
-pub fn nowNanos() i128 {
-    return std.time.nanoTimestamp();
+pub fn nowNanos(io: std.Io) i128 {
+    return std.Io.Timestamp.now(io, .real).toNanoseconds();
 }
 
-pub fn sleepNanos(nanoseconds: u64) void {
-    std.Thread.sleep(nanoseconds);
+pub fn sleepNanos(io: std.Io, nanoseconds: u64) void {
+    std.Io.sleep(io, .fromNanoseconds(@intCast(nanoseconds)), .awake) catch |err| {
+        std.log.scoped(.clock).warn("sleep interrupted: {}", .{err});
+    };
 }
 
 test "the three clock reads agree on the same instant" {
-    const secs = nowSeconds();
-    const millis = nowMillis();
-    const nanos = nowNanos();
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const secs = nowSeconds(io);
+    const millis = nowMillis(io);
+    const nanos = nowNanos(io);
 
     // All three read the same wall clock, so they must agree once scaled
     // down to seconds. A one-second tolerance absorbs a tick landing
@@ -48,15 +54,20 @@ test "the three clock reads agree on the same instant" {
 }
 
 test "nowSeconds returns a plausible wall-clock time" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
     // 2026-01-01T00:00:00Z. Guards against a clock source that returns
     // uptime or zero instead of Unix time.
-    try std.testing.expect(nowSeconds() > 1_767_225_600);
+    try std.testing.expect(nowSeconds(threaded.io()) > 1_767_225_600);
 }
 
-test "sleepNanos advances the monotonic reading by at least the requested span" {
+test "sleepNanos advances the clock by at least the requested span" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const requested_ns: u64 = 5 * std.time.ns_per_ms;
-    const before = nowNanos();
-    sleepNanos(requested_ns);
-    const elapsed = nowNanos() - before;
-    try std.testing.expect(elapsed >= requested_ns);
+    const before = nowNanos(io);
+    sleepNanos(io, requested_ns);
+    try std.testing.expect(nowNanos(io) - before >= requested_ns);
 }
