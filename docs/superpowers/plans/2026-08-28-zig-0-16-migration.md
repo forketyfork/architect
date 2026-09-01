@@ -625,7 +625,7 @@ Zig 0.16 removes `std.time.timestamp`, `milliTimestamp`, `nanoTimestamp`, and `s
 
   Task 7 prefixes each with an `io: std.Io` parameter and keeps the names and return types unchanged.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/clock.zig` with only the tests:
 
@@ -667,7 +667,7 @@ test "sleepNanos advances the monotonic reading by at least the requested span" 
 }
 ```
 
-- [ ] **Step 2: Register the new file in the test registry**
+- [x] **Step 2: Register the new file in the test registry**
 
 In `src/main.zig`'s `test` block, in alphabetical position:
 
@@ -677,12 +677,12 @@ In `src/main.zig`'s `test` block, in alphabetical position:
     _ = @import("colors.zig");
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `nix develop --command zig build test 2>&1 | tail -20`
 Expected: FAIL with `use of undeclared identifier 'nowSeconds'`.
 
-- [ ] **Step 4: Write the minimal implementation**
+- [x] **Step 4: Write the minimal implementation**
 
 Add to `src/clock.zig`, above the tests:
 
@@ -715,12 +715,12 @@ pub fn sleepNanos(nanoseconds: u64) void {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped.
 
-- [ ] **Step 6: Commit the module**
+- [x] **Step 6: Commit the module**
 
 ```bash
 nix develop --command zig fmt src/
@@ -728,7 +728,7 @@ git add src/clock.zig src/main.zig
 git commit -m "feat(clock): add time and sleep accessor module"
 ```
 
-- [ ] **Step 7: Route the 13 timestamp sites through `clock`**
+- [x] **Step 7: Route the 13 timestamp sites through `clock`**
 
 Add `const clock = @import("clock.zig");` (or `@import("../clock.zig")` in `src/app/`, `src/session/`; `@import("../../clock.zig")` under `src/ui/components/`) and replace each call:
 
@@ -750,7 +750,7 @@ Add `const clock = @import("clock.zig");` (or `@import("../clock.zig")` in `src/
 
 Note: `src/app/control.zig` is compiled into the separate `control` module for the MCP binary as well as into the main binary, so its import must resolve from `src/app/` — use `@import("../clock.zig")`.
 
-- [ ] **Step 8: Route the 14 sleep sites through `clock`**
+- [x] **Step 8: Route the 14 sleep sites through `clock`**
 
 | Site | Replace with |
 | --- | --- |
@@ -771,7 +771,7 @@ Note: `src/app/control.zig` is compiled into the separate `control` module for t
 
 `std.time.ns_per_ms` and friends are compile-time constants that survive into 0.16 — leave them alone.
 
-- [ ] **Step 9: Verify no call site was missed**
+- [x] **Step 9: Verify no call site was missed**
 
 Run: `grep -rn 'std\.time\.\(milliTimestamp\|nanoTimestamp\|timestamp\)' src`
 Expected: no output.
@@ -779,7 +779,7 @@ Expected: no output.
 Run: `grep -rn 'std\.Thread\.sleep' src`
 Expected: no output.
 
-- [ ] **Step 10: Verify build, tests, and lint**
+- [x] **Step 10: Verify build, tests, and lint**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -794,7 +794,7 @@ Expected: exit 0.
 
 Timestamps drive animation and log rotation, which no unit test covers. Run: `nix develop --command zig build run` and confirm: the layout expand/collapse animation still runs smoothly (not instant, not frozen) — that exercises `layout.zig:94`; the log file under the log directory carries correct ISO-8601 timestamps — that exercises `logging.zig:197`; and quitting with a busy session still shows the shimmer overlay for its normal duration rather than hanging or returning instantly — that exercises the `runtime.zig` quit sleeps.
 
-- [ ] **Step 12: Format and commit**
+- [x] **Step 12: Format and commit**
 
 ```bash
 nix develop --command zig fmt src/
