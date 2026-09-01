@@ -57,8 +57,11 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     errdefer stderr_buf.deinit(allocator);
 
     errdefer {
-        _ = child.kill() catch |err| {
-            std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{err});
+        _ = child.kill() catch |kill_err| switch (kill_err) {
+            error.AlreadyTerminated => _ = child.wait() catch |wait_err| {
+                std.log.scoped(.proc).warn("failed to reap child after output failure: {}", .{wait_err});
+            },
+            else => std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{kill_err}),
         };
     }
 
@@ -79,6 +82,9 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
 /// Spawns `argv`, waits for it, and discards its output.
 pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) !Term {
     var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     return fromStdTerm(try child.spawnAndWait());
 }
 

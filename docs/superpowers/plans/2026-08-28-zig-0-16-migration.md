@@ -963,9 +963,14 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     var stderr_buf: std.ArrayList(u8) = .empty;
     errdefer stderr_buf.deinit(allocator);
 
-    errdefer child.kill() catch |err| {
-        std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{err});
-    };
+    errdefer {
+        _ = child.kill() catch |kill_err| switch (kill_err) {
+            error.AlreadyTerminated => _ = child.wait() catch |wait_err| {
+                std.log.scoped(.proc).warn("failed to reap child after output failure: {}", .{wait_err});
+            },
+            else => std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{kill_err}),
+        };
+    }
 
     try child.collectOutput(allocator, &stdout_buf, &stderr_buf, options.max_output_bytes);
     const term = try child.wait();
@@ -984,6 +989,9 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
 /// Spawns `argv`, waits for it, and discards its output.
 pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) !Term {
     var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     return fromStdTerm(try child.spawnAndWait());
 }
 ```
@@ -996,6 +1004,10 @@ at the flip regardless. Making it explicit here means it is exercised and
 tested under 0.15.2 rather than arriving unnoticed with the toolchain bump.
 Neither `gh pr list` nor `git diff` reads stdin, so no observable behavior
 changes — but verify the manual checks in Step 14 rather than assuming.
+
+Second-review correction: retain the existing zombie-reaping cleanup for
+`AlreadyTerminated` and explicitly ignore `spawnDetached` standard streams,
+preserving the pre-migration process-lifecycle and stdio behavior.
 
 - [x] **Step 5: Run the tests to verify they pass**
 
