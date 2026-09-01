@@ -2154,7 +2154,7 @@ git commit -m "build: resolve the macOS SDK workaround for Zig 0.16.0"
 - Consumes: the completed migration
 - Produces: documentation consistent with the 0.16 codebase
 
-- [ ] **Step 1: Update `CLAUDE.md`**
+- [x] **Step 1: Update `CLAUDE.md`**
 
 `AGENTS.md` is a symlink to `CLAUDE.md`, so edit only `CLAUDE.md`.
 
@@ -2189,26 +2189,26 @@ Add to the Architecture Invariants section:
 
 Update the repo note about the macOS SDK workaround to match whatever Task 14 concluded.
 
-- [ ] **Step 2: Update `docs/ARCHITECTURE.md`**
+- [x] **Step 2: Update `docs/ARCHITECTURE.md`**
 
 Document the three new shared-utility modules alongside the existing `src/geom.zig` / `src/anim/easing.zig` / `src/gfx/primitives.zig` tier, and the `io` carrier data flow from `main(init)` through `runtime.run` into the session and UI layers. Read the existing document's structure first and follow it rather than appending a new section at the end.
 
-- [ ] **Step 3: Update `docs/development.md`**
+- [x] **Step 3: Update `docs/development.md`**
 
 Update the Zig version and any setup instructions that name 0.15.2.
 
-- [ ] **Step 4: Check `README.md` and `docs/perf-debugging.md`**
+- [x] **Step 4: Check `README.md` and `docs/perf-debugging.md`**
 
 Run: `grep -n '0\.15' README.md docs/perf-debugging.md docs/configuration.md docs/ai-integration.md`
 
 Update every hit. If there are none, leave the files alone — do not edit them to look busy.
 
-- [ ] **Step 5: Verify no stale version references remain**
+- [x] **Step 5: Verify no stale version references remain**
 
 Run: `grep -rn '0\.15\.2\|Zig 0\.15' --exclude-dir=.git --exclude-dir=.tmp --exclude-dir=zig-out --exclude-dir=.zig-cache .`
 Expected: only `docs/superpowers/specs/2026-08-28-zig-0-16-migration-design.md`, `docs/superpowers/plans/2026-08-28-zig-0-16-migration.md`, and `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md`, which document the migration and should retain their historical references.
 
-- [ ] **Step 6: Verify the whole pipeline**
+- [x] **Step 6: Verify the whole pipeline**
 
 Run: `nix develop --command just ci`
 Expected: exit 0. This runs build, test, and lint in sequence.
@@ -2235,7 +2235,7 @@ Automated checks cannot reach any of Architect's rendering, terminal, or subproc
 
 Record any discrepancy as a migration defect and fix it before proceeding.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A

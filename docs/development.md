@@ -25,15 +25,15 @@ This document covers local setup, build/test commands, and release steps.
    direnv allow
    ```
 
-   On macOS hosts where the active `MacOSX.sdk` only exposes `arm64e` targets, Zig 0.15.2 can fail during native Darwin linking with errors such as `undefined symbol: __availability_version_check`. The upstream tracker for this regression is https://codeberg.org/ziglang/zig/issues/31756.
+   On macOS hosts where the active `MacOSX.sdk` only exposes `arm64e` targets, the Zig 0.16.0 dev shell retains a workaround for native Darwin linking errors such as `undefined symbol: __availability_version_check`. The upstream tracker for this regression is https://codeberg.org/ziglang/zig/issues/31756.
 
    The dev shell works around that by exposing `MacOSX15.4.sdk` through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for `xcrun --sdk macosx --show-sdk-path`. `build.zig` also resolves framework paths through `DEVELOPER_DIR` and `xcrun` before it falls back to hardcoded SDK locations, so the workaround does not need to force `SDKROOT`. Keeping the shim inside the fake developer tree means tools like `git` can still invoke `/usr/bin/xcrun` without tripping over the overridden `DEVELOPER_DIR`.
 
-   Remove this workaround once Architect no longer uses Zig 0.15.2, or once Zig handles the arm64e-only macOS SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
+   Keep this workaround until a macOS host confirms that Zig handles the arm64e-only SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
 
 3. Verify the environment:
    ```bash
-   zig version  # Should show 0.15.2+ (compatible with ghostty-vt)
+   zig version  # Should show 0.16.0+ (compatible with ghostty-vt)
    just --list  # Show available commands
    ```
 

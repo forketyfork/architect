@@ -14,9 +14,8 @@
 ## Build Requirements
 
 ### Zig Version
-- Minimum Zig version: **0.15.1** (example code)
-- Ghostty main requires: **0.15.2**
 - Use the version specified in the consuming project's `build.zig.zon`
+- Architect currently requires: **0.16.0**
 
 ### Dependencies
 
