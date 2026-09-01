@@ -131,14 +131,13 @@ pub const StoryOverlayComponent = struct {
     }
 
     fn readFile(self: *StoryOverlayComponent, path: []const u8) ?[]u8 {
-        const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch |err| {
             log.warn("failed to open story file {s}: {}", .{ path, err });
             return null;
         };
-        defer file.close();
+        defer file.close(self.io);
 
-        const max_size: usize = 4 * 1024 * 1024;
-        return file.readToEndAlloc(self.allocator, max_size) catch |err| {
+        return std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(4 * 1024 * 1024)) catch |err| {
             log.warn("failed to read story file {s}: {}", .{ path, err });
             return null;
         };

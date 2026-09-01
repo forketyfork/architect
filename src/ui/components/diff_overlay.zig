@@ -412,13 +412,13 @@ pub const DiffOverlayComponent = struct {
         };
         defer self.allocator.free(abs_path);
 
-        const file = std.fs.openFileAbsolute(abs_path, .{}) catch |err| {
+        const file = std.Io.Dir.openFileAbsolute(self.io, abs_path, .{}) catch |err| {
             log.warn("failed to open untracked file {s}: {}", .{ rel_path, err });
             return;
         };
-        defer file.close();
+        defer file.close(self.io);
 
-        const stat = file.stat() catch |err| {
+        const stat = file.stat(self.io) catch |err| {
             log.warn("failed to stat untracked file {s}: {}", .{ rel_path, err });
             return;
         };
@@ -433,7 +433,7 @@ pub const DiffOverlayComponent = struct {
             return;
         }
 
-        const content = file.readToEndAlloc(self.allocator, max_file_bytes) catch |err| {
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, abs_path, self.allocator, .limited(max_file_bytes)) catch |err| {
             log.warn("failed to read untracked file {s}: {}", .{ rel_path, err });
             return;
         };
@@ -2769,7 +2769,7 @@ pub const DiffOverlayComponent = struct {
 
         const dir_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect" }) catch return;
         defer self.allocator.free(dir_path);
-        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+        std.Io.Dir.createDirAbsolute(self.io, dir_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => {
                 log.warn("failed to create .architect dir: {}", .{err});
@@ -2800,12 +2800,12 @@ pub const DiffOverlayComponent = struct {
         }
         buf.appendSlice(self.allocator, "\n]\n") catch return;
 
-        const file = std.fs.createFileAbsolute(file_path, .{ .truncate = true }) catch |err| {
+        const file = std.Io.Dir.createFileAbsolute(self.io, file_path, .{ .truncate = true }) catch |err| {
             log.warn("failed to create comments file: {}", .{err});
             return;
         };
-        defer file.close();
-        file.writeAll(buf.items) catch |err| {
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch |err| {
             log.warn("failed to write comments file: {}", .{err});
         };
     }
@@ -2836,9 +2836,7 @@ pub const DiffOverlayComponent = struct {
         const file_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect", "diff_comments.json" }) catch return;
         defer self.allocator.free(file_path);
 
-        const file = std.fs.openFileAbsolute(file_path, .{}) catch return;
-        defer file.close();
-        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return;
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, file_path, self.allocator, .limited(1024 * 1024)) catch return;
         defer self.allocator.free(content);
 
         self.parseCommentsJson(content);

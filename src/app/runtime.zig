@@ -765,7 +765,7 @@ fn planExternalSpawnSlot(
     };
 }
 
-fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
+fn validateExternalSpawnCwd(io: std.Io, cwd: []const u8) ?control.SpawnFailure {
     if (!std.fs.path.isAbsolute(cwd)) {
         return .{
             .code = .invalid_cwd,
@@ -773,13 +773,13 @@ fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
         };
     }
 
-    var dir = std.fs.openDirAbsolute(cwd, .{}) catch {
+    var dir = std.Io.Dir.openDirAbsolute(io, cwd, .{}) catch {
         return .{
             .code = .invalid_cwd,
             .message = "cwd must be an existing directory",
         };
     };
-    dir.close();
+    dir.close(io);
     return null;
 }
 
@@ -892,7 +892,7 @@ fn handleExternalSpawnRequest(
     pending: *control.PendingSpawn,
 ) void {
     const allocator = context.allocator;
-    if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
+    if (validateExternalSpawnCwd(context.io, pending.request.cwd)) |failure| {
         pending.completion.complete(.{ .failure = failure });
         return;
     }
@@ -3682,9 +3682,9 @@ test "agentLabel reports the detected agent name or 'none'" {
 }
 
 test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
-    try std.testing.expect(validateExternalSpawnCwd("/tmp") == null);
+    try std.testing.expect(validateExternalSpawnCwd(std.testing.io, "/tmp") == null);
 
-    const failure = validateExternalSpawnCwd("relative/path") orelse return error.TestUnexpectedResult;
+    const failure = validateExternalSpawnCwd(std.testing.io, "relative/path") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(control.SpawnErrorCode.invalid_cwd, failure.code);
 }
 

@@ -15,7 +15,8 @@ pub const std_options: std.Options = .{
 pub fn main(init: std.process.Init) !void {
     env.init(init.minimal.environ);
 
-    var args = init.minimal.args;
+    var args = std.process.Args.Iterator.init(init.minimal.args);
+    defer args.deinit();
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(init.gpa);
     while (args.next()) |arg| {

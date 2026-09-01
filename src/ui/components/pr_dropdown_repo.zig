@@ -3,7 +3,6 @@ const std = @import("std");
 /// Walk upward from `cwd` looking for a `.git` directory (or `.git` file for worktrees).
 /// Returns a newly-allocated absolute path to the directory containing `.git`.
 pub fn findRepoRoot(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) !?[]u8 {
-    _ = io;
     var current = try allocator.dupe(u8, cwd);
     errdefer allocator.free(current);
 
@@ -12,13 +11,13 @@ pub fn findRepoRoot(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) !
         defer allocator.free(dot_git);
 
         var found = false;
-        if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
+        if (std.Io.Dir.openDirAbsolute(io, dot_git, .{})) |dir_const| {
             var dir = dir_const;
-            dir.close();
+            dir.close(io);
             found = true;
         } else |_| {
-            if (std.fs.openFileAbsolute(dot_git, .{})) |file| {
-                file.close();
+            if (std.Io.Dir.openFileAbsolute(io, dot_git, .{})) |file| {
+                file.close(io);
                 found = true;
             } else |_| {}
         }
@@ -44,33 +43,32 @@ pub fn detectGithubOrigin(allocator: std.mem.Allocator, io: std.Io, repo_root: [
     const cfg_path = try resolveConfigPath(allocator, io, repo_root);
     defer allocator.free(cfg_path);
 
-    var file = std.fs.openFileAbsolute(cfg_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(io, cfg_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 256 * 1024);
+    defer file.close(io);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, cfg_path, allocator, .limited(256 * 1024));
     defer allocator.free(bytes);
 
     return originUrlIsGithub(bytes);
 }
 
 fn resolveConfigPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {
-    _ = io;
     const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
     defer allocator.free(dot_git);
 
-    if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
+    if (std.Io.Dir.openDirAbsolute(io, dot_git, .{})) |dir_const| {
         var dir = dir_const;
-        dir.close();
+        dir.close(io);
         return std.fs.path.join(allocator, &.{ dot_git, "config" });
     } else |_| {}
 
-    var file = std.fs.openFileAbsolute(dot_git, .{}) catch {
+    const file = std.Io.Dir.openFileAbsolute(io, dot_git, .{}) catch {
         return std.fs.path.join(allocator, &.{ dot_git, "config" });
     };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
+    defer file.close(io);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, dot_git, allocator, .limited(4096));
     defer allocator.free(bytes);
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "gitdir:")) {
@@ -87,9 +85,9 @@ fn resolveConfigPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []cons
     // at `<main>/.git/config`. Read `commondir` to find the main gitdir.
     const commondir_path = try std.fs.path.join(allocator, &.{ gitdir_abs, "commondir" });
     defer allocator.free(commondir_path);
-    if (std.fs.openFileAbsolute(commondir_path, .{})) |cf| {
-        defer cf.close();
-        const cb = try cf.readToEndAlloc(allocator, 4096);
+    if (std.Io.Dir.openFileAbsolute(io, commondir_path, .{})) |cf| {
+        defer cf.close(io);
+        const cb = try std.Io.Dir.cwd().readFileAlloc(io, commondir_path, allocator, .limited(4096));
         defer allocator.free(cb);
         const ct = std.mem.trim(u8, cb, " \t\r\n");
         if (ct.len > 0) {
@@ -148,12 +146,12 @@ pub fn readCurrentBranch(allocator: std.mem.Allocator, io: std.Io, repo_root: []
     const head_path = try resolveHeadPath(allocator, io, repo_root);
     defer allocator.free(head_path);
 
-    var file = std.fs.openFileAbsolute(head_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(io, head_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
+    defer file.close(io);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, head_path, allocator, .limited(4096));
     defer allocator.free(bytes);
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
     const prefix = "ref: refs/heads/";
@@ -164,21 +162,20 @@ pub fn readCurrentBranch(allocator: std.mem.Allocator, io: std.Io, repo_root: []
 }
 
 fn resolveHeadPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {
-    _ = io;
     const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
     defer allocator.free(dot_git);
 
-    if (std.fs.openDirAbsolute(dot_git, .{})) |dir_const| {
+    if (std.Io.Dir.openDirAbsolute(io, dot_git, .{})) |dir_const| {
         var dir = dir_const;
-        dir.close();
+        dir.close(io);
         return std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
     } else |_| {}
 
-    var file = std.fs.openFileAbsolute(dot_git, .{}) catch {
+    const file = std.Io.Dir.openFileAbsolute(io, dot_git, .{}) catch {
         return std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
     };
-    defer file.close();
-    const bytes = try file.readToEndAlloc(allocator, 4096);
+    defer file.close(io);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, dot_git, allocator, .limited(4096));
     defer allocator.free(bytes);
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "gitdir:")) {

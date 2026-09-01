@@ -1885,11 +1885,11 @@ The remaining 19 source sites.
 - Consumes: `io` threaded in by Tasks 8 and 9
 - Produces: no `fs.` filesystem calls remain anywhere in `src/`
 
-- [ ] **Step 1: Convert each file using the mapping table**
+- [x] **Step 1: Convert each file using the mapping table**
 
 All sites in these files use the `std.fs.`-qualified spelling, so `grep -n 'std\.fs\.' <file>` enumerates them. Use `self.io` inside component methods (Task 9 added the field) and the function's `io` parameter in free functions.
 
-- [ ] **Step 2: Verify no filesystem call remains anywhere**
+- [x] **Step 2: Verify no filesystem call remains anywhere**
 
 Run: `grep -rnE '\b(std\.)?fs\.[A-Za-z_]+' src build.zig | grep -vE 'fs\.(path|max_path_bytes|max_name_bytes)'`
 Expected: no output.
@@ -1897,14 +1897,14 @@ Expected: no output.
 Run: `grep -rn 'std\.fs\.File\|std\.fs\.Dir' src build.zig`
 Expected: no output.
 
-- [ ] **Step 3: Verify the error class shrank**
+- [x] **Step 3: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -cE 'Mutex|Condition' .tmp/flip-errors.txt`
 Expected: the only remaining errors are mutex and condition errors, so this count equals the total error count from `grep -c 'error:'`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 nix develop --command zig fmt src/
