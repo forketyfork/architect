@@ -36,20 +36,16 @@ pub const Handler = struct {
         value: ghostty_vt.StreamAction.Value(action),
     ) void {
         self.vtFallible(action, value) catch |err| {
-            switch (@as(anyerror, err)) {
-                error.HyperlinkSetOutOfMemory,
-                error.HyperlinkSetNeedsRehash,
-                error.HyperlinkMapOutOfMemory,
-                => log.warn("OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{err}),
-                else => {
-                    self.semantic_failure = true;
-                    log.warn("error handling VT action action={} err={}", .{ action, err });
-                },
-            }
+            self.semantic_failure = true;
+            log.warn("error handling VT action action={} err={}", .{ action, err });
         };
     }
 
     pub fn hasSemanticFailure(self: *const Handler) bool {
+        // Ghostty's delegated handler exposes only this undifferentiated flag.
+        // Treat every delegated failure as fatal, including OSC 8 capacity
+        // exhaustion, because the current Ghostty API cannot distinguish it
+        // from terminal-state allocation failures.
         return self.semantic_failure or self.readonly.semantic_failure;
     }
 

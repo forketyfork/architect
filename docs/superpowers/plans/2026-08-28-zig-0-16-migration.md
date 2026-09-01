@@ -2022,6 +2022,8 @@ Never guess an API shape. If a diagnostic is not obviously mechanical, stop and 
 
 Reviewed: log rotation intentionally uses `Dir.renamePreserve`; POSIX file-to-file rename does not return `PathAlreadyExists`, so this makes the existing suffix retry avoid archive clobbering without changing successful rotation semantics.
 
+Accepted: Ghostty's delegated handler reports only an undifferentiated `semantic_failure` flag, so every delegated failure, including OSC 8 hyperlink capacity exhaustion, is session-fatal. The old fine-grained hyperlink exemption cannot be recovered at that API boundary.
+
 - [x] **Step 2: Normalize the deprecated ArrayList alias**
 
 0.16 keeps `std.ArrayListUnmanaged` as a deprecated alias for `std.ArrayList`, so these four sites compile but should not stay. `CLAUDE.md` mandates the `std.ArrayList` spelling:
