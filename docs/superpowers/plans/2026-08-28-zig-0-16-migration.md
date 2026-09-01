@@ -2007,7 +2007,7 @@ This is the first task in the flip whose gate is a fully green build.
 - Consumes: everything from Tasks 6–12
 - Produces: `zig build`, `zig build test`, and `just lint` all green under Zig 0.16.0
 
-- [ ] **Step 1: Drive the remaining errors to zero**
+- [x] **Step 1: Drive the remaining errors to zero**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 Run: `grep -c 'error:' .tmp/flip-errors.txt`
@@ -2020,7 +2020,7 @@ nix develop --command bash -c 'echo "$(dirname "$(readlink -f "$(which zig)")")/
 
 Never guess an API shape. If a diagnostic is not obviously mechanical, stop and report it rather than inventing a workaround.
 
-- [ ] **Step 2: Normalize the deprecated ArrayList alias**
+- [x] **Step 2: Normalize the deprecated ArrayList alias**
 
 0.16 keeps `std.ArrayListUnmanaged` as a deprecated alias for `std.ArrayList`, so these four sites compile but should not stay. `CLAUDE.md` mandates the `std.ArrayList` spelling:
 
@@ -2032,31 +2032,31 @@ Replace each `std.ArrayListUnmanaged(T)` with `std.ArrayList(T)`. The type is id
 Run: `grep -rn 'ArrayListUnmanaged' src`
 Expected after: no output.
 
-- [ ] **Step 3: Verify the build**
+- [x] **Step 3: Verify the build**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
 
-- [ ] **Step 4: Verify the tests**
+- [x] **Step 4: Verify the tests**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped — a pipe would mask a failing exit code.
 
 If any test fails, fix it. Do not weaken or delete a test to get green; a test that now fails is either a migration defect or a test that encoded a 0.15 implementation detail, and the two need different responses. If it is the latter, say so explicitly in the commit message.
 
-- [ ] **Step 5: Verify the test registry**
+- [x] **Step 5: Verify the test registry**
 
 Run: `nix develop --command ./scripts/check-test-registry.sh`
 Expected: exit 0. `src/env.zig`, `src/clock.zig`, and `src/proc.zig` were registered in Tasks 3–5; this confirms nothing regressed.
 
-- [ ] **Step 6: Verify lint, including Zwanzig under 0.16**
+- [x] **Step 6: Verify lint, including Zwanzig under 0.16**
 
 Run: `nix develop --command just lint`
 Expected: exit 0. This is also the live confirmation that zwanzig v0.15.1 builds and runs under Zig 0.16.0 — the `zig build lint` step compiles it from source with the host toolchain.
 
 If zwanzig fails to compile here, its `src/compat.zig` gate is the place to look; report the diagnostics rather than patching around them.
 
-- [ ] **Step 7: Commit the formatting churn separately**
+- [x] **Step 7: Commit the formatting churn separately**
 
 0.16's `zig fmt` may reformat files that 0.15.2 formatted differently. Keep it out of the substantive commits:
 
@@ -2068,7 +2068,7 @@ git commit -m "style: apply zig 0.16 formatting"
 
 If this produces an empty commit, skip it.
 
-- [ ] **Step 8: Verify formatting is stable**
+- [x] **Step 8: Verify formatting is stable**
 
 Run: `nix develop --command zig fmt --check src/`
 Expected: exit 0, no output.
