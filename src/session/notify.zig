@@ -201,7 +201,7 @@ pub fn startNotifyThread(
             }
 
             while (!ctx.stop.load(.seq_cst)) {
-                const connection = server.accept(ctx.io) catch |err| switch (err) {
+                const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
                     error.WouldBlock => {
                         clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                         continue;
@@ -211,8 +211,7 @@ pub fn startNotifyThread(
                         continue;
                     },
                 };
-                defer connection.close(ctx.io);
-                const conn_fd = connection.socket.handle;
+                defer _ = std.c.close(conn_fd);
 
                 const conn_flags = posix_util.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
                     log.debug("failed to get connection flags: {}", .{err});

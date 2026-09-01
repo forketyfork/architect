@@ -1342,7 +1342,7 @@ fn sendExitSequence(io: std.Io, master_fd: posix.fd_t, agent_kind: session_state
     const sequence = agent_kind.exitControlSequence();
     for (sequence, 0..) |byte, idx| {
         const buf = [1]u8{byte};
-        _ = posix.write(master_fd, &buf) catch |err| {
+        _ = posix_util.write(master_fd, &buf) catch |err| {
             log.warn("quit teardown: failed to send exit key sequence (step {d}) for {s}: {}", .{ idx + 1, agent_kind.name(), err });
             return;
         };
@@ -1354,8 +1354,15 @@ fn sendExitSequence(io: std.Io, master_fd: posix.fd_t, agent_kind: session_state
 }
 
 fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid_t {
-    const fd = posix.openZ(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
-    defer posix.close(fd);
+    const fd = while (true) {
+        const open_fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
+        switch (std.c.errno(open_fd)) {
+            .SUCCESS => break open_fd,
+            .INTR => continue,
+            else => return null,
+        }
+    };
+    defer _ = std.c.close(fd);
     const fg = tcgetpgrp(fd);
     if (fg <= 0) return null;
     const fg_pgrp: posix.pid_t = @intCast(fg);

@@ -88,6 +88,46 @@ pub const WriteError = error{
     MessageTooBig,
 } || std.posix.UnexpectedError;
 
+pub const AcceptError = error{
+    WouldBlock,
+    ConnectionAborted,
+    SocketNotListening,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    SystemResources,
+    ProtocolFailure,
+    BlockedByFirewall,
+} || std.posix.UnexpectedError;
+
+/// Accepts a connection on `sock` without capturing the peer address, mirroring
+/// Zig 0.15.2's `std.posix.accept(sock, null, null, 0)`. `std.Io.net.Server.accept`
+/// cannot be used here: it treats `EAGAIN` on a non-blocking listening socket as a
+/// programmer bug and panics, but the call sites need non-blocking accept to poll
+/// a stop flag alongside listening for connections.
+pub fn accept(sock: std.posix.fd_t) AcceptError!std.posix.fd_t {
+    while (true) {
+        const rc = std.posix.system.accept(sock, null, null);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .AGAIN => return error.WouldBlock,
+            .BADF => unreachable,
+            .CONNABORTED => return error.ConnectionAborted,
+            .FAULT => unreachable,
+            .INVAL => return error.SocketNotListening,
+            .NOTSOCK => unreachable,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            .NOBUFS => return error.SystemResources,
+            .NOMEM => return error.SystemResources,
+            .OPNOTSUPP => unreachable,
+            .PROTO => return error.ProtocolFailure,
+            .PERM => return error.BlockedByFirewall,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
 pub fn write(fd: std.posix.fd_t, bytes: []const u8) WriteError!usize {
     if (bytes.len == 0) return 0;
 

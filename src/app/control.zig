@@ -411,7 +411,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     setFdNonBlocking(fd, "control socket");
 
     while (!ctx.stop.load(.seq_cst)) {
-        const connection = server.accept(ctx.io) catch |err| switch (err) {
+        const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
             error.WouldBlock => {
                 clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                 continue;
@@ -421,7 +421,6 @@ fn controlThreadMain(ctx: ControlContext) !void {
                 continue;
             },
         };
-        const conn_fd = connection.socket.handle;
         setFdNonBlocking(conn_fd, "control connection");
         handleControlConnection(ctx.allocator, ctx.io, conn_fd, ctx.queue, ctx.runtime_wake);
         _ = std.c.close(conn_fd);
