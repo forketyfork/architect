@@ -1923,7 +1923,7 @@ git commit -m "refactor(ui): move component filesystem calls to std.Io.Dir"
 - Consumes: `io` available as a field on every struct that owns a mutex (Tasks 8 and 9)
 - Produces: no `std.Thread.Mutex` or `std.Thread.Condition` remains. `SpawnCompletion.complete(io, response)` and `SpawnCompletion.wait(io)` gain an `io` parameter, so their callers in `src/app/control.zig` and `src/app/runtime.zig` must pass one.
 
-- [ ] **Step 1: Change the declarations**
+- [x] **Step 1: Change the declarations**
 
 `std.Io.Mutex` and `std.Io.Condition` initialize with `.init`, not `.{}` — a default-initialized `.{}` will not compile because both carry non-defaulted atomic state. For each of the eight declarations:
 
@@ -1935,7 +1935,7 @@ git commit -m "refactor(ui): move component filesystem calls to std.Io.Dir"
     condition: std.Io.Condition = .init,
 ```
 
-- [ ] **Step 2: Add `io` to every lock, unlock, and wait**
+- [x] **Step 2: Add `io` to every lock, unlock, and wait**
 
 Use the uncancelable variants. `Io.Mutex.lock` and `Io.Condition.wait` return `Cancelable!void`, and Architect never requests cancellation, so making every lock site fallible would add `catch` blocks with no correct recovery — which `CLAUDE.md`'s error-handling rule forbids resolving with a bare `catch`. `lockUncancelable` and `waitUncancelable` are total functions.
 
@@ -1975,7 +1975,7 @@ Apply the same pattern to `SpawnQueue` (`src/app/control.zig:123`), `LoggerState
 
 `src/session/pty_reader.zig`'s mutexes are on the hot path between the PTY reader thread and the frame loop, so keep the critical sections exactly as narrow as they are today — do not widen a `defer unlock` to cover more work than the original.
 
-- [ ] **Step 3: Verify no thread synchronization primitive remains**
+- [x] **Step 3: Verify no thread synchronization primitive remains**
 
 Run: `grep -rn 'std\.Thread\.\(Mutex\|Condition\)' src`
 Expected: no output.
@@ -1983,7 +1983,7 @@ Expected: no output.
 Run: `grep -rn '\.lock()\|\.unlock()\|\.wait(&' src`
 Expected: no output — every call now takes `io`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 nix develop --command zig fmt src/

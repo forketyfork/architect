@@ -42,25 +42,27 @@ pub const PtyOutputBuffer = struct {
         closed,
     };
 
-    mutex: std.Thread.Mutex = .{},
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
     data: []u8,
     head: usize = 0,
     len: usize = 0,
     eof: bool = false,
     read_error: ?posix.ReadError = null,
 
-    pub fn create(allocator: std.mem.Allocator) error{OutOfMemory}!*PtyOutputBuffer {
-        return createWithCapacity(allocator, buffer_capacity);
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) error{OutOfMemory}!*PtyOutputBuffer {
+        return createWithCapacity(allocator, io, buffer_capacity);
     }
 
     pub fn createWithCapacity(
         allocator: std.mem.Allocator,
+        io: std.Io,
         capacity: usize,
     ) error{OutOfMemory}!*PtyOutputBuffer {
         std.debug.assert(capacity > 0);
         const self = try allocator.create(PtyOutputBuffer);
         errdefer allocator.destroy(self);
-        self.* = .{ .data = try allocator.alloc(u8, capacity) };
+        self.* = .{ .io = io, .data = try allocator.alloc(u8, capacity) };
         return self;
     }
 
@@ -72,8 +74,8 @@ pub const PtyOutputBuffer = struct {
     /// Reader-thread side: drain `fd` into free ring space until the fd
     /// would block, the ring fills, or the fd closes/fails.
     pub fn pumpFd(self: *PtyOutputBuffer, fd: posix.fd_t) PumpOutcome {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.eof or self.read_error != null) return .closed;
 
@@ -104,8 +106,8 @@ pub const PtyOutputBuffer = struct {
 
     /// Main-thread side: copy up to `dest.len` buffered bytes out, in order.
     pub fn consume(self: *PtyOutputBuffer, dest: []u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var copied: usize = 0;
         while (copied < dest.len and self.len > 0) {
@@ -123,8 +125,8 @@ pub const PtyOutputBuffer = struct {
     /// Surface the first unrecoverable read error once all buffered bytes are
     /// drained, so output preceding the failure is not lost.
     pub fn takePendingReadError(self: *PtyOutputBuffer) ?posix.ReadError {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.len > 0) return null;
         const err = self.read_error orelse return null;
         self.read_error = null;
@@ -136,8 +138,8 @@ pub const PtyOutputBuffer = struct {
     }
 
     fn pollState(self: *PtyOutputBuffer) PollState {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.eof or self.read_error != null) return .closed;
         if (self.len == self.data.len) return .full;
         return .ready;
@@ -171,21 +173,26 @@ fn isWakeWorthy(revents: i16) bool {
 /// read of a registered fd happens while `mutex` is held, so `retire`
 /// returning guarantees the reader can no longer touch the fd or buffer.
 pub const PtyReader = struct {
-    mutex: std.Thread.Mutex = .{},
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
     entries: [grid_layout.max_terminals]Entry = undefined,
     entry_count: usize = 0,
 
+    pub fn init(io: std.Io) PtyReader {
+        return .{ .io = io };
+    }
+
     pub fn register(self: *PtyReader, fd: posix.fd_t, buffer: *PtyOutputBuffer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         std.debug.assert(self.entry_count < self.entries.len);
         self.entries[self.entry_count] = .{ .fd = fd, .buffer = buffer };
         self.entry_count += 1;
     }
 
     pub fn retire(self: *PtyReader, fd: posix.fd_t) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         for (self.entries[0..self.entry_count], 0..) |entry, i| {
             if (entry.fd == fd) {
                 self.entries[i] = self.entries[self.entry_count - 1];
@@ -201,8 +208,8 @@ pub const PtyReader = struct {
         self: *PtyReader,
         out: *[grid_layout.max_terminals]posix.pollfd,
     ) PollSnapshot {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var count: usize = 0;
         var has_full_buffer = false;
         for (self.entries[0..self.entry_count]) |entry| {
@@ -219,8 +226,8 @@ pub const PtyReader = struct {
     }
 
     fn pumpReadyFds(self: *PtyReader, pollfds: []const posix.pollfd) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var progressed = false;
         for (pollfds) |pfd| {
             if (!isWakeWorthy(pfd.revents)) continue;
@@ -313,8 +320,8 @@ fn waitForBufferBytes(io: std.Io, buffer: *PtyOutputBuffer, timeout_ms: u64) boo
 }
 
 fn bufferHasBytes(buffer: *PtyOutputBuffer) bool {
-    buffer.mutex.lock();
-    defer buffer.mutex.unlock();
+    buffer.mutex.lockUncancelable(buffer.io);
+    defer buffer.mutex.unlock(buffer.io);
     return buffer.len > 0;
 }
 
@@ -334,7 +341,7 @@ test "isWakeWorthy fires for readable, hangup, error, and invalid fds" {
 
 test "PtyOutputBuffer pumps a pipe and consumes in order" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -354,7 +361,7 @@ test "PtyOutputBuffer pumps a pipe and consumes in order" {
 
 test "PtyOutputBuffer returns idle when the fd has no data" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -366,7 +373,7 @@ test "PtyOutputBuffer returns idle when the fd has no data" {
 
 test "PtyOutputBuffer wraps around a small ring without corrupting bytes" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 8);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 8);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -388,7 +395,7 @@ test "PtyOutputBuffer wraps around a small ring without corrupting bytes" {
 
 test "PtyOutputBuffer reports full and resumes after the consumer drains" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -412,7 +419,7 @@ test "PtyOutputBuffer reports full and resumes after the consumer drains" {
 
 test "PtyOutputBuffer records EOF when the write end closes" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -433,7 +440,7 @@ test "PtyOutputBuffer records EOF when the write end closes" {
 
 test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
@@ -444,8 +451,8 @@ test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
 
     {
-        buffer.mutex.lock();
-        defer buffer.mutex.unlock();
+        buffer.mutex.lockUncancelable(buffer.io);
+        defer buffer.mutex.unlock(buffer.io);
         buffer.read_error = error.NotOpenForReading;
     }
 
@@ -458,10 +465,10 @@ test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
 
 test "PtyReader register/retire updates the poll snapshot" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 16);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 16);
     defer buffer.destroy(allocator);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(std.testing.io);
     reader.register(7, buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
     try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(&pollfds).count);
@@ -473,19 +480,19 @@ test "PtyReader register/retire updates the poll snapshot" {
 
 test "PtyReader snapshot distinguishes full and closed buffers" {
     const allocator = std.testing.allocator;
-    const full_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const full_buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer full_buffer.destroy(allocator);
-    const closed_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const closed_buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer closed_buffer.destroy(allocator);
 
-    full_buffer.mutex.lock();
+    full_buffer.mutex.lockUncancelable(full_buffer.io);
     full_buffer.len = full_buffer.data.len;
-    full_buffer.mutex.unlock();
-    closed_buffer.mutex.lock();
+    full_buffer.mutex.unlock(full_buffer.io);
+    closed_buffer.mutex.lockUncancelable(closed_buffer.io);
     closed_buffer.eof = true;
-    closed_buffer.mutex.unlock();
+    closed_buffer.mutex.unlock(closed_buffer.io);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(std.testing.io);
     reader.register(7, full_buffer);
     reader.register(8, closed_buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
@@ -506,14 +513,14 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
     defer posix.close(fds[0]);
     defer posix.close(fds[1]);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
     var wake_count = atomic.Value(usize).init(0);
@@ -550,14 +557,14 @@ test "PtyReader.retire prevents any further reads of the fd" {
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
     const fds = try makeNonBlockingPipe();
     defer posix.close(fds[0]);
     defer posix.close(fds[1]);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
 

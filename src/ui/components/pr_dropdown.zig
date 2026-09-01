@@ -23,7 +23,7 @@ const FetchContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: []const u8,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     result: ?FetchResult = null,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -36,8 +36,8 @@ const FetchContext = struct {
     }
 
     fn takeResult(self: *FetchContext) ?FetchResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const result = self.result;
         self.result = null;
         return result;
@@ -595,9 +595,9 @@ pub const PRDropdownComponent = struct {
 
     fn fetchThreadMain(ctx: *FetchContext) void {
         const result = fetch.runGhPrList(ctx.allocator, ctx.io, ctx.cwd);
-        ctx.mutex.lock();
+        ctx.mutex.lockUncancelable(ctx.io);
         ctx.result = result;
-        ctx.mutex.unlock();
+        ctx.mutex.unlock(ctx.io);
         ctx.done.store(true, .release);
     }
 

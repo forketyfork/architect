@@ -19,7 +19,7 @@ pub const InitOptions = struct {
 };
 
 const LoggerState = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     initialized: bool = false,
     allocator: ?std.mem.Allocator = null,
     io: ?std.Io = null,
@@ -263,8 +263,8 @@ fn emitLoggingInternalError(err: anyerror) void {
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, options: InitOptions) !void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
     if (state.initialized) return;
 
@@ -295,18 +295,17 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: InitOptions) !voi
 }
 
 pub fn deinit() void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    const io = state.io orelse return;
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
     if (!state.initialized) return;
 
     if (state.file) |file| {
-        if (state.io) |io| {
-            file.sync(io) catch |err| {
-                emitLoggingInternalError(err);
-            };
-            file.close(io);
-        }
+        file.sync(io) catch |err| {
+            emitLoggingInternalError(err);
+        };
+        file.close(io);
     }
 
     if (state.directory_path) |path| {
@@ -326,20 +325,23 @@ pub fn deinit() void {
 }
 
 pub fn isInitialized() bool {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    const io = state.io orelse return false;
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
     return state.initialized;
 }
 
 pub fn writeStartupMarker() !void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    const io = state.io orelse return error.LoggerNotInitialized;
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
     try writeEventLocked(&state, "runtime", "architect startup", "startup", null);
 }
 
 pub fn writeShutdownMarker() !void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    const io = state.io orelse return error.LoggerNotInitialized;
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
     try writeEventLocked(&state, "runtime", "architect shutdown", "shutdown", null);
 }
 
@@ -349,8 +351,9 @@ pub fn writeEvent(
     event_name: []const u8,
     extra_data: ?[]const u8,
 ) !void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    const io = state.io orelse return error.LoggerNotInitialized;
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
     try writeEventLocked(&state, scope_name, message, event_name, extra_data);
 }
 
@@ -361,9 +364,9 @@ pub fn logFn(
     args: anytype,
 ) void {
     var should_fallback_to_stderr = false;
-    {
-        state.mutex.lock();
-        defer state.mutex.unlock();
+    if (state.io) |io| {
+        state.mutex.lockUncancelable(io);
+        defer state.mutex.unlock(io);
 
         if (!state.initialized) {
             should_fallback_to_stderr = true;
@@ -380,6 +383,8 @@ pub fn logFn(
                 should_fallback_to_stderr = true;
             };
         }
+    } else {
+        should_fallback_to_stderr = true;
     }
 
     if (should_fallback_to_stderr) {

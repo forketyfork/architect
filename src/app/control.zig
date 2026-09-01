@@ -91,26 +91,26 @@ pub const RuntimeWake = struct {
 };
 
 pub const SpawnCompletion = struct {
-    mutex: std.Thread.Mutex = .{},
-    condition: std.Thread.Condition = .{},
+    mutex: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
     completed: bool = false,
     response: SpawnResponse = undefined,
 
-    pub fn complete(self: *SpawnCompletion, response: SpawnResponse) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn complete(self: *SpawnCompletion, io: std.Io, response: SpawnResponse) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         self.response = response;
         self.completed = true;
-        self.condition.signal();
+        self.condition.signal(io);
     }
 
-    pub fn wait(self: *SpawnCompletion) SpawnResponse {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn wait(self: *SpawnCompletion, io: std.Io) SpawnResponse {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         while (!self.completed) {
-            self.condition.wait(&self.mutex);
+            self.condition.waitUncancelable(io, &self.mutex);
         }
         return self.response;
     }
@@ -122,22 +122,22 @@ pub const PendingSpawn = struct {
 };
 
 pub const SpawnQueue = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     items: std.ArrayListUnmanaged(PendingSpawn) = .empty,
 
     pub fn deinit(self: *SpawnQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
-    pub fn push(self: *SpawnQueue, allocator: std.mem.Allocator, item: PendingSpawn) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn push(self: *SpawnQueue, allocator: std.mem.Allocator, io: std.Io, item: PendingSpawn) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *SpawnQueue) std.ArrayListUnmanaged(PendingSpawn) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn drainAll(self: *SpawnQueue, io: std.Io) std.ArrayListUnmanaged(PendingSpawn) {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const items = self.items;
         self.items = .empty;
         return items;
@@ -375,13 +375,14 @@ pub fn cleanupControlFiles(io: std.Io, socket_path: [:0]const u8, discovery_path
 pub fn failPending(
     queue: *SpawnQueue,
     allocator: std.mem.Allocator,
+    io: std.Io,
     code: SpawnErrorCode,
     message: []const u8,
 ) void {
-    var pending = queue.drainAll();
+    var pending = queue.drainAll(io);
     defer pending.deinit(allocator);
     for (pending.items) |*item| {
-        item.completion.complete(.{ .failure = .{ .code = code, .message = message } });
+        item.completion.complete(io, .{ .failure = .{ .code = code, .message = message } });
         item.request.deinit(allocator);
     }
 }
@@ -476,7 +477,7 @@ fn handleControlConnection(
     errdefer request.deinit(allocator);
 
     var completion = SpawnCompletion{};
-    queue.push(allocator, .{
+    queue.push(allocator, io, .{
         .request = request,
         .completion = &completion,
     }) catch |err| {
@@ -495,7 +496,7 @@ fn handleControlConnection(
         waker.notify();
     }
 
-    const response = completion.wait();
+    const response = completion.wait(io);
     writeControlResponse(io, conn_fd, response) catch |err| {
         log.debug("failed to write control response: {}", .{err});
     };
@@ -986,17 +987,17 @@ test "SpawnQueue drains queued requests" {
     defer queue.deinit(allocator);
 
     var completion = SpawnCompletion{};
-    try queue.push(allocator, .{
+    try queue.push(allocator, std.testing.io, .{
         .request = .{ .cwd = try allocator.dupe(u8, "/tmp") },
         .completion = &completion,
     });
 
-    var pending = queue.drainAll();
+    var pending = queue.drainAll(std.testing.io);
     defer pending.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     pending.items[0].request.deinit(allocator);
 
-    var empty = queue.drainAll();
+    var empty = queue.drainAll(std.testing.io);
     defer empty.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), empty.items.len);
 }

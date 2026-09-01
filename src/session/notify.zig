@@ -24,22 +24,22 @@ pub const StoryNotification = struct {
 };
 
 pub const NotificationQueue = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     items: std.ArrayListUnmanaged(Notification) = .{},
 
     pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
-    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, item: Notification) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, io: std.Io, item: Notification) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *NotificationQueue) std.ArrayListUnmanaged(Notification) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn drainAll(self: *NotificationQueue, io: std.Io) std.ArrayListUnmanaged(Notification) {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const items = self.items;
         self.items = .{};
         return items;
@@ -90,11 +90,12 @@ fn releaseNotification(allocator: std.mem.Allocator, note: Notification) void {
 
 fn enqueueNotification(
     allocator: std.mem.Allocator,
+    io: std.Io,
     queue: *NotificationQueue,
     runtime_wake: ?RuntimeWake,
     note: Notification,
 ) void {
-    queue.push(allocator, note) catch |err| {
+    queue.push(allocator, io, note) catch |err| {
         log.warn("failed to queue notification for session {d}: {}", .{ notificationSessionId(note), err });
         releaseNotification(allocator, note);
         return;
@@ -248,7 +249,7 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items, ctx.allocator)) |note| {
-                    enqueueNotification(ctx.allocator, ctx.queue, ctx.runtime_wake, note);
+                    enqueueNotification(ctx.allocator, ctx.io, ctx.queue, ctx.runtime_wake, note);
                 }
             }
         }
@@ -270,11 +271,11 @@ test "NotificationQueue - push and drain" {
     var queue = NotificationQueue{};
     defer queue.deinit(allocator);
 
-    try queue.push(allocator, .{ .status = .{ .session = 0, .state = .running } });
-    try queue.push(allocator, .{ .status = .{ .session = 1, .state = .awaiting_approval } });
-    try queue.push(allocator, .{ .status = .{ .session = 2, .state = .done } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 0, .state = .running } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 1, .state = .awaiting_approval } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 2, .state = .done } });
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 3), items.items.len);
@@ -304,12 +305,13 @@ test "enqueueNotification wakes after queueing" {
 
     enqueueNotification(
         allocator,
+        std.testing.io,
         &queue,
         wake,
         .{ .status = .{ .session = 7, .state = .done } },
     );
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), wake_count);
@@ -339,17 +341,18 @@ test "enqueueNotification skips wake when queueing fails" {
     };
 
     while (true) {
-        queue.push(allocator, .{ .status = .{ .session = 1, .state = .running } }) catch break;
+        queue.push(allocator, std.testing.io, .{ .status = .{ .session = 1, .state = .running } }) catch break;
     }
 
     enqueueNotification(
         allocator,
+        std.testing.io,
         &queue,
         wake,
         .{ .status = .{ .session = 7, .state = .done } },
     );
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), wake_count);

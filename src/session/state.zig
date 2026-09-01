@@ -263,7 +263,7 @@ pub const SessionState = struct {
         self.stream = stream;
         self.markDirty();
 
-        const buffer = try pty_reader_mod.PtyOutputBuffer.create(self.allocator);
+        const buffer = try pty_reader_mod.PtyOutputBuffer.create(self.allocator, self.io);
         self.pty_buffer = buffer;
         if (self.pty_reader) |reader| reader.register(shell.pty.master, buffer);
 
@@ -1347,7 +1347,7 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
             session.stream = vt_stream.initStream(allocator, terminal, shell);
         } else return error.TestUnexpectedResult;
     } else return error.TestUnexpectedResult;
-    session.pty_buffer = try pty_reader_mod.PtyOutputBuffer.create(allocator);
+    session.pty_buffer = try pty_reader_mod.PtyOutputBuffer.create(allocator, session.io);
     session.spawned = true;
     session.dead = true;
     session.quit_capture_active = true;

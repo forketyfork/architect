@@ -794,11 +794,12 @@ fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
 }
 
 fn completeExternalSpawnFailure(
+    io: std.Io,
     pending: *control.PendingSpawn,
     code: control.SpawnErrorCode,
     message: []const u8,
 ) void {
-    pending.completion.complete(.{ .failure = .{
+    pending.completion.complete(io, .{ .failure = .{
         .code = code,
         .message = message,
     } });
@@ -893,14 +894,14 @@ fn handleExternalSpawnRequest(
 ) void {
     const allocator = context.allocator;
     if (validateExternalSpawnCwd(context.io, pending.request.cwd)) |failure| {
-        pending.completion.complete(.{ .failure = failure });
+        pending.completion.complete(context.io, .{ .failure = failure });
         return;
     }
 
     const command_input = if (pending.request.command) |command| blk: {
         break :blk buildQueuedCommand(allocator, command) catch |err| {
             log.warn("failed to prepare external spawn command: {}", .{err});
-            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare command for the new session");
+            completeExternalSpawnFailure(context.io, pending, .spawn_failed, "failed to prepare command for the new session");
             return;
         };
     } else null;
@@ -908,7 +909,7 @@ fn handleExternalSpawnRequest(
 
     const cwd_buf = allocZ(allocator, pending.request.cwd) catch |err| {
         log.warn("failed to allocate external spawn cwd: {}", .{err});
-        completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare working directory");
+        completeExternalSpawnFailure(context.io, pending, .spawn_failed, "failed to prepare working directory");
         return;
     };
     defer allocator.free(cwd_buf);
@@ -921,11 +922,11 @@ fn handleExternalSpawnRequest(
         else
             "failed to spawn terminal session";
         const code: control.SpawnErrorCode = if (err == error.NoFreeSession) .full_grid else .spawn_failed;
-        completeExternalSpawnFailure(pending, code, message);
+        completeExternalSpawnFailure(context.io, pending, code, message);
         return;
     };
 
-    pending.completion.complete(.{ .success = .{
+    pending.completion.complete(context.io, .{ .success = .{
         .session_id = session.id,
         .slot_index = session.slot_index,
     } });
@@ -1445,7 +1446,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     var control_stop = std.atomic.Value(bool).init(false);
     var pty_reader_stop = std.atomic.Value(bool).init(false);
     var pty_wake_pending = std.atomic.Value(bool).init(false);
-    var pty_reader_state = pty_reader.PtyReader{};
+    var pty_reader_state = pty_reader.PtyReader.init(io);
 
     var config = config_mod.Config.load(allocator, io) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1571,7 +1572,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     );
     defer {
         control_stop.store(true, .seq_cst);
-        control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
+        control.failPending(&control_queue, allocator, io, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(io, control_sock, control_discovery_path);
     }
@@ -2692,7 +2693,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
             .cell_height_pixels = &cell_height_pixels,
         };
 
-        var control_requests = control_queue.drainAll();
+        var control_requests = control_queue.drainAll(io);
         defer control_requests.deinit(allocator);
         const had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
@@ -2700,7 +2701,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
             request.request.deinit(allocator);
         }
 
-        var notifications = notify_queue.drainAll();
+        var notifications = notify_queue.drainAll(io);
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
