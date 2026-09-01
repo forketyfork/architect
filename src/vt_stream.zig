@@ -16,6 +16,7 @@ pub const Handler = struct {
     terminal: *ghostty_vt.Terminal,
     shell: *shell_mod.Shell,
     readonly: ReadonlyHandler,
+    semantic_failure: bool = false,
 
     pub fn init(terminal: *ghostty_vt.Terminal, shell: *shell_mod.Shell) Handler {
         return .{
@@ -35,8 +36,21 @@ pub const Handler = struct {
         value: ghostty_vt.StreamAction.Value(action),
     ) void {
         self.vtFallible(action, value) catch |err| {
-            log.warn("error handling VT action action={} err={}", .{ action, err });
+            switch (@as(anyerror, err)) {
+                error.HyperlinkSetOutOfMemory,
+                error.HyperlinkSetNeedsRehash,
+                error.HyperlinkMapOutOfMemory,
+                => log.warn("OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{err}),
+                else => {
+                    self.semantic_failure = true;
+                    log.warn("error handling VT action action={} err={}", .{ action, err });
+                },
+            }
         };
+    }
+
+    pub fn hasSemanticFailure(self: *const Handler) bool {
+        return self.semantic_failure or self.readonly.semantic_failure;
     }
 
     fn vtFallible(

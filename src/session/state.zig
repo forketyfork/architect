@@ -408,6 +408,7 @@ pub const SessionState = struct {
         StringAllocOutOfMemory,
         StyleSetNeedsRehash,
         StyleSetOutOfMemory,
+        VtSemanticFailure,
     };
 
     fn processExitCallback(
@@ -648,6 +649,7 @@ pub const SessionState = struct {
             }
             const was_synchronized_output = self.synchronizedOutputActive();
             stream.nextSlice(self.output_buf[0..n]);
+            if (stream.handler.hasSemanticFailure()) return error.VtSemanticFailure;
             const processed_at_ms = clock.nowMillis(self.io);
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
@@ -815,8 +817,14 @@ pub const SessionState = struct {
         if (getForegroundPgrp(shell.child_pid)) |fg| return fg;
 
         const slave_path_z = ptsname(shell.pty.master) orelse return null;
-        const fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
-        if (fd == -1) return null;
+        const fd = while (true) {
+            const open_fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
+            switch (std.c.errno(open_fd)) {
+                .SUCCESS => break open_fd,
+                .INTR => continue,
+                else => return null,
+            }
+        };
         defer _ = std.c.close(fd);
         const fg_pgrp = tcgetpgrp(fd);
         if (fg_pgrp <= 0) return null;
@@ -1370,6 +1378,16 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     if (session.terminal) |*terminal| {
         try std.testing.expect(!terminal.modes.get(.synchronized_output));
     } else return error.TestUnexpectedResult;
+
+    if (session.stream) |*stream| {
+        stream.handler.readonly.semantic_failure = true;
+    } else return error.TestUnexpectedResult;
+    _ = try posix_util.write(pipe_fds[1], "x");
+    try std.testing.expectEqual(
+        pty_reader_mod.PumpOutcome.progressed,
+        session.pty_buffer.?.pumpFd(pipe_fds[0]),
+    );
+    try std.testing.expectError(error.VtSemanticFailure, session.processOutput());
 }
 
 test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {

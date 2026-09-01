@@ -2020,6 +2020,8 @@ nix develop --command bash -c 'echo "$(dirname "$(readlink -f "$(which zig)")")/
 
 Never guess an API shape. If a diagnostic is not obviously mechanical, stop and report it rather than inventing a workaround.
 
+Reviewed: log rotation intentionally uses `Dir.renamePreserve`; POSIX file-to-file rename does not return `PathAlreadyExists`, so this makes the existing suffix retry avoid archive clobbering without changing successful rotation semantics.
+
 - [x] **Step 2: Normalize the deprecated ArrayList alias**
 
 0.16 keeps `std.ArrayListUnmanaged` as a deprecated alias for `std.ArrayList`, so these four sites compile but should not stay. `CLAUDE.md` mandates the `std.ArrayList` spelling:
