@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
+const Dir = std.Io.Dir;
+const File = std.Io.File;
 const clock = @import("clock.zig");
 const env = @import("env.zig");
 const time_c = @cImport({
@@ -22,7 +24,7 @@ const LoggerState = struct {
     allocator: ?std.mem.Allocator = null,
     io: ?std.Io = null,
     directory_path: ?[]u8 = null,
-    file: ?fs.File = null,
+    file: ?File = null,
     current_size: u64 = 0,
     min_level: std.log.Level = .info,
     max_file_size_bytes: u64 = default_max_file_size_bytes,
@@ -129,15 +131,16 @@ fn writeEscapedMessage(writer: *std.Io.Writer, message: []const u8) !void {
     }
 }
 
-fn openActiveLogFile(directory_path: []const u8) !struct { file: fs.File, size: u64 } {
+fn openActiveLogFile(io: std.Io, directory_path: []const u8) !struct { file: File, size: u64 } {
     var active_path_buf: [fs.max_path_bytes]u8 = undefined;
     const active_path = try buildPath(&active_path_buf, directory_path, active_log_filename);
-    const file = try fs.createFileAbsolute(active_path, .{
+    const file = try Dir.createFileAbsolute(io, active_path, .{
         .truncate = false,
         .read = true,
     });
-    const size = try file.getEndPos();
-    try file.seekTo(size);
+    const size = (try file.stat(io)).size;
+    var writer = file.writerStreaming(io, &.{});
+    try writer.seekTo(size);
     return .{
         .file = file,
         .size = size,
@@ -147,12 +150,13 @@ fn openActiveLogFile(directory_path: []const u8) !struct { file: fs.File, size: 
 fn rotateLocked(s: *LoggerState) !void {
     const directory_path = s.directory_path orelse return error.LoggerNotInitialized;
     const existing_file = s.file orelse return error.LoggerNotInitialized;
-    existing_file.close();
+    const io = s.io orelse return error.LoggerNotInitialized;
+    existing_file.close(io);
     s.file = null;
 
     var active_path_buf: [fs.max_path_bytes]u8 = undefined;
     const active_path = try buildPath(&active_path_buf, directory_path, active_log_filename);
-    const now_secs = clock.nowSeconds(s.io orelse return error.LoggerNotInitialized);
+    const now_secs = clock.nowSeconds(io);
     var suffix_buf: [32]u8 = undefined;
     const suffix = try rotationSuffix(now_secs, &suffix_buf);
 
@@ -165,7 +169,7 @@ fn rotateLocked(s: *LoggerState) !void {
         else
             try std.fmt.bufPrint(&archive_name_buf, "architect-{s}-{d}.log", .{ suffix, attempt });
         const archive_path = try buildPath(&archive_path_buf, directory_path, archive_name);
-        fs.renameAbsolute(active_path, archive_path) catch |err| switch (err) {
+        Dir.renameAbsolute(active_path, archive_path, io) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
             error.FileNotFound => break,
             else => return err,
@@ -173,7 +177,7 @@ fn rotateLocked(s: *LoggerState) !void {
         break;
     }
 
-    const active = try openActiveLogFile(directory_path);
+    const active = try openActiveLogFile(io, directory_path);
     s.file = active.file;
     s.current_size = active.size;
 }
@@ -232,7 +236,7 @@ fn writeRecordLocked(
 
     try ensureCapacityLocked(s, line.len);
     const log_file = s.file orelse return error.LoggerNotInitialized;
-    try log_file.writeAll(line);
+    try log_file.writeStreamingAll(s.io orelse return error.LoggerNotInitialized, line);
     s.current_size += line.len;
 }
 
@@ -273,12 +277,12 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: InitOptions) !voi
             try defaultLogDirectoryPath(allocator);
         defer allocator.free(raw_directory_path);
 
-        try fs.cwd().makePath(raw_directory_path);
-        break :blk try fs.cwd().realpathAlloc(allocator, raw_directory_path);
+        try Dir.cwd().createDirPath(io, raw_directory_path);
+        break :blk try Dir.cwd().realPathFileAlloc(io, raw_directory_path, allocator);
     };
     errdefer allocator.free(directory_path);
 
-    const active = try openActiveLogFile(directory_path);
+    const active = try openActiveLogFile(io, directory_path);
 
     state.allocator = allocator;
     state.io = io;
@@ -297,10 +301,12 @@ pub fn deinit() void {
     if (!state.initialized) return;
 
     if (state.file) |file| {
-        file.sync() catch |err| {
-            emitLoggingInternalError(err);
-        };
-        file.close();
+        if (state.io) |io| {
+            file.sync(io) catch |err| {
+                emitLoggingInternalError(err);
+            };
+            file.close(io);
+        }
     }
 
     if (state.directory_path) |path| {
@@ -350,7 +356,7 @@ pub fn writeEvent(
 
 pub fn logFn(
     comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -385,12 +391,10 @@ fn activeLogPathAlloc(allocator: std.mem.Allocator, directory_path: []const u8) 
     return fs.path.join(allocator, &[_][]const u8{ directory_path, active_log_filename });
 }
 
-fn readActiveLogAlloc(allocator: std.mem.Allocator, directory_path: []const u8) ![]u8 {
+fn readActiveLogAlloc(allocator: std.mem.Allocator, io: std.Io, directory_path: []const u8) ![]u8 {
     const active_path = try activeLogPathAlloc(allocator, directory_path);
     defer allocator.free(active_path);
-    const file = try fs.openFileAbsolute(active_path, .{});
-    defer file.close();
-    return file.readToEndAlloc(allocator, 4 * 1024 * 1024);
+    return try Dir.cwd().readFileAlloc(io, active_path, allocator, .limited(4 * 1024 * 1024));
 }
 
 test "timestampToLocalIso8601 includes local timezone offset" {
@@ -411,7 +415,7 @@ test "logFn respects minimum level filtering" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     try init(allocator, std.testing.io, .{
@@ -424,7 +428,7 @@ test "logFn respects minimum level filtering" {
     logFn(.info, .logging_test, "info message should be filtered", .{});
     logFn(.warn, .logging_test, "warn message should be written", .{});
 
-    const contents = try readActiveLogAlloc(allocator, tmp_path);
+    const contents = try readActiveLogAlloc(allocator, std.testing.io, tmp_path);
     defer allocator.free(contents);
 
     try std.testing.expect(!std.mem.containsAtLeast(u8, contents, 1, "info message should be filtered"));
@@ -436,7 +440,7 @@ test "log line includes timestamp, level, scope, and message fields" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     try init(allocator, std.testing.io, .{
@@ -447,7 +451,7 @@ test "log line includes timestamp, level, scope, and message fields" {
 
     logFn(.info, .runtime, "hello structured log", .{});
 
-    const contents = try readActiveLogAlloc(allocator, tmp_path);
+    const contents = try readActiveLogAlloc(allocator, std.testing.io, tmp_path);
     defer allocator.free(contents);
 
     const line = std.mem.trim(u8, contents, "\n");
@@ -469,7 +473,7 @@ test "rotation archives old file once size limit is exceeded" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     try init(allocator, std.testing.io, .{
@@ -484,13 +488,13 @@ test "rotation archives old file once size limit is exceeded" {
         logFn(.info, .rotation_test, "rotation line {d} abcdefghijklmnopqrstuvwxyz", .{idx});
     }
 
-    var dir = try fs.openDirAbsolute(tmp_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try Dir.openDirAbsolute(std.testing.io, tmp_path, .{ .iterate = true });
+    defer dir.close(std.testing.io);
     var iterator = dir.iterate();
 
     var active_found = false;
     var archive_count: usize = 0;
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.testing.io)) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.eql(u8, entry.name, active_log_filename)) {
             active_found = true;
@@ -508,10 +512,10 @@ test "rotation archives old file once size limit is exceeded" {
 test "init resolves a relative directory_override to an absolute log directory" {
     const allocator = std.testing.allocator;
     const relative_dir = ".tmp/logging_relative_override_test";
-    fs.cwd().deleteTree(relative_dir) catch |err| {
+    Dir.cwd().deleteTree(std.testing.io, relative_dir) catch |err| {
         std.debug.print("failed to pre-clean test log directory: {}\n", .{err});
     };
-    defer fs.cwd().deleteTree(relative_dir) catch |err| {
+    defer Dir.cwd().deleteTree(std.testing.io, relative_dir) catch |err| {
         std.debug.print("failed to clean up test log directory: {}\n", .{err});
     };
 
@@ -525,11 +529,11 @@ test "init resolves a relative directory_override to an absolute log directory" 
     try std.testing.expect(fs.path.isAbsolute(resolved));
     try std.testing.expect(std.mem.endsWith(u8, resolved, "logging_relative_override_test"));
 
-    var dir = try fs.openDirAbsolute(resolved, .{ .iterate = true });
-    defer dir.close();
+    var dir = try Dir.openDirAbsolute(std.testing.io, resolved, .{ .iterate = true });
+    defer dir.close(std.testing.io);
     var found_active = false;
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.testing.io)) |entry| {
         if (entry.kind == .file and std.mem.eql(u8, entry.name, active_log_filename)) found_active = true;
     }
     try std.testing.expect(found_active);
@@ -540,7 +544,7 @@ test "startup, shutdown, and explicit events are emitted with info level" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(tmp_path);
 
     try init(allocator, std.testing.io, .{
@@ -553,7 +557,7 @@ test "startup, shutdown, and explicit events are emitted with info level" {
     try writeEvent("runtime", "entered full view", "view_enter_full", "from=Grid to=Full");
     try writeShutdownMarker();
 
-    const contents = try readActiveLogAlloc(allocator, tmp_path);
+    const contents = try readActiveLogAlloc(allocator, std.testing.io, tmp_path);
     defer allocator.free(contents);
 
     var event_lines: usize = 0;

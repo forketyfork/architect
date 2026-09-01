@@ -79,7 +79,7 @@ pub const FontPaths = struct {
 
         paths.symbol_fallback = try allocator.dupeZ(u8, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
         const stix_path = "/System/Library/Fonts/Supplemental/STIXTwoMath.otf";
-        paths.symbol_fallback_secondary = if (std.fs.accessAbsolute(stix_path, .{})) |_|
+        paths.symbol_fallback_secondary = if (std.Io.Dir.accessAbsolute(io, stix_path, .{})) |_|
             try allocator.dupeZ(u8, stix_path)
         else |_|
             null;
@@ -136,14 +136,13 @@ fn findSystemFont(allocator: std.mem.Allocator, io: std.Io, font_family: []const
 }
 
 fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, font_family: []const u8, style_suffix: []const u8) ![:0]const u8 {
-    _ = io;
     const extensions = [_][]const u8{ "otf", "ttf", "ttc" };
 
     for (extensions) |ext| {
         const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
         defer allocator.free(font_path);
 
-        std.fs.accessAbsolute(font_path, .{}) catch |err| {
+        std.Io.Dir.accessAbsolute(io, font_path, .{}) catch |err| {
             log.debug("font not found at {s}: {}", .{ font_path, err });
             continue;
         };
@@ -155,7 +154,7 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []c
         const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}{s}.{s}", .{ dir_path, font_family, style_suffix, ext });
         defer allocator.free(font_path);
 
-        std.fs.accessAbsolute(font_path, .{}) catch |err| {
+        std.Io.Dir.accessAbsolute(io, font_path, .{}) catch |err| {
             log.debug("font not found at {s}: {}", .{ font_path, err });
             continue;
         };
@@ -168,7 +167,7 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []c
             const font_path = try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{ dir_path, font_family, ext });
             defer allocator.free(font_path);
 
-            std.fs.accessAbsolute(font_path, .{}) catch |err| {
+            std.Io.Dir.accessAbsolute(io, font_path, .{}) catch |err| {
                 log.debug("font not found at {s}: {}", .{ font_path, err });
                 continue;
             };
@@ -179,18 +178,18 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []c
 
     const ttc_path = try std.fmt.allocPrint(allocator, "{s}/{s}.ttc", .{ dir_path, font_family });
     defer allocator.free(ttc_path);
-    if (std.fs.accessAbsolute(ttc_path, .{})) {
+    if (std.Io.Dir.accessAbsolute(io, ttc_path, .{})) {
         log.info("Found TTC file containing {s} variant: {s}", .{ style_suffix, ttc_path });
         return allocator.dupeZ(u8, ttc_path);
     } else |_| {}
 
     log.info("Recursively searching {s} for {s} {s}", .{ dir_path, font_family, style_suffix });
 
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch |err| {
         log.warn("Could not open directory {s}: {}", .{ dir_path, err });
         return error.FontNotFound;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var walker = dir.walk(allocator) catch |err| {
         log.warn("Could not walk directory {s}: {}", .{ dir_path, err });
@@ -198,7 +197,7 @@ fn searchFontInDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []c
     };
     defer walker.deinit();
 
-    while (walker.next()) |maybe_entry| {
+    while (walker.next(io)) |maybe_entry| {
         const entry = maybe_entry orelse break;
         if (entry.kind != .file) continue;
 

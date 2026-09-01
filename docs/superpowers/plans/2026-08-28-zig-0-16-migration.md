@@ -1790,7 +1790,7 @@ git commit -m "refactor(ui): thread io through the components that need it"
 - Consumes: `io` threaded in by Task 8; `std.Io.Dir` / `std.Io.File` per the mapping table
 - Produces: no `fs.` filesystem calls remain in these files
 
-- [ ] **Step 1: Note the alias hazard before you start**
+- [x] **Step 1: Note the alias hazard before you start**
 
 `src/config.zig:2` and `src/logging.zig:3` declare `const fs = std.fs;`, and `src/session/state.zig:9` does too. A grep for `std.fs.` will miss every site in those files. Update the aliases first so the compiler finds the sites for you:
 
@@ -1802,7 +1802,7 @@ const File = std.Io.File;
 
 `fs.path.*` and `fs.max_path_bytes` survive in 0.16, so the `fs` alias stays for those uses only.
 
-- [ ] **Step 2: Convert `src/config.zig`**
+- [x] **Step 2: Convert `src/config.zig`**
 
 **Check the toml drift finding first.** `src/config.zig` is the only consumer of the `toml` dependency, which moved to an untagged branch in Task 6. Read the Risk 4 verdict in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` before editing. If the parser API drifted, fix that in this step and be careful of the two hazards `CLAUDE.md` records: parser-owned maps must not outlive `result.deinit()`, and persisted map keys *and* values must both be duplicated into your own storage. A use-after-free here is a segfault at config load, not a compile error.
 
@@ -1822,13 +1822,13 @@ Every `defer file.close()` becomes `defer file.close(io)`, and every `defer dir.
 
 The two test sites need their own `io`; add the `std.Io.Threaded` setup from Task 7 Step 6 to each.
 
-- [ ] **Step 3: Convert `src/logging.zig`**
+- [x] **Step 3: Convert `src/logging.zig`**
 
 Line 133 `Dir.createFileAbsolute(io, active_path, .{ ... })` — keep the existing flags struct verbatim. Line 166 `Dir.renameAbsolute(active_path, archive_path, io)` — **`io` goes last here**, unlike every other call in this table. Line 274 `Dir.cwd().createDirPath(io, raw_directory_path)`. Line 275 `Dir.cwd().realPathFileAlloc(io, raw_directory_path, allocator)` — note the argument order differs from 0.15's `realpathAlloc(allocator, path)`. Line 387 `Dir.openFileAbsolute(io, active_path, .{})`. Lines 483 and 524 `Dir.openDirAbsolute(io, ..., .{ .iterate = true })`, and their iterator loops become `while (try it.next(io)) |entry|`. Lines 507 and 510 `Dir.cwd().deleteTree(io, relative_dir)`. The `file: ?fs.File` field at line 23 becomes `file: ?File`, and the `openActiveLogFile` return type at line 130 becomes `!struct { file: File, size: u64 }`.
 
 `LoggerState` is shared across threads behind a mutex, so it must store `io` as a field rather than receive it per call — the log functions are called from `std.log`'s handler, which has no place to pass one.
 
-- [ ] **Step 4: Convert `src/mcp/main.zig`**
+- [x] **Step 4: Convert `src/mcp/main.zig`**
 
 Task 7 already changed `main`, `run`, and the `stdin`/`stdout` types. The remaining work is the read loop and the writes. `File.read` is gone:
 
@@ -1844,27 +1844,27 @@ and every `stdout_file.writeAll(bytes)` becomes:
 
 Thread `io` into `handleMessage` and `writeJsonRpcError` alongside their existing `allocator` parameters.
 
-- [ ] **Step 5: Convert `src/shell.zig`**
+- [x] **Step 5: Convert `src/shell.zig`**
 
 Sixteen sites, all `std.fs.`-qualified so grep finds them: `std.fs.makeDirAbsolute` becomes `std.Io.Dir.createDirAbsolute(io, path, .default_dir)` at lines 674, 685, 694, 705, 786, 800, 850; `std.fs.createFileAbsolute` becomes `std.Io.Dir.createFileAbsolute(io, path, flags)` at lines 717, 813, 1176. Keep every existing `catch |err| switch (err)` block exactly as-is — the error sets are compatible. Run `grep -n 'std\.fs\.' src/shell.zig` after editing and convert whatever remains that is not `std.fs.path.*` or `std.fs.max_path_bytes`.
 
-- [ ] **Step 6: Convert `src/font_paths.zig` and `src/app/control.zig`**
+- [x] **Step 6: Convert `src/font_paths.zig` and `src/app/control.zig`**
 
 Six and five sites respectively, all `std.fs.`-qualified. Apply the mapping table. `src/app/control.zig` is compiled into both the main binary and the `control` module for `architect-mcp`, so its `io` must arrive as a parameter or stored field, never from `src/main.zig`.
 
-- [ ] **Step 7: Verify no filesystem call remains in these six files**
+- [x] **Step 7: Verify no filesystem call remains in these six files**
 
 Run: `for f in src/shell.zig src/config.zig src/mcp/main.zig src/logging.zig src/font_paths.zig src/app/control.zig; do echo "== $f"; grep -nE '\b(std\.)?fs\.[A-Za-z_]+' "$f" | grep -vE 'fs\.(path|max_path_bytes|max_name_bytes)'; done`
 Expected: no lines under any file heading.
 
-- [ ] **Step 8: Verify the error class shrank**
+- [x] **Step 8: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'src/(shell|config|logging|font_paths|mcp/main|app/control)\.zig' .tmp/flip-errors.txt | grep -vE 'Mutex|Condition'`
 Expected: no output.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 nix develop --command zig fmt src/
