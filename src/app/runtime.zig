@@ -1791,7 +1791,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     try ui.register(session_interaction_component.asComponent());
 
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
-    worktree_comp_ptr.* = .{ .allocator = allocator };
+    worktree_comp_ptr.* = .{ .allocator = allocator, .io = io };
     const worktree_component = ui_mod.UiComponent{
         .ptr = worktree_comp_ptr,
         .vtable = &ui_mod.worktree_overlay.WorktreeOverlayComponent.vtable,
@@ -1819,7 +1819,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     try ui.register(help_component);
 
     const pr_dropdown_comp_ptr = try allocator.create(ui_mod.pr_dropdown.PRDropdownComponent);
-    pr_dropdown_comp_ptr.* = .{ .allocator = allocator };
+    pr_dropdown_comp_ptr.* = .{ .allocator = allocator, .io = io };
     const pr_dropdown_component = ui_mod.UiComponent{
         .ptr = pr_dropdown_comp_ptr,
         .vtable = &ui_mod.pr_dropdown.PRDropdownComponent.vtable,
@@ -1851,11 +1851,11 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     try ui.register(cwd_bar_component.asComponent());
     const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
     try ui.register(metrics_overlay_component.asComponent());
-    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
+    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator, io);
     try ui.register(diff_overlay_component.asComponent());
     const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
     try ui.register(reader_overlay_component.asComponent());
-    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
+    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator, io);
     try ui.register(story_overlay_component.asComponent());
     const selection_agent_overlay_component = try ui_mod.selection_agent_overlay.SelectionAgentOverlayComponent.init(allocator);
     try ui.register(selection_agent_overlay_component.asComponent());

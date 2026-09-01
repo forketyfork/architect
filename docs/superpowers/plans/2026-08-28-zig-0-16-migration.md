@@ -1718,11 +1718,11 @@ Expected: no output.
 - Consumes: `clock.*(io, ...)`, `proc.*(allocator, io, ...)` from Task 7; `io` available in `src/app/runtime.zig` from Task 8
 - Produces: each of the six components carries an `io: std.Io` field immediately after its `allocator` field, set from its `init`'s new `io` parameter; `runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) model.FetchResult`
 
-- [ ] **Step 1: Add the `io` field and `init` parameter to each of the six components**
+- [x] **Step 1: Add the `io` field and `init` parameter to each of the six components**
 
 The convention matches Task 8 Step 2: `io` sits immediately after `allocator` in the struct, and `init` takes `io` immediately after its allocator parameter. Do not reorder any other field. Update each component's `init` call in `src/app/runtime.zig` to pass `io`.
 
-- [ ] **Step 2: Thread `io` into the PR dropdown's fetch thread context**
+- [x] **Step 2: Thread `io` into the PR dropdown's fetch thread context**
 
 `src/ui/components/pr_dropdown.zig:584` spawns a fetch thread whose context outlives the spawning stack frame, so the context struct must store its own `io` copy rather than borrow one:
 
@@ -1747,7 +1747,7 @@ and the `proc.run` call inside it becomes:
 
 Keep every existing `log.err` message and `model.FetchResult` branch exactly as Task 5 left them.
 
-- [ ] **Step 3: Widen the `diff_overlay.zig` subprocess call**
+- [x] **Step 3: Widen the `diff_overlay.zig` subprocess call**
 
 ```zig
     const result = proc.run(self.allocator, self.io, .{
@@ -1758,18 +1758,18 @@ Keep every existing `log.err` message and `model.FetchResult` branch exactly as 
 
 Read the surrounding 40 lines first and keep every existing error branch, and the consumers of the `term: proc.Term` field, unchanged.
 
-- [ ] **Step 4: Widen the PR dropdown's mutex operations**
+- [x] **Step 4: Widen the PR dropdown's mutex operations**
 
 `src/ui/components/pr_dropdown.zig:25` declares a mutex. Task 12 converts the declaration; here, only ensure `io` is reachable at each lock site — either as `self.io` or via the thread context from Step 2.
 
-- [ ] **Step 5: Verify the error class shrank**
+- [x] **Step 5: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -n 'src/ui/' .tmp/flip-errors.txt | grep -vE 'std\.fs|std\.Io\.(Dir|File)|Mutex|Condition'`
 Expected: no output. Remaining UI errors are filesystem and mutex errors, handled by Tasks 11 and 12.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 nix develop --command zig fmt src/

@@ -128,6 +128,7 @@ const GitResult = struct {
 
 pub const DiffOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
@@ -205,9 +206,9 @@ pub const DiffOverlayComponent = struct {
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
 
-    pub fn init(allocator: std.mem.Allocator) !*DiffOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*DiffOverlayComponent {
         const comp = try allocator.create(DiffOverlayComponent);
-        comp.* = .{ .allocator = allocator, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
+        comp.* = .{ .allocator = allocator, .io = io, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
         comp.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
         comp.pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
         comp.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
@@ -548,7 +549,7 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn runGitCommand(self: *DiffOverlayComponent, cwd: []const u8, argv: []const []const u8) !GitResult {
-        const result = proc.run(self.allocator, .{
+        const result = proc.run(self.allocator, self.io, .{
             .argv = argv,
             .cwd = cwd,
             .max_output_bytes = max_output_bytes,
@@ -3556,6 +3557,7 @@ fn testUiHost() types.UiHost {
 test "diff overlay agent dropdown takes keyboard priority over an open comment editor" {
     var component = DiffOverlayComponent{
         .allocator = std.testing.allocator,
+        .io = std.testing.io,
         .overlay = .{ .visible = true },
         .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
         .editing = .{
@@ -3605,6 +3607,7 @@ test "diff overlay agent dropdown takes keyboard priority over an open comment e
 test "diff overlay text input while the agent dropdown is open does not leak into the comment editor" {
     var component = DiffOverlayComponent{
         .allocator = std.testing.allocator,
+        .io = std.testing.io,
         .overlay = .{ .visible = true },
         .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
         .editing = .{

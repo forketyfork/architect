@@ -42,6 +42,7 @@ const AnchorPosition = struct {
 
 pub const StoryOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
@@ -73,10 +74,11 @@ pub const StoryOverlayComponent = struct {
     const marker_width: c_int = 20;
     const code_indent: c_int = 8;
 
-    pub fn init(allocator: std.mem.Allocator) !*StoryOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*StoryOverlayComponent {
         const comp = try allocator.create(StoryOverlayComponent);
         comp.* = .{
             .allocator = allocator,
+            .io = io,
             .pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER),
             .arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT),
         };

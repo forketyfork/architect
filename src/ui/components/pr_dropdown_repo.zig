@@ -2,7 +2,8 @@ const std = @import("std");
 
 /// Walk upward from `cwd` looking for a `.git` directory (or `.git` file for worktrees).
 /// Returns a newly-allocated absolute path to the directory containing `.git`.
-pub fn findRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
+pub fn findRepoRoot(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) !?[]u8 {
+    _ = io;
     var current = try allocator.dupe(u8, cwd);
     errdefer allocator.free(current);
 
@@ -39,8 +40,8 @@ pub fn findRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
 
 /// Look at the git config and decide whether `[remote "origin"]` points at github.com.
 /// Resolves `.git` files (worktrees) so it finds the main repo's config.
-pub fn detectGithubOrigin(allocator: std.mem.Allocator, repo_root: []const u8) !bool {
-    const cfg_path = try resolveConfigPath(allocator, repo_root);
+pub fn detectGithubOrigin(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) !bool {
+    const cfg_path = try resolveConfigPath(allocator, io, repo_root);
     defer allocator.free(cfg_path);
 
     var file = std.fs.openFileAbsolute(cfg_path, .{}) catch |err| switch (err) {
@@ -54,7 +55,8 @@ pub fn detectGithubOrigin(allocator: std.mem.Allocator, repo_root: []const u8) !
     return originUrlIsGithub(bytes);
 }
 
-fn resolveConfigPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]u8 {
+fn resolveConfigPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {
+    _ = io;
     const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
     defer allocator.free(dot_git);
 
@@ -142,8 +144,8 @@ fn urlPointsToGithub(url: []const u8) bool {
 
 /// Read HEAD and return the current branch name (or null if detached HEAD).
 /// Handles both regular repos and worktrees.
-pub fn readCurrentBranch(allocator: std.mem.Allocator, repo_root: []const u8) !?[]u8 {
-    const head_path = try resolveHeadPath(allocator, repo_root);
+pub fn readCurrentBranch(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) !?[]u8 {
+    const head_path = try resolveHeadPath(allocator, io, repo_root);
     defer allocator.free(head_path);
 
     var file = std.fs.openFileAbsolute(head_path, .{}) catch |err| switch (err) {
@@ -161,7 +163,8 @@ pub fn readCurrentBranch(allocator: std.mem.Allocator, repo_root: []const u8) !?
     return try allocator.dupe(u8, branch);
 }
 
-fn resolveHeadPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]u8 {
+fn resolveHeadPath(allocator: std.mem.Allocator, io: std.Io, repo_root: []const u8) ![]u8 {
+    _ = io;
     const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
     defer allocator.free(dot_git);
 

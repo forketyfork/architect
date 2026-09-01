@@ -18,6 +18,7 @@ const log = std.log.scoped(.worktree_overlay);
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: ExpandingOverlay = ExpandingOverlay.init(2, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
     badge: GlyphBadge = .{ .text = "⌘T" },
@@ -104,9 +105,9 @@ pub const WorktreeOverlayComponent = struct {
         font_generation: u64,
     };
 
-    pub fn create(allocator: std.mem.Allocator) !UiComponent {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) !UiComponent {
         const comp = try allocator.create(WorktreeOverlayComponent);
-        comp.* = .{ .allocator = allocator };
+        comp.* = .{ .allocator = allocator, .io = io };
         return UiComponent{
             .ptr = comp,
             .vtable = &vtable,
