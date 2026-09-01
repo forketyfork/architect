@@ -15,20 +15,21 @@ const JsonRpcErrorCode = enum(i32) {
     internal_error = -32603,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    try run(gpa.allocator(), std.fs.File.stdin(), std.fs.File.stdout());
+pub fn main(init: std.process.Init) !void {
+    try run(init.gpa, init.io, std.Io.File.stdin(), std.Io.File.stdout());
 }
 
-pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: std.fs.File) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void {
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
     var discarding_oversized_line = false;
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try stdin_file.read(&chunk);
+        const n = stdin_file.readStreaming(io, &.{&chunk}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
         if (n == 0) break;
 
         for (chunk[0..n]) |byte| {
@@ -41,14 +42,14 @@ pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: s
 
             if (byte == '\n') {
                 if (buffer.items.len > 0) {
-                    try handleMessage(allocator, stdout_file, buffer.items);
+                    try handleMessage(allocator, io, stdout_file, buffer.items);
                     buffer.clearRetainingCapacity();
                 }
                 continue;
             }
             if (byte == '\r') continue;
             if (buffer.items.len >= control.max_message_bytes) {
-                try writeJsonRpcError(allocator, stdout_file, null, .invalid_request, "message is too large");
+                try writeJsonRpcError(allocator, io, stdout_file, null, .invalid_request, "message is too large");
                 buffer.clearRetainingCapacity();
                 discarding_oversized_line = true;
                 continue;
@@ -58,33 +59,34 @@ pub fn run(allocator: std.mem.Allocator, stdin_file: std.fs.File, stdout_file: s
     }
 
     if (!discarding_oversized_line and buffer.items.len > 0) {
-        try handleMessage(allocator, stdout_file, buffer.items);
+        try handleMessage(allocator, io, stdout_file, buffer.items);
     }
 }
 
 fn handleMessage(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     bytes: []const u8,
 ) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
-        try writeJsonRpcError(allocator, stdout_file, null, .parse_error, "parse error");
+        try writeJsonRpcError(allocator, io, stdout_file, null, .parse_error, "parse error");
         return;
     };
     defer parsed.deinit();
 
     if (parsed.value != .object) {
-        try writeJsonRpcError(allocator, stdout_file, null, .invalid_request, "request must be an object");
+        try writeJsonRpcError(allocator, io, stdout_file, null, .invalid_request, "request must be an object");
         return;
     }
 
     const object = parsed.value.object;
     const method_value = object.get("method") orelse {
-        try writeJsonRpcError(allocator, stdout_file, object.get("id"), .invalid_request, "method is required");
+        try writeJsonRpcError(allocator, io, stdout_file, object.get("id"), .invalid_request, "method is required");
         return;
     };
     if (method_value != .string) {
-        try writeJsonRpcError(allocator, stdout_file, object.get("id"), .invalid_request, "method must be a string");
+        try writeJsonRpcError(allocator, io, stdout_file, object.get("id"), .invalid_request, "method must be a string");
         return;
     }
 
@@ -97,49 +99,51 @@ fn handleMessage(
     }
 
     if (std.mem.eql(u8, method_value.string, "initialize")) {
-        try writeInitializeResult(allocator, stdout_file, id_value);
+        try writeInitializeResult(allocator, io, stdout_file, id_value);
     } else if (std.mem.eql(u8, method_value.string, "ping")) {
-        try writeEmptyResult(allocator, stdout_file, id_value);
+        try writeEmptyResult(allocator, io, stdout_file, id_value);
     } else if (std.mem.eql(u8, method_value.string, "tools/list")) {
-        try writeToolsListResult(allocator, stdout_file, id_value);
+        try writeToolsListResult(allocator, io, stdout_file, id_value);
     } else if (std.mem.eql(u8, method_value.string, "tools/call")) {
-        try handleToolsCall(allocator, stdout_file, id_value, object.get("params"));
+        try handleToolsCall(allocator, io, stdout_file, id_value, object.get("params"));
     } else {
-        try writeJsonRpcError(allocator, stdout_file, id_value, .method_not_found, "method not found");
+        try writeJsonRpcError(allocator, io, stdout_file, id_value, .method_not_found, "method not found");
     }
 }
 
 fn handleToolsCall(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
     params_value: ?std.json.Value,
 ) !void {
     const params = params_value orelse {
-        try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "params are required");
+        try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "params are required");
         return;
     };
     if (params != .object) {
-        try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "params must be an object");
+        try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "params must be an object");
         return;
     }
 
     const name_value = params.object.get("name") orelse {
-        try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "tool name is required");
+        try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "tool name is required");
         return;
     };
     if (name_value != .string or !std.mem.eql(u8, name_value.string, tool_name)) {
-        try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "unknown tool");
+        try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "unknown tool");
         return;
     }
 
     const arguments = params.object.get("arguments") orelse {
-        try writeToolFailure(allocator, stdout_file, id_value, .invalid_request, "cwd is required");
+        try writeToolFailure(allocator, io, stdout_file, id_value, .invalid_request, "cwd is required");
         return;
     };
     var request = control.parseSpawnRequestFromValue(allocator, arguments) catch |err| {
         try writeToolFailure(
             allocator,
+            io,
             stdout_file,
             id_value,
             .invalid_request,
@@ -149,26 +153,27 @@ fn handleToolsCall(
     };
     defer request.deinit(allocator);
 
-    var response = control.connectAndSendSpawnRequest(allocator, request) catch |err| {
+    var response = control.connectAndSendSpawnRequest(allocator, io, request) catch |err| {
         var message_buf: [160]u8 = undefined;
         const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
             log.debug("failed to format Architect contact error: {}", .{fmt_err});
             break :blk "failed to contact Architect";
         };
-        try writeToolFailure(allocator, stdout_file, id_value, .app_not_running, message);
+        try writeToolFailure(allocator, io, stdout_file, id_value, .app_not_running, message);
         return;
     };
     defer response.deinit(allocator);
 
     switch (response.response) {
-        .success => |success| try writeToolSuccess(allocator, stdout_file, id_value, success),
-        .failure => |failure| try writeToolFailure(allocator, stdout_file, id_value, failure.code, failure.message),
+        .success => |success| try writeToolSuccess(allocator, io, stdout_file, id_value, success),
+        .failure => |failure| try writeToolFailure(allocator, io, stdout_file, id_value, failure.code, failure.message),
     }
 }
 
 fn writeInitializeResult(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
 ) !void {
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -193,12 +198,13 @@ fn writeInitializeResult(
     try json.endObject();
     try endRpcResult(&json);
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn writeEmptyResult(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
 ) !void {
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -208,12 +214,13 @@ fn writeEmptyResult(
     try beginRpcResult(&json, id_value);
     try endRpcResult(&json);
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn writeToolsListResult(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
 ) !void {
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -227,7 +234,7 @@ fn writeToolsListResult(
     try json.endArray();
     try endRpcResult(&json);
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn writeSpawnSessionTool(json: *std.json.Stringify) !void {
@@ -331,7 +338,8 @@ fn writeSpawnOutputSchema(json: *std.json.Stringify) !void {
 
 fn writeToolSuccess(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
     success: control.SpawnSuccess,
 ) !void {
@@ -362,12 +370,13 @@ fn writeToolSuccess(
     try json.write(false);
     try endRpcResult(&json);
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn writeToolFailure(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
     code: control.SpawnErrorCode,
     message: []const u8,
@@ -399,12 +408,13 @@ fn writeToolFailure(
     try json.write(true);
     try endRpcResult(&json);
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn writeJsonRpcError(
     allocator: std.mem.Allocator,
-    stdout_file: std.fs.File,
+    io: std.Io,
+    stdout_file: std.Io.File,
     id_value: ?std.json.Value,
     code: JsonRpcErrorCode,
     message: []const u8,
@@ -431,7 +441,7 @@ fn writeJsonRpcError(
     try json.endObject();
     try json.endObject();
 
-    try writeJsonLine(stdout_file, out.written());
+    try writeJsonLine(io, stdout_file, out.written());
 }
 
 fn beginRpcResult(json: *std.json.Stringify, id_value: ?std.json.Value) !void {
@@ -453,24 +463,25 @@ fn endRpcResult(json: *std.json.Stringify) !void {
     try json.endObject();
 }
 
-fn writeJsonLine(stdout_file: std.fs.File, bytes: []const u8) !void {
-    try stdout_file.writeAll(bytes);
-    try stdout_file.writeAll("\n");
+fn writeJsonLine(io: std.Io, stdout_file: std.Io.File, bytes: []const u8) !void {
+    try stdout_file.writeStreamingAll(io, bytes);
+    try stdout_file.writeStreamingAll(io, "\n");
 }
 
 test "tools/list exposes exactly spawn_session" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var out = try tmp.dir.createFile("tools-list.jsonl", .{ .truncate = true });
+    const out = try tmp.dir.createFile(io, "tools-list.jsonl", .{ .truncate = true });
 
     const id = std.json.Value{ .integer = 1 };
-    try writeToolsListResult(allocator, out, id);
-    out.close();
+    try writeToolsListResult(allocator, io, out, id);
+    out.close(io);
 
-    const input = try tmp.dir.readFileAlloc(allocator, "tools-list.jsonl", 16 * 1024);
+    const input = try tmp.dir.readFileAlloc(io, "tools-list.jsonl", allocator, .limited(16 * 1024));
     defer allocator.free(input);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, input, "\n"), .{});
     defer parsed.deinit();
@@ -485,17 +496,18 @@ test "tools/list exposes exactly spawn_session" {
 
 test "tool failure response is an MCP tool error result" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var out = try tmp.dir.createFile("failure.jsonl", .{ .truncate = true });
+    const out = try tmp.dir.createFile(io, "failure.jsonl", .{ .truncate = true });
 
     const id = std.json.Value{ .integer = 9 };
-    try writeToolFailure(allocator, out, id, .invalid_cwd, "cwd does not exist");
-    out.close();
+    try writeToolFailure(allocator, io, out, id, .invalid_cwd, "cwd does not exist");
+    out.close(io);
 
-    const input = try tmp.dir.readFileAlloc(allocator, "failure.jsonl", 16 * 1024);
+    const input = try tmp.dir.readFileAlloc(io, "failure.jsonl", allocator, .limited(16 * 1024));
     defer allocator.free(input);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, input, "\n"), .{});
     defer parsed.deinit();
@@ -513,29 +525,32 @@ test "tool failure response is an MCP tool error result" {
 
 test "run discards the rest of an oversized line" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-
-    var input = try tmp.dir.createFile("input.jsonl", .{ .read = true });
-    defer input.close();
 
     const oversized = try allocator.alloc(u8, control.max_message_bytes + 10);
     defer allocator.free(oversized);
     @memset(oversized, 'x');
 
-    try input.writeAll(oversized);
-    try input.writeAll("\n");
-    try input.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
-    try input.seekTo(0);
+    {
+        const input_writer = try tmp.dir.createFile(io, "input.jsonl", .{});
+        defer input_writer.close(io);
+        try input_writer.writeStreamingAll(io, oversized);
+        try input_writer.writeStreamingAll(io, "\n");
+        try input_writer.writeStreamingAll(io, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+    }
+    const input = try tmp.dir.openFile(io, "input.jsonl", .{});
+    defer input.close(io);
 
-    var out = try tmp.dir.createFile("output.jsonl", .{ .read = true });
-    defer out.close();
+    {
+        const out = try tmp.dir.createFile(io, "output.jsonl", .{});
+        defer out.close(io);
+        try run(allocator, io, input, out);
+    }
 
-    try run(allocator, input, out);
-    try out.seekTo(0);
-
-    const output = try out.readToEndAlloc(allocator, 64 * 1024);
+    const output = try tmp.dir.readFileAlloc(io, "output.jsonl", allocator, .limited(64 * 1024));
     defer allocator.free(output);
 
     var line_count: usize = 0;

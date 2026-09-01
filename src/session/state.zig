@@ -12,6 +12,7 @@ const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
 const pty_reader_mod = @import("pty_reader.zig");
+const posix_util = @import("../posix_util.zig");
 const mac = if (builtin.os.tag == .macos)
     @cImport({
         @cInclude("sys/types.h");
@@ -101,6 +102,7 @@ pub const SessionState = struct {
     session_id_z: [session_id_buf_len:0]u8,
     notify_sock_z: [:0]const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
     theme: colors_mod.Theme,
     cwd_path: ?[]const u8 = null,
     /// Subslice of cwd_path pointing to the basename. Always points within cwd_path's memory.
@@ -110,7 +112,7 @@ pub const SessionState = struct {
     /// Set to true once updateCwd observes a non-root directory. Prevents the transient `/`
     /// that the shell briefly reports during startup from polluting recent_folders.
     cwd_settled: bool = false,
-    pending_write: std.ArrayListUnmanaged(u8) = .empty,
+    pending_write: std.ArrayList(u8) = .empty,
     /// Process watcher for event-driven exit detection.
     process_watcher: ?xev.Process = null,
     /// Context for disambiguating process exit callbacks. Includes its own completion struct
@@ -131,7 +133,7 @@ pub const SessionState = struct {
     agent_metadata_captured: bool = false,
     /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
     /// stale UUIDs from earlier scrollback.
-    quit_capture: std.ArrayListUnmanaged(u8) = .empty,
+    quit_capture: std.ArrayList(u8) = .empty,
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
@@ -168,6 +170,7 @@ pub const SessionState = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
+        io: std.Io,
         slot_index: usize,
         shell_path: []const u8,
         size: pty_mod.winsize,
@@ -192,6 +195,7 @@ pub const SessionState = struct {
             .session_id_z = session_id_buf,
             .notify_sock_z = notify_sock,
             .allocator = allocator,
+            .io = io,
             .theme = theme,
         };
     }
@@ -212,6 +216,7 @@ pub const SessionState = struct {
         self.assignNewSessionId();
 
         const shell = try shell_mod.Shell.spawn(
+            self.io,
             self.shell_path,
             self.pty_size,
             &self.session_id_z,
@@ -226,10 +231,10 @@ pub const SessionState = struct {
             }
         }
 
-        var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
+        var terminal = try ghostty_vt.Terminal.init(self.io, self.allocator, .{
             .cols = self.pty_size.ws_col,
             .rows = self.pty_size.ws_row,
-            .max_scrollback = 10_000_000,
+            .max_scrollback_bytes = 10_000_000,
             .default_modes = .{ .grapheme_cluster = true },
             .colors = terminalColorsFromTheme(self.theme),
         });
@@ -259,7 +264,7 @@ pub const SessionState = struct {
         self.stream = stream;
         self.markDirty();
 
-        const buffer = try pty_reader_mod.PtyOutputBuffer.create(self.allocator);
+        const buffer = try pty_reader_mod.PtyOutputBuffer.create(self.allocator, self.io);
         self.pty_buffer = buffer;
         if (self.pty_reader) |reader| reader.register(shell.pty.master, buffer);
 
@@ -393,7 +398,7 @@ pub const SessionState = struct {
         }
     }
 
-    pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
+    pub const ProcessOutputError = posix.ReadError || std.Io.File.Writer.Error || error{
         DivisionByZero,
         GraphemeAllocOutOfMemory,
         GraphemeMapOutOfMemory,
@@ -403,6 +408,7 @@ pub const SessionState = struct {
         StringAllocOutOfMemory,
         StyleSetNeedsRehash,
         StyleSetOutOfMemory,
+        VtSemanticFailure,
     };
 
     fn processExitCallback(
@@ -642,8 +648,9 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
-            try stream.nextSlice(self.output_buf[0..n]);
-            const processed_at_ms = clock.nowMillis();
+            stream.nextSlice(self.output_buf[0..n]);
+            if (stream.handler.hasSemanticFailure()) return error.VtSemanticFailure;
+            const processed_at_ms = clock.nowMillis(self.io);
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
 
@@ -810,11 +817,15 @@ pub const SessionState = struct {
         if (getForegroundPgrp(shell.child_pid)) |fg| return fg;
 
         const slave_path_z = ptsname(shell.pty.master) orelse return null;
-        const slave_path = std.mem.sliceTo(slave_path_z, 0);
-        const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
-            return null;
+        const fd = while (true) {
+            const open_fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
+            switch (std.c.errno(open_fd)) {
+                .SUCCESS => break open_fd,
+                .INTR => continue,
+                else => return null,
+            }
         };
-        defer posix.close(fd);
+        defer _ = std.c.close(fd);
         const fg_pgrp = tcgetpgrp(fd);
         if (fg_pgrp <= 0) return null;
         return @intCast(fg_pgrp);
@@ -1012,7 +1023,7 @@ fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
     return info.kp_eproc.e_tpgid;
 }
 
-pub const MakeNonBlockingError = posix.FcntlError;
+pub const MakeNonBlockingError = posix_util.FcntlError;
 
 test "synchronized output timeout clears stuck terminal mode" {
     const allocator = std.testing.allocator;
@@ -1022,10 +1033,10 @@ test "synchronized output timeout clears stuck terminal mode" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1046,10 +1057,10 @@ test "synchronized output timeout resets when mode is already clear" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1067,10 +1078,10 @@ test "synchronized output timeout waits for output to go quiet" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1050;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1090,10 +1101,10 @@ test "synchronized output keeps future last-output sample" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1101;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1112,10 +1123,10 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 5099;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 10,
         .rows = 3,
-        .max_scrollback = 5,
+        .max_scrollback_bytes = 5,
     });
     defer session.terminal.?.deinit(allocator);
 
@@ -1137,13 +1148,13 @@ test "SessionState assigns incrementing ids" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var first = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer first.deinit(allocator);
     first.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 0), first.id);
     try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
 
-    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme, null);
+    var second = try SessionState.init(allocator, std.testing.io, 1, "/bin/zsh", size, notify_sock, theme, null);
     defer second.deinit(allocator);
     second.assignNewSessionId();
     try std.testing.expectEqual(@as(usize, 1), second.id);
@@ -1152,6 +1163,8 @@ test "SessionState assigns incrementing ids" {
 
 test "checkAlive skips waitpid polling when a process watcher owns exit detection" {
     const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
     const theme = colors_mod.Theme.default();
     const size = pty_mod.winsize{
         .ws_row = 24,
@@ -1161,19 +1174,20 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    const pid = try posix.fork();
+    const pid = try posix_util.fork();
     if (pid == 0) {
         std.c._exit(0);
     }
     defer _ = std.c.waitpid(pid, null, 0);
     // Give the forked child a moment to exit and become reapable.
-    clock.sleepNanos(50 * std.time.ns_per_ms);
+    clock.sleepNanos(threaded.io(), 50 * std.time.ns_per_ms);
 
-    const pipe_fds = try posix.pipe();
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
     // pty.deinit() only closes the master fd; close the slave ourselves.
-    defer posix.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[0]);
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, threaded.io(), 0, "/bin/zsh", size, notify_sock, theme, null);
     // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
     defer session.deinit(allocator);
 
@@ -1181,6 +1195,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     session.dead = false;
     session.render_epoch = 1;
     session.shell = shell_mod.Shell{
+        .io = threaded.io(),
         .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
         .child_pid = pid,
     };
@@ -1213,7 +1228,7 @@ test "despawn keeps active wait context alive until callback reclaims it" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     const wait_ctx = try allocator.create(SessionState.WaitContext);
@@ -1247,7 +1262,7 @@ test "resetForRespawn clears agent metadata" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, theme, null);
     defer session.deinit(allocator);
 
     session.agent_kind = .codex;
@@ -1262,13 +1277,13 @@ test "resetForRespawn clears agent metadata" {
 }
 
 fn makeNonBlocking(fd: posix.fd_t) MakeNonBlockingError!void {
-    const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+    const flags = try posix_util.fcntl(fd, posix.F.GETFL, 0);
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    _ = try posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
+    _ = try posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
-fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
+fn maybeShrinkPendingWrite(buf: *std.ArrayList(u8), allocator: std.mem.Allocator) void {
     if (buf.items.len == 0 and buf.capacity > pending_write_shrink_threshold) {
         buf.shrinkAndFree(allocator, 0);
     }
@@ -1276,7 +1291,7 @@ fn maybeShrinkPendingWrite(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.
 
 test "pending write shrinks when empty and over threshold" {
     const allocator = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
     try buf.ensureTotalCapacity(allocator, pending_write_shrink_threshold + 10);
@@ -1323,34 +1338,36 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
     defer session.deinit(allocator);
 
-    const pipe_fds = try posix.pipe();
-    defer posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[1]);
     try makeNonBlocking(pipe_fds[0]);
 
     session.shell = .{
+        .io = session.io,
         .pty = .{ .master = pipe_fds[0], .slave = pipe_fds[1] },
         .child_pid = 0,
     };
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{ .cols = 80, .rows = 24 });
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
     if (session.terminal) |*terminal| {
         if (session.shell) |*shell| {
             session.stream = vt_stream.initStream(allocator, terminal, shell);
         } else return error.TestUnexpectedResult;
     } else return error.TestUnexpectedResult;
-    session.pty_buffer = try pty_reader_mod.PtyOutputBuffer.create(allocator);
+    session.pty_buffer = try pty_reader_mod.PtyOutputBuffer.create(allocator, session.io);
     session.spawned = true;
     session.dead = true;
     session.quit_capture_active = true;
 
-    _ = try posix.write(pipe_fds[1], "\x1b[?2026h\x1b[H");
+    _ = try posix_util.write(pipe_fds[1], "\x1b[?2026h\x1b[H");
     var i: usize = 0;
     while (i < 40) : (i += 1) {
-        _ = try posix.write(pipe_fds[1], "chunk-of-a-frame ");
+        _ = try posix_util.write(pipe_fds[1], "chunk-of-a-frame ");
     }
-    _ = try posix.write(pipe_fds[1], "\x1b[?2026l");
+    _ = try posix_util.write(pipe_fds[1], "\x1b[?2026l");
 
     try std.testing.expectEqual(
         pty_reader_mod.PumpOutcome.progressed,
@@ -1361,6 +1378,16 @@ test "processOutput consumes a chunked 2026-wrapped frame from the ring buffer i
     if (session.terminal) |*terminal| {
         try std.testing.expect(!terminal.modes.get(.synchronized_output));
     } else return error.TestUnexpectedResult;
+
+    if (session.stream) |*stream| {
+        stream.handler.readonly.semantic_failure = true;
+    } else return error.TestUnexpectedResult;
+    _ = try posix_util.write(pipe_fds[1], "x");
+    try std.testing.expectEqual(
+        pty_reader_mod.PumpOutcome.progressed,
+        session.pty_buffer.?.pumpFd(pipe_fds[0]),
+    );
+    try std.testing.expectError(error.VtSemanticFailure, session.processOutput());
 }
 
 test "failAndTerminate marks dead, bumps render epoch, and drops pending writes" {

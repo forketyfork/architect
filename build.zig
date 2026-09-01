@@ -39,8 +39,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const posix_util_mod = b.createModule(.{
+        .root_source_file = b.path("src/posix_util.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     control_mod.addImport("../env.zig", env_mod);
     control_mod.addImport("../clock.zig", clock_mod);
+    control_mod.addImport("../posix_util.zig", posix_util_mod);
     mcp_mod.addImport("control", control_mod);
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),
@@ -100,12 +106,12 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    if (b.graph.env_map.get("SDL3_INCLUDE_PATH")) |sdl3_include| {
+    if (b.graph.environ_map.get("SDL3_INCLUDE_PATH")) |sdl3_include| {
         exe_mod.addIncludePath(.{ .cwd_relative = sdl3_include });
         const lib_path = b.fmt("{s}/../lib", .{sdl3_include});
         exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
     }
-    if (b.graph.env_map.get("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
+    if (b.graph.environ_map.get("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
         exe_mod.addIncludePath(.{ .cwd_relative = sdl3_ttf_include });
         const ttf_lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
         exe_mod.addLibraryPath(.{ .cwd_relative = ttf_lib_path });
@@ -159,7 +165,7 @@ pub fn build(b: *std.Build) void {
 // Prefer the active developer selection over hardcoded SDK locations so
 // macOS SDK overrides in the dev shell stay local to the environment.
 fn findSdkRoot(b: *std.Build) ?[]const u8 {
-    if (b.graph.env_map.get("SDKROOT")) |sdk_root| {
+    if (b.graph.environ_map.get("SDKROOT")) |sdk_root| {
         return sdk_root;
     }
 
@@ -167,7 +173,7 @@ fn findSdkRoot(b: *std.Build) ?[]const u8 {
         return sdk_root;
     }
 
-    if (findXcrunSdkRoot(b.allocator)) |sdk_root| {
+    if (findXcrunSdkRoot(b.allocator, b.graph.io)) |sdk_root| {
         return sdk_root;
     }
 
@@ -177,7 +183,7 @@ fn findSdkRoot(b: *std.Build) ?[]const u8 {
     };
 
     for (candidates) |candidate| {
-        if (sdkExists(candidate)) {
+        if (sdkExists(b.graph.io, candidate)) {
             return candidate;
         }
     }
@@ -186,14 +192,14 @@ fn findSdkRoot(b: *std.Build) ?[]const u8 {
 }
 
 fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
-    const developer_dir = b.graph.env_map.get("DEVELOPER_DIR") orelse return null;
+    const developer_dir = b.graph.environ_map.get("DEVELOPER_DIR") orelse return null;
     const candidates = [_][]const u8{
         b.fmt("{s}/SDKs/MacOSX.sdk", .{developer_dir}),
         b.fmt("{s}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk", .{developer_dir}),
     };
 
     for (candidates) |candidate| {
-        if (sdkExists(candidate)) {
+        if (sdkExists(b.graph.io, candidate)) {
             return candidate;
         }
     }
@@ -201,15 +207,14 @@ fn findDeveloperDirSdkRoot(b: *std.Build) ?[]const u8 {
     return null;
 }
 
-fn findXcrunSdkRoot(allocator: std.mem.Allocator) ?[]const u8 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+fn findXcrunSdkRoot(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" },
     }) catch return null;
     defer allocator.free(result.stderr);
 
     switch (result.term) {
-        .Exited => |code| if (code != 0) {
+        .exited => |code| if (code != 0) {
             allocator.free(result.stdout);
             return null;
         },
@@ -219,7 +224,7 @@ fn findXcrunSdkRoot(allocator: std.mem.Allocator) ?[]const u8 {
         },
     }
 
-    const trimmed = std.mem.trimRight(u8, result.stdout, "\r\n");
+    const trimmed = std.mem.trimEnd(u8, result.stdout, "\r\n");
     if (trimmed.len == 0) {
         allocator.free(result.stdout);
         return null;
@@ -232,10 +237,10 @@ fn findXcrunSdkRoot(allocator: std.mem.Allocator) ?[]const u8 {
     return allocator.dupe(u8, trimmed) catch null;
 }
 
-fn sdkExists(path: []const u8) bool {
-    if (std.fs.openDirAbsolute(path, .{})) |dir_const| {
+fn sdkExists(io: std.Io, path: []const u8) bool {
+    if (std.Io.Dir.openDirAbsolute(io, path, .{})) |dir_const| {
         var dir = dir_const;
-        dir.close();
+        dir.close(io);
         return true;
     } else |_| {
         return false;

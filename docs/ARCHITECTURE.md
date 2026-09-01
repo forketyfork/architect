@@ -45,7 +45,7 @@ graph TD
     end
 
     subgraph Shared Utilities
-        SHARED["geom, colors, dpi, config,<br/>logging, url_matcher, metrics, os/open"]
+        SHARED["geom, colors, dpi, config, env, clock, proc,<br/>logging, url_matcher, metrics, os/open"]
     end
 
     MAIN --> RT
@@ -91,6 +91,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
+- `main(init: std.process.Init)` passes `init.io` to `runtime.run(io, ...)`, which threads it through the application, session, and UI layers. I/O-owning structs store it beside their allocator; worker contexts copy it when their thread outlives the spawner.
 - Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY reader (`session/pty_reader.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification listener, control listener, and PTY reader also post a custom SDL wake event after queueing work or draining PTY bytes, so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY reader polls the master fds of all spawned sessions with a ~100ms timeout and, when one becomes readable, drains it into that session's mutex-guarded ring buffer (`PtyOutputBuffer`, 1 MiB) — so producer processes are never backpressured by render pacing, and DEC-2026 sync windows close in the buffer as fast as the producer writes them. Sessions register their fd+buffer on spawn and retire it during teardown; reads happen only under the registry mutex, so `retire()` returning guarantees the reader can no longer touch the fd or buffer. The main thread's `processOutput` consumes from the buffer (VT parsing stays main-thread-only) and clears a shared `wake_pending` flag at the top of each frame; the reader posts at most one SDL wake event per frame via that flag.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
@@ -99,7 +100,7 @@ Platform    Session    Rendering    UI Overlay
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
 - Terminal resizes use Ghostty's minimal flow: a single `ioctl(master, TIOCSWINSZ)` on the PTY master, which the kernel pairs with a SIGWINCH to the foreground process group of the slave's controlling terminal. Each session is sized independently. The focused session in `.Full`/`.Expanding`/`.Collapsing` mode (and additionally the previous session during a panning transition) is sized to the full-window cell count; every other session stays at grid-cell size. Grid↔full view toggle therefore reflows exactly one session — the one the user actually zoomed — instead of every session in the workspace. Window resize, font size change, and grid layout change all flow through the same per-session dispatch (`fullSetForMode` in `app/runtime.zig`, `applyTerminalResize` with `Sizes`/`FullSet` in `app/layout.zig`). Grid sizing accounts for the user's grid font scale and the reserved CWD-bar space when computing tile cell count. When an application enables DEC mode 40 and switches DECCOLM (`\e[?3h`/`\e[?3l`), `applyTerminalResize` preserves the ghostty-vt logical 80/132-column width while the Architect layout target column count is unchanged; row and pixel-size changes still update the terminal model, and DEC 2048 in-band size reports use that logical model size with the latest pixel fields. A target column-count change resets the model to the computed grid/full size. While DEC mode 2026 (`\e[?2026h`) is active for a session, the renderer reuses the last cached texture for that session via `synchronizedOutputHoldsCache` in `render/renderer.zig` instead of refreshing from the in-progress vt model, so reflows from agents like Codex appear as one atomic frame change rather than a top-to-bottom rescroll. The hold is dropped when the cached composition mismatches the requested one (an overlay or wave needs to bake into the next frame) or when the app sends the closing `\e[?2026l`; the next frame after the close refreshes once and snaps to the final state. A timeout-based safety net in `session/state.zig` force-clears the mode if a session leaves `\e[?2026h` set without ever closing it. Beyond that per-batch 2026 hold, a resize is not hidden or animated in any way: the repaint an app performs in response to SIGWINCH renders live, frame by frame, exactly as it does in Ghostty. Agents differ widely in how they answer a resize — Claude repaints in a single burst that is over within tens of milliseconds, while codex erases its scrollback and re-prints its transcript tail as a paced multi-second stream — and that difference is the agent's behavior to own, not the terminal's to conceal. Architect deliberately carries no resize-settle hold, freeze, or sweep-reveal transition: an earlier implementation froze the pre-resize texture until output went quiet and then swept the new layout in, which cost a mandatory ~1.8 s of animation on every grid↔full toggle (a 400 ms silence debounce plus a 1400 ms sweep) to hide a repaint that fast agents had already finished, and which re-triggered on ordinary scrollback output because "a large output chunk shortly after a resize" cannot distinguish a repaint wave from the user simply scrolling. Showing the truth immediately is both simpler and more honest about what the app is doing.
-- Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
+- Shared Utilities (`geom`, `colors`, `dpi`, `config`, `env`, `clock`, `proc`, `logging`, `metrics`, etc.) may be imported by any layer but never import from layers above them. `env.zig` is the process-environment accessor, `clock.zig` supplies I/O-aware timestamps and sleep, and `proc.zig` wraps I/O-aware process execution.
 - **Exception:** `app/*` modules may import `c.zig` directly for SDL type definitions used in input handling. This is a pragmatic shortcut for FFI constants, not a general license to depend on the Platform layer.
 
 ## Rules for New Code
@@ -133,6 +134,19 @@ These patterns are mandatory for all new code. They are derived from the archite
 | Add external control of app state   | `app/control.zig` + a runtime drain handler in `app/runtime.zig` |
 
 ## Data Flow
+
+### I/O Carrier
+
+```
+main(init: std.process.Init)
+    | init.io
+    v
+runtime.run(io, ...)
+    | explicit parameter or stored field
+    +--> application and session layers
+    +--> UI components that perform I/O
+    +--> copied into worker-thread contexts
+```
 
 ### Frame Loop (per frame, ~16ms active / ~50ms idle)
 
@@ -434,9 +448,9 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
-| `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main()`, `run()` | `app/control` module import, std |
-| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `main.zig` | Thin entrypoint + global logging hook registration | `main(init: std.process.Init)`, `std_options.logFn` | `app/runtime`, `logging` |
+| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main(init: std.process.Init)`, `run()` | `app/control` module import, std |
+| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run(io, ...)`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard and submitted-paste construction, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `pasteText()`, `buildSubmittedPaste()`, `clearTerminal()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
@@ -450,6 +464,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting, first-launch onboarding hint | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
+| `env.zig`, `clock.zig`, `proc.zig` | Process-environment access, I/O-aware timestamps/sleep, and I/O-aware process execution helpers | `get()`, `now*()`, `sleepNanos()`, `run()`, `spawnDetached()` | std |
 | `ui/root.zig` | UI component registry, z-index dispatch, action drain | `UiRoot`, `register()`, `handleEvent()`, `update()`, `render()`, `needsFrame()` | `ui/component`, `ui/types` |
 | `ui/component.zig` | UI component vtable interface | `UiComponent`, `VTable` (handleEvent, update, render, hitTest, wantsFrame, deinit) | `ui/types`, `c` |
 | `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |

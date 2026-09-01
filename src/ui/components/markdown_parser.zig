@@ -241,7 +241,7 @@ pub fn freeBlocks(allocator: std.mem.Allocator, blocks: *std.ArrayList(DisplayBl
         freeStyledSpans(allocator, block.spans);
     }
     blocks.deinit(allocator);
-    blocks.* = .{};
+    blocks.* = .empty;
 }
 
 pub fn freeStyledSpans(allocator: std.mem.Allocator, spans: []StyledSpan) void {
@@ -253,7 +253,7 @@ pub fn freeStyledSpans(allocator: std.mem.Allocator, spans: []StyledSpan) void {
 }
 
 fn trimRightSpaces(line: []const u8) []const u8 {
-    return std.mem.trimRight(u8, line, " \t");
+    return std.mem.trimEnd(u8, line, " \t");
 }
 
 const LineInfo = struct {
@@ -263,7 +263,7 @@ const LineInfo = struct {
 
 fn readLine(input: []const u8, start: usize) LineInfo {
     const line_end = std.mem.indexOfScalarPos(u8, input, start, '\n') orelse input.len;
-    const raw_line = std.mem.trimRight(u8, input[start..line_end], "\r");
+    const raw_line = std.mem.trimEnd(u8, input[start..line_end], "\r");
     const next_start: ?usize = if (line_end < input.len) line_end + 1 else null;
     return .{
         .line = raw_line,
@@ -272,12 +272,12 @@ fn readLine(input: []const u8, start: usize) LineInfo {
 }
 
 fn isFenceLine(line: []const u8) bool {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     return std.mem.startsWith(u8, trimmed, "```");
 }
 
 fn parseFenceLanguage(line: []const u8) []const u8 {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (!std.mem.startsWith(u8, trimmed, "```")) return "";
     return std.mem.trim(u8, trimmed[3..], " \t");
 }
@@ -301,7 +301,7 @@ const Heading = struct {
 };
 
 fn parseHeading(line: []const u8) ?Heading {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len == 0 or trimmed[0] != '#') return null;
 
     var level: usize = 0;
@@ -325,7 +325,7 @@ const ListItem = struct {
 fn parseListItem(line: []const u8) ?ListItem {
     const leading = countLeadingSpaces(line);
     const indent_level: u8 = @intCast(@min(leading / 2, max_indent_level));
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len < 2) return null;
 
     if ((trimmed[0] == '-' or trimmed[0] == '*' or trimmed[0] == '+') and trimmed[1] == ' ') {
@@ -377,14 +377,14 @@ const BlockquoteLine = struct {
 };
 
 fn parseBlockquote(line: []const u8) ?BlockquoteLine {
-    var trimmed = std.mem.trimLeft(u8, line, " \t");
+    var trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len == 0 or trimmed[0] != '>') return null;
 
     var depth: usize = 0;
     while (trimmed.len > 0 and trimmed[0] == '>') {
         depth += 1;
         trimmed = trimmed[1..];
-        trimmed = std.mem.trimLeft(u8, trimmed, " \t");
+        trimmed = std.mem.trimStart(u8, trimmed, " \t");
     }
 
     return .{
@@ -952,7 +952,7 @@ const CodeRefResult = struct {
 };
 
 fn stripCodeRef(line: []const u8) CodeRefResult {
-    const trimmed = std.mem.trimRight(u8, line, " \t\r");
+    const trimmed = std.mem.trimEnd(u8, line, " \t\r");
 
     if (trimmed.len >= 13) { // minimum: <!--ref:N-->
         if (std.mem.endsWith(u8, trimmed, "-->")) {
@@ -966,7 +966,7 @@ fn stripCodeRef(line: []const u8) CodeRefResult {
                     const num = std.fmt.parseInt(u8, trimmed[num_start..num_end], 10) catch {
                         return .{ .text = line, .ref_number = null };
                     };
-                    const stripped = std.mem.trimRight(u8, trimmed[0..abs_pos], " \t");
+                    const stripped = std.mem.trimEnd(u8, trimmed[0..abs_pos], " \t");
                     return .{ .text = stripped, .ref_number = num };
                 }
             }

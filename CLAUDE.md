@@ -6,7 +6,7 @@
 
 **Name:** Architect
 **Description:** A terminal multiplexer and AI-assisted coding environment built on SDL3 and Zig. Architect lets developers run multiple terminal sessions in a tiled layout, annotate diffs, and integrate Claude agents directly into their workflow.
-**Stack:** Zig 0.15, SDL3, ghostty-vt (terminal emulation), Nix dev shell, `just` task runner
+**Stack:** Zig 0.16, SDL3, ghostty-vt (terminal emulation), Nix dev shell, `just` task runner
 **Status:** Active development
 
 ## Build & Run
@@ -180,10 +180,17 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 ### Naming collisions in large render functions
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent "local constant shadows" errors.
 
-### Zig 0.15 collection API differences
-- `std.ArrayList(T)`: Zig 0.15 only provides `initCapacity(allocator, n)`, not `init()`. When initializing, use a reasonable capacity estimate (e.g., 8 or 16) rather than 0—`initCapacity(allocator, 0)` still allocates and is wasteful. For truly lazy allocation, use `.empty` and pass the allocator on each operation. Methods like `append` require the allocator argument (`list.append(allocator, item)`).
-- `std.fmt.allocPrintZ` is unavailable; create a null-terminated buffer manually: allocate `len+1`, copy bytes, set the last byte to 0, and slice as `buf[0..len :0]`.
-- For writers, `toml.serialize` expects `*std.Io.Writer`. Use `std.Io.Writer.Allocating.init(allocator)` (or `initCapacity`) and pass `&writer.writer`; read bytes with `writer.written()`.
+### Zig 0.16 API notes
+- `std.ArrayList(T)` is the unmanaged list: init with `.empty` (or `initCapacity`), and pass the allocator to each method (`list.append(allocator, item)`). `std.ArrayListUnmanaged` is a deprecated alias — do not use it.
+- `std.fs` retains only `path`, `max_path_bytes`, `max_name_bytes`, and the base64 alphabets. Every filesystem operation moved to `std.Io.Dir` / `std.Io.File` and takes an `io` argument. Two irregularities to remember: `Dir.renameAbsolute(old, new, io)` takes `io` **last**, and `makeDirAbsolute`/`makePath` were renamed to `createDirAbsolute`/`createDirPath` rather than merely gaining a parameter.
+- `std.time` retains only its duration constants. Timestamps come from `clock.zig`, which wraps `std.Io.Timestamp.now(io, .real)`. The clock enum tags are `real`, `awake`, `boot`, `cpu_process`, `cpu_thread`.
+- `std.Thread.spawn`/`join`/`detach` survive; `std.Thread.Mutex`, `Condition`, `Pool`, `WaitGroup`, and `sleep` do not. Use `std.Io.Mutex` / `std.Io.Condition`, initialized with `.init` (not `.{}`), and prefer `lockUncancelable`/`waitUncancelable` — Architect has no cancellation model, so a fallible lock adds error paths with no correct recovery.
+- `std.process.Child` keeps only `kill(io)` and `wait(io)`. Creation is `std.process.spawn(io, opts)`; the collect-output pattern is `std.process.run(gpa, io, opts)`. `Child.Term` tags are lowercase (`.exited`, `.signal`, `.stopped`, `.unknown`) and `signal` carries `std.posix.SIG`, not `u32`. Use `src/proc.zig` for the application process helpers.
+- Link and include configuration lives on `std.Build.Module`, not `std.Build.Step.Compile`. `link_libc` is a Module field, settable in `b.createModule`.
+- `std.posix.getenv` is gone. Read the environment through `src/env.zig`.
+
+### Inventory greps for std API migrations
+`const fs = std.fs;` and `const posix = std.posix;` aliases hide call sites from a `std.`-qualified grep — this cost real time during the 0.16 migration. Always match `\b(std\.)?fs\.` and `\b(std\.)?posix\.`. When excluding survivors, put the underscore in the character class: `fs\.[A-Za-z]+` truncates `fs.max_path_bytes` to `fs.max` and lets it slip past the filter.
 
 ### Loop boundary conditions
 When iterating over slices with index arithmetic, use `< len` not `<= len`:
@@ -209,7 +216,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - User config lives in `~/.config/architect/config.toml`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
 - Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
-- On macOS hosts where `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` is arm64e-only, the Nix dev shell auto-applies a Zig 0.15.2 workaround: it points `DEVELOPER_DIR` at a fake developer dir backed by `MacOSX15.4.sdk` and installs an `xcrun` shim inside that fake developer tree so `zig build`, Ghostty's Apple SDK discovery, and unrelated tools that still invoke `/usr/bin/xcrun` keep working. Remove it once Zig's fix for https://codeberg.org/ziglang/zig/issues/31756 is no longer needed here.
+- On macOS hosts where `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` is arm64e-only, the Nix dev shell retains the Zig 0.16.0 workaround: it points `DEVELOPER_DIR` at a fake developer dir backed by `MacOSX15.4.sdk` and installs an `xcrun` shim inside that fake developer tree so `zig build`, Ghostty's Apple SDK discovery, and unrelated tools that still invoke `/usr/bin/xcrun` keep working. Keep it until a macOS host confirms the upstream fix for https://codeberg.org/ziglang/zig/issues/31756 makes it unnecessary.
 - Shared UI/render utilities live in `src/geom.zig` (Rect + point containment), `src/anim/easing.zig` (easing), `src/gfx/primitives.zig` (rounded/thick borders), and `src/gfx/shimmer.zig` (busy shimmer used by the quit overlay); reuse them instead of duplicating helpers.
 - The UI overlay pipeline is centralized in `src/ui/`—`UiRoot` receives events before `main`'s switch, runs per-frame `update`, drains `UiAction`s, and renders after the scene; register new components there rather than adding more UI logic to `main.zig`.
 - Reusable marquee text rendering lives in `src/ui/components/marquee_label.zig`; use it instead of re-implementing scroll logic.
@@ -219,9 +226,11 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Overlays built on `ExpandingOverlay` must gate keyboard input and toggles on `state.isOpenOrOpening()`, never on `state == .Open`: the expand animation lasts ~200 ms, and keys typed during it otherwise fall through to the focused terminal.
 - Static text badges (the collapsed `⌘O`/`⌘T`/`⌘?` overlay hints) must use `src/ui/components/glyph_badge.zig`. Never create-render-destroy an SDL texture within a single frame: destroying a texture that was queued for rendering forces SDL's Metal backend to flush the command queue and block on drawable acquisition (up to ~1 s under load). Cache textures and invalidate on font/theme changes.
 - Cursor rendering: set the cursor's background color during the per-cell background pass and render the glyph on top; avoid drawing a separate cursor rectangle after text rendering, which hides the underlying glyph.
-- ghostty-vt defaults: `Terminal.Options.max_scrollback` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty's app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn't support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
+- ghostty-vt defaults: `Terminal.Options.max_scrollback_bytes` is 10_000 bytes and `0` disables scrollback entirely; set it explicitly when you expect deeper history. Ghostty's app sets 10 MB via `scrollback-limit` in Config.zig; upstream currently doesn't support unlimited scrollback. Use bytes, not lines, when sizing scrollback.
 
 ## Architecture Invariants (agent instructions)
+- `io: std.Io` is threaded explicitly, as a struct field immediately after `allocator` or a parameter immediately after `allocator`. Never store it in a module-level variable. Structs whose threads outlive the spawner must store their own copy.
+- `src/env.zig` is the only sanctioned module-level accessor in the codebase, because `std.Io` exposes no environment surface and the process environment is global and immutable. Do not add others.
 - Route UI input/rendering through `UiRoot` only; do not add new UI event branches or rendering in `main.zig` or `renderer.zig`.
 - Keep scene rendering (`renderer.zig`) focused on terminals/scene overlays; UI components belong in `src/ui/components/` and render after `renderer.render(...)`.
 - Do not store UI state or UI textures in session structs or `app_state.zig`; UI state must live inside UI components or UI-managed assets.

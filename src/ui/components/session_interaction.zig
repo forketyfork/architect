@@ -978,14 +978,14 @@ fn isWordCharacter(codepoint: u21) bool {
 /// on non-text cells.
 fn cellCodepoint(cell: anytype) u21 {
     return if (cell.content_tag == .codepoint or cell.content_tag == .codepoint_grapheme)
-        cell.content.codepoint
+        if (comptime @TypeOf(cell.content.codepoint) == u21) cell.content.codepoint else cell.content.codepoint.data
     else
         0;
 }
 
 fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.Pin) void {
     const terminal = &(session.terminal orelse return);
-    const page = &pin.node.data;
+    const page = pin.node.page();
     const max_col: u16 = @intCast(page.size.cols - 1);
 
     const click_coords = pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return;
@@ -1052,7 +1052,7 @@ fn selectWord(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.P
 
 fn selectLine(session: *SessionState, view: *SessionViewState, pin: ghostty_vt.Pin) void {
     const terminal = &(session.terminal orelse return);
-    const page = &pin.node.data;
+    const page = pin.node.page();
     const max_col: u16 = @intCast(page.size.cols - 1);
 
     const click_y = (pinToCoords(terminal, pin, view.is_viewing_scrollback) orelse return).y;
@@ -1087,7 +1087,7 @@ const LinkMatch = struct {
 };
 
 fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pin: ghostty_vt.Pin, is_viewing_scrollback: bool) ?LinkMatch {
-    const page = &pin.node.data;
+    const page = pin.node.page();
     const row_and_cell = pin.rowAndCell();
     const cell = row_and_cell.cell;
 

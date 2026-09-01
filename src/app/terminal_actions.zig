@@ -79,7 +79,6 @@ pub fn pasteText(
             defer allocator.free(buf);
             break :blk ghostty_vt.input.encodePaste(buf, opts);
         },
-        else => return err,
     };
 
     for (slices) |part| {

@@ -17,6 +17,7 @@ const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
+const posix_util = @import("../posix_util.zig");
 const notify = @import("../session/notify.zig");
 const pty_reader = @import("../session/pty_reader.zig");
 const session_state = @import("../session/state.zig");
@@ -80,6 +81,7 @@ const pending_session_send_timeout_ms: i64 = 10_000;
 
 const SpawnSessionContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sessions: []const *SessionState,
     grid: *GridLayout,
     anim_state: *AnimationState,
@@ -363,12 +365,13 @@ fn shouldSavePersistenceNow(dirty: bool, dirty_since_ms: i64, now_ms: i64) bool 
 fn savePersistenceIfDirty(
     persistence: *config_mod.Persistence,
     allocator: std.mem.Allocator,
+    io: std.Io,
     dirty: *bool,
     dirty_since_ms: *i64,
     now_ms: i64,
 ) void {
     if (!shouldSavePersistenceNow(dirty.*, dirty_since_ms.*, now_ms)) return;
-    persistence.save(allocator) catch |err| {
+    persistence.save(allocator, io) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
         return;
     };
@@ -763,7 +766,7 @@ fn planExternalSpawnSlot(
     };
 }
 
-fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
+fn validateExternalSpawnCwd(io: std.Io, cwd: []const u8) ?control.SpawnFailure {
     if (!std.fs.path.isAbsolute(cwd)) {
         return .{
             .code = .invalid_cwd,
@@ -771,13 +774,13 @@ fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
         };
     }
 
-    var dir = std.fs.openDirAbsolute(cwd, .{}) catch {
+    var dir = std.Io.Dir.openDirAbsolute(io, cwd, .{}) catch {
         return .{
             .code = .invalid_cwd,
             .message = "cwd must be an existing directory",
         };
     };
-    dir.close();
+    dir.close(io);
     return null;
 }
 
@@ -792,11 +795,12 @@ fn buildQueuedCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
 }
 
 fn completeExternalSpawnFailure(
+    io: std.Io,
     pending: *control.PendingSpawn,
     code: control.SpawnErrorCode,
     message: []const u8,
 ) void {
-    pending.completion.complete(.{ .failure = .{
+    pending.completion.complete(io, .{ .failure = .{
         .code = code,
         .message = message,
     } });
@@ -890,15 +894,15 @@ fn handleExternalSpawnRequest(
     pending: *control.PendingSpawn,
 ) void {
     const allocator = context.allocator;
-    if (validateExternalSpawnCwd(pending.request.cwd)) |failure| {
-        pending.completion.complete(.{ .failure = failure });
+    if (validateExternalSpawnCwd(context.io, pending.request.cwd)) |failure| {
+        pending.completion.complete(context.io, .{ .failure = failure });
         return;
     }
 
     const command_input = if (pending.request.command) |command| blk: {
         break :blk buildQueuedCommand(allocator, command) catch |err| {
             log.warn("failed to prepare external spawn command: {}", .{err});
-            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare command for the new session");
+            completeExternalSpawnFailure(context.io, pending, .spawn_failed, "failed to prepare command for the new session");
             return;
         };
     } else null;
@@ -906,7 +910,7 @@ fn handleExternalSpawnRequest(
 
     const cwd_buf = allocZ(allocator, pending.request.cwd) catch |err| {
         log.warn("failed to allocate external spawn cwd: {}", .{err});
-        completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare working directory");
+        completeExternalSpawnFailure(context.io, pending, .spawn_failed, "failed to prepare working directory");
         return;
     };
     defer allocator.free(cwd_buf);
@@ -919,11 +923,11 @@ fn handleExternalSpawnRequest(
         else
             "failed to spawn terminal session";
         const code: control.SpawnErrorCode = if (err == error.NoFreeSession) .full_grid else .spawn_failed;
-        completeExternalSpawnFailure(pending, code, message);
+        completeExternalSpawnFailure(context.io, pending, code, message);
         return;
     };
 
-    pending.completion.complete(.{ .success = .{
+    pending.completion.complete(context.io, .{ .success = .{
         .session_id = session.id,
         .slot_index = session.slot_index,
     } });
@@ -1059,6 +1063,7 @@ fn swapTwoResources(
 
 const FontReloadContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     renderer: *c.SDL_Renderer,
     shared_cache: *font_cache_mod.FontCache,
     ui_cache: *font_cache_mod.FontCache,
@@ -1090,6 +1095,7 @@ fn deinitFontResource(font: *font_mod.Font) void {
 
 fn reloadFontsForScale(
     allocator: std.mem.Allocator,
+    io: std.Io,
     renderer: *c.SDL_Renderer,
     shared_cache: *font_cache_mod.FontCache,
     ui_cache: *font_cache_mod.FontCache,
@@ -1101,6 +1107,7 @@ fn reloadFontsForScale(
 ) font_mod.Font.InitError!void {
     var ctx = FontReloadContext{
         .allocator = allocator,
+        .io = io,
         .renderer = renderer,
         .shared_cache = shared_cache,
         .ui_cache = ui_cache,
@@ -1138,6 +1145,7 @@ fn applyScaleChangeAndResize(
 
 const RuntimeScaleChangeContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     renderer: *c.SDL_Renderer,
     shared_font_cache: *font_cache_mod.FontCache,
     ui_font_cache: *font_cache_mod.FontCache,
@@ -1162,6 +1170,7 @@ const RuntimeScaleChangeContext = struct {
 fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Font.InitError!void {
     try reloadFontsForScale(
         ctx.allocator,
+        ctx.io,
         ctx.renderer,
         ctx.shared_font_cache,
         ctx.ui_font_cache,
@@ -1225,6 +1234,7 @@ const QuitTeardownTask = struct {
 };
 
 const QuitTeardownWorker = struct {
+    io: std.Io,
     tasks: []QuitTeardownTask,
     done: *std.atomic.Value(bool),
 
@@ -1232,9 +1242,9 @@ const QuitTeardownWorker = struct {
         defer self.done.store(true, .seq_cst);
         var threads: [grid_layout.max_terminals]?std.Thread = [_]?std.Thread{null} ** grid_layout.max_terminals;
         for (self.tasks, 0..) |*task, idx| {
-            threads[idx] = std.Thread.spawn(.{}, runTask, .{task}) catch |err| blk: {
+            threads[idx] = std.Thread.spawn(.{}, runTask, .{ self.io, task }) catch |err| blk: {
                 log.warn("quit teardown: failed to spawn parallel task for session {d}: {}", .{ task.session_idx, err });
-                runTask(task);
+                runTask(self.io, task);
                 break :blk null;
             };
         }
@@ -1245,23 +1255,23 @@ const QuitTeardownWorker = struct {
         }
     }
 
-    fn runTask(task: *QuitTeardownTask) void {
+    fn runTask(io: std.Io, task: *QuitTeardownTask) void {
         log.info("quit teardown: session {d} has foreground agent {s}", .{ task.session_idx, task.agent_kind.name() });
-        sendExitSequence(task.pty_master, task.agent_kind);
-        clock.sleepNanos(quit_primary_wait_ms * std.time.ns_per_ms);
+        sendExitSequence(io, task.pty_master, task.agent_kind);
+        clock.sleepNanos(io, quit_primary_wait_ms * std.time.ns_per_ms);
 
         var fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         if (fg_pgrp != null) {
             log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ task.session_idx, task.agent_kind.name() });
-            sendExitSequence(task.pty_master, task.agent_kind);
-            clock.sleepNanos(quit_retry_wait_ms * std.time.ns_per_ms);
+            sendExitSequence(io, task.pty_master, task.agent_kind);
+            clock.sleepNanos(io, quit_retry_wait_ms * std.time.ns_per_ms);
             fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         }
 
         if (fg_pgrp) |pgrp| {
             log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ task.session_idx, task.agent_kind.name() });
             _ = std.c.kill(-pgrp, std.c.SIG.TERM);
-            clock.sleepNanos(quit_term_wait_ms * std.time.ns_per_ms);
+            clock.sleepNanos(io, quit_term_wait_ms * std.time.ns_per_ms);
         } else {
             log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ task.session_idx, task.agent_kind.name() });
         }
@@ -1276,7 +1286,7 @@ const QuitTeardownState = struct {
     worker: QuitTeardownWorker = undefined,
     thread: ?std.Thread = null,
 
-    fn start(self: *QuitTeardownState, sessions: []*SessionState) !bool {
+    fn start(self: *QuitTeardownState, io: std.Io, sessions: []*SessionState) !bool {
         if (self.active) return true;
 
         self.task_count = 0;
@@ -1303,6 +1313,7 @@ const QuitTeardownState = struct {
 
         self.done.store(false, .seq_cst);
         self.worker = .{
+            .io = io,
             .tasks = self.tasks[0..self.task_count],
             .done = &self.done,
         };
@@ -1327,24 +1338,31 @@ const QuitTeardownState = struct {
     }
 };
 
-fn sendExitSequence(master_fd: posix.fd_t, agent_kind: session_state.AgentKind) void {
+fn sendExitSequence(io: std.Io, master_fd: posix.fd_t, agent_kind: session_state.AgentKind) void {
     const sequence = agent_kind.exitControlSequence();
     for (sequence, 0..) |byte, idx| {
         const buf = [1]u8{byte};
-        _ = posix.write(master_fd, &buf) catch |err| {
+        _ = posix_util.write(master_fd, &buf) catch |err| {
             log.warn("quit teardown: failed to send exit key sequence (step {d}) for {s}: {}", .{ idx + 1, agent_kind.name(), err });
             return;
         };
         if (idx + 1 < sequence.len) {
-            clock.sleepNanos(220 * std.time.ns_per_ms);
+            clock.sleepNanos(io, 220 * std.time.ns_per_ms);
         }
     }
     log.debug("quit teardown: wrote exit command for agent {s}", .{agent_kind.name()});
 }
 
 fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid_t {
-    const fd = posix.openZ(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
-    defer posix.close(fd);
+    const fd = while (true) {
+        const open_fd = std.c.open(slave_path_z, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, @as(std.c.mode_t, 0));
+        switch (std.c.errno(open_fd)) {
+            .SUCCESS => break open_fd,
+            .INTR => continue,
+            else => return null,
+        }
+    };
+    defer _ = std.c.close(fd);
     const fg = tcgetpgrp(fd);
     if (fg <= 0) return null;
     const fg_pgrp: posix.pid_t = @intCast(fg);
@@ -1352,7 +1370,7 @@ fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid
     return fg_pgrp;
 }
 
-fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *SessionState) void {
+fn drainQuitCaptureOutput(io: std.Io, tasks: []const QuitTeardownTask, sessions: []const *SessionState) void {
     if (tasks.len == 0) return;
 
     var last_capture_lengths: [grid_layout.max_terminals]usize = [_]usize{0} ** grid_layout.max_terminals;
@@ -1360,7 +1378,7 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
         last_capture_lengths[idx] = sessions[task.session_idx].quitCaptureBytes().len;
     }
 
-    const start_ns = clock.nowNanos();
+    const start_ns = clock.nowNanos(io);
     var last_growth_ns = start_ns;
 
     while (true) {
@@ -1377,13 +1395,13 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
             last_capture_lengths[idx] = new_len;
         }
 
-        const now_ns = clock.nowNanos();
+        const now_ns = clock.nowNanos(io);
         if (saw_growth) {
             last_growth_ns = now_ns;
         }
 
         if (!shouldContinueQuitCaptureDrain(start_ns, last_growth_ns, now_ns)) break;
-        clock.sleepNanos(quit_capture_drain_poll_ns);
+        clock.sleepNanos(io, quit_capture_drain_poll_ns);
     }
 }
 
@@ -1394,13 +1412,14 @@ fn shouldContinueQuitCaptureDrain(start_ns: i128, last_growth_ns: i128, now_ns: 
 }
 
 fn startQuitFlow(
+    io: std.Io,
     quit_state: *QuitTeardownState,
     sessions: []*SessionState,
     overlay: *ui_mod.quit_blocking_overlay.QuitBlockingOverlayComponent,
 ) bool {
     if (builtin.os.tag != .macos) return true;
     if (quit_state.active) return false;
-    const started = quit_state.start(sessions) catch |err| {
+    const started = quit_state.start(io, sessions) catch |err| {
         log.warn("quit teardown: failed to start worker thread: {}", .{err});
         return true;
     };
@@ -1409,7 +1428,7 @@ fn startQuitFlow(
     return false;
 }
 
-pub fn run(log_dir_override: ?[]const u8) !void {
+pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -1425,22 +1444,22 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     const notify_sock = try notify.getNotifySocketPath(allocator);
     defer allocator.free(notify_sock);
 
-    const control_sock = try control.getControlSocketPath(allocator);
+    const control_sock = try control.getControlSocketPath(allocator, io);
     defer allocator.free(control_sock);
 
-    const control_discovery_path = try control.getControlDiscoveryPath(allocator);
+    const control_discovery_path = try control.getControlDiscoveryPath(allocator, io);
     defer allocator.free(control_discovery_path);
 
     var notify_stop = std.atomic.Value(bool).init(false);
     var control_stop = std.atomic.Value(bool).init(false);
     var pty_reader_stop = std.atomic.Value(bool).init(false);
     var pty_wake_pending = std.atomic.Value(bool).init(false);
-    var pty_reader_state = pty_reader.PtyReader{};
+    var pty_reader_state = pty_reader.PtyReader.init(io);
 
-    var config = config_mod.Config.load(allocator) catch |err| blk: {
+    var config = config_mod.Config.load(allocator, io) catch |err| blk: {
         if (err == error.ConfigNotFound) {
             std.debug.print("Config not found, creating default config file\n", .{});
-            config_mod.Config.createDefaultConfigFile(allocator) catch |create_err| {
+            config_mod.Config.createDefaultConfigFile(allocator, io) catch |create_err| {
                 std.debug.print("Failed to create default config: {}\n", .{create_err});
             };
         } else {
@@ -1457,7 +1476,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     defer config.deinit(allocator);
 
     var file_logging_enabled = false;
-    logging_mod.init(allocator, .{
+    logging_mod.init(allocator, io, .{
         .min_level = config.logging.getMinLevel(),
         .directory_override = log_dir_override,
     }) catch |err| {
@@ -1478,9 +1497,9 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         logging_mod.deinit();
     }
 
-    var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
+    var persistence = config_mod.Persistence.load(allocator, io) catch |err| blk: {
         std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
-        var fallback = config_mod.Persistence.init(allocator);
+        var fallback = config_mod.Persistence.init(allocator, io);
         fallback.font_size = config.font.size;
         fallback.window = config.window;
         break :blk fallback;
@@ -1534,6 +1553,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     defer platform.stopTextInput(sdl.window);
     const notify_thread = try notify.startNotifyThread(
         allocator,
+        io,
         notify_sock,
         &notify_queue,
         &notify_stop,
@@ -1548,6 +1568,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     }
     const control_thread = try control.startControlThread(
         allocator,
+        io,
         control_sock,
         control_discovery_path,
         &control_queue,
@@ -1559,11 +1580,12 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     );
     defer {
         control_stop.store(true, .seq_cst);
-        control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
+        control.failPending(&control_queue, allocator, io, .app_not_running, "Architect is shutting down");
         control_thread.join();
-        control.cleanupControlFiles(control_sock, control_discovery_path);
+        control.cleanupControlFiles(io, control_sock, control_discovery_path);
     }
     const pty_reader_thread = try pty_reader.start(
+        io,
         &pty_reader_state,
         &pty_reader_stop,
         &pty_wake_pending,
@@ -1596,7 +1618,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var scale_y = sdl.scale_y;
     var ui_scale: f32 = @max(scale_x, scale_y);
 
-    var font_paths = try font_paths_mod.FontPaths.init(allocator, config.font.family);
+    var font_paths = try font_paths_mod.FontPaths.init(allocator, io, config.font.family);
     defer font_paths.deinit();
 
     var shared_font_cache = font_cache_mod.FontCache.initWithFallbacks(allocator, false);
@@ -1692,7 +1714,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
     // Initialize all session slots
     for (0..grid_layout.max_terminals) |i| {
-        sessions_storage[i] = try SessionState.init(allocator, i, shell_path, size, notify_sock, theme, &pty_reader_state);
+        sessions_storage[i] = try SessionState.init(allocator, io, i, shell_path, size, notify_sock, theme, &pty_reader_state);
         sessions[i] = &sessions_storage[i];
         init_count += 1;
     }
@@ -1778,7 +1800,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     try ui.register(session_interaction_component.asComponent());
 
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
-    worktree_comp_ptr.* = .{ .allocator = allocator };
+    worktree_comp_ptr.* = .{ .allocator = allocator, .io = io };
     const worktree_component = ui_mod.UiComponent{
         .ptr = worktree_comp_ptr,
         .vtable = &ui_mod.worktree_overlay.WorktreeOverlayComponent.vtable,
@@ -1806,7 +1828,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     try ui.register(help_component);
 
     const pr_dropdown_comp_ptr = try allocator.create(ui_mod.pr_dropdown.PRDropdownComponent);
-    pr_dropdown_comp_ptr.* = .{ .allocator = allocator };
+    pr_dropdown_comp_ptr.* = .{ .allocator = allocator, .io = io };
     const pr_dropdown_component = ui_mod.UiComponent{
         .ptr = pr_dropdown_comp_ptr,
         .vtable = &ui_mod.pr_dropdown.PRDropdownComponent.vtable,
@@ -1838,11 +1860,11 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     try ui.register(cwd_bar_component.asComponent());
     const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
     try ui.register(metrics_overlay_component.asComponent());
-    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
+    const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator, io);
     try ui.register(diff_overlay_component.asComponent());
     const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
     try ui.register(reader_overlay_component.asComponent());
-    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
+    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator, io);
     try ui.register(story_overlay_component.asComponent());
     const selection_agent_overlay_component = try ui_mod.selection_agent_overlay.SelectionAgentOverlayComponent.init(allocator);
     try ui.register(selection_agent_overlay_component.asComponent());
@@ -1854,8 +1876,8 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var next_frame_wait: FrameWaitDecision = .none;
     while (running) {
         var next_event = waitForNextFrame(next_frame_wait);
-        const frame_start_ns: i128 = clock.nowNanos();
-        const now = clock.nowMillis();
+        const frame_start_ns: i128 = clock.nowNanos(io);
+        const now = clock.nowMillis(io);
         if (relaunch_trace_frames > 0) {
             log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
                 @tagName(anim_state.mode),
@@ -1925,7 +1947,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 c.SDL_EVENT_QUIT => {
                     if (quit_teardown.active) continue;
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                        if (startQuitFlow(io, &quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
                             running = false;
                         }
                     }
@@ -1938,7 +1960,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                         continue;
                     }
                     if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                        if (startQuitFlow(io, &quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
                             running = false;
                         }
                     }
@@ -1960,6 +1982,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     ui_scale = @max(scale_x, scale_y);
                     var scale_change_ctx = RuntimeScaleChangeContext{
                         .allocator = allocator,
+                        .io = io,
                         .renderer = renderer,
                         .shared_font_cache = &shared_font_cache,
                         .ui_font_cache = &ui_font_cache,
@@ -2061,6 +2084,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     const mouse_y: c_int = @intFromFloat(scaled_event.drop.y);
 
                     const hovered_session = layout.calculateHoveredSession(
+                        io,
                         mouse_x,
                         mouse_y,
                         &anim_state,
@@ -2103,7 +2127,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                         if (quit_teardown.active) continue;
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
                         if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                            if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                            if (startQuitFlow(io, &quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
                                 running = false;
                             }
                         }
@@ -2644,7 +2668,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         if (terminal_entries_changed) {
             markPersistenceDirty(&persistence_dirty, &persistence_dirty_since_ms, now);
         }
-        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, &persistence_dirty_since_ms, now);
+        savePersistenceIfDirty(&persistence, allocator, io, &persistence_dirty, &persistence_dirty_since_ms, now);
 
         if (quit_teardown.isFinished()) {
             running = false;
@@ -2658,6 +2682,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
 
         const spawn_context = SpawnSessionContext{
             .allocator = allocator,
+            .io = io,
             .sessions = sessions,
             .grid = &grid,
             .anim_state = &anim_state,
@@ -2676,7 +2701,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             .cell_height_pixels = &cell_height_pixels,
         };
 
-        var control_requests = control_queue.drainAll();
+        var control_requests = control_queue.drainAll(io);
         defer control_requests.deinit(allocator);
         const had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
@@ -2684,7 +2709,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             request.request.deinit(allocator);
         }
 
-        var notifications = notify_queue.drainAll();
+        var notifications = notify_queue.drainAll(io);
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
@@ -2946,7 +2971,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             },
             .ConfirmQuit => {
                 if (!quit_teardown.active) {
-                    if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                    if (startQuitFlow(io, &quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
                         running = false;
                     }
                 }
@@ -2957,7 +2982,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
 
                     if (builtin.os.tag == .macos) {
-                        _ = proc.spawnDetached(allocator, &.{ "open", "-t", config_path }) catch |err| {
+                        _ = proc.spawnDetached(allocator, io, &.{ "open", "-t", config_path }) catch |err| {
                             std.debug.print("Failed to open config file: {}\n", .{err});
                         };
                     } else {
@@ -3413,7 +3438,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 log.info("frame trace after render", .{});
             }
             metrics_mod.increment(.frame_count);
-            last_render_ns = clock.nowNanos();
+            last_render_ns = clock.nowNanos(io);
         }
 
         if (relaunch_trace_frames > 0) {
@@ -3426,13 +3451,13 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             window_close_suppress_countdown -= 1;
         }
 
-        const frame_end_ns: i128 = clock.nowNanos();
+        const frame_end_ns: i128 = clock.nowNanos(io);
         const frame_ns = frame_end_ns - frame_start_ns;
         next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
     }
 
     if (builtin.os.tag == .macos) {
-        const now = clock.nowMillis();
+        const now = clock.nowMillis(io);
         for (sessions) |session| {
             session.updateCwd(now);
         }
@@ -3440,7 +3465,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         if (quit_teardown.active) {
             quit_blocking_overlay_component.setActive(false);
             quit_teardown.join();
-            drainQuitCaptureOutput(quit_teardown.tasks[0..quit_teardown.task_count], sessions[0..]);
+            drainQuitCaptureOutput(io, quit_teardown.tasks[0..quit_teardown.task_count], sessions[0..]);
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
                 const session = sessions[task.session_idx];
                 session.stopQuitCapture();
@@ -3473,7 +3498,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
         };
     }
 
-    persistence.save(allocator) catch |err| {
+    persistence.save(allocator, io) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
     };
     persistence.deinit(allocator);
@@ -3607,20 +3632,23 @@ test "drainPendingSessionSends waits for the deadline, then writes the pending t
     // A pipe stands in for the PTY: `Shell.write` writes to `pty.master`, so the
     // test can read the other end to observe exactly what was sent, instead of
     // trusting a fabricated session whose `sendInput` would silently no-op.
-    const pipe_fds = try posix.pipe();
-    defer posix.close(pipe_fds[0]);
-    defer posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var session: SessionState = undefined;
     session.id = 1;
     session.spawned = true;
     session.dead = false;
     session.shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
         .child_pid = -1,
     };
     session.pending_write = .empty;
     session.allocator = allocator;
+    session.io = std.testing.io;
     var sessions = [_]*SessionState{&session};
 
     var pending_sends = std.ArrayList(PendingSessionSend).empty;
@@ -3664,9 +3692,9 @@ test "agentLabel reports the detected agent name or 'none'" {
 }
 
 test "validateExternalSpawnCwd accepts directories and rejects relative paths" {
-    try std.testing.expect(validateExternalSpawnCwd("/tmp") == null);
+    try std.testing.expect(validateExternalSpawnCwd(std.testing.io, "/tmp") == null);
 
-    const failure = validateExternalSpawnCwd("relative/path") orelse return error.TestUnexpectedResult;
+    const failure = validateExternalSpawnCwd(std.testing.io, "relative/path") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(control.SpawnErrorCode.invalid_cwd, failure.code);
 }
 
@@ -4001,7 +4029,7 @@ test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
 test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata until quit capture" {
     const allocator = std.testing.allocator;
 
-    var persistence = config_mod.Persistence.init(allocator);
+    var persistence = config_mod.Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed");
@@ -4029,7 +4057,7 @@ test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata
 test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {
     const allocator = std.testing.allocator;
 
-    var persistence = config_mod.Persistence.init(allocator);
+    var persistence = config_mod.Persistence.init(allocator, std.testing.io);
     defer persistence.deinit(allocator);
 
     var sessions_storage: [2]SessionState = undefined;

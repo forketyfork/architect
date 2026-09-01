@@ -42,26 +42,27 @@ const AnchorPosition = struct {
 
 pub const StoryOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
     raw_content: ?[]u8 = null,
-    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .{},
-    lines: std.ArrayList(markdown_renderer.RenderLine) = .{},
+    blocks: std.ArrayList(markdown_parser.DisplayBlock) = .empty,
+    lines: std.ArrayList(markdown_renderer.RenderLine) = .empty,
     file_path: ?[]u8 = null,
 
     wrap_cols: usize = 0,
 
-    anchor_positions: std.ArrayList(AnchorPosition) = .{},
+    anchor_positions: std.ArrayList(AnchorPosition) = .empty,
     hovered_anchor: ?u8 = null,
     hover_start_ms: i64 = 0,
 
     search_active: bool = false,
     search: text_edit.TextInput = .{ .separators = text_edit.prose_separators, .accepts = text_edit.isSingleLineChar },
-    matches: std.ArrayList(SearchMatch) = .{},
+    matches: std.ArrayList(SearchMatch) = .empty,
     selected_match: ?usize = null,
 
-    link_hits: std.ArrayList(LinkHit) = .{},
+    link_hits: std.ArrayList(LinkHit) = .empty,
     hovered_link: ?usize = null,
 
     pointer_cursor: ?*c.SDL_Cursor = null,
@@ -73,10 +74,11 @@ pub const StoryOverlayComponent = struct {
     const marker_width: c_int = 20;
     const code_indent: c_int = 8;
 
-    pub fn init(allocator: std.mem.Allocator) !*StoryOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*StoryOverlayComponent {
         const comp = try allocator.create(StoryOverlayComponent);
         comp.* = .{
             .allocator = allocator,
+            .io = io,
             .pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER),
             .arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT),
         };
@@ -129,14 +131,13 @@ pub const StoryOverlayComponent = struct {
     }
 
     fn readFile(self: *StoryOverlayComponent, path: []const u8) ?[]u8 {
-        const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch |err| {
             log.warn("failed to open story file {s}: {}", .{ path, err });
             return null;
         };
-        defer file.close();
+        defer file.close(self.io);
 
-        const max_size: usize = 4 * 1024 * 1024;
-        return file.readToEndAlloc(self.allocator, max_size) catch |err| {
+        return std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(4 * 1024 * 1024)) catch |err| {
             log.warn("failed to read story file {s}: {}", .{ path, err });
             return null;
         };
@@ -146,7 +147,7 @@ pub const StoryOverlayComponent = struct {
         markdown_parser.freeBlocks(self.allocator, &self.blocks);
         self.blocks = markdown_parser.parseStory(self.allocator, self.raw_content orelse "") catch |err| {
             log.warn("failed to parse story markdown: {}", .{err});
-            self.blocks = .{};
+            self.blocks = .empty;
             return;
         };
 
@@ -159,7 +160,7 @@ pub const StoryOverlayComponent = struct {
         const effective_wrap = if (self.wrap_cols > 0) self.wrap_cols else 120;
         self.lines = markdown_renderer.buildLines(self.allocator, self.blocks.items, effective_wrap) catch |err| {
             log.warn("failed to build story layout: {}", .{err});
-            self.lines = .{};
+            self.lines = .empty;
             return;
         };
         self.rebuildSearchMatches();

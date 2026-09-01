@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const posix_util = @import("posix_util.zig");
 
 const log = std.log.scoped(.pty);
 
@@ -74,12 +75,12 @@ const PosixPty = struct {
         }
 
         cloexec: {
-            const flags = std.posix.fcntl(master_fd, std.posix.F.GETFD, 0) catch |err| {
+            const flags = posix_util.fcntl(master_fd, std.posix.F.GETFD, 0) catch |err| {
                 log.warn("error getting flags for master fd err={}", .{err});
                 break :cloexec;
             };
 
-            _ = std.posix.fcntl(
+            _ = posix_util.fcntl(
                 master_fd,
                 std.posix.F.SETFD,
                 flags | std.posix.FD_CLOEXEC,
@@ -168,15 +169,15 @@ const PosixPty = struct {
 
         // The pre-dup2 fds are no longer needed; stdin/stdout/stderr already point
         // at the slave. Match ghostty's close pattern.
-        posix.close(self.slave);
-        posix.close(self.master);
+        _ = std.c.close(self.slave);
+        _ = std.c.close(self.master);
     }
 };
 
 test "setSize updates slave winsize via master ioctl" {
     var pty = try Pty.open(.{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 800, .ws_ypixel = 600 });
     defer pty.deinit();
-    defer posix.close(pty.slave);
+    defer _ = std.c.close(pty.slave);
 
     try pty.setSize(.{ .ws_row = 40, .ws_col = 120, .ws_xpixel = 1200, .ws_ypixel = 800 });
 

@@ -1,13 +1,81 @@
+// zwanzig-disable: identifier-style
 const builtin = @import("builtin");
 
 const is_macos = builtin.os.tag == .macos;
 
-const c = if (is_macos) @cImport({
-    @cInclude("Carbon/Carbon.h");
-    @cInclude("CoreFoundation/CoreFoundation.h");
-    @cInclude("objc/runtime.h");
-    @cInclude("objc/message.h");
-}) else struct {};
+/// Hand-written bindings for the handful of Carbon/CoreFoundation/Objective-C
+/// runtime symbols this file needs, verified against the real macOS SDK
+/// headers (HIToolbox/TextInputSources.h, CoreFoundation's CFBase/CFString/
+/// CFDictionary/CFNumber/CFPreferences.h, objc/objc.h, objc/message.h).
+///
+/// `@cImport`-ing Carbon/CoreFoundation.h pulls in ApplicationServices and
+/// CoreServices, which under Zig 0.16's Aro-based translate-c fail to parse:
+/// nested/umbrella framework headers aren't found (matches a reported
+/// Accelerate/vImage regression), and ImageIO's use of Apple's Blocks syntax
+/// (`(^Foo)(...)`) isn't understood by Aro's C parser at all. Hand-declaring
+/// only the symbols actually used here avoids both problems; the symbols
+/// themselves are decades-old, ABI-frozen APIs.
+const c = if (is_macos) struct {
+    pub const CFTypeID = c_ulong;
+    pub const CFIndex = c_long;
+    pub const Boolean = u8;
+    pub const OSStatus = i32;
+
+    // `const void*`: genuinely generic, so this stays optional-by-default;
+    // any concrete opaque pointer below coerces into it implicitly.
+    pub const CFTypeRef = ?*anyopaque;
+    pub const CFPropertyListRef = CFTypeRef;
+
+    const CFAllocator = opaque {};
+    pub const CFAllocatorRef = *CFAllocator;
+    pub extern const kCFAllocatorDefault: CFAllocatorRef;
+
+    const CFString = opaque {};
+    pub const CFStringRef = *CFString;
+    pub const CFStringEncoding = u32;
+    pub const kCFStringEncodingUTF8: CFStringEncoding = 0x0800_0100;
+    pub extern fn CFStringCreateWithCString(alloc: CFAllocatorRef, c_str: [*:0]const u8, encoding: CFStringEncoding) callconv(.c) ?CFStringRef;
+
+    const CFDictionary = opaque {};
+    pub const CFDictionaryRef = *CFDictionary;
+    pub extern fn CFDictionaryGetTypeID() callconv(.c) CFTypeID;
+    pub extern fn CFDictionaryGetValue(the_dict: CFDictionaryRef, key: CFTypeRef) callconv(.c) CFTypeRef;
+
+    pub const CFNumberType = CFIndex;
+    pub const kCFNumberSInt64Type: CFNumberType = 4;
+    pub extern fn CFNumberGetTypeID() callconv(.c) CFTypeID;
+    pub extern fn CFNumberGetValue(number: CFTypeRef, the_type: CFNumberType, value_ptr: ?*anyopaque) callconv(.c) Boolean;
+
+    pub extern fn CFBooleanGetTypeID() callconv(.c) CFTypeID;
+    pub extern fn CFBooleanGetValue(boolean: CFTypeRef) callconv(.c) Boolean;
+
+    pub extern fn CFGetTypeID(cf: CFTypeRef) callconv(.c) CFTypeID;
+    pub extern fn CFRetain(cf: CFTypeRef) callconv(.c) CFTypeRef;
+    pub extern fn CFRelease(cf: CFTypeRef) callconv(.c) void;
+
+    pub extern fn CFPreferencesCopyAppValue(key: CFStringRef, application_id: CFStringRef) callconv(.c) CFPropertyListRef;
+
+    // Carbon / HIToolbox text input source services (TextInputSources.h).
+    const TISInputSource = opaque {};
+    pub const TISInputSourceRef = *TISInputSource;
+    pub extern const kTISPropertyInputSourceID: CFStringRef;
+    pub extern fn TISCopyCurrentKeyboardInputSource() callconv(.c) ?TISInputSourceRef;
+    pub extern fn TISGetInputSourceProperty(input_source: TISInputSourceRef, property_key: CFStringRef) callconv(.c) ?*anyopaque;
+    pub extern fn TISSelectInputSource(input_source: TISInputSourceRef) callconv(.c) OSStatus;
+
+    // Objective-C runtime (objc/objc.h, objc/message.h). `objc_msgSend`'s
+    // declared signature is never called directly: existing call sites below
+    // take its address and reinterpret it as the specific non-variadic
+    // signature each call actually needs, the standard pattern for calling
+    // objc_msgSend from non-Objective-C code.
+    const objc_class = opaque {};
+    pub const Class = *objc_class;
+    const objc_selector = opaque {};
+    pub const SEL = *objc_selector;
+    pub extern fn objc_getClass(name: [*:0]const u8) callconv(.c) ?Class;
+    pub extern fn sel_registerName(name: [*:0]const u8) callconv(.c) ?SEL;
+    pub extern fn objc_msgSend() callconv(.c) void;
+} else struct {};
 
 pub const InputSourceTracker = if (is_macos) struct {
     source: ?c.TISInputSourceRef = null,

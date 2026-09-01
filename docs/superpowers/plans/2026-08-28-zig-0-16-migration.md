@@ -1215,7 +1215,7 @@ Every filesystem transformation in Tasks 6, 10, and 11 comes from this table, ve
 - Consumes: the four verified hashes from Task 1
 - Produces: a `build.zig` that 0.16 can execute, so the compiler reaches `src/`
 
-- [ ] **Step 1: Bump the toolchain in `flake.nix`**
+- [x] **Step 1: Bump the toolchain in `flake.nix`**
 
 ```nix
             zig.packages.${system}."0.16.0"
@@ -1223,7 +1223,7 @@ Every filesystem transformation in Tasks 6, 10, and 11 comes from this table, ve
 
 Leave the macOS SDK workaround block alone for now; Task 14 handles it.
 
-- [ ] **Step 2: Bump `build.zig.zon`**
+- [x] **Step 2: Bump `build.zig.zon`**
 
 Use the hashes recorded in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` from Task 1 Step 4. Do not invent hashes; if the inventory is missing any, re-run `zig fetch` for that URL.
 
@@ -1261,7 +1261,7 @@ Use the hashes recorded in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory
 
 The `zwanzig` URL is unchanged — v0.15.1's `src/compat.zig` already supports 0.16.0 — but its hash must still be regenerated if 0.16 changed the hash format.
 
-- [ ] **Step 3: Rename the build graph's env map**
+- [x] **Step 3: Rename the build graph's env map**
 
 `std.Build.Graph.env_map` is `environ_map` in 0.16. Task 2 already routed all four reads through the graph, so this is a mechanical rename of four occurrences in `build.zig`:
 
@@ -1272,7 +1272,7 @@ The `zwanzig` URL is unchanged — v0.15.1's `src/compat.zig` already supports 0
 Run: `grep -c 'b\.graph\.environ_map\.get' build.zig`
 Expected: `4`.
 
-- [ ] **Step 4: Convert `build.zig`'s filesystem and subprocess calls**
+- [x] **Step 4: Convert `build.zig`'s filesystem and subprocess calls**
 
 `sdkExists` uses `std.fs.openDirAbsolute` and `findXcrunSdkRoot` uses `std.process.Child.run`. Both need `io`, which comes from `b.graph.io`. Thread it as a parameter rather than reaching for a global:
 
@@ -1320,12 +1320,12 @@ fn sdkExists(io: std.Io, path: []const u8) bool {
 
 Note the `Term` tag is now lowercase `.exited`. Update the three callers to pass `io`: `findSdkRoot` becomes `findSdkRoot(b)` still (it has `b`, so it uses `b.graph.io` internally and passes it down), `findDeveloperDirSdkRoot(b)` likewise, and each `sdkExists(candidate)` call becomes `sdkExists(b.graph.io, candidate)`, with `findXcrunSdkRoot(b.allocator)` becoming `findXcrunSdkRoot(b.allocator, b.graph.io)`.
 
-- [ ] **Step 5: Verify `build.zig` itself compiles under 0.16**
+- [x] **Step 5: Verify `build.zig` itself compiles under 0.16**
 
 Run: `nix develop --command bash -c 'zig build --help > /dev/null'`
 Expected: exit 0. This executes the build script without building the project, isolating build-script errors from source errors. If it fails, the diagnostics are all in `build.zig` — fix them before continuing.
 
-- [ ] **Step 6: Confirm dependency resolution and capture the source error baseline**
+- [x] **Step 6: Confirm dependency resolution and capture the source error baseline**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
@@ -1335,7 +1335,7 @@ Expected: no output. Any dependency-resolution error here is a Task 1 regression
 Run: `grep -c 'error:' .tmp/flip-errors.txt`
 Expected: a large number, all pointing into `src/`. Record it; later tasks compare against it.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add flake.nix build.zig.zon build.zig
@@ -1366,7 +1366,7 @@ the migration."
   - `proc.run(allocator: std.mem.Allocator, io: std.Io, options: RunOptions) !RunResult`, `proc.spawnDetached(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !Term`
   - `proc.Term` is unchanged (`exited`/`signal`/`stopped`/`unknown`, `signal: u32`)
 
-- [ ] **Step 1: Convert `src/main.zig` to take `std.process.Init`**
+- [x] **Step 1: Convert `src/main.zig` to take `std.process.Init`**
 
 `std.process.Init` supplies `io`, `gpa`, `arena`, and `environ_map`; `std.process.argsAlloc` is gone and arguments arrive through `init.minimal.args`.
 
@@ -1394,7 +1394,7 @@ Add `const env = @import("env.zig");` to the imports.
 
 If `std.process.Args.Iterator`'s exact method name differs from `next()`, read `lib/std/process/Args.zig` in the 0.16 lib directory (`$(dirname $(readlink -f $(which zig)))/../lib/std/process/Args.zig`) and use the real name. Do not guess.
 
-- [ ] **Step 2: Convert `src/mcp/main.zig`**
+- [x] **Step 2: Convert `src/mcp/main.zig`**
 
 ```zig
 pub fn main(init: std.process.Init) !void {
@@ -1406,7 +1406,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, stdin_file: std.Io.File, st
 
 `init.gpa` replaces the `DebugAllocator` entirely, so the `var gpa` / `defer _ = gpa.deinit()` lines are deleted.
 
-- [ ] **Step 3: Convert `src/env.zig` internals**
+- [x] **Step 3: Convert `src/env.zig` internals**
 
 ```zig
 var process_environ: ?std.process.Environ = null;
@@ -1426,7 +1426,7 @@ pub fn get(key: []const u8) ?[:0]const u8 {
 
 The panic is deliberate: a read before initialization is a programming error with no correct recovery, and returning `null` would silently hide it.
 
-- [ ] **Step 4: Fix `src/env.zig`'s tests for the new initialization requirement**
+- [x] **Step 4: Fix `src/env.zig`'s tests for the new initialization requirement**
 
 The tests call `get` without a `main`, so they must initialize first. The test binary's environment is reachable through `std.process.Environ`:
 
@@ -1452,7 +1452,7 @@ test "get returns null for a variable that is not set" {
 
 `.global` is the process-wide environ block; confirm the exact spelling against `lib/std/process/Environ.zig:35` (`pub const GlobalBlock`) in the installed 0.16 lib directory and use whatever constructor it actually provides. Do not guess.
 
-- [ ] **Step 5: Convert `src/clock.zig` internals**
+- [x] **Step 5: Convert `src/clock.zig` internals**
 
 ```zig
 pub fn nowSeconds(io: std.Io) i64 {
@@ -1480,7 +1480,7 @@ pub fn sleepNanos(io: std.Io, nanoseconds: u64) void {
 
 `Timestamp.nanoseconds` is `i96`; `toNanoseconds()` returns `i96`, which widens losslessly to the `i128` callers expect.
 
-- [ ] **Step 6: Update `src/clock.zig`'s tests to pass `io`**
+- [x] **Step 6: Update `src/clock.zig`'s tests to pass `io`**
 
 Tests need their own `Io`. Create one per test:
 
@@ -1524,7 +1524,7 @@ test "sleepNanos advances the clock by at least the requested span" {
 }
 ```
 
-- [ ] **Step 7: Convert `src/proc.zig` internals**
+- [x] **Step 7: Convert `src/proc.zig` internals**
 
 `std.process.run` covers the collect-output shape exactly, including `cwd` and output limits. `std.process.spawn` plus `Child.wait` covers the spawn-and-wait shape.
 
@@ -1563,7 +1563,7 @@ pub fn spawnDetached(allocator: std.mem.Allocator, io: std.Io, argv: []const []c
 
 `spawnDetached` keeps its `allocator` parameter (discarded) so the four call sites do not change shape; drop the parameter only if a reviewer asks.
 
-- [ ] **Step 8: Update `src/proc.zig`'s tests to pass `io`**
+- [x] **Step 8: Update `src/proc.zig`'s tests to pass `io`**
 
 Prefix each test with the same `std.Io.Threaded` setup shown in Step 6 and thread `io` into every `run` / `spawnDetached` call. For example:
 
@@ -1584,14 +1584,14 @@ test "run collects stdout and reports a zero exit" {
 }
 ```
 
-- [ ] **Step 9: Verify the error class shrank**
+- [x] **Step 9: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'argsAlloc|GeneralPurposeAllocator|std\.time\.(timestamp|milliTimestamp|nanoTimestamp)|std\.Thread\.sleep' .tmp/flip-errors.txt`
 Expected: no output. The entry-point, allocator, time, and sleep error classes are gone; the remaining errors are missing-`io` errors at the call sites Tasks 8–12 fix.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1614,7 +1614,7 @@ env, clock, and proc now take the io context that Zig 0.16 requires."
 - Consumes: `clock.*(io, ...)`, `proc.*(allocator, io, ...)` from Task 7
 - Produces: every struct in these files that owns an `allocator` field also owns an `io: std.Io` field, placed immediately after it; every function that takes an `allocator` parameter and reaches a `clock`, `proc`, or filesystem call also takes `io: std.Io` immediately after it. `runtime.run(io: std.Io, log_dir_override: ?[]const u8) !void`.
 
-- [ ] **Step 1: Widen `runtime.run`**
+- [x] **Step 1: Widen `runtime.run`**
 
 ```zig
 pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
@@ -1622,7 +1622,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
 
 Task 7 Step 1 already calls it this way.
 
-- [ ] **Step 2: Add the `io` field to every struct that owns an `allocator`**
+- [x] **Step 2: Add the `io` field to every struct that owns an `allocator`**
 
 The convention, applied uniformly: `io` goes immediately after `allocator`, and every `init` that takes an allocator takes `io` immediately after it. For example, in `src/session/state.zig`:
 
@@ -1637,7 +1637,7 @@ pub const SessionState = struct {
 
 (place `io` next to wherever `allocator` already sits in each struct — do not reorder the other fields)
 
-- [ ] **Step 3: Thread `io` into thread-context structs**
+- [x] **Step 3: Thread `io` into thread-context structs**
 
 Spawned threads outlive their spawner's stack frame, so `io` must be *stored*, not borrowed. Every context struct passed to `std.Thread.spawn` gains an `io` field. The affected spawn sites are `src/app/control.zig:355`, `src/app/runtime.zig:1232`, `src/app/runtime.zig:1306`, `src/session/notify.zig:260`, `src/session/pty_reader.zig:261`, `src/ui/components/pr_dropdown.zig:584`, and `src/os/open.zig:47`.
 
@@ -1652,7 +1652,7 @@ Spawned threads outlive their spawner's stack frame, so `io` must be *stored*, n
 
 `std.Io` is a fat pointer (vtable plus userdata) and the `std.Io.Threaded` instance it points at lives for the whole process, so storing a copy per context is safe.
 
-- [ ] **Step 4: Widen the `clock` call sites**
+- [x] **Step 4: Widen the `clock` call sites**
 
 All 27 sites from Task 4 now need `io` as the first argument. Where the enclosing function is a method on a struct that gained an `io` field in Step 2, use `self.io`; otherwise use the function's new `io` parameter. For example `src/app/layout.zig:94`:
 
@@ -1666,7 +1666,7 @@ and `src/session/state.zig:644`:
             const processed_at_ms = clock.nowMillis(self.io);
 ```
 
-- [ ] **Step 5: Widen the `proc` call sites in this layer**
+- [x] **Step 5: Widen the `proc` call sites in this layer**
 
 `src/app/runtime.zig:2958`:
 
@@ -1685,14 +1685,14 @@ and `src/session/state.zig:644`:
     try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 ```
 
-- [ ] **Step 6: Verify the error class shrank**
+- [x] **Step 6: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'clock\.(now|sleep)|proc\.(run|spawnDetached)' .tmp/flip-errors.txt`
 Expected: no output. Remaining errors should be filesystem and mutex errors only, plus UI-layer `io` plumbing.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1718,11 +1718,11 @@ Expected: no output.
 - Consumes: `clock.*(io, ...)`, `proc.*(allocator, io, ...)` from Task 7; `io` available in `src/app/runtime.zig` from Task 8
 - Produces: each of the six components carries an `io: std.Io` field immediately after its `allocator` field, set from its `init`'s new `io` parameter; `runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) model.FetchResult`
 
-- [ ] **Step 1: Add the `io` field and `init` parameter to each of the six components**
+- [x] **Step 1: Add the `io` field and `init` parameter to each of the six components**
 
 The convention matches Task 8 Step 2: `io` sits immediately after `allocator` in the struct, and `init` takes `io` immediately after its allocator parameter. Do not reorder any other field. Update each component's `init` call in `src/app/runtime.zig` to pass `io`.
 
-- [ ] **Step 2: Thread `io` into the PR dropdown's fetch thread context**
+- [x] **Step 2: Thread `io` into the PR dropdown's fetch thread context**
 
 `src/ui/components/pr_dropdown.zig:584` spawns a fetch thread whose context outlives the spawning stack frame, so the context struct must store its own `io` copy rather than borrow one:
 
@@ -1747,7 +1747,7 @@ and the `proc.run` call inside it becomes:
 
 Keep every existing `log.err` message and `model.FetchResult` branch exactly as Task 5 left them.
 
-- [ ] **Step 3: Widen the `diff_overlay.zig` subprocess call**
+- [x] **Step 3: Widen the `diff_overlay.zig` subprocess call**
 
 ```zig
     const result = proc.run(self.allocator, self.io, .{
@@ -1758,18 +1758,18 @@ Keep every existing `log.err` message and `model.FetchResult` branch exactly as 
 
 Read the surrounding 40 lines first and keep every existing error branch, and the consumers of the `term: proc.Term` field, unchanged.
 
-- [ ] **Step 4: Widen the PR dropdown's mutex operations**
+- [x] **Step 4: Widen the PR dropdown's mutex operations**
 
 `src/ui/components/pr_dropdown.zig:25` declares a mutex. Task 12 converts the declaration; here, only ensure `io` is reachable at each lock site — either as `self.io` or via the thread context from Step 2.
 
-- [ ] **Step 5: Verify the error class shrank**
+- [x] **Step 5: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -n 'src/ui/' .tmp/flip-errors.txt | grep -vE 'std\.fs|std\.Io\.(Dir|File)|Mutex|Condition'`
 Expected: no output. Remaining UI errors are filesystem and mutex errors, handled by Tasks 11 and 12.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1790,7 +1790,7 @@ git commit -m "refactor(ui): thread io through the components that need it"
 - Consumes: `io` threaded in by Task 8; `std.Io.Dir` / `std.Io.File` per the mapping table
 - Produces: no `fs.` filesystem calls remain in these files
 
-- [ ] **Step 1: Note the alias hazard before you start**
+- [x] **Step 1: Note the alias hazard before you start**
 
 `src/config.zig:2` and `src/logging.zig:3` declare `const fs = std.fs;`, and `src/session/state.zig:9` does too. A grep for `std.fs.` will miss every site in those files. Update the aliases first so the compiler finds the sites for you:
 
@@ -1802,7 +1802,7 @@ const File = std.Io.File;
 
 `fs.path.*` and `fs.max_path_bytes` survive in 0.16, so the `fs` alias stays for those uses only.
 
-- [ ] **Step 2: Convert `src/config.zig`**
+- [x] **Step 2: Convert `src/config.zig`**
 
 **Check the toml drift finding first.** `src/config.zig` is the only consumer of the `toml` dependency, which moved to an untagged branch in Task 6. Read the Risk 4 verdict in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` before editing. If the parser API drifted, fix that in this step and be careful of the two hazards `CLAUDE.md` records: parser-owned maps must not outlive `result.deinit()`, and persisted map keys *and* values must both be duplicated into your own storage. A use-after-free here is a segfault at config load, not a compile error.
 
@@ -1822,13 +1822,13 @@ Every `defer file.close()` becomes `defer file.close(io)`, and every `defer dir.
 
 The two test sites need their own `io`; add the `std.Io.Threaded` setup from Task 7 Step 6 to each.
 
-- [ ] **Step 3: Convert `src/logging.zig`**
+- [x] **Step 3: Convert `src/logging.zig`**
 
 Line 133 `Dir.createFileAbsolute(io, active_path, .{ ... })` — keep the existing flags struct verbatim. Line 166 `Dir.renameAbsolute(active_path, archive_path, io)` — **`io` goes last here**, unlike every other call in this table. Line 274 `Dir.cwd().createDirPath(io, raw_directory_path)`. Line 275 `Dir.cwd().realPathFileAlloc(io, raw_directory_path, allocator)` — note the argument order differs from 0.15's `realpathAlloc(allocator, path)`. Line 387 `Dir.openFileAbsolute(io, active_path, .{})`. Lines 483 and 524 `Dir.openDirAbsolute(io, ..., .{ .iterate = true })`, and their iterator loops become `while (try it.next(io)) |entry|`. Lines 507 and 510 `Dir.cwd().deleteTree(io, relative_dir)`. The `file: ?fs.File` field at line 23 becomes `file: ?File`, and the `openActiveLogFile` return type at line 130 becomes `!struct { file: File, size: u64 }`.
 
 `LoggerState` is shared across threads behind a mutex, so it must store `io` as a field rather than receive it per call — the log functions are called from `std.log`'s handler, which has no place to pass one.
 
-- [ ] **Step 4: Convert `src/mcp/main.zig`**
+- [x] **Step 4: Convert `src/mcp/main.zig`**
 
 Task 7 already changed `main`, `run`, and the `stdin`/`stdout` types. The remaining work is the read loop and the writes. `File.read` is gone:
 
@@ -1844,27 +1844,27 @@ and every `stdout_file.writeAll(bytes)` becomes:
 
 Thread `io` into `handleMessage` and `writeJsonRpcError` alongside their existing `allocator` parameters.
 
-- [ ] **Step 5: Convert `src/shell.zig`**
+- [x] **Step 5: Convert `src/shell.zig`**
 
 Sixteen sites, all `std.fs.`-qualified so grep finds them: `std.fs.makeDirAbsolute` becomes `std.Io.Dir.createDirAbsolute(io, path, .default_dir)` at lines 674, 685, 694, 705, 786, 800, 850; `std.fs.createFileAbsolute` becomes `std.Io.Dir.createFileAbsolute(io, path, flags)` at lines 717, 813, 1176. Keep every existing `catch |err| switch (err)` block exactly as-is — the error sets are compatible. Run `grep -n 'std\.fs\.' src/shell.zig` after editing and convert whatever remains that is not `std.fs.path.*` or `std.fs.max_path_bytes`.
 
-- [ ] **Step 6: Convert `src/font_paths.zig` and `src/app/control.zig`**
+- [x] **Step 6: Convert `src/font_paths.zig` and `src/app/control.zig`**
 
 Six and five sites respectively, all `std.fs.`-qualified. Apply the mapping table. `src/app/control.zig` is compiled into both the main binary and the `control` module for `architect-mcp`, so its `io` must arrive as a parameter or stored field, never from `src/main.zig`.
 
-- [ ] **Step 7: Verify no filesystem call remains in these six files**
+- [x] **Step 7: Verify no filesystem call remains in these six files**
 
 Run: `for f in src/shell.zig src/config.zig src/mcp/main.zig src/logging.zig src/font_paths.zig src/app/control.zig; do echo "== $f"; grep -nE '\b(std\.)?fs\.[A-Za-z_]+' "$f" | grep -vE 'fs\.(path|max_path_bytes|max_name_bytes)'; done`
 Expected: no lines under any file heading.
 
-- [ ] **Step 8: Verify the error class shrank**
+- [x] **Step 8: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -nE 'src/(shell|config|logging|font_paths|mcp/main|app/control)\.zig' .tmp/flip-errors.txt | grep -vE 'Mutex|Condition'`
 Expected: no output.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1885,11 +1885,11 @@ The remaining 19 source sites.
 - Consumes: `io` threaded in by Tasks 8 and 9
 - Produces: no `fs.` filesystem calls remain anywhere in `src/`
 
-- [ ] **Step 1: Convert each file using the mapping table**
+- [x] **Step 1: Convert each file using the mapping table**
 
 All sites in these files use the `std.fs.`-qualified spelling, so `grep -n 'std\.fs\.' <file>` enumerates them. Use `self.io` inside component methods (Task 9 added the field) and the function's `io` parameter in free functions.
 
-- [ ] **Step 2: Verify no filesystem call remains anywhere**
+- [x] **Step 2: Verify no filesystem call remains anywhere**
 
 Run: `grep -rnE '\b(std\.)?fs\.[A-Za-z_]+' src build.zig | grep -vE 'fs\.(path|max_path_bytes|max_name_bytes)'`
 Expected: no output.
@@ -1897,14 +1897,14 @@ Expected: no output.
 Run: `grep -rn 'std\.fs\.File\|std\.fs\.Dir' src build.zig`
 Expected: no output.
 
-- [ ] **Step 3: Verify the error class shrank**
+- [x] **Step 3: Verify the error class shrank**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
 Run: `grep -cE 'Mutex|Condition' .tmp/flip-errors.txt`
 Expected: the only remaining errors are mutex and condition errors, so this count equals the total error count from `grep -c 'error:'`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1923,7 +1923,7 @@ git commit -m "refactor(ui): move component filesystem calls to std.Io.Dir"
 - Consumes: `io` available as a field on every struct that owns a mutex (Tasks 8 and 9)
 - Produces: no `std.Thread.Mutex` or `std.Thread.Condition` remains. `SpawnCompletion.complete(io, response)` and `SpawnCompletion.wait(io)` gain an `io` parameter, so their callers in `src/app/control.zig` and `src/app/runtime.zig` must pass one.
 
-- [ ] **Step 1: Change the declarations**
+- [x] **Step 1: Change the declarations**
 
 `std.Io.Mutex` and `std.Io.Condition` initialize with `.init`, not `.{}` — a default-initialized `.{}` will not compile because both carry non-defaulted atomic state. For each of the eight declarations:
 
@@ -1935,7 +1935,7 @@ git commit -m "refactor(ui): move component filesystem calls to std.Io.Dir"
     condition: std.Io.Condition = .init,
 ```
 
-- [ ] **Step 2: Add `io` to every lock, unlock, and wait**
+- [x] **Step 2: Add `io` to every lock, unlock, and wait**
 
 Use the uncancelable variants. `Io.Mutex.lock` and `Io.Condition.wait` return `Cancelable!void`, and Architect never requests cancellation, so making every lock site fallible would add `catch` blocks with no correct recovery — which `CLAUDE.md`'s error-handling rule forbids resolving with a bare `catch`. `lockUncancelable` and `waitUncancelable` are total functions.
 
@@ -1975,7 +1975,7 @@ Apply the same pattern to `SpawnQueue` (`src/app/control.zig:123`), `LoggerState
 
 `src/session/pty_reader.zig`'s mutexes are on the hot path between the PTY reader thread and the frame loop, so keep the critical sections exactly as narrow as they are today — do not widen a `defer unlock` to cover more work than the original.
 
-- [ ] **Step 3: Verify no thread synchronization primitive remains**
+- [x] **Step 3: Verify no thread synchronization primitive remains**
 
 Run: `grep -rn 'std\.Thread\.\(Mutex\|Condition\)' src`
 Expected: no output.
@@ -1983,7 +1983,7 @@ Expected: no output.
 Run: `grep -rn '\.lock()\|\.unlock()\|\.wait(&' src`
 Expected: no output — every call now takes `io`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -2007,7 +2007,7 @@ This is the first task in the flip whose gate is a fully green build.
 - Consumes: everything from Tasks 6–12
 - Produces: `zig build`, `zig build test`, and `just lint` all green under Zig 0.16.0
 
-- [ ] **Step 1: Drive the remaining errors to zero**
+- [x] **Step 1: Drive the remaining errors to zero**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 Run: `grep -c 'error:' .tmp/flip-errors.txt`
@@ -2020,7 +2020,11 @@ nix develop --command bash -c 'echo "$(dirname "$(readlink -f "$(which zig)")")/
 
 Never guess an API shape. If a diagnostic is not obviously mechanical, stop and report it rather than inventing a workaround.
 
-- [ ] **Step 2: Normalize the deprecated ArrayList alias**
+Reviewed: log rotation intentionally uses `Dir.renamePreserve`; POSIX file-to-file rename does not return `PathAlreadyExists`, so this makes the existing suffix retry avoid archive clobbering without changing successful rotation semantics.
+
+Accepted: Ghostty's delegated handler reports only an undifferentiated `semantic_failure` flag, so every delegated failure, including OSC 8 hyperlink capacity exhaustion, is session-fatal. The old fine-grained hyperlink exemption cannot be recovered at that API boundary.
+
+- [x] **Step 2: Normalize the deprecated ArrayList alias**
 
 0.16 keeps `std.ArrayListUnmanaged` as a deprecated alias for `std.ArrayList`, so these four sites compile but should not stay. `CLAUDE.md` mandates the `std.ArrayList` spelling:
 
@@ -2032,31 +2036,31 @@ Replace each `std.ArrayListUnmanaged(T)` with `std.ArrayList(T)`. The type is id
 Run: `grep -rn 'ArrayListUnmanaged' src`
 Expected after: no output.
 
-- [ ] **Step 3: Verify the build**
+- [x] **Step 3: Verify the build**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
 
-- [ ] **Step 4: Verify the tests**
+- [x] **Step 4: Verify the tests**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped — a pipe would mask a failing exit code.
 
 If any test fails, fix it. Do not weaken or delete a test to get green; a test that now fails is either a migration defect or a test that encoded a 0.15 implementation detail, and the two need different responses. If it is the latter, say so explicitly in the commit message.
 
-- [ ] **Step 5: Verify the test registry**
+- [x] **Step 5: Verify the test registry**
 
 Run: `nix develop --command ./scripts/check-test-registry.sh`
 Expected: exit 0. `src/env.zig`, `src/clock.zig`, and `src/proc.zig` were registered in Tasks 3–5; this confirms nothing regressed.
 
-- [ ] **Step 6: Verify lint, including Zwanzig under 0.16**
+- [x] **Step 6: Verify lint, including Zwanzig under 0.16**
 
 Run: `nix develop --command just lint`
 Expected: exit 0. This is also the live confirmation that zwanzig v0.15.1 builds and runs under Zig 0.16.0 — the `zig build lint` step compiles it from source with the host toolchain.
 
 If zwanzig fails to compile here, its `src/compat.zig` gate is the place to look; report the diagnostics rather than patching around them.
 
-- [ ] **Step 7: Commit the formatting churn separately**
+- [x] **Step 7: Commit the formatting churn separately**
 
 0.16's `zig fmt` may reformat files that 0.15.2 formatted differently. Keep it out of the substantive commits:
 
@@ -2068,7 +2072,7 @@ git commit -m "style: apply zig 0.16 formatting"
 
 If this produces an empty commit, skip it.
 
-- [ ] **Step 8: Verify formatting is stable**
+- [x] **Step 8: Verify formatting is stable**
 
 Run: `nix develop --command zig fmt --check src/`
 Expected: exit 0, no output.
@@ -2084,7 +2088,7 @@ Expected: exit 0, no output.
 - Consumes: the Task 1 Step 9 conclusion
 - Produces: either a removed workaround or an updated comment naming 0.16.0
 
-- [ ] **Step 1: Read the Task 1 conclusion**
+- [x] **Step 1: Read the Task 1 conclusion**
 
 Open `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` and find the SDK-workaround verdict. Do not re-derive it.
 
@@ -2106,7 +2110,7 @@ Expected: only `scripts/setup-macos-sdk-workaround.sh` itself and any docs menti
 
 If nothing else references it, delete the script and remove the repo note about it from `CLAUDE.md` (Task 15 covers the doc edit). If the release workflow references it, leave the script and stop — that is a separate change.
 
-- [ ] **Step 2b: If Task 1 concluded the workaround is still needed — update its comment**
+- [x] **Step 2b: If Task 1 concluded the workaround is still needed — update its comment**
 
 ```nix
             # Zig 0.16.0 cannot link correctly against the arm64e-only macOS 26.4 SDK stubs.
@@ -2115,7 +2119,7 @@ If nothing else references it, delete the script and remove the repo note about 
             . "$project_root/scripts/setup-macos-sdk-workaround.sh"
 ```
 
-- [ ] **Step 3: Verify the shell still builds the project**
+- [x] **Step 3: Verify the shell still builds the project**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -2125,12 +2129,12 @@ Expected: exit 0. Run this unpiped.
 
 If removal broke linking, the Task 1 conclusion was wrong for this host. Restore the workaround, take branch 2b instead, and record the discrepancy in the inventory doc.
 
-- [ ] **Step 4: Verify the release build path**
+- [x] **Step 4: Verify the release build path**
 
 Run: `nix develop --command zig build -Doptimize=ReleaseFast`
 Expected: exit 0. Release builds use a different link configuration than Debug, and the SDK workaround affects linking specifically.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add flake.nix scripts/ 2>/dev/null
@@ -2150,7 +2154,7 @@ git commit -m "build: resolve the macOS SDK workaround for Zig 0.16.0"
 - Consumes: the completed migration
 - Produces: documentation consistent with the 0.16 codebase
 
-- [ ] **Step 1: Update `CLAUDE.md`**
+- [x] **Step 1: Update `CLAUDE.md`**
 
 `AGENTS.md` is a symlink to `CLAUDE.md`, so edit only `CLAUDE.md`.
 
@@ -2185,26 +2189,26 @@ Add to the Architecture Invariants section:
 
 Update the repo note about the macOS SDK workaround to match whatever Task 14 concluded.
 
-- [ ] **Step 2: Update `docs/ARCHITECTURE.md`**
+- [x] **Step 2: Update `docs/ARCHITECTURE.md`**
 
 Document the three new shared-utility modules alongside the existing `src/geom.zig` / `src/anim/easing.zig` / `src/gfx/primitives.zig` tier, and the `io` carrier data flow from `main(init)` through `runtime.run` into the session and UI layers. Read the existing document's structure first and follow it rather than appending a new section at the end.
 
-- [ ] **Step 3: Update `docs/development.md`**
+- [x] **Step 3: Update `docs/development.md`**
 
 Update the Zig version and any setup instructions that name 0.15.2.
 
-- [ ] **Step 4: Check `README.md` and `docs/perf-debugging.md`**
+- [x] **Step 4: Check `README.md` and `docs/perf-debugging.md`**
 
 Run: `grep -n '0\.15' README.md docs/perf-debugging.md docs/configuration.md docs/ai-integration.md`
 
 Update every hit. If there are none, leave the files alone — do not edit them to look busy.
 
-- [ ] **Step 5: Verify no stale version references remain**
+- [x] **Step 5: Verify no stale version references remain**
 
 Run: `grep -rn '0\.15\.2\|Zig 0\.15' --exclude-dir=.git --exclude-dir=.tmp --exclude-dir=zig-out --exclude-dir=.zig-cache .`
 Expected: only `docs/superpowers/specs/2026-08-28-zig-0-16-migration-design.md`, `docs/superpowers/plans/2026-08-28-zig-0-16-migration.md`, and `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md`, which document the migration and should retain their historical references.
 
-- [ ] **Step 6: Verify the whole pipeline**
+- [x] **Step 6: Verify the whole pipeline**
 
 Run: `nix develop --command just ci`
 Expected: exit 0. This runs build, test, and lint in sequence.
@@ -2231,7 +2235,7 @@ Automated checks cannot reach any of Architect's rendering, terminal, or subproc
 
 Record any discrepancy as a migration defect and fix it before proceeding.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A

@@ -1,6 +1,7 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("shell.zig");
+const posix_util = @import("posix_util.zig");
 
 const log = std.log.scoped(.vt_stream);
 
@@ -15,6 +16,7 @@ pub const Handler = struct {
     terminal: *ghostty_vt.Terminal,
     shell: *shell_mod.Shell,
     readonly: ReadonlyHandler,
+    semantic_failure: bool = false,
 
     pub fn init(terminal: *ghostty_vt.Terminal, shell: *shell_mod.Shell) Handler {
         return .{
@@ -32,6 +34,25 @@ pub const Handler = struct {
         self: *Handler,
         comptime action: ghostty_vt.StreamAction.Tag,
         value: ghostty_vt.StreamAction.Value(action),
+    ) void {
+        self.vtFallible(action, value) catch |err| {
+            self.semantic_failure = true;
+            log.warn("error handling VT action action={} err={}", .{ action, err });
+        };
+    }
+
+    pub fn hasSemanticFailure(self: *const Handler) bool {
+        // Ghostty's delegated handler exposes only this undifferentiated flag.
+        // Treat every delegated failure as fatal, including OSC 8 capacity
+        // exhaustion, because the current Ghostty API cannot distinguish it
+        // from terminal-state allocation failures.
+        return self.semantic_failure or self.readonly.semantic_failure;
+    }
+
+    fn vtFallible(
+        self: *Handler,
+        comptime action: ghostty_vt.StreamAction.Tag,
+        value: ghostty_vt.StreamAction.Value(action),
     ) !void {
         switch (action) {
             .device_attributes => try self.handleDeviceAttributes(value),
@@ -41,7 +62,7 @@ pub const Handler = struct {
             .request_mode => try self.handleRequestMode(value.mode),
             .request_mode_unknown => try self.handleRequestModeUnknown(value.mode, value.ansi),
             .set_mode => {
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 // DEC mode 2048 (in-band size reports): apps that enable this
                 // expect a size report whenever the terminal is resized AND an
                 // initial report when the mode is first enabled. Matches
@@ -52,78 +73,40 @@ pub const Handler = struct {
             },
             .kitty_keyboard_push => {
                 log.debug("kitty_keyboard_push: flags={d}", .{value.flags.int()});
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_pop => {
                 log.debug("kitty_keyboard_pop: n={d}", .{value});
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set => {
                 log.debug("kitty_keyboard_set: flags={d}", .{value.flags.int()});
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set_or => {
                 log.debug("kitty_keyboard_set_or: flags={d}", .{value.flags.int()});
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
             .kitty_keyboard_set_not => {
                 log.debug("kitty_keyboard_set_not: flags={d}", .{value.flags.int()});
-                try self.delegateVt(action, value);
+                self.delegateVt(action, value);
                 log.debug("kitty_keyboard: current={d}", .{self.terminal.screens.active.kitty_keyboard.current().int()});
             },
-            else => try self.delegateVt(action, value),
+            else => self.delegateVt(action, value),
         }
     }
 
-    /// Errors the built-in readonly handler can surface, other than the OSC 8
-    /// hyperlink capacity errors that delegateVt always contains. Declared
-    /// explicitly (rather than inferred) because `vt` is comptime-generic over
-    /// the action tag: each action instantiates a differently-shaped inferred
-    /// error union, and only some of them actually include the hyperlink
-    /// errors. An inferred return type here would force every switch arm in
-    /// `vt` below to reference literals that are members of the local error
-    /// union, which fails to compile for actions that can't produce them.
-    const DelegateVtError = error{
-        DivisionByZero,
-        GraphemeAllocOutOfMemory,
-        GraphemeMapOutOfMemory,
-        NeedsRehash,
-        OutOfMemory,
-        OutOfSpace,
-        StringAllocOutOfMemory,
-        StyleSetNeedsRehash,
-        StyleSetOutOfMemory,
-    };
-
-    /// Delegates to the built-in readonly handler, containing OSC 8 hyperlink
-    /// capacity errors so a single exhausted hyperlink table doesn't abort
-    /// parsing of the rest of the PTY output. All other errors propagate.
+    /// Delegates to the built-in readonly handler.
     fn delegateVt(
         self: *Handler,
         comptime action: ghostty_vt.StreamAction.Tag,
         value: ghostty_vt.StreamAction.Value(action),
-    ) DelegateVtError!void {
-        self.readonly.vt(action, value) catch |err| {
-            // Match against anyerror since the hyperlink error names aren't
-            // members of every action's own inferred error set.
-            switch (@as(anyerror, err)) {
-                error.HyperlinkSetOutOfMemory,
-                error.HyperlinkSetNeedsRehash,
-                error.HyperlinkMapOutOfMemory,
-                => {
-                    log.warn("OSC 8 hyperlink capacity exhausted, hyperlink dropped: {}", .{err});
-                    return;
-                },
-                else => {},
-            }
-            // Safe: the hyperlink errors were already handled above, so err
-            // is guaranteed to be a member of DelegateVtError here.
-            return @errorCast(err);
-        };
+    ) void {
+        self.readonly.vt(action, value);
     }
 
     fn handleDeviceAttributes(self: *Handler, req: ghostty_vt.DeviceAttributeReq) !void {
@@ -390,7 +373,7 @@ test "formatOscColorQueryResponse formats dynamic queries with the input termina
 test "stream answers OSC 10 and OSC 11 color queries" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 80,
         .rows = 24,
         .colors = .{
@@ -402,11 +385,13 @@ test "stream answers OSC 10 and OSC 11 color queries" {
     });
     defer terminal.deinit(allocator);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -419,11 +404,11 @@ test "stream answers OSC 10 and OSC 11 color queries" {
 
     var buf: [128]u8 = undefined;
 
-    try stream.nextSlice("\x1b]10;?\x07");
+    stream.nextSlice("\x1b]10;?\x07");
     const fg_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b]10;rgb:abab/cdcd/efef\x07", buf[0..fg_len]);
 
-    try stream.nextSlice("\x1b]11;?\x1b\\");
+    stream.nextSlice("\x1b]11;?\x1b\\");
     const bg_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b]11;rgb:1212/3434/5656\x1b\\", buf[0..bg_len]);
 }
@@ -431,17 +416,19 @@ test "stream answers OSC 10 and OSC 11 color queries" {
 test "stream answers synchronized output mode report queries" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 80,
         .rows = 24,
     });
     defer terminal.deinit(allocator);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -454,13 +441,13 @@ test "stream answers synchronized output mode report queries" {
 
     var buf: [128]u8 = undefined;
 
-    try stream.nextSlice("\x1b[?2026$p");
+    stream.nextSlice("\x1b[?2026$p");
     const disabled_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[?2026;2$y", buf[0..disabled_len]);
 
     terminal.modes.set(.synchronized_output, true);
 
-    try stream.nextSlice("\x1b[?2026$p");
+    stream.nextSlice("\x1b[?2026$p");
     const enabled_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[?2026;1$y", buf[0..enabled_len]);
 }
@@ -468,17 +455,19 @@ test "stream answers synchronized output mode report queries" {
 test "stream answers unknown mode report queries" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 80,
         .rows = 24,
     });
     defer terminal.deinit(allocator);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -491,7 +480,7 @@ test "stream answers unknown mode report queries" {
 
     var buf: [128]u8 = undefined;
 
-    try stream.nextSlice("\x1b[?9999$p");
+    stream.nextSlice("\x1b[?9999$p");
     const private_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[?9999;0$y", buf[0..private_len]);
 
@@ -499,11 +488,11 @@ test "stream answers unknown mode report queries" {
     // form (`$p`) is dropped by the parser before reaching the handler, so no
     // response is written. Verify via a non-blocking read instead of hanging
     // on a reply that can never arrive.
-    const flags = try std.posix.fcntl(pipe_fds[0], std.posix.F.GETFL, 0);
+    const flags = try posix_util.fcntl(pipe_fds[0], std.posix.F.GETFL, 0);
     var o_flags: std.posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    _ = try std.posix.fcntl(pipe_fds[0], std.posix.F.SETFL, @as(u32, @bitCast(o_flags)));
-    try stream.nextSlice("\x1b[9999$p");
+    _ = try posix_util.fcntl(pipe_fds[0], std.posix.F.SETFL, @as(u32, @bitCast(o_flags)));
+    stream.nextSlice("\x1b[9999$p");
     try std.testing.expectError(error.WouldBlock, std.posix.read(pipe_fds[0], &buf));
 }
 
@@ -513,7 +502,7 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
     var palette = ghostty_vt.color.default;
     palette[17] = .{ .r = 0x12, .g = 0x34, .b = 0x56 };
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 80,
         .rows = 24,
         .colors = .{
@@ -525,11 +514,13 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
     });
     defer terminal.deinit(allocator);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -542,7 +533,7 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
 
     var buf: [128]u8 = undefined;
 
-    try stream.nextSlice("\x1b]4;17;?\x07");
+    stream.nextSlice("\x1b]4;17;?\x07");
     const len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b]4;17;rgb:1212/3434/5656\x07", buf[0..len]);
 }
@@ -550,17 +541,19 @@ test "stream answers OSC 4 palette queries with the current terminal palette" {
 test "stream processes OSC 8 hyperlinks via nextSlice without error" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 80,
         .rows = 24,
     });
     defer terminal.deinit(allocator);
 
-    const pipe_fds = try std.posix.pipe();
-    defer std.posix.close(pipe_fds[0]);
-    defer std.posix.close(pipe_fds[1]);
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
 
     var shell = shell_mod.Shell{
+        .io = std.testing.io,
         .pty = .{
             .master = pipe_fds[1],
             .slave = pipe_fds[0],
@@ -574,7 +567,7 @@ test "stream processes OSC 8 hyperlinks via nextSlice without error" {
     // Delegated (non-explicit) VT actions such as hyperlink start/end and
     // print route through Handler.delegateVt; this exercises that path end
     // to end via the SIMD-capable nextSlice entry point.
-    try stream.nextSlice("\x1b]8;;http://example.com\x1b\\link text\x1b]8;;\x1b\\");
+    stream.nextSlice("\x1b]8;;http://example.com\x1b\\link text\x1b]8;;\x1b\\");
 
     try std.testing.expectEqual(@as(usize, 9), terminal.screens.active.cursor.x);
 }
@@ -586,5 +579,5 @@ pub fn initStream(
     terminal: *ghostty_vt.Terminal,
     shell: *shell_mod.Shell,
 ) StreamType {
-    return StreamType.initAlloc(alloc, Handler.init(terminal, shell));
+    return StreamType.init(.{ .allocator = alloc, .handler = Handler.init(terminal, shell) });
 }

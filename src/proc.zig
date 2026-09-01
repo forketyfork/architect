@@ -34,63 +34,41 @@ pub const RunOptions = struct {
 
 fn fromStdTerm(term: std.process.Child.Term) Term {
     return switch (term) {
-        .Exited => |code| .{ .exited = code },
-        .Signal => |sig| .{ .signal = sig },
-        .Stopped => |sig| .{ .stopped = sig },
-        .Unknown => |code| .{ .unknown = code },
+        .exited => |code| .{ .exited = code },
+        .signal => |sig| .{ .signal = @intFromEnum(sig) },
+        .stopped => |sig| .{ .stopped = @intFromEnum(sig) },
+        .unknown => |code| .{ .unknown = code },
     };
 }
 
 /// Runs `argv` to completion, collecting stdout and stderr.
-pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
-    var child = std.process.Child.init(options.argv, allocator);
-    child.cwd = options.cwd;
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    var stdout_buf: std.ArrayList(u8) = .empty;
-    errdefer stdout_buf.deinit(allocator);
-    var stderr_buf: std.ArrayList(u8) = .empty;
-    errdefer stderr_buf.deinit(allocator);
-
-    errdefer {
-        _ = child.kill() catch |kill_err| switch (kill_err) {
-            error.AlreadyTerminated => _ = child.wait() catch |wait_err| {
-                std.log.scoped(.proc).warn("failed to reap child after output failure: {}", .{wait_err});
-            },
-            else => std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{kill_err}),
-        };
-    }
-
-    try child.collectOutput(allocator, &stdout_buf, &stderr_buf, options.max_output_bytes);
-    const term = try child.wait();
-
-    const stdout_slice = try stdout_buf.toOwnedSlice(allocator);
-    errdefer allocator.free(stdout_slice);
-    const stderr_slice = try stderr_buf.toOwnedSlice(allocator);
-
+pub fn run(allocator: std.mem.Allocator, io: std.Io, options: RunOptions) !RunResult {
+    const result = try std.process.run(allocator, io, .{
+        .argv = options.argv,
+        .cwd = if (options.cwd) |c| .{ .path = c } else .inherit,
+        .stdout_limit = .limited(options.max_output_bytes),
+        .stderr_limit = .limited(options.max_output_bytes),
+    });
     return .{
-        .term = fromStdTerm(term),
-        .stdout = stdout_slice,
-        .stderr = stderr_slice,
+        .term = fromStdTerm(result.term),
+        .stdout = result.stdout,
+        .stderr = result.stderr,
     };
 }
 
 /// Spawns `argv`, waits for it, and discards its output.
-pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) !Term {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    return fromStdTerm(try child.spawnAndWait());
+pub fn spawnDetached(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !Term {
+    _ = allocator;
+    var child = try std.process.spawn(io, .{ .argv = argv });
+    return fromStdTerm(try child.wait(io));
 }
 
 test "run collects stdout and reports a zero exit" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
     const allocator = std.testing.allocator;
-    const result = try run(allocator, .{
+    const result = try run(allocator, threaded.io(), .{
         .argv = &.{ "/bin/sh", "-c", "printf hello" },
     });
     defer allocator.free(result.stdout);
@@ -101,8 +79,11 @@ test "run collects stdout and reports a zero exit" {
 }
 
 test "run separates stderr from stdout and reports a nonzero exit" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
     const allocator = std.testing.allocator;
-    const result = try run(allocator, .{
+    const result = try run(allocator, threaded.io(), .{
         .argv = &.{ "/bin/sh", "-c", "printf out; printf err 1>&2; exit 3" },
     });
     defer allocator.free(result.stdout);
@@ -114,8 +95,11 @@ test "run separates stderr from stdout and reports a nonzero exit" {
 }
 
 test "run honors cwd" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
     const allocator = std.testing.allocator;
-    const result = try run(allocator, .{
+    const result = try run(allocator, threaded.io(), .{
         .argv = &.{ "/bin/sh", "-c", "pwd" },
         .cwd = "/",
     });
@@ -126,14 +110,20 @@ test "run honors cwd" {
 }
 
 test "run surfaces a missing executable as an error rather than a term" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
     const allocator = std.testing.allocator;
-    try std.testing.expectError(error.FileNotFound, run(allocator, .{
+    try std.testing.expectError(error.FileNotFound, run(allocator, threaded.io(), .{
         .argv = &.{"/nonexistent/architect-test-binary"},
     }));
 }
 
 test "spawnDetached waits for the child and returns its term" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
     const allocator = std.testing.allocator;
-    const term = try spawnDetached(allocator, &.{ "/bin/sh", "-c", "exit 7" });
+    const term = try spawnDetached(allocator, threaded.io(), &.{ "/bin/sh", "-c", "exit 7" });
     try std.testing.expectEqual(Term{ .exited = 7 }, term);
 }

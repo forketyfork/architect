@@ -3,6 +3,7 @@ const posix = std.posix;
 const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const grid_layout = @import("../app/grid_layout.zig");
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.pty_reader);
 
@@ -42,25 +43,27 @@ pub const PtyOutputBuffer = struct {
         closed,
     };
 
-    mutex: std.Thread.Mutex = .{},
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
     data: []u8,
     head: usize = 0,
     len: usize = 0,
     eof: bool = false,
     read_error: ?posix.ReadError = null,
 
-    pub fn create(allocator: std.mem.Allocator) error{OutOfMemory}!*PtyOutputBuffer {
-        return createWithCapacity(allocator, buffer_capacity);
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) error{OutOfMemory}!*PtyOutputBuffer {
+        return createWithCapacity(allocator, io, buffer_capacity);
     }
 
     pub fn createWithCapacity(
         allocator: std.mem.Allocator,
+        io: std.Io,
         capacity: usize,
     ) error{OutOfMemory}!*PtyOutputBuffer {
         std.debug.assert(capacity > 0);
         const self = try allocator.create(PtyOutputBuffer);
         errdefer allocator.destroy(self);
-        self.* = .{ .data = try allocator.alloc(u8, capacity) };
+        self.* = .{ .io = io, .data = try allocator.alloc(u8, capacity) };
         return self;
     }
 
@@ -72,8 +75,8 @@ pub const PtyOutputBuffer = struct {
     /// Reader-thread side: drain `fd` into free ring space until the fd
     /// would block, the ring fills, or the fd closes/fails.
     pub fn pumpFd(self: *PtyOutputBuffer, fd: posix.fd_t) PumpOutcome {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.eof or self.read_error != null) return .closed;
 
@@ -104,8 +107,8 @@ pub const PtyOutputBuffer = struct {
 
     /// Main-thread side: copy up to `dest.len` buffered bytes out, in order.
     pub fn consume(self: *PtyOutputBuffer, dest: []u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var copied: usize = 0;
         while (copied < dest.len and self.len > 0) {
@@ -123,8 +126,8 @@ pub const PtyOutputBuffer = struct {
     /// Surface the first unrecoverable read error once all buffered bytes are
     /// drained, so output preceding the failure is not lost.
     pub fn takePendingReadError(self: *PtyOutputBuffer) ?posix.ReadError {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.len > 0) return null;
         const err = self.read_error orelse return null;
         self.read_error = null;
@@ -136,8 +139,8 @@ pub const PtyOutputBuffer = struct {
     }
 
     fn pollState(self: *PtyOutputBuffer) PollState {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.eof or self.read_error != null) return .closed;
         if (self.len == self.data.len) return .full;
         return .ready;
@@ -171,21 +174,26 @@ fn isWakeWorthy(revents: i16) bool {
 /// read of a registered fd happens while `mutex` is held, so `retire`
 /// returning guarantees the reader can no longer touch the fd or buffer.
 pub const PtyReader = struct {
-    mutex: std.Thread.Mutex = .{},
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
     entries: [grid_layout.max_terminals]Entry = undefined,
     entry_count: usize = 0,
 
+    pub fn init(io: std.Io) PtyReader {
+        return .{ .io = io };
+    }
+
     pub fn register(self: *PtyReader, fd: posix.fd_t, buffer: *PtyOutputBuffer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         std.debug.assert(self.entry_count < self.entries.len);
         self.entries[self.entry_count] = .{ .fd = fd, .buffer = buffer };
         self.entry_count += 1;
     }
 
     pub fn retire(self: *PtyReader, fd: posix.fd_t) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         for (self.entries[0..self.entry_count], 0..) |entry, i| {
             if (entry.fd == fd) {
                 self.entries[i] = self.entries[self.entry_count - 1];
@@ -201,8 +209,8 @@ pub const PtyReader = struct {
         self: *PtyReader,
         out: *[grid_layout.max_terminals]posix.pollfd,
     ) PollSnapshot {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var count: usize = 0;
         var has_full_buffer = false;
         for (self.entries[0..self.entry_count]) |entry| {
@@ -219,8 +227,8 @@ pub const PtyReader = struct {
     }
 
     fn pumpReadyFds(self: *PtyReader, pollfds: []const posix.pollfd) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var progressed = false;
         for (pollfds) |pfd| {
             if (!isWakeWorthy(pfd.revents)) continue;
@@ -239,6 +247,7 @@ pub const PtyReader = struct {
 };
 
 const ReaderContext = struct {
+    io: std.Io,
     reader: *PtyReader,
     stop: *atomic.Value(bool),
     wake_pending: *atomic.Value(bool),
@@ -248,12 +257,14 @@ const ReaderContext = struct {
 pub const StartError = std.Thread.SpawnError;
 
 pub fn start(
+    io: std.Io,
     reader: *PtyReader,
     stop: *atomic.Value(bool),
     wake_pending: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) StartError!std.Thread {
     const ctx = ReaderContext{
+        .io = io,
         .reader = reader,
         .stop = stop,
         .wake_pending = wake_pending,
@@ -272,13 +283,13 @@ fn run(ctx: ReaderContext) void {
                 full_buffer_retry_ns
             else
                 @as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms;
-            clock.sleepNanos(retry_ns);
+            clock.sleepNanos(ctx.io, retry_ns);
             continue;
         }
 
         const ready = posix.poll(pollfds[0..snapshot.count], poll_timeout_ms) catch |err| {
             log.debug("poll failed: {}", .{err});
-            clock.sleepNanos(poll_error_backoff_ns);
+            clock.sleepNanos(ctx.io, poll_error_backoff_ns);
             continue;
         };
         if (ready == 0) continue;
@@ -291,27 +302,26 @@ fn run(ctx: ReaderContext) void {
     }
 }
 
-fn makeNonBlockingPipe() ![2]posix.fd_t {
-    const fds = try posix.pipe();
-    const flags = try posix.fcntl(fds[0], posix.F.GETFL, 0);
+fn makeNonBlockingPipe(fds: *[2]posix.fd_t) !void {
+    try posix_util.pipe(fds);
+    const flags = try posix_util.fcntl(fds[0], posix.F.GETFL, 0);
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    _ = try posix.fcntl(fds[0], posix.F.SETFL, @as(u32, @bitCast(o_flags)));
-    return fds;
+    _ = try posix_util.fcntl(fds[0], posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
-fn waitForBufferBytes(buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
+fn waitForBufferBytes(io: std.Io, buffer: *PtyOutputBuffer, timeout_ms: u64) bool {
     var waited_ms: u64 = 0;
     while (waited_ms < timeout_ms) : (waited_ms += 5) {
         if (bufferHasBytes(buffer)) return true;
-        clock.sleepNanos(5 * std.time.ns_per_ms);
+        clock.sleepNanos(io, 5 * std.time.ns_per_ms);
     }
     return bufferHasBytes(buffer);
 }
 
 fn bufferHasBytes(buffer: *PtyOutputBuffer) bool {
-    buffer.mutex.lock();
-    defer buffer.mutex.unlock();
+    buffer.mutex.lockUncancelable(buffer.io);
+    defer buffer.mutex.unlock(buffer.io);
     return buffer.len > 0;
 }
 
@@ -331,15 +341,16 @@ test "isWakeWorthy fires for readable, hangup, error, and invalid fds" {
 
 test "PtyOutputBuffer pumps a pipe and consumes in order" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "hello ");
-    _ = try posix.write(fds[1], "world");
+    _ = try posix_util.write(fds[1], "hello ");
+    _ = try posix_util.write(fds[1], "world");
 
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
 
@@ -351,33 +362,35 @@ test "PtyOutputBuffer pumps a pipe and consumes in order" {
 
 test "PtyOutputBuffer returns idle when the fd has no data" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     try std.testing.expectEqual(PumpOutcome.idle, buffer.pumpFd(fds[0]));
 }
 
 test "PtyOutputBuffer wraps around a small ring without corrupting bytes" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 8);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 8);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
     var out: [8]u8 = undefined;
 
-    _ = try posix.write(fds[1], "abcdef");
+    _ = try posix_util.write(fds[1], "abcdef");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(@as(usize, 4), buffer.consume(out[0..4]));
     try std.testing.expectEqualSlices(u8, "abcd", out[0..4]);
 
-    _ = try posix.write(fds[1], "ghijk");
+    _ = try posix_util.write(fds[1], "ghijk");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     const n = buffer.consume(&out);
     try std.testing.expectEqualSlices(u8, "efghijk", out[0..n]);
@@ -385,14 +398,15 @@ test "PtyOutputBuffer wraps around a small ring without corrupting bytes" {
 
 test "PtyOutputBuffer reports full and resumes after the consumer drains" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "abcdef");
+    _ = try posix_util.write(fds[1], "abcdef");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.full, buffer.pumpFd(fds[0]));
     try std.testing.expect(!buffer.canAcceptBytes());
@@ -409,14 +423,15 @@ test "PtyOutputBuffer reports full and resumes after the consumer drains" {
 
 test "PtyOutputBuffer records EOF when the write end closes" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
 
-    _ = try posix.write(fds[1], "tail");
-    posix.close(fds[1]);
+    _ = try posix_util.write(fds[1], "tail");
+    _ = std.c.close(fds[1]);
 
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
     try std.testing.expectEqual(PumpOutcome.closed, buffer.pumpFd(fds[0]));
@@ -430,19 +445,20 @@ test "PtyOutputBuffer records EOF when the write end closes" {
 
 test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    const buffer = try PtyOutputBuffer.create(allocator, std.testing.io);
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    _ = try posix.write(fds[1], "data");
+    _ = try posix_util.write(fds[1], "data");
     try std.testing.expectEqual(PumpOutcome.progressed, buffer.pumpFd(fds[0]));
 
     {
-        buffer.mutex.lock();
-        defer buffer.mutex.unlock();
+        buffer.mutex.lockUncancelable(buffer.io);
+        defer buffer.mutex.unlock(buffer.io);
         buffer.read_error = error.NotOpenForReading;
     }
 
@@ -455,10 +471,10 @@ test "PtyOutputBuffer surfaces a read error only after the ring is drained" {
 
 test "PtyReader register/retire updates the poll snapshot" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, 16);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 16);
     defer buffer.destroy(allocator);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(std.testing.io);
     reader.register(7, buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
     try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(&pollfds).count);
@@ -470,19 +486,19 @@ test "PtyReader register/retire updates the poll snapshot" {
 
 test "PtyReader snapshot distinguishes full and closed buffers" {
     const allocator = std.testing.allocator;
-    const full_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const full_buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer full_buffer.destroy(allocator);
-    const closed_buffer = try PtyOutputBuffer.createWithCapacity(allocator, 4);
+    const closed_buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 4);
     defer closed_buffer.destroy(allocator);
 
-    full_buffer.mutex.lock();
+    full_buffer.mutex.lockUncancelable(full_buffer.io);
     full_buffer.len = full_buffer.data.len;
-    full_buffer.mutex.unlock();
-    closed_buffer.mutex.lock();
+    full_buffer.mutex.unlock(full_buffer.io);
+    closed_buffer.mutex.lockUncancelable(closed_buffer.io);
     closed_buffer.eof = true;
-    closed_buffer.mutex.unlock();
+    closed_buffer.mutex.unlock(closed_buffer.io);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(std.testing.io);
     reader.register(7, full_buffer);
     reader.register(8, closed_buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
@@ -501,19 +517,22 @@ test "PtyReader snapshot distinguishes full and closed buffers" {
 
 test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
     var wake_count = atomic.Value(usize).init(0);
 
-    const thread = try start(&reader, &stop, &wake_pending, .{
+    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, .{
         .context = &wake_count,
         .callback = incrementWakeCount,
     });
@@ -523,51 +542,54 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     }
 
     reader.register(fds[0], buffer);
-    _ = try posix.write(fds[1], "ping");
+    _ = try posix_util.write(fds[1], "ping");
 
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expect(wake_pending.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
-    _ = try posix.write(fds[1], "pong");
-    clock.sleepNanos(300 * std.time.ns_per_ms);
+    _ = try posix_util.write(fds[1], "pong");
+    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     var out: [16]u8 = undefined;
     _ = buffer.consume(&out);
     wake_pending.store(false, .seq_cst);
-    _ = try posix.write(fds[1], "again");
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    _ = try posix_util.write(fds[1], "again");
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     try std.testing.expectEqual(@as(usize, 2), wake_count.load(.seq_cst));
 }
 
 test "PtyReader.retire prevents any further reads of the fd" {
     const allocator = std.testing.allocator;
-    const buffer = try PtyOutputBuffer.create(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
     defer buffer.destroy(allocator);
 
-    const fds = try makeNonBlockingPipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
 
-    var reader = PtyReader{};
+    var reader = PtyReader.init(threaded.io());
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
 
-    const thread = try start(&reader, &stop, &wake_pending, null);
+    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, null);
     defer {
         stop.store(true, .seq_cst);
         thread.join();
     }
 
     reader.register(fds[0], buffer);
-    _ = try posix.write(fds[1], "before");
-    try std.testing.expect(waitForBufferBytes(buffer, 2_000));
+    _ = try posix_util.write(fds[1], "before");
+    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
     var out: [32]u8 = undefined;
     _ = buffer.consume(&out);
 
     reader.retire(fds[0]);
-    _ = try posix.write(fds[1], "after");
-    clock.sleepNanos(300 * std.time.ns_per_ms);
+    _ = try posix_util.write(fds[1], "after");
+    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
     try std.testing.expect(!bufferHasBytes(buffer));
 }

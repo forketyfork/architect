@@ -21,8 +21,9 @@ const FetchResult = model.FetchResult;
 
 const FetchContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     cwd: []const u8,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     result: ?FetchResult = null,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -35,8 +36,8 @@ const FetchContext = struct {
     }
 
     fn takeResult(self: *FetchContext) ?FetchResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const result = self.result;
         self.result = null;
         return result;
@@ -50,6 +51,7 @@ const FetchJob = struct {
 
 pub const PRDropdownComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: ExpandingOverlay = ExpandingOverlay.init(3, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
 
@@ -61,7 +63,7 @@ pub const PRDropdownComponent = struct {
     current_pr_number: ?u32 = null,
 
     // Fetched PRs (owned by this component)
-    prs: std.ArrayList(PullRequest) = .{},
+    prs: std.ArrayList(PullRequest) = .empty,
     fetch_status: FetchStatus = .idle,
     fetch_error: ?[]const u8 = null,
     last_fetch_ms: i64 = 0,
@@ -72,7 +74,7 @@ pub const PRDropdownComponent = struct {
     fetch_jobs: std.ArrayList(FetchJob) = .empty,
 
     // Filter / selection
-    filtered_indices: std.ArrayList(usize) = .{},
+    filtered_indices: std.ArrayList(usize) = .empty,
     selected_index: usize = 0,
     hovered_entry: ?usize = null,
     search_query: text_edit.TextInput = .{ .separators = text_edit.path_separators, .accepts = text_edit.isSingleLineChar },
@@ -94,9 +96,9 @@ pub const PRDropdownComponent = struct {
     /// Time before a successful fetch is considered stale and re-fetched on open.
     const fetch_ttl_ms: i64 = 30_000;
 
-    pub fn create(allocator: std.mem.Allocator) !UiComponent {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) !UiComponent {
         const comp = try allocator.create(PRDropdownComponent);
-        comp.* = .{ .allocator = allocator };
+        comp.* = .{ .allocator = allocator, .io = io };
         return UiComponent{
             .ptr = comp,
             .vtable = &vtable,
@@ -475,17 +477,17 @@ pub const PRDropdownComponent = struct {
         var new_is_github_repo = false;
 
         if (new_cwd) |cwd| {
-            new_repo_root = repo.findRepoRoot(self.allocator, cwd) catch |err| blk: {
+            new_repo_root = repo.findRepoRoot(self.allocator, self.io, cwd) catch |err| blk: {
                 log.warn("failed to find repository for {s}: {}", .{ cwd, err });
                 break :blk null;
             };
             if (new_repo_root) |root| {
-                new_is_github_repo = repo.detectGithubOrigin(self.allocator, root) catch |err| blk: {
+                new_is_github_repo = repo.detectGithubOrigin(self.allocator, self.io, root) catch |err| blk: {
                     log.warn("failed to inspect GitHub origin for {s}: {}", .{ root, err });
                     break :blk false;
                 };
                 if (new_is_github_repo) {
-                    new_branch = repo.readCurrentBranch(self.allocator, root) catch |err| blk: {
+                    new_branch = repo.readCurrentBranch(self.allocator, self.io, root) catch |err| blk: {
                         log.warn("failed to read branch for {s}: {}", .{ root, err });
                         break :blk null;
                     };
@@ -533,7 +535,7 @@ pub const PRDropdownComponent = struct {
 
     fn refreshCurrentBranch(self: *PRDropdownComponent) void {
         const root = self.repo_root orelse return;
-        const new_branch = repo.readCurrentBranch(self.allocator, root) catch |err| {
+        const new_branch = repo.readCurrentBranch(self.allocator, self.io, root) catch |err| {
             log.warn("failed to refresh branch for {s}: {}", .{ root, err });
             return;
         };
@@ -570,6 +572,7 @@ pub const PRDropdownComponent = struct {
         };
         ctx.* = .{
             .allocator = self.allocator,
+            .io = self.io,
             .cwd = cwd_copy,
         };
 
@@ -591,10 +594,10 @@ pub const PRDropdownComponent = struct {
     }
 
     fn fetchThreadMain(ctx: *FetchContext) void {
-        const result = fetch.runGhPrList(ctx.allocator, ctx.cwd);
-        ctx.mutex.lock();
+        const result = fetch.runGhPrList(ctx.allocator, ctx.io, ctx.cwd);
+        ctx.mutex.lockUncancelable(ctx.io);
         ctx.result = result;
-        ctx.mutex.unlock();
+        ctx.mutex.unlock(ctx.io);
         ctx.done.store(true, .release);
     }
 

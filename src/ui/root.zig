@@ -17,7 +17,7 @@ pub const UiRoot = struct {
     pub fn init(allocator: std.mem.Allocator) UiRoot {
         return .{
             .allocator = allocator,
-            .components = .{},
+            .components = .empty,
             .actions = types.UiActionQueue.init(allocator),
             .assets = .{},
         };

@@ -1,11 +1,11 @@
 #!/bin/sh
 
-# Work around Zig 0.15.2 failing to link against the macOS 26.4 SDK family,
+# Work around Zig 0.16.0 failing to link against the macOS 26.4 SDK family,
 # whose top-level libSystem.tbd no longer advertises arm64-macos.
 # Upstream tracker: https://codeberg.org/ziglang/zig/issues/31756
 #
-# Remove this once Architect no longer uses Zig 0.15.2, or once Zig's Darwin
-# SDK discovery/linker handles the arm64e-only stub layout correctly.
+# Remove this once Zig's Darwin SDK discovery/linker handles the arm64e-only
+# stub layout correctly and a macOS host has confirmed it.
 
 legacy_sdk="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 default_stub="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd"
@@ -49,4 +49,4 @@ esac
 
 export DEVELOPER_DIR="$developer_dir"
 
-echo "Applied Zig 0.15.2 macOS SDK workaround using $legacy_sdk"
+echo "Applied Zig 0.16.0 macOS SDK workaround using $legacy_sdk"

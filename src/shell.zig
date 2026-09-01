@@ -7,6 +7,7 @@ const clock = @import("clock.zig");
 const env = @import("env.zig");
 const proc = @import("proc.zig");
 const pty_mod = @import("pty.zig");
+const posix_util = @import("posix_util.zig");
 const libc = @cImport({
     @cInclude("stdlib.h");
 });
@@ -653,7 +654,7 @@ fn setEnv(name: [:0]const u8, value: [:0]const u8) void {
 
 /// Ensure xterm-ghostty terminfo is compiled and available.
 /// Installs to ~/.cache/architect/terminfo. Must be called from parent process before fork.
-pub fn ensureTerminfoSetup() void {
+pub fn ensureTerminfoSetup(io: std.Io) void {
     if (terminfo_setup_done) return;
     terminfo_setup_done = true;
 
@@ -674,7 +675,7 @@ pub fn ensureTerminfoSetup() void {
 
     // Create ~/.cache first if needed
     const dot_cache = std.fmt.bufPrint(&parent_buf, "{s}/.cache", .{home}) catch return;
-    std.fs.makeDirAbsolute(dot_cache) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, dot_cache, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("Failed to create .cache dir: {}", .{err});
@@ -685,7 +686,7 @@ pub fn ensureTerminfoSetup() void {
     // Create ~/.cache/architect (parent of terminfo dir)
     var architect_buf: [std.fs.max_path_bytes]u8 = undefined;
     const architect_dir = std.fmt.bufPrint(&architect_buf, "{s}/.cache/architect", .{home}) catch return;
-    std.fs.makeDirAbsolute(architect_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, architect_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("Failed to create architect cache dir: {}", .{err});
@@ -694,7 +695,7 @@ pub fn ensureTerminfoSetup() void {
     };
 
     // Create terminfo dir
-    std.fs.makeDirAbsolute(cache_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("Failed to create terminfo cache dir: {}", .{err});
@@ -705,7 +706,7 @@ pub fn ensureTerminfoSetup() void {
     // Create x subdir for terminfo entries
     var x_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const x_dir = std.fmt.bufPrint(&x_dir_buf, "{s}/x", .{cache_dir}) catch return;
-    std.fs.makeDirAbsolute(x_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, x_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("Failed to create terminfo x dir: {}", .{err});
@@ -717,17 +718,17 @@ pub fn ensureTerminfoSetup() void {
     var src_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const src_path_z = std.fmt.bufPrintZ(&src_path_buf, "{s}/xterm-ghostty.ti", .{cache_dir}) catch return;
 
-    const src_file = std.fs.createFileAbsolute(src_path_z, .{}) catch |err| {
+    const src_file = std.Io.Dir.createFileAbsolute(io, src_path_z, .{}) catch |err| {
         log.warn("Failed to create terminfo source file: {}", .{err});
         return;
     };
-    defer src_file.close();
-    src_file.writeAll(architect_terminfo_src) catch |err| {
+    defer src_file.close(io);
+    src_file.writeStreamingAll(io, architect_terminfo_src) catch |err| {
         log.warn("Failed to write terminfo source: {}", .{err});
         return;
     };
 
-    const tic_path = findExecutableInPath("tic") orelse {
+    const tic_path = findExecutableInPath(io, "tic") orelse {
         log.warn("tic not found in PATH, falling back to {s}", .{fallback_term});
         return;
     };
@@ -764,7 +765,7 @@ pub fn ensureTerminfoSetup() void {
     }
 }
 
-fn ensureArchitectCommandSetup() void {
+fn ensureArchitectCommandSetup(io: std.Io) void {
     if (architect_command_setup_done) return;
     architect_command_setup_done = true;
 
@@ -786,7 +787,7 @@ fn ensureArchitectCommandSetup() void {
     architect_command_base_z = base_dir_z;
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
-    std.fs.makeDirAbsolute(base_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, base_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("failed to create architect command base dir: {}", .{err});
@@ -800,7 +801,7 @@ fn ensureArchitectCommandSetup() void {
     };
     const bin_dir = bin_dir_z[0..bin_dir_z.len];
 
-    std.fs.makeDirAbsolute(bin_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, bin_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("failed to create architect bin dir: {}", .{err});
@@ -813,19 +814,19 @@ fn ensureArchitectCommandSetup() void {
         return;
     };
 
-    const script_file = std.fs.createFileAbsolute(script_path_z, .{ .truncate = true }) catch |err| {
+    const script_file = std.Io.Dir.createFileAbsolute(io, script_path_z, .{ .truncate = true }) catch |err| {
         log.warn("failed to create architect command: {}", .{err});
         return;
     };
-    defer script_file.close();
+    defer script_file.close(io);
 
-    script_file.writeAll(architect_command_script) catch |err| {
+    script_file.writeStreamingAll(io, architect_command_script) catch |err| {
         log.warn("failed to write architect command: {}", .{err});
         return;
     };
 
     const script_path = std.mem.sliceTo(script_path_z, 0);
-    posix.fchmodat(posix.AT.FDCWD, script_path, 0o755, 0) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(io, script_path, .fromMode(0o755), .{}) catch |err| {
         log.warn("failed to chmod architect command: {}", .{err});
     };
 
@@ -837,7 +838,7 @@ fn isShellNamed(shell_path: []const u8, name: []const u8) bool {
     return std.mem.eql(u8, base, name);
 }
 
-fn ensureArchitectZshProfileSetup() void {
+fn ensureArchitectZshProfileSetup(io: std.Io) void {
     if (architect_zsh_profile_setup_done) return;
     architect_zsh_profile_setup_done = true;
 
@@ -850,7 +851,7 @@ fn ensureArchitectZshProfileSetup() void {
         return;
     };
 
-    std.fs.makeDirAbsolute(zsh_dir_z) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, zsh_dir_z, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
             log.warn("failed to create architect zsh dir: {}", .{err});
@@ -864,13 +865,13 @@ fn ensureArchitectZshProfileSetup() void {
         return;
     };
 
-    const env_file = std.fs.createFileAbsolute(env_path_z, .{ .truncate = true }) catch |err| {
+    const env_file = std.Io.Dir.createFileAbsolute(io, env_path_z, .{ .truncate = true }) catch |err| {
         log.warn("failed to create architect zsh env: {}", .{err});
         return;
     };
-    defer env_file.close();
+    defer env_file.close(io);
 
-    env_file.writeAll(architect_zsh_env_script) catch |err| {
+    env_file.writeStreamingAll(io, architect_zsh_env_script) catch |err| {
         log.warn("failed to write architect zsh env: {}", .{err});
         return;
     };
@@ -881,13 +882,13 @@ fn ensureArchitectZshProfileSetup() void {
         return;
     };
 
-    const profile_file = std.fs.createFileAbsolute(profile_path_z, .{ .truncate = true }) catch |err| {
+    const profile_file = std.Io.Dir.createFileAbsolute(io, profile_path_z, .{ .truncate = true }) catch |err| {
         log.warn("failed to create architect zsh profile: {}", .{err});
         return;
     };
-    defer profile_file.close();
+    defer profile_file.close(io);
 
-    profile_file.writeAll(architect_zsh_profile_script) catch |err| {
+    profile_file.writeStreamingAll(io, architect_zsh_profile_script) catch |err| {
         log.warn("failed to write architect zsh profile: {}", .{err});
         return;
     };
@@ -898,13 +899,13 @@ fn ensureArchitectZshProfileSetup() void {
         return;
     };
 
-    const rc_file = std.fs.createFileAbsolute(rc_path_z, .{ .truncate = true }) catch |err| {
+    const rc_file = std.Io.Dir.createFileAbsolute(io, rc_path_z, .{ .truncate = true }) catch |err| {
         log.warn("failed to create architect zsh rc: {}", .{err});
         return;
     };
-    defer rc_file.close();
+    defer rc_file.close(io);
 
-    rc_file.writeAll(architect_zsh_rc_script) catch |err| {
+    rc_file.writeStreamingAll(io, architect_zsh_rc_script) catch |err| {
         log.warn("failed to write architect zsh rc: {}", .{err});
         return;
     };
@@ -915,13 +916,13 @@ fn ensureArchitectZshProfileSetup() void {
         return;
     };
 
-    const login_file = std.fs.createFileAbsolute(login_path_z, .{ .truncate = true }) catch |err| {
+    const login_file = std.Io.Dir.createFileAbsolute(io, login_path_z, .{ .truncate = true }) catch |err| {
         log.warn("failed to create architect zsh login: {}", .{err});
         return;
     };
-    defer login_file.close();
+    defer login_file.close(io);
 
-    login_file.writeAll(architect_zsh_login_script) catch |err| {
+    login_file.writeStreamingAll(io, architect_zsh_login_script) catch |err| {
         log.warn("failed to write architect zsh login: {}", .{err});
         return;
     };
@@ -995,7 +996,7 @@ fn ensureArchitectCommandPath() void {
     }
 }
 
-fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
+fn findExecutableInPath(io: std.Io, name: []const u8) ?[:0]const u8 {
     const path_env = env.get("PATH") orelse return null;
     const path_env_slice = std.mem.sliceTo(path_env, 0);
     var it = std.mem.splitScalar(u8, path_env_slice, ':');
@@ -1005,7 +1006,7 @@ fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
             log.warn("failed to format candidate path: {}", .{err});
             continue;
         };
-        if (std.fs.cwd().statFile(candidate)) |_| {
+        if (std.Io.Dir.cwd().statFile(io, candidate, .{})) |_| {
             return candidate;
         } else |_| {}
     }
@@ -1013,6 +1014,7 @@ fn findExecutableInPath(name: []const u8) ?[:0]const u8 {
 }
 
 pub const Shell = struct {
+    io: std.Io,
     pty: pty_mod.Pty,
     child_pid: std.c.pid_t,
 
@@ -1024,12 +1026,12 @@ pub const Shell = struct {
     const name_session: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
     const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
+    pub fn spawn(io: std.Io, shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
-        ensureTerminfoSetup();
-        ensureArchitectCommandSetup();
+        ensureTerminfoSetup(io);
+        ensureArchitectCommandSetup(io);
         if (isShellNamed(shell_path, "zsh")) {
-            ensureArchitectZshProfileSetup();
+            ensureArchitectZshProfileSetup(io);
         }
 
         const pty_instance = try pty_mod.Pty.open(size);
@@ -1045,9 +1047,9 @@ pub const Shell = struct {
             // Match ghostty's order: dup2 first so stdin/stdout/stderr point at the
             // slave before childPreExec rebinds the controlling terminal and closes
             // the original master/slave fds.
-            posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
+            posix_util.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
 
             if (libc.setenv(name_session.ptr, session_id, 1) != 0) {
                 std.c._exit(1);
@@ -1082,7 +1084,7 @@ pub const Shell = struct {
                 // Errors are intentionally ignored: we're in a forked child process where
                 // logging is impractical, and chdir failure is non-fatal (shell starts in
                 // the parent's cwd instead).
-                posix.chdir(dir) catch {};
+                _ = std.c.chdir(dir);
             }
 
             pty_instance.childPreExec() catch std.c._exit(1);
@@ -1102,9 +1104,10 @@ pub const Shell = struct {
             }
         }
 
-        posix.close(pty_instance.slave);
+        _ = std.c.close(pty_instance.slave);
 
         return .{
+            .io = io,
             .pty = pty_instance,
             .child_pid = pid,
         };
@@ -1120,16 +1123,17 @@ pub const Shell = struct {
         var waited_ns: u64 = 0;
         const max_wait_ns: u64 = 50 * std.time.ns_per_ms;
         const backoff_ns: u64 = 1 * std.time.ns_per_ms;
+        const pty_file: std.Io.File = .{ .handle = self.pty.master, .flags = .{ .nonblocking = true } };
 
         while (written < data.len) {
-            const n = posix.write(self.pty.master, data[written..]) catch |err| switch (err) {
+            const n = pty_file.writeStreaming(self.io, &.{}, &.{data[written..]}, 1) catch |err| switch (err) {
                 error.WouldBlock => {
                     // PTY is full; retry for a short bounded window so pastes
                     // complete, but avoid indefinitely stalling the UI thread.
                     if (waited_ns >= max_wait_ns) {
                         return if (written > 0) written else err;
                     }
-                    clock.sleepNanos(backoff_ns);
+                    clock.sleepNanos(self.io, backoff_ns);
                     waited_ns += backoff_ns;
                     continue;
                 },
@@ -1165,25 +1169,28 @@ test "pathContainsEntry" {
 test "bundled terminfo compiles to legacy short-int format" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const io = threaded.io();
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(tmp_path);
 
     const src_path = try std.fs.path.join(allocator, &.{ tmp_path, "xterm-ghostty.terminfo" });
     defer allocator.free(src_path);
 
     {
-        const src_file = try std.fs.createFileAbsolute(src_path, .{});
-        defer src_file.close();
-        try src_file.writeAll(architect_terminfo_src);
+        const src_file = try std.Io.Dir.createFileAbsolute(io, src_path, .{});
+        defer src_file.close(io);
+        try src_file.writeStreamingAll(io, architect_terminfo_src);
     }
 
-    const tic_path = findExecutableInPath("tic") orelse return error.SkipZigTest;
+    const tic_path = findExecutableInPath(io, "tic") orelse return error.SkipZigTest;
 
-    const term = try proc.spawnDetached(allocator, &.{ tic_path, "-x", "-o", tmp_path, src_path });
+    const term = try proc.spawnDetached(allocator, io, &.{ tic_path, "-x", "-o", tmp_path, src_path });
     try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 
     // tic stores the compiled entry in either `78/xterm-ghostty` (hashed,
@@ -1195,9 +1202,9 @@ test "bundled terminfo compiles to legacy short-int format" {
     for (candidates) |rel| {
         const full = try std.fs.path.join(allocator, &.{ tmp_path, rel });
         defer allocator.free(full);
-        const file = std.fs.openFileAbsolute(full, .{}) catch continue;
-        defer file.close();
-        const n = try file.readAll(&magic);
+        const file = std.Io.Dir.openFileAbsolute(io, full, .{}) catch continue;
+        defer file.close(io);
+        const n = try file.readStreaming(io, &.{&magic});
         if (n == magic.len) {
             read_ok = true;
             break;

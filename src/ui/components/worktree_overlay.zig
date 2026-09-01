@@ -18,11 +18,12 @@ const log = std.log.scoped(.worktree_overlay);
 
 pub const WorktreeOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: ExpandingOverlay = ExpandingOverlay.init(2, button_margin, button_size_small, button_size_large, button_animation_duration_ms),
     first_frame: FirstFrameGuard = .{},
     badge: GlyphBadge = .{ .text = "⌘T" },
 
-    worktrees: std.ArrayList(Worktree) = .{},
+    worktrees: std.ArrayList(Worktree) = .empty,
     last_cwd: ?[]const u8 = null,
     display_base: ?[]const u8 = null,
     needs_refresh: bool = true,
@@ -104,9 +105,9 @@ pub const WorktreeOverlayComponent = struct {
         font_generation: u64,
     };
 
-    pub fn create(allocator: std.mem.Allocator) !UiComponent {
+    pub fn create(allocator: std.mem.Allocator, io: std.Io) !UiComponent {
         const comp = try allocator.create(WorktreeOverlayComponent);
-        comp.* = .{ .allocator = allocator };
+        comp.* = .{ .allocator = allocator, .io = io };
         return UiComponent{
             .ptr = comp,
             .vtable = &vtable,
@@ -632,7 +633,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn makeDisplayPath(self: *WorktreeOverlayComponent, base: []const u8, abs: []const u8) ![]const u8 {
         if (std.mem.startsWith(u8, abs, base)) {
-            const rel = std.fs.path.relative(self.allocator, base, abs) catch {
+            const rel = std.fs.path.relative(self.allocator, ".", null, base, abs) catch {
                 return self.allocator.dupe(u8, abs);
             };
             if (rel.len == 0) return self.allocator.dupe(u8, repository_root_label);
@@ -1463,13 +1464,13 @@ pub const WorktreeOverlayComponent = struct {
         };
         defer self.allocator.free(worktrees_dir_buf);
 
-        var dir = std.fs.openDirAbsolute(worktrees_dir_buf, .{ .iterate = true }) catch {
+        var dir = std.Io.Dir.openDirAbsolute(self.io, worktrees_dir_buf, .{ .iterate = true }) catch {
             return self.worktrees.items.len > 0;
         };
-        defer dir.close();
+        defer dir.close(self.io);
 
         var iterator = dir.iterate();
-        while (iterator.next() catch |err| blk: {
+        while (iterator.next(self.io) catch |err| blk: {
             log.warn("failed to iterate directory: {}", .{err});
             break :blk null;
         }) |entry| {
@@ -1507,9 +1508,7 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn readTrimmedFile(self: *WorktreeOverlayComponent, path: []const u8) ![]const u8 {
-        const file = try std.fs.openFileAbsolute(path, .{});
-        defer file.close();
-        const contents = try file.readToEndAlloc(self.allocator, 4096);
+        const contents = try std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(4096));
         defer self.allocator.free(contents);
         const trimmed = std.mem.trim(u8, contents, " \t\r\n");
         return self.allocator.dupe(u8, trimmed);
@@ -1526,17 +1525,17 @@ pub const WorktreeOverlayComponent = struct {
             };
             defer self.allocator.free(candidate);
 
-            if (std.fs.openDirAbsolute(candidate, .{})) |dir| {
+            if (std.Io.Dir.openDirAbsolute(self.io, candidate, .{})) |dir| {
                 var owned_dir = dir;
-                owned_dir.close();
+                owned_dir.close(self.io);
                 const gitdir = try self.allocator.dupe(u8, candidate);
                 const commondir = try self.resolveCommonDir(gitdir);
                 self.allocator.free(current);
                 return GitContext{ .gitdir = gitdir, .commondir = commondir, .allocator = self.allocator };
             } else |_| {
                 // .git file case
-                if (std.fs.openFileAbsolute(candidate, .{})) |file| {
-                    defer file.close();
+                if (std.Io.Dir.openFileAbsolute(self.io, candidate, .{})) |file| {
+                    defer file.close(self.io);
                     const gitdir_line = self.readTrimmedFile(candidate) catch |err| {
                         log.warn("failed to read .git file: {}", .{err});
                         break;

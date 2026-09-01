@@ -182,10 +182,10 @@ test "stripAnsiAlloc converts OSC 133 prompt markers to marker line" {
 test "extractTerminalText roundtrip includes scrollback and viewport text" {
     const allocator = std.testing.allocator;
 
-    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
         .cols = 8,
         .rows = 3,
-        .max_scrollback = 8 * 32,
+        .max_scrollback_bytes = 8 * 32,
     });
     defer terminal.deinit(allocator);
 

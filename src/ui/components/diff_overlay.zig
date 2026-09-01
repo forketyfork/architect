@@ -128,18 +128,19 @@ const GitResult = struct {
 
 pub const DiffOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
-    files: std.ArrayList(DiffFile) = .{},
+    files: std.ArrayList(DiffFile) = .empty,
     raw_output: ?[]u8 = null,
-    display_rows: std.ArrayList(DisplayRow) = .{},
+    display_rows: std.ArrayList(DisplayRow) = .empty,
     cache: ?*Cache = null,
     last_repo_root: ?[]u8 = null,
 
     hovered_file: ?usize = null,
 
-    comments: std.ArrayList(DiffComment) = .{},
+    comments: std.ArrayList(DiffComment) = .empty,
     editing: ?EditingComment = null,
     agent_dropdown: dropdown_menu.DropdownMenu,
     send_button_hovered: bool = false,
@@ -205,9 +206,9 @@ pub const DiffOverlayComponent = struct {
     // max_chars plus room for tab-to-spaces expansion
     const max_display_buffer: usize = 520;
 
-    pub fn init(allocator: std.mem.Allocator) !*DiffOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*DiffOverlayComponent {
         const comp = try allocator.create(DiffOverlayComponent);
-        comp.* = .{ .allocator = allocator, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
+        comp.* = .{ .allocator = allocator, .io = io, .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator) };
         comp.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
         comp.pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
         comp.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
@@ -411,13 +412,13 @@ pub const DiffOverlayComponent = struct {
         };
         defer self.allocator.free(abs_path);
 
-        const file = std.fs.openFileAbsolute(abs_path, .{}) catch |err| {
+        const file = std.Io.Dir.openFileAbsolute(self.io, abs_path, .{}) catch |err| {
             log.warn("failed to open untracked file {s}: {}", .{ rel_path, err });
             return;
         };
-        defer file.close();
+        defer file.close(self.io);
 
-        const stat = file.stat() catch |err| {
+        const stat = file.stat(self.io) catch |err| {
             log.warn("failed to stat untracked file {s}: {}", .{ rel_path, err });
             return;
         };
@@ -432,7 +433,7 @@ pub const DiffOverlayComponent = struct {
             return;
         }
 
-        const content = file.readToEndAlloc(self.allocator, max_file_bytes) catch |err| {
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, abs_path, self.allocator, .limited(max_file_bytes)) catch |err| {
             log.warn("failed to read untracked file {s}: {}", .{ rel_path, err });
             return;
         };
@@ -548,14 +549,14 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn runGitCommand(self: *DiffOverlayComponent, cwd: []const u8, argv: []const []const u8) !GitResult {
-        const result = proc.run(self.allocator, .{
+        const result = proc.run(self.allocator, self.io, .{
             .argv = argv,
             .cwd = cwd,
             .max_output_bytes = max_output_bytes,
         }) catch |err| {
             log.warn("failed to run git command: {}", .{err});
             return switch (err) {
-                error.StdoutStreamTooLong, error.StderrStreamTooLong => error.OutputTooLarge,
+                error.StreamTooLong => error.OutputTooLarge,
                 error.OutOfMemory => error.OutputAllocFailed,
                 else => error.ReadFailed,
             };
@@ -608,12 +609,12 @@ pub const DiffOverlayComponent = struct {
 
             if (std.mem.startsWith(u8, line_text, "diff --git ")) {
                 const path = extractFilePath(line_text);
-                var hunks = std.ArrayList(DiffHunk){};
+                var hunks: std.ArrayList(DiffHunk) = .empty;
                 _ = &hunks;
                 self.files.append(self.allocator, .{
                     .path = path,
                     .collapsed = false,
-                    .hunks = .{},
+                    .hunks = .empty,
                 }) catch |err| {
                     log.warn("failed to append file: {}", .{err});
                     pos = if (line_end < output.len) line_end + 1 else output.len;
@@ -642,7 +643,7 @@ pub const DiffOverlayComponent = struct {
                         .header_text = line_text,
                         .old_start = parsed.old_start,
                         .new_start = parsed.new_start,
-                        .lines = .{},
+                        .lines = .empty,
                     }) catch |err| {
                         log.warn("failed to append hunk: {}", .{err});
                         pos = if (line_end < output.len) line_end + 1 else output.len;
@@ -738,7 +739,7 @@ pub const DiffOverlayComponent = struct {
             file.hunks.deinit(self.allocator);
         }
         self.files.deinit(self.allocator);
-        self.files = .{};
+        self.files = .empty;
         self.hovered_file = null;
         self.freeComments();
         self.cancelEditingImmediate();
@@ -2322,7 +2323,7 @@ pub const DiffOverlayComponent = struct {
             self.allocator.free(comment.text);
         }
         self.comments.deinit(self.allocator);
-        self.comments = .{};
+        self.comments = .empty;
     }
 
     fn cancelEditing(self: *DiffOverlayComponent, now_ms: i64) void {
@@ -2633,7 +2634,7 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn formatCommentsForAgent(self: *DiffOverlayComponent) ?[]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         var first = true;
         for (self.comments.items) |comment| {
             if (comment.sent) continue;
@@ -2768,7 +2769,7 @@ pub const DiffOverlayComponent = struct {
 
         const dir_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect" }) catch return;
         defer self.allocator.free(dir_path);
-        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+        std.Io.Dir.createDirAbsolute(self.io, dir_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => {
                 log.warn("failed to create .architect dir: {}", .{err});
@@ -2779,7 +2780,7 @@ pub const DiffOverlayComponent = struct {
         const file_path = std.fs.path.join(self.allocator, &.{ dir_path, "diff_comments.json" }) catch return;
         defer self.allocator.free(file_path);
 
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
         buf.appendSlice(self.allocator, "[\n") catch return;
         var first = true;
@@ -2799,12 +2800,12 @@ pub const DiffOverlayComponent = struct {
         }
         buf.appendSlice(self.allocator, "\n]\n") catch return;
 
-        const file = std.fs.createFileAbsolute(file_path, .{ .truncate = true }) catch |err| {
+        const file = std.Io.Dir.createFileAbsolute(self.io, file_path, .{ .truncate = true }) catch |err| {
             log.warn("failed to create comments file: {}", .{err});
             return;
         };
-        defer file.close();
-        file.writeAll(buf.items) catch |err| {
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch |err| {
             log.warn("failed to write comments file: {}", .{err});
         };
     }
@@ -2835,9 +2836,7 @@ pub const DiffOverlayComponent = struct {
         const file_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect", "diff_comments.json" }) catch return;
         defer self.allocator.free(file_path);
 
-        const file = std.fs.openFileAbsolute(file_path, .{}) catch return;
-        defer file.close();
-        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return;
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, file_path, self.allocator, .limited(1024 * 1024)) catch return;
         defer self.allocator.free(content);
 
         self.parseCommentsJson(content);
@@ -2920,7 +2919,7 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn parseJsonString(self: *DiffOverlayComponent, content: []const u8, pos: *usize) ?[]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf: std.ArrayList(u8) = .empty;
         while (pos.* < content.len and content[pos.*] != '"') {
             if (content[pos.*] == '\\' and pos.* + 1 < content.len) {
                 pos.* += 1;
@@ -3556,6 +3555,7 @@ fn testUiHost() types.UiHost {
 test "diff overlay agent dropdown takes keyboard priority over an open comment editor" {
     var component = DiffOverlayComponent{
         .allocator = std.testing.allocator,
+        .io = std.testing.io,
         .overlay = .{ .visible = true },
         .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
         .editing = .{
@@ -3605,6 +3605,7 @@ test "diff overlay agent dropdown takes keyboard priority over an open comment e
 test "diff overlay text input while the agent dropdown is open does not leak into the comment editor" {
     var component = DiffOverlayComponent{
         .allocator = std.testing.allocator,
+        .io = std.testing.io,
         .overlay = .{ .visible = true },
         .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
         .editing = .{

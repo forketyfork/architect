@@ -4,6 +4,7 @@ const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.notify);
 
@@ -24,24 +25,24 @@ pub const StoryNotification = struct {
 };
 
 pub const NotificationQueue = struct {
-    mutex: std.Thread.Mutex = .{},
-    items: std.ArrayListUnmanaged(Notification) = .{},
+    mutex: std.Io.Mutex = .init,
+    items: std.ArrayList(Notification) = .empty,
 
     pub fn deinit(self: *NotificationQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
-    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, item: Notification) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn push(self: *NotificationQueue, allocator: std.mem.Allocator, io: std.Io, item: Notification) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *NotificationQueue) std.ArrayListUnmanaged(Notification) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn drainAll(self: *NotificationQueue, io: std.Io) std.ArrayList(Notification) {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const items = self.items;
-        self.items = .{};
+        self.items = .empty;
         return items;
     }
 };
@@ -58,6 +59,7 @@ pub fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathErro
 
 const NotifyContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
@@ -89,11 +91,12 @@ fn releaseNotification(allocator: std.mem.Allocator, note: Notification) void {
 
 fn enqueueNotification(
     allocator: std.mem.Allocator,
+    io: std.Io,
     queue: *NotificationQueue,
     runtime_wake: ?RuntimeWake,
     note: Notification,
 ) void {
-    queue.push(allocator, note) catch |err| {
+    queue.push(allocator, io, note) catch |err| {
         log.warn("failed to queue notification for session {d}: {}", .{ notificationSessionId(note), err });
         releaseNotification(allocator, note);
         return;
@@ -108,12 +111,13 @@ pub const StartNotifyThreadError = std.Thread.SpawnError;
 
 pub fn startNotifyThread(
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) StartNotifyThreadError!std.Thread {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink notify socket: {}", .{err}),
     };
@@ -174,34 +178,32 @@ pub fn startNotifyThread(
         }
 
         fn run(ctx: NotifyContext) !void {
-            const addr = try std.net.Address.initUnix(ctx.socket_path);
-            const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-            defer posix.close(fd);
-
-            try posix.bind(fd, &addr.any, addr.getOsSockLen());
-            try posix.listen(fd, 16);
+            const address = try std.Io.net.UnixAddress.init(ctx.socket_path);
+            var server = try address.listen(ctx.io, .{ .kernel_backlog = 16 });
+            defer server.deinit(ctx.io);
+            const fd = server.socket.handle;
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+            std.Io.Dir.cwd().setFilePermissions(ctx.io, sock_path, .fromMode(0o600), .{}) catch |err| {
                 log.warn("failed to chmod notify socket: {}", .{err});
             };
 
             // Make accept non-blocking so the loop can observe stop requests.
-            const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| blk: {
+            const flags = posix_util.fcntl(fd, posix.F.GETFL, 0) catch |err| blk: {
                 log.warn("failed to get socket flags: {}", .{err});
                 break :blk null;
             };
             if (flags) |f| {
                 var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                 o_flags.NONBLOCK = true;
-                if (posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                if (posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
                     log.warn("failed to set socket non-blocking: {}", .{err});
                 }
             }
 
             while (!ctx.stop.load(.seq_cst)) {
-                const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
+                const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
                     error.WouldBlock => {
-                        clock.sleepNanos(std.time.ns_per_ms * 10);
+                        clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                         continue;
                     },
                     else => {
@@ -209,21 +211,21 @@ pub fn startNotifyThread(
                         continue;
                     },
                 };
-                defer posix.close(conn_fd);
+                defer _ = std.c.close(conn_fd);
 
-                const conn_flags = posix.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
+                const conn_flags = posix_util.fcntl(conn_fd, posix.F.GETFL, 0) catch |err| blk: {
                     log.debug("failed to get connection flags: {}", .{err});
                     break :blk null;
                 };
                 if (conn_flags) |f| {
                     var o_flags: posix.O = @bitCast(@as(u32, @intCast(f)));
                     o_flags.NONBLOCK = true;
-                    if (posix.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+                    if (posix_util.fcntl(conn_fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
                         log.warn("failed to set connection non-blocking: {}", .{err});
                     }
                 }
 
-                var buffer = std.ArrayList(u8){};
+                var buffer: std.ArrayList(u8) = .empty;
                 defer buffer.deinit(ctx.allocator);
 
                 var tmp: [512]u8 = undefined;
@@ -246,7 +248,7 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items, ctx.allocator)) |note| {
-                    enqueueNotification(ctx.allocator, ctx.queue, ctx.runtime_wake, note);
+                    enqueueNotification(ctx.allocator, ctx.io, ctx.queue, ctx.runtime_wake, note);
                 }
             }
         }
@@ -254,6 +256,7 @@ pub fn startNotifyThread(
 
     const ctx = NotifyContext{
         .allocator = allocator,
+        .io = io,
         .socket_path = socket_path,
         .queue = queue,
         .stop = stop,
@@ -267,11 +270,11 @@ test "NotificationQueue - push and drain" {
     var queue = NotificationQueue{};
     defer queue.deinit(allocator);
 
-    try queue.push(allocator, .{ .status = .{ .session = 0, .state = .running } });
-    try queue.push(allocator, .{ .status = .{ .session = 1, .state = .awaiting_approval } });
-    try queue.push(allocator, .{ .status = .{ .session = 2, .state = .done } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 0, .state = .running } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 1, .state = .awaiting_approval } });
+    try queue.push(allocator, std.testing.io, .{ .status = .{ .session = 2, .state = .done } });
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 3), items.items.len);
@@ -301,12 +304,13 @@ test "enqueueNotification wakes after queueing" {
 
     enqueueNotification(
         allocator,
+        std.testing.io,
         &queue,
         wake,
         .{ .status = .{ .session = 7, .state = .done } },
     );
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), wake_count);
@@ -336,17 +340,18 @@ test "enqueueNotification skips wake when queueing fails" {
     };
 
     while (true) {
-        queue.push(allocator, .{ .status = .{ .session = 1, .state = .running } }) catch break;
+        queue.push(allocator, std.testing.io, .{ .status = .{ .session = 1, .state = .running } }) catch break;
     }
 
     enqueueNotification(
         allocator,
+        std.testing.io,
         &queue,
         wake,
         .{ .status = .{ .session = 7, .state = .done } },
     );
 
-    var items = queue.drainAll();
+    var items = queue.drainAll(std.testing.io);
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), wake_count);

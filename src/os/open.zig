@@ -57,7 +57,9 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
 fn openUrlThread(ctx: *ThreadContext) void {
     defer ctx.deinit();
 
-    _ = proc.spawnDetached(ctx.allocator, &ctx.argv) catch |err| {
+    var threaded: std.Io.Threaded = .init(ctx.allocator, .{});
+    defer threaded.deinit();
+    _ = proc.spawnDetached(ctx.allocator, threaded.io(), &ctx.argv) catch |err| {
         log.warn("failed to open URL '{s}': {}", .{ ctx.url, err });
         return;
     };

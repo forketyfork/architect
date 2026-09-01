@@ -10,13 +10,13 @@ const GhOutputPreview = struct {
     consumed: usize,
 };
 
-pub fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) model.FetchResult {
+pub fn runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) model.FetchResult {
     const argv = [_][]const u8{
         "gh",      "pr",     "list",
         "--state", "open",   "--limit",
         "30",      "--json", "number,title,headRefName",
     };
-    const result = proc.run(allocator, .{
+    const result = proc.run(allocator, io, .{
         .argv = &argv,
         .cwd = cwd,
     }) catch |err| {

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const runtime = @import("app/runtime.zig");
 const logging = @import("logging.zig");
 const cli_args = @import("cli_args.zig");
+const env = @import("env.zig");
 
 pub const std_options: std.Options = .{
     // Keep compile-time logging permissive; runtime filtering is handled by
@@ -11,17 +12,23 @@ pub const std_options: std.Options = .{
     .logFn = logging.logFn,
 };
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+pub fn main(init: std.process.Init) !void {
+    env.init(init.minimal.environ);
 
-    const parsed = cli_args.parse(argv[1..]) catch |err| {
+    var args = std.process.Args.Iterator.init(init.minimal.args);
+    defer args.deinit();
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(init.gpa);
+    while (args.next()) |arg| {
+        try argv.append(init.gpa, arg);
+    }
+
+    const parsed = cli_args.parse(argv.items[1..]) catch |err| {
         std.debug.print("architect: {s}\n{s}", .{ @errorName(err), cli_args.usage_text });
         std.process.exit(1);
     };
 
-    try runtime.run(parsed.log_dir_override);
+    try runtime.run(init.io, parsed.log_dir_override);
 }
 
 // Zig only collects tests from files reachable through this block, so every

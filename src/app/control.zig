@@ -4,6 +4,7 @@ const posix = std.posix;
 const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const env = @import("../env.zig");
+const posix_util = @import("../posix_util.zig");
 
 const log = std.log.scoped(.control);
 
@@ -91,26 +92,26 @@ pub const RuntimeWake = struct {
 };
 
 pub const SpawnCompletion = struct {
-    mutex: std.Thread.Mutex = .{},
-    condition: std.Thread.Condition = .{},
+    mutex: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
     completed: bool = false,
     response: SpawnResponse = undefined,
 
-    pub fn complete(self: *SpawnCompletion, response: SpawnResponse) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn complete(self: *SpawnCompletion, io: std.Io, response: SpawnResponse) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         self.response = response;
         self.completed = true;
-        self.condition.signal();
+        self.condition.signal(io);
     }
 
-    pub fn wait(self: *SpawnCompletion) SpawnResponse {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn wait(self: *SpawnCompletion, io: std.Io) SpawnResponse {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         while (!self.completed) {
-            self.condition.wait(&self.mutex);
+            self.condition.waitUncancelable(io, &self.mutex);
         }
         return self.response;
     }
@@ -122,22 +123,22 @@ pub const PendingSpawn = struct {
 };
 
 pub const SpawnQueue = struct {
-    mutex: std.Thread.Mutex = .{},
-    items: std.ArrayListUnmanaged(PendingSpawn) = .empty,
+    mutex: std.Io.Mutex = .init,
+    items: std.ArrayList(PendingSpawn) = .empty,
 
     pub fn deinit(self: *SpawnQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
-    pub fn push(self: *SpawnQueue, allocator: std.mem.Allocator, item: PendingSpawn) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn push(self: *SpawnQueue, allocator: std.mem.Allocator, io: std.Io, item: PendingSpawn) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         try self.items.append(allocator, item);
     }
 
-    pub fn drainAll(self: *SpawnQueue) std.ArrayListUnmanaged(PendingSpawn) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn drainAll(self: *SpawnQueue, io: std.Io) std.ArrayList(PendingSpawn) {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         const items = self.items;
         self.items = .empty;
         return items;
@@ -245,10 +246,10 @@ fn duplicateValidatedString(
     return try allocator.dupe(u8, value);
 }
 
-pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
-    var base = try controlRuntimeDirAlloc(allocator);
+pub fn getControlSocketPath(allocator: std.mem.Allocator, io: std.Io) ![:0]u8 {
+    var base = try controlRuntimeDirAlloc(allocator, io);
     defer base.deinit(allocator);
-    try ensureControlRuntimeDir(base);
+    try ensureControlRuntimeDir(io, base);
 
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_control_{d}.sock", .{pid});
@@ -256,10 +257,10 @@ pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
     return try std.fs.path.joinZ(allocator, &.{ base.path, socket_name });
 }
 
-pub fn getControlDiscoveryPath(allocator: std.mem.Allocator) ![]u8 {
-    var base = try controlRuntimeDirAlloc(allocator);
+pub fn getControlDiscoveryPath(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    var base = try controlRuntimeDirAlloc(allocator, io);
     defer base.deinit(allocator);
-    try ensureControlRuntimeDir(base);
+    try ensureControlRuntimeDir(io, base);
 
     const file_name = try controlDiscoveryFileNameAlloc(allocator);
     defer allocator.free(file_name);
@@ -276,7 +277,8 @@ const ControlRuntimeDir = struct {
     }
 };
 
-fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
+fn controlRuntimeDirAlloc(allocator: std.mem.Allocator, io: std.Io) !ControlRuntimeDir {
+    _ = io;
     if (env.get("XDG_RUNTIME_DIR")) |runtime_dir| {
         return .{
             .path = try allocator.dupe(u8, runtime_dir),
@@ -298,26 +300,31 @@ fn fallbackControlRuntimeDirAlloc(allocator: std.mem.Allocator) ![]u8 {
         return try std.fs.path.join(allocator, &.{ home, ".cache", "architect", "runtime" });
     }
 
-    return try std.fmt.allocPrint(allocator, "/tmp/architect-{d}", .{posix.getuid()});
+    return try std.fmt.allocPrint(allocator, "/tmp/architect-{d}", .{std.c.getuid()});
 }
 
-fn ensureControlRuntimeDir(runtime_dir: ControlRuntimeDir) !void {
+fn ensureControlRuntimeDir(io: std.Io, runtime_dir: ControlRuntimeDir) !void {
     if (!runtime_dir.managed) return;
 
-    try std.fs.cwd().makePath(runtime_dir.path);
-    try posix.fchmodat(posix.AT.FDCWD, runtime_dir.path, 0o700, 0);
+    try std.Io.Dir.cwd().createDirPath(io, runtime_dir.path);
+    try std.Io.Dir.cwd().setFilePermissions(
+        io,
+        runtime_dir.path,
+        .fromMode(0o700),
+        .{},
+    );
 }
 
 fn controlDiscoveryFileNameAlloc(allocator: std.mem.Allocator) ![]u8 {
     return try std.fmt.allocPrint(
         allocator,
         "{s}{d}_{d}{s}",
-        .{ discovery_file_prefix, posix.getuid(), std.c.getpid(), discovery_file_suffix },
+        .{ discovery_file_prefix, std.c.getuid(), std.c.getpid(), discovery_file_suffix },
     );
 }
 
 fn controlDiscoveryFilePrefixAlloc(allocator: std.mem.Allocator) ![]u8 {
-    return try std.fmt.allocPrint(allocator, "{s}{d}_", .{ discovery_file_prefix, posix.getuid() });
+    return try std.fmt.allocPrint(allocator, "{s}{d}_", .{ discovery_file_prefix, std.c.getuid() });
 }
 
 fn isOwnControlDiscoveryFileName(file_name: []const u8, prefix: []const u8) bool {
@@ -326,6 +333,7 @@ fn isOwnControlDiscoveryFileName(file_name: []const u8, prefix: []const u8) bool
 
 const ControlContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
     queue: *SpawnQueue,
@@ -335,19 +343,21 @@ const ControlContext = struct {
 
 pub fn startControlThread(
     allocator: std.mem.Allocator,
+    io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
     queue: *SpawnQueue,
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) std.Thread.SpawnError!std.Thread {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink control socket: {}", .{err}),
     };
 
     const ctx = ControlContext{
         .allocator = allocator,
+        .io = io,
         .socket_path = socket_path,
         .discovery_path = discovery_path,
         .queue = queue,
@@ -357,12 +367,12 @@ pub fn startControlThread(
     return try std.Thread.spawn(.{}, controlThreadMain, .{ctx});
 }
 
-pub fn cleanupControlFiles(socket_path: [:0]const u8, discovery_path: []const u8) void {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
+pub fn cleanupControlFiles(io: std.Io, socket_path: [:0]const u8, discovery_path: []const u8) void {
+    _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to unlink control socket during cleanup: {}", .{err}),
     };
-    std.fs.deleteFileAbsolute(discovery_path) catch |err| switch (err) {
+    std.Io.Dir.deleteFileAbsolute(io, discovery_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to delete control discovery file: {}", .{err}),
     };
@@ -371,39 +381,39 @@ pub fn cleanupControlFiles(socket_path: [:0]const u8, discovery_path: []const u8
 pub fn failPending(
     queue: *SpawnQueue,
     allocator: std.mem.Allocator,
+    io: std.Io,
     code: SpawnErrorCode,
     message: []const u8,
 ) void {
-    var pending = queue.drainAll();
+    var pending = queue.drainAll(io);
     defer pending.deinit(allocator);
     for (pending.items) |*item| {
-        item.completion.complete(.{ .failure = .{ .code = code, .message = message } });
+        item.completion.complete(io, .{ .failure = .{ .code = code, .message = message } });
         item.request.deinit(allocator);
     }
 }
 
 fn controlThreadMain(ctx: ControlContext) !void {
-    const addr = try std.net.Address.initUnix(ctx.socket_path);
-    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    defer posix.close(fd);
+    const address = try std.Io.net.UnixAddress.init(ctx.socket_path);
+    var server = try address.listen(ctx.io, .{ .kernel_backlog = 16 });
+    defer server.deinit(ctx.io);
 
-    try posix.bind(fd, &addr.any, addr.getOsSockLen());
-    try posix.listen(fd, 16);
+    const fd = server.socket.handle;
 
     const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-    std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(ctx.io, sock_path, .fromMode(0o600), .{}) catch |err| {
         log.warn("failed to chmod control socket: {}", .{err});
     };
-    writeDiscoveryFile(ctx.allocator, ctx.discovery_path, sock_path) catch |err| {
+    writeDiscoveryFile(ctx.allocator, ctx.io, ctx.discovery_path, sock_path) catch |err| {
         log.warn("failed to write control discovery file: {}", .{err});
     };
 
     setFdNonBlocking(fd, "control socket");
 
     while (!ctx.stop.load(.seq_cst)) {
-        const conn_fd = posix.accept(fd, null, null, 0) catch |err| switch (err) {
+        const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
             error.WouldBlock => {
-                clock.sleepNanos(std.time.ns_per_ms * 10);
+                clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
                 continue;
             },
             else => {
@@ -412,33 +422,34 @@ fn controlThreadMain(ctx: ControlContext) !void {
             },
         };
         setFdNonBlocking(conn_fd, "control connection");
-        handleControlConnection(ctx.allocator, conn_fd, ctx.queue, ctx.runtime_wake);
-        posix.close(conn_fd);
+        handleControlConnection(ctx.allocator, ctx.io, conn_fd, ctx.queue, ctx.runtime_wake);
+        _ = std.c.close(conn_fd);
     }
 }
 
 fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
-    const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch |err| {
+    const flags = posix_util.fcntl(fd, posix.F.GETFL, 0) catch |err| {
         log.warn("failed to get {s} flags: {}", .{ context, err });
         return;
     };
 
     var o_flags: posix.O = @bitCast(@as(u32, @intCast(flags)));
     o_flags.NONBLOCK = true;
-    if (posix.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
+    if (posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)))) |_| {} else |err| {
         log.warn("failed to set {s} non-blocking: {}", .{ context, err });
     }
 }
 
 fn handleControlConnection(
     allocator: std.mem.Allocator,
+    io: std.Io,
     conn_fd: posix.fd_t,
     queue: *SpawnQueue,
     runtime_wake: ?RuntimeWake,
 ) void {
-    const bytes = readLineFromFdWithTimeout(allocator, conn_fd, max_message_bytes, control_request_read_timeout_ms) catch |err| {
+    const bytes = readLineFromFdWithTimeout(allocator, io, conn_fd, max_message_bytes, control_request_read_timeout_ms) catch |err| {
         log.debug("failed to read control request: {}", .{err});
-        writeControlResponse(conn_fd, .{ .failure = .{
+        writeControlResponse(io, conn_fd, .{ .failure = .{
             .code = .invalid_request,
             .message = "invalid control request",
         } }) catch |write_err| {
@@ -449,7 +460,7 @@ fn handleControlConnection(
     defer allocator.free(bytes);
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
-        writeControlResponse(conn_fd, .{ .failure = .{
+        writeControlResponse(io, conn_fd, .{ .failure = .{
             .code = .invalid_request,
             .message = "request is not valid JSON",
         } }) catch |write_err| {
@@ -460,7 +471,7 @@ fn handleControlConnection(
     defer parsed.deinit();
 
     var request = parseSpawnRequestFromValue(allocator, parsed.value) catch |err| {
-        writeControlResponse(conn_fd, .{ .failure = .{
+        writeControlResponse(io, conn_fd, .{ .failure = .{
             .code = .invalid_request,
             .message = parseErrorMessage(err),
         } }) catch |write_err| {
@@ -471,13 +482,13 @@ fn handleControlConnection(
     errdefer request.deinit(allocator);
 
     var completion = SpawnCompletion{};
-    queue.push(allocator, .{
+    queue.push(allocator, io, .{
         .request = request,
         .completion = &completion,
     }) catch |err| {
         log.warn("failed to queue control request: {}", .{err});
         request.deinit(allocator);
-        writeControlResponse(conn_fd, .{ .failure = .{
+        writeControlResponse(io, conn_fd, .{ .failure = .{
             .code = .spawn_failed,
             .message = "failed to queue spawn request",
         } }) catch |write_err| {
@@ -490,8 +501,8 @@ fn handleControlConnection(
         waker.notify();
     }
 
-    const response = completion.wait();
-    writeControlResponse(conn_fd, response) catch |err| {
+    const response = completion.wait(io);
+    writeControlResponse(io, conn_fd, response) catch |err| {
         log.debug("failed to write control response: {}", .{err});
     };
 }
@@ -508,43 +519,45 @@ pub fn parseErrorMessage(err: ParseSpawnRequestError) []const u8 {
     };
 }
 
-fn writeDiscoveryFile(allocator: std.mem.Allocator, path: []const u8, socket_path: []const u8) !void {
+fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, socket_path: []const u8) !void {
     const payload = try discoveryPayloadAlloc(allocator, socket_path);
     defer allocator.free(payload);
 
     const dir_path = std.fs.path.dirname(path) orelse return error.InvalidDiscoveryPath;
     const base_name = std.fs.path.basename(path);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{});
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
+    defer dir.close(io);
 
+    var random_suffix: u64 = undefined;
+    std.Io.random(io, std.mem.asBytes(&random_suffix));
     const temp_name = try std.fmt.allocPrint(
         allocator,
         ".{s}.{x}.tmp",
-        .{ base_name, std.crypto.random.int(u64) },
+        .{ base_name, random_suffix },
     );
     defer allocator.free(temp_name);
 
-    var file = try dir.createFile(temp_name, .{
+    var file = try dir.createFile(io, temp_name, .{
         .exclusive = true,
-        .mode = 0o600,
+        .permissions = .fromMode(0o600),
     });
     var file_open = true;
-    errdefer if (file_open) file.close();
-    errdefer deleteTempDiscoveryFile(&dir, temp_name);
+    errdefer if (file_open) file.close(io);
+    errdefer deleteTempDiscoveryFile(io, &dir, temp_name);
 
-    try posix.fchmod(file.handle, 0o600);
-    try file.writeAll(payload);
-    try file.sync();
-    file.close();
+    try file.setPermissions(io, .fromMode(0o600));
+    try file.writeStreamingAll(io, payload);
+    try file.sync(io);
+    file.close(io);
     file_open = false;
 
-    try dir.rename(temp_name, base_name);
+    try dir.rename(temp_name, dir, base_name, io);
     log.info("wrote control discovery file {s} for socket {s}", .{ path, socket_path });
 }
 
-fn deleteTempDiscoveryFile(dir: *std.fs.Dir, temp_name: []const u8) void {
-    dir.deleteFile(temp_name) catch |err| switch (err) {
+fn deleteTempDiscoveryFile(io: std.Io, dir: *std.Io.Dir, temp_name: []const u8) void {
+    dir.deleteFile(io, temp_name) catch |err| switch (err) {
         error.FileNotFound => {},
         else => log.warn("failed to delete temporary control discovery file {s}: {}", .{ temp_name, err }),
     };
@@ -566,12 +579,13 @@ fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8) 
     return try allocator.dupe(u8, out.written());
 }
 
-fn readLineFromFd(allocator: std.mem.Allocator, fd: posix.fd_t, max_bytes: usize) ![]u8 {
-    return try readLineFromFdWithTimeout(allocator, fd, max_bytes, null);
+fn readLineFromFd(allocator: std.mem.Allocator, io: std.Io, fd: posix.fd_t, max_bytes: usize) ![]u8 {
+    return try readLineFromFdWithTimeout(allocator, io, fd, max_bytes, null);
 }
 
 fn readLineFromFdWithTimeout(
     allocator: std.mem.Allocator,
+    io: std.Io,
     fd: posix.fd_t,
     max_bytes: usize,
     timeout_ms: ?i64,
@@ -579,11 +593,11 @@ fn readLineFromFdWithTimeout(
     var buffer: std.ArrayList(u8) = .empty;
     errdefer buffer.deinit(allocator);
 
-    const deadline_ms = if (timeout_ms) |ms| clock.nowMillis() + ms else null;
+    const deadline_ms = if (timeout_ms) |ms| clock.nowMillis(io) + ms else null;
     var tmp: [512]u8 = undefined;
     while (true) {
         if (deadline_ms) |deadline| {
-            const now = clock.nowMillis();
+            const now = clock.nowMillis(io);
             if (now >= deadline) return error.TimedOut;
 
             const remaining_ms = deadline - now;
@@ -597,7 +611,9 @@ fn readLineFromFdWithTimeout(
             if (ready == 0) return error.TimedOut;
         }
 
-        const n = posix.read(fd, &tmp) catch |err| switch (err) {
+        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = true } };
+        const n = file.readStreaming(io, &.{&tmp}) catch |err| switch (err) {
+            error.EndOfStream => break,
             error.WouldBlock => continue,
             else => return err,
         };
@@ -617,21 +633,17 @@ fn readLineFromFdWithTimeout(
     return try buffer.toOwnedSlice(allocator);
 }
 
-fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
-    var written: usize = 0;
-    while (written < bytes.len) {
-        const n = try posix.write(fd, bytes[written..]);
-        if (n == 0) return error.WriteFailed;
-        written += n;
-    }
+fn writeAllFd(io: std.Io, fd: posix.fd_t, bytes: []const u8) !void {
+    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = true } };
+    try file.writeStreamingAll(io, bytes);
 }
 
-fn writeControlResponse(fd: posix.fd_t, response: SpawnResponse) !void {
+fn writeControlResponse(io: std.Io, fd: posix.fd_t, response: SpawnResponse) !void {
     var buffer: [512]u8 = undefined;
     var fbs = std.heap.FixedBufferAllocator.init(&buffer);
     const allocator = fbs.allocator();
     const payload = try controlResponseAlloc(allocator, response);
-    try writeAllFd(fd, payload);
+    try writeAllFd(io, fd, payload);
 }
 
 pub fn controlRequestAlloc(allocator: std.mem.Allocator, request: SpawnRequest) ![]u8 {
@@ -688,9 +700,10 @@ pub fn controlResponseAlloc(allocator: std.mem.Allocator, response: SpawnRespons
 
 pub fn connectAndSendSpawnRequest(
     allocator: std.mem.Allocator,
+    io: std.Io,
     request: SpawnRequest,
 ) !OwnedSpawnResponse {
-    var connection = connectToNewestControlSocket(allocator) catch |err| switch (err) {
+    var connection = connectToNewestControlSocket(allocator, io) catch |err| switch (err) {
         error.NoControlDiscoveryFile => return staticFailure(.app_not_running, "Architect is not running"),
         error.NoLiveControlSocket => return staticFailure(.app_not_running, "Architect is not accepting control requests"),
         else => return err,
@@ -699,9 +712,9 @@ pub fn connectAndSendSpawnRequest(
 
     const payload = try controlRequestAlloc(allocator, request);
     defer allocator.free(payload);
-    try writeAllFd(connection.fd, payload);
+    try writeAllFd(io, connection.fd, payload);
 
-    const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
+    const response_bytes = try readLineFromFd(allocator, io, connection.fd, max_message_bytes);
     defer allocator.free(response_bytes);
     return try parseControlResponse(allocator, response_bytes);
 }
@@ -711,7 +724,7 @@ const ControlConnection = struct {
     socket_path: []const u8,
 
     fn deinit(self: *ControlConnection, allocator: std.mem.Allocator) void {
-        posix.close(self.fd);
+        _ = std.c.close(self.fd);
         allocator.free(self.socket_path);
         self.* = undefined;
     }
@@ -719,7 +732,7 @@ const ControlConnection = struct {
 
 const DiscoveryCandidate = struct {
     socket_path: []const u8,
-    mtime: i128,
+    mtime: std.Io.Timestamp,
 
     fn deinit(self: *DiscoveryCandidate, allocator: std.mem.Allocator) void {
         allocator.free(self.socket_path);
@@ -727,8 +740,8 @@ const DiscoveryCandidate = struct {
     }
 };
 
-fn connectToNewestControlSocket(allocator: std.mem.Allocator) !ControlConnection {
-    var candidates = try discoverControlCandidates(allocator);
+fn connectToNewestControlSocket(allocator: std.mem.Allocator, io: std.Io) !ControlConnection {
+    var candidates = try discoverControlCandidates(allocator, io);
     defer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
@@ -739,13 +752,13 @@ fn connectToNewestControlSocket(allocator: std.mem.Allocator) !ControlConnection
     while (candidates.items.len > 0) {
         const idx = newestDiscoveryCandidateIndex(candidates.items);
         const candidate = candidates.items[idx];
-        const fd = connectControlSocket(candidate.socket_path) catch |err| {
+        const fd = connectControlSocket(io, candidate.socket_path) catch |err| {
             log.debug("failed to connect to discovered control socket {s}: {}", .{ candidate.socket_path, err });
             var removed = candidates.swapRemove(idx);
             removed.deinit(allocator);
             continue;
         };
-        errdefer posix.close(fd);
+        errdefer _ = std.c.close(fd);
         return .{
             .fd = fd,
             .socket_path = try allocator.dupe(u8, candidate.socket_path),
@@ -755,35 +768,35 @@ fn connectToNewestControlSocket(allocator: std.mem.Allocator) !ControlConnection
     return error.NoLiveControlSocket;
 }
 
-fn discoverControlCandidates(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(DiscoveryCandidate) {
-    var candidates: std.ArrayListUnmanaged(DiscoveryCandidate) = .empty;
+fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.ArrayList(DiscoveryCandidate) {
+    var candidates: std.ArrayList(DiscoveryCandidate) = .empty;
     errdefer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
     }
 
-    var runtime_dir = try controlRuntimeDirAlloc(allocator);
+    var runtime_dir = try controlRuntimeDirAlloc(allocator, io);
     defer runtime_dir.deinit(allocator);
 
-    var dir = std.fs.openDirAbsolute(runtime_dir.path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(io, runtime_dir.path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return candidates,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io);
 
     const prefix = try controlDiscoveryFilePrefixAlloc(allocator);
     defer allocator.free(prefix);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!isOwnControlDiscoveryFileName(entry.name, prefix)) continue;
 
-        const stat = dir.statFile(entry.name) catch |err| {
+        const stat = dir.statFile(io, entry.name, .{}) catch |err| {
             log.debug("failed to stat control discovery file {s}: {}", .{ entry.name, err });
             continue;
         };
-        const discovery = dir.readFileAlloc(allocator, entry.name, max_message_bytes) catch |err| {
+        const discovery = dir.readFileAlloc(io, entry.name, allocator, .limited(max_message_bytes)) catch |err| {
             log.debug("failed to read control discovery file {s}: {}", .{ entry.name, err });
             continue;
         };
@@ -809,20 +822,17 @@ fn discoverControlCandidates(allocator: std.mem.Allocator) !std.ArrayListUnmanag
 fn newestDiscoveryCandidateIndex(candidates: []const DiscoveryCandidate) usize {
     var newest_idx: usize = 0;
     for (candidates[1..], 1..) |candidate, idx| {
-        if (candidate.mtime > candidates[newest_idx].mtime) {
+        if (candidate.mtime.nanoseconds > candidates[newest_idx].mtime.nanoseconds) {
             newest_idx = idx;
         }
     }
     return newest_idx;
 }
 
-fn connectControlSocket(socket_path: []const u8) !posix.fd_t {
-    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    errdefer posix.close(fd);
-
-    const addr = try std.net.Address.initUnix(socket_path);
-    try posix.connect(fd, &addr.any, addr.getOsSockLen());
-    return fd;
+fn connectControlSocket(io: std.Io, socket_path: []const u8) !posix.fd_t {
+    const address = try std.Io.net.UnixAddress.init(socket_path);
+    const stream = try address.connect(io);
+    return stream.socket.handle;
 }
 
 fn staticFailure(code: SpawnErrorCode, message: []const u8) OwnedSpawnResponse {
@@ -971,9 +981,9 @@ test "fallback control runtime directory does not use TMPDIR" {
 
 test "newestDiscoveryCandidateIndex picks the highest mtime" {
     const candidates = [_]DiscoveryCandidate{
-        .{ .socket_path = "/tmp/old.sock", .mtime = 10 },
-        .{ .socket_path = "/tmp/new.sock", .mtime = 30 },
-        .{ .socket_path = "/tmp/mid.sock", .mtime = 20 },
+        .{ .socket_path = "/tmp/old.sock", .mtime = .fromNanoseconds(10) },
+        .{ .socket_path = "/tmp/new.sock", .mtime = .fromNanoseconds(30) },
+        .{ .socket_path = "/tmp/mid.sock", .mtime = .fromNanoseconds(20) },
     };
 
     try std.testing.expectEqual(@as(usize, 1), newestDiscoveryCandidateIndex(&candidates));
@@ -985,17 +995,17 @@ test "SpawnQueue drains queued requests" {
     defer queue.deinit(allocator);
 
     var completion = SpawnCompletion{};
-    try queue.push(allocator, .{
+    try queue.push(allocator, std.testing.io, .{
         .request = .{ .cwd = try allocator.dupe(u8, "/tmp") },
         .completion = &completion,
     });
 
-    var pending = queue.drainAll();
+    var pending = queue.drainAll(std.testing.io);
     defer pending.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     pending.items[0].request.deinit(allocator);
 
-    var empty = queue.drainAll();
+    var empty = queue.drainAll(std.testing.io);
     defer empty.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), empty.items.len);
 }

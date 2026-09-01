@@ -18,11 +18,28 @@ comptime {
 ///
 /// This is the only sanctioned module-level accessor in the codebase. The
 /// `io` context is never stored this way.
+var process_environ: ?std.process.Environ = null;
+
+/// Must be called exactly once, from `main`, before any thread is spawned.
+pub fn init(environ: std.process.Environ) void {
+    std.debug.assert(process_environ == null);
+    process_environ = environ;
+}
+
 pub fn get(key: []const u8) ?[:0]const u8 {
-    return std.posix.getenv(key);
+    const environ = process_environ orelse
+        @panic("env.get called before env.init; main must call env.init first");
+    return environ.getPosix(key);
+}
+
+fn initForTest() void {
+    if (process_environ == null) {
+        process_environ = std.testing.environ;
+    }
 }
 
 test "get returns a value for a variable the process always has" {
+    initForTest();
     // PATH is guaranteed present in every shell Architect is launched from,
     // including the CI runners and the Nix dev shell.
     const path = get("PATH");
@@ -31,5 +48,6 @@ test "get returns a value for a variable the process always has" {
 }
 
 test "get returns null for a variable that is not set" {
+    initForTest();
     try std.testing.expectEqual(@as(?[:0]const u8, null), get("ARCHITECT_DEFINITELY_NOT_SET_9f3a1c"));
 }
