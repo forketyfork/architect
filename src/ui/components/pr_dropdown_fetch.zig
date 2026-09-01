@@ -1,5 +1,6 @@
 const std = @import("std");
 const model = @import("pr_dropdown_model.zig");
+const proc = @import("../../proc.zig");
 
 const log = std.log.scoped(.pr_dropdown);
 pub const gh_output_log_preview_limit: usize = 2 * 1024;
@@ -15,12 +16,10 @@ pub fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) model.FetchRes
         "--state", "open",   "--limit",
         "30",      "--json", "number,title,headRefName",
     };
-    var child = std.process.Child.init(&argv, allocator);
-    child.cwd = cwd;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    const result = proc.run(allocator, .{
+        .argv = &argv,
+        .cwd = cwd,
+    }) catch |err| {
         if (err == error.FileNotFound) {
             log.err("gh CLI not found while listing pull requests: cwd={s}", .{cwd});
             return model.FetchResult{
@@ -32,38 +31,15 @@ pub fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) model.FetchRes
         log.err("failed to launch gh while listing pull requests: cwd={s} error={s}", .{ cwd, @errorName(err) });
         return buildFetchError(allocator, "Failed to launch gh: {s}", .{@errorName(err)});
     };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    var stdout_buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch {
-        log.err("failed to allocate gh stdout buffer: cwd={s}", .{cwd});
-        _ = child.kill() catch |err| log.warn("failed to stop gh after stdout allocation failure: {}", .{err});
-        return buildFetchError(allocator, "Out of memory reading gh output", .{});
-    };
-    defer stdout_buf.deinit(allocator);
-    var stderr_buf = std.ArrayList(u8).initCapacity(allocator, 256) catch {
-        log.err("failed to allocate gh stderr buffer: cwd={s}", .{cwd});
-        _ = child.kill() catch |err| log.warn("failed to stop gh after stderr allocation failure: {}", .{err});
-        return buildFetchError(allocator, "Out of memory reading gh output", .{});
-    };
-    defer stderr_buf.deinit(allocator);
-
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 4 * 1024 * 1024) catch |err| {
-        log.err("failed to collect gh output: cwd={s} error={s}", .{ cwd, @errorName(err) });
-        _ = child.kill() catch |kill_err| log.warn("failed to stop gh after output failure: {}", .{kill_err});
-        _ = child.wait() catch |wait_err| log.warn("failed to reap gh after output failure: {}", .{wait_err});
-        return buildFetchError(allocator, "Failed to read gh output: {s}", .{@errorName(err)});
-    };
-
-    const term = child.wait() catch |err| {
-        log.err("failed to wait for gh: cwd={s} error={s}", .{ cwd, @errorName(err) });
-        return buildFetchError(allocator, "Failed to wait for gh: {s}", .{@errorName(err)});
-    };
-
-    switch (term) {
-        .Exited => |code| {
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
-                const stderr_msg = std.mem.trim(u8, stderr_buf.items, " \t\r\n");
+                const stderr_msg = std.mem.trim(u8, result.stderr, " \t\r\n");
                 log.err("gh pr list failed: cwd={s} exit_code={d}", .{ cwd, code });
-                logGhOutputPreview("stderr", stderr_buf.items);
+                logGhOutputPreview("stderr", result.stderr);
                 if (stderr_msg.len > 0) {
                     return buildFetchError(allocator, "gh exited {d}: {s}", .{ code, stderr_msg });
                 }
@@ -76,15 +52,15 @@ pub fn runGhPrList(allocator: std.mem.Allocator, cwd: []const u8) model.FetchRes
         },
     }
 
-    const result = parseGhJson(allocator, stdout_buf.items);
-    if (result.status == .failed) {
+    const fetch_result = parseGhJson(allocator, result.stdout);
+    if (fetch_result.status == .failed) {
         log.err("gh PR list processing failed: cwd={s} error={s}", .{
             cwd,
-            result.error_message orelse "unknown parsing error",
+            fetch_result.error_message orelse "unknown parsing error",
         });
-        logGhOutputPreview("stdout", stdout_buf.items);
+        logGhOutputPreview("stdout", result.stdout);
     }
-    return result;
+    return fetch_result;
 }
 
 fn logGhOutputPreview(comptime stream_name: []const u8, bytes: []const u8) void {

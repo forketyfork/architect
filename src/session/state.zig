@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
@@ -642,7 +643,7 @@ pub const SessionState = struct {
             }
             const was_synchronized_output = self.synchronizedOutputActive();
             try stream.nextSlice(self.output_buf[0..n]);
-            const processed_at_ms = std.time.milliTimestamp();
+            const processed_at_ms = clock.nowMillis();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
             self.markDirty();
 
@@ -1166,7 +1167,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     }
     defer _ = std.c.waitpid(pid, null, 0);
     // Give the forked child a moment to exit and become reapable.
-    std.Thread.sleep(50 * std.time.ns_per_ms);
+    clock.sleepNanos(50 * std.time.ns_per_ms);
 
     const pipe_fds = try posix.pipe();
     // pty.deinit() only closes the master fd; close the slave ourselves.

@@ -34,7 +34,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const clock_mod = b.createModule(.{
+        .root_source_file = b.path("src/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     control_mod.addImport("../env.zig", env_mod);
+    control_mod.addImport("../clock.zig", clock_mod);
     mcp_mod.addImport("control", control_mod);
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),

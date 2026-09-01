@@ -4,7 +4,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
 const posix = std.posix;
+const clock = @import("../clock.zig");
 const env = @import("../env.zig");
+const proc = @import("../proc.zig");
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
@@ -1246,20 +1248,20 @@ const QuitTeardownWorker = struct {
     fn runTask(task: *QuitTeardownTask) void {
         log.info("quit teardown: session {d} has foreground agent {s}", .{ task.session_idx, task.agent_kind.name() });
         sendExitSequence(task.pty_master, task.agent_kind);
-        std.Thread.sleep(quit_primary_wait_ms * std.time.ns_per_ms);
+        clock.sleepNanos(quit_primary_wait_ms * std.time.ns_per_ms);
 
         var fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         if (fg_pgrp != null) {
             log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ task.session_idx, task.agent_kind.name() });
             sendExitSequence(task.pty_master, task.agent_kind);
-            std.Thread.sleep(quit_retry_wait_ms * std.time.ns_per_ms);
+            clock.sleepNanos(quit_retry_wait_ms * std.time.ns_per_ms);
             fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         }
 
         if (fg_pgrp) |pgrp| {
             log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ task.session_idx, task.agent_kind.name() });
             _ = std.c.kill(-pgrp, std.c.SIG.TERM);
-            std.Thread.sleep(quit_term_wait_ms * std.time.ns_per_ms);
+            clock.sleepNanos(quit_term_wait_ms * std.time.ns_per_ms);
         } else {
             log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ task.session_idx, task.agent_kind.name() });
         }
@@ -1334,7 +1336,7 @@ fn sendExitSequence(master_fd: posix.fd_t, agent_kind: session_state.AgentKind) 
             return;
         };
         if (idx + 1 < sequence.len) {
-            std.Thread.sleep(220 * std.time.ns_per_ms);
+            clock.sleepNanos(220 * std.time.ns_per_ms);
         }
     }
     log.debug("quit teardown: wrote exit command for agent {s}", .{agent_kind.name()});
@@ -1358,7 +1360,7 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
         last_capture_lengths[idx] = sessions[task.session_idx].quitCaptureBytes().len;
     }
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = clock.nowNanos();
     var last_growth_ns = start_ns;
 
     while (true) {
@@ -1375,13 +1377,13 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
             last_capture_lengths[idx] = new_len;
         }
 
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = clock.nowNanos();
         if (saw_growth) {
             last_growth_ns = now_ns;
         }
 
         if (!shouldContinueQuitCaptureDrain(start_ns, last_growth_ns, now_ns)) break;
-        std.Thread.sleep(quit_capture_drain_poll_ns);
+        clock.sleepNanos(quit_capture_drain_poll_ns);
     }
 }
 
@@ -1852,8 +1854,8 @@ pub fn run(log_dir_override: ?[]const u8) !void {
     var next_frame_wait: FrameWaitDecision = .none;
     while (running) {
         var next_event = waitForNextFrame(next_frame_wait);
-        const frame_start_ns: i128 = std.time.nanoTimestamp();
-        const now = std.time.milliTimestamp();
+        const frame_start_ns: i128 = clock.nowNanos();
+        const now = clock.nowMillis();
         if (relaunch_trace_frames > 0) {
             log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
                 @tagName(anim_state.mode),
@@ -2954,16 +2956,15 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                     defer allocator.free(config_path);
                     if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
 
-                    const result = switch (builtin.os.tag) {
-                        .macos => blk: {
-                            var child = std.process.Child.init(&.{ "open", "-t", config_path }, allocator);
-                            break :blk child.spawn();
-                        },
-                        else => open_url.openUrl(allocator, config_path),
-                    };
-                    result catch |err| {
-                        std.debug.print("Failed to open config file: {}\n", .{err});
-                    };
+                    if (builtin.os.tag == .macos) {
+                        _ = proc.spawnDetached(allocator, &.{ "open", "-t", config_path }) catch |err| {
+                            std.debug.print("Failed to open config file: {}\n", .{err});
+                        };
+                    } else {
+                        open_url.openUrl(allocator, config_path) catch |err| {
+                            std.debug.print("Failed to open config file: {}\n", .{err});
+                        };
+                    }
                     ui.showToast("Opening config file", now);
                 } else |err| {
                     std.debug.print("Failed to get config path: {}\n", .{err});
@@ -3412,7 +3413,7 @@ pub fn run(log_dir_override: ?[]const u8) !void {
                 log.info("frame trace after render", .{});
             }
             metrics_mod.increment(.frame_count);
-            last_render_ns = std.time.nanoTimestamp();
+            last_render_ns = clock.nowNanos();
         }
 
         if (relaunch_trace_frames > 0) {
@@ -3425,13 +3426,13 @@ pub fn run(log_dir_override: ?[]const u8) !void {
             window_close_suppress_countdown -= 1;
         }
 
-        const frame_end_ns: i128 = std.time.nanoTimestamp();
+        const frame_end_ns: i128 = clock.nowNanos();
         const frame_ns = frame_end_ns - frame_start_ns;
         next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
     }
 
     if (builtin.os.tag == .macos) {
-        const now = std.time.milliTimestamp();
+        const now = clock.nowMillis();
         for (sessions) |session| {
             session.updateCwd(now);
         }

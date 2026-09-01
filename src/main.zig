@@ -39,6 +39,7 @@ test {
     _ = @import("app/terminal_actions.zig");
     _ = @import("app/terminal_history.zig");
     _ = @import("cli_args.zig");
+    _ = @import("clock.zig");
     _ = @import("colors.zig");
     _ = @import("config.zig");
     _ = @import("env.zig");
@@ -49,6 +50,7 @@ test {
     _ = @import("metrics.zig");
     _ = @import("pty.zig");
     _ = @import("platform/sdl.zig");
+    _ = @import("proc.zig");
     _ = @import("render/renderer.zig");
     _ = @import("session/notify.zig");
     _ = @import("session/pty_reader.zig");

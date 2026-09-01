@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const proc = @import("../proc.zig");
 
 const log = std.log.scoped(.open);
 
@@ -56,8 +57,7 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
 fn openUrlThread(ctx: *ThreadContext) void {
     defer ctx.deinit();
 
-    var child = std.process.Child.init(&ctx.argv, ctx.allocator);
-    _ = child.spawnAndWait() catch |err| {
+    _ = proc.spawnDetached(ctx.allocator, &ctx.argv) catch |err| {
         log.warn("failed to open URL '{s}': {}", .{ ctx.url, err });
         return;
     };

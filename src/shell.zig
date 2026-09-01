@@ -3,7 +3,9 @@
 const std = @import("std");
 const assets = @import("assets");
 const posix = std.posix;
+const clock = @import("clock.zig");
 const env = @import("env.zig");
+const proc = @import("proc.zig");
 const pty_mod = @import("pty.zig");
 const libc = @cImport({
     @cInclude("stdlib.h");
@@ -1127,7 +1129,7 @@ pub const Shell = struct {
                     if (waited_ns >= max_wait_ns) {
                         return if (written > 0) written else err;
                     }
-                    std.Thread.sleep(backoff_ns);
+                    clock.sleepNanos(backoff_ns);
                     waited_ns += backoff_ns;
                     continue;
                 },
@@ -1181,12 +1183,8 @@ test "bundled terminfo compiles to legacy short-int format" {
 
     const tic_path = findExecutableInPath("tic") orelse return error.SkipZigTest;
 
-    var child = std.process.Child.init(&.{ tic_path, "-x", "-o", tmp_path, src_path }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    const term = try child.spawnAndWait();
-    try testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    const term = try proc.spawnDetached(allocator, &.{ tic_path, "-x", "-o", tmp_path, src_path });
+    try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 
     // tic stores the compiled entry in either `78/xterm-ghostty` (hashed,
     // modern ncurses default) or `x/xterm-ghostty` (legacy single-char), so try

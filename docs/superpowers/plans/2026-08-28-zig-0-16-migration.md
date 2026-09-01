@@ -625,7 +625,7 @@ Zig 0.16 removes `std.time.timestamp`, `milliTimestamp`, `nanoTimestamp`, and `s
 
   Task 7 prefixes each with an `io: std.Io` parameter and keeps the names and return types unchanged.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/clock.zig` with only the tests:
 
@@ -667,7 +667,7 @@ test "sleepNanos advances the monotonic reading by at least the requested span" 
 }
 ```
 
-- [ ] **Step 2: Register the new file in the test registry**
+- [x] **Step 2: Register the new file in the test registry**
 
 In `src/main.zig`'s `test` block, in alphabetical position:
 
@@ -677,12 +677,12 @@ In `src/main.zig`'s `test` block, in alphabetical position:
     _ = @import("colors.zig");
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `nix develop --command zig build test 2>&1 | tail -20`
 Expected: FAIL with `use of undeclared identifier 'nowSeconds'`.
 
-- [ ] **Step 4: Write the minimal implementation**
+- [x] **Step 4: Write the minimal implementation**
 
 Add to `src/clock.zig`, above the tests:
 
@@ -715,12 +715,12 @@ pub fn sleepNanos(nanoseconds: u64) void {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped.
 
-- [ ] **Step 6: Commit the module**
+- [x] **Step 6: Commit the module**
 
 ```bash
 nix develop --command zig fmt src/
@@ -728,7 +728,7 @@ git add src/clock.zig src/main.zig
 git commit -m "feat(clock): add time and sleep accessor module"
 ```
 
-- [ ] **Step 7: Route the 13 timestamp sites through `clock`**
+- [x] **Step 7: Route the 13 timestamp sites through `clock`**
 
 Add `const clock = @import("clock.zig");` (or `@import("../clock.zig")` in `src/app/`, `src/session/`; `@import("../../clock.zig")` under `src/ui/components/`) and replace each call:
 
@@ -750,7 +750,7 @@ Add `const clock = @import("clock.zig");` (or `@import("../clock.zig")` in `src/
 
 Note: `src/app/control.zig` is compiled into the separate `control` module for the MCP binary as well as into the main binary, so its import must resolve from `src/app/` — use `@import("../clock.zig")`.
 
-- [ ] **Step 8: Route the 14 sleep sites through `clock`**
+- [x] **Step 8: Route the 14 sleep sites through `clock`**
 
 | Site | Replace with |
 | --- | --- |
@@ -771,7 +771,7 @@ Note: `src/app/control.zig` is compiled into the separate `control` module for t
 
 `std.time.ns_per_ms` and friends are compile-time constants that survive into 0.16 — leave them alone.
 
-- [ ] **Step 9: Verify no call site was missed**
+- [x] **Step 9: Verify no call site was missed**
 
 Run: `grep -rn 'std\.time\.\(milliTimestamp\|nanoTimestamp\|timestamp\)' src`
 Expected: no output.
@@ -779,7 +779,7 @@ Expected: no output.
 Run: `grep -rn 'std\.Thread\.sleep' src`
 Expected: no output.
 
-- [ ] **Step 10: Verify build, tests, and lint**
+- [x] **Step 10: Verify build, tests, and lint**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -794,7 +794,7 @@ Expected: exit 0.
 
 Timestamps drive animation and log rotation, which no unit test covers. Run: `nix develop --command zig build run` and confirm: the layout expand/collapse animation still runs smoothly (not instant, not frozen) — that exercises `layout.zig:94`; the log file under the log directory carries correct ISO-8601 timestamps — that exercises `logging.zig:197`; and quitting with a busy session still shows the shimmer overlay for its normal duration rather than hanging or returning instantly — that exercises the `runtime.zig` quit sleeps.
 
-- [ ] **Step 12: Format and commit**
+- [x] **Step 12: Format and commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -829,7 +829,7 @@ This task and Task 4 belong to the same PR (Prep 3).
 
   Task 7 prefixes both functions with an `io: std.Io` parameter and swaps the internals.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/proc.zig` with only the tests. These use `/bin/sh`, which is present on both macOS and Linux:
 
@@ -887,7 +887,7 @@ test "spawnDetached waits for the child and returns its term" {
 }
 ```
 
-- [ ] **Step 2: Register the new file in the test registry**
+- [x] **Step 2: Register the new file in the test registry**
 
 In `src/main.zig`'s `test` block, in alphabetical position:
 
@@ -897,12 +897,12 @@ In `src/main.zig`'s `test` block, in alphabetical position:
     _ = @import("pty.zig");
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `nix develop --command zig build test 2>&1 | tail -20`
 Expected: FAIL with `use of undeclared identifier 'run'`.
 
-- [ ] **Step 4: Write the minimal implementation**
+- [x] **Step 4: Write the minimal implementation**
 
 Add to `src/proc.zig`, above the tests:
 
@@ -963,9 +963,14 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     var stderr_buf: std.ArrayList(u8) = .empty;
     errdefer stderr_buf.deinit(allocator);
 
-    errdefer child.kill() catch |err| {
-        std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{err});
-    };
+    errdefer {
+        _ = child.kill() catch |kill_err| switch (kill_err) {
+            error.AlreadyTerminated => _ = child.wait() catch |wait_err| {
+                std.log.scoped(.proc).warn("failed to reap child after output failure: {}", .{wait_err});
+            },
+            else => std.log.scoped(.proc).warn("failed to stop child after output failure: {}", .{kill_err}),
+        };
+    }
 
     try child.collectOutput(allocator, &stdout_buf, &stderr_buf, options.max_output_bytes);
     const term = try child.wait();
@@ -984,6 +989,9 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
 /// Spawns `argv`, waits for it, and discards its output.
 pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) !Term {
     var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
     return fromStdTerm(try child.spawnAndWait());
 }
 ```
@@ -997,12 +1005,16 @@ tested under 0.15.2 rather than arriving unnoticed with the toolchain bump.
 Neither `gh pr list` nor `git diff` reads stdin, so no observable behavior
 changes — but verify the manual checks in Step 14 rather than assuming.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+Second-review correction: retain the existing zombie-reaping cleanup for
+`AlreadyTerminated` and explicitly ignore `spawnDetached` standard streams,
+preserving the pre-migration process-lifecycle and stdio behavior.
+
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `nix develop --command zig build test`
 Expected: exit 0. Run this unpiped.
 
-- [ ] **Step 6: Commit the module**
+- [x] **Step 6: Commit the module**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1013,7 +1025,7 @@ run() ignores stdin because 0.16's std.process.run hardcodes that; landing
 it now means the change is tested under the current toolchain."
 ```
 
-- [ ] **Step 7: Convert `src/os/open.zig`**
+- [x] **Step 7: Convert `src/os/open.zig`**
 
 `openUrlThread` spawns and waits, discarding output. Replace the body:
 
@@ -1030,7 +1042,7 @@ fn openUrlThread(ctx: *ThreadContext) void {
 
 Add `const proc = @import("../proc.zig");` to the imports.
 
-- [ ] **Step 8: Convert `src/app/runtime.zig:2958`**
+- [x] **Step 8: Convert `src/app/runtime.zig:2958`**
 
 The `open -t <config_path>` invocation also discards output:
 
@@ -1042,7 +1054,7 @@ The `open -t <config_path>` invocation also discards output:
 
 Preserve whatever the surrounding error handling currently does; if the existing code already logs, keep the same message and level.
 
-- [ ] **Step 9: Convert `src/ui/components/pr_dropdown_fetch.zig`**
+- [x] **Step 9: Convert `src/ui/components/pr_dropdown_fetch.zig`**
 
 This is the collect-output shape. Replace the whole spawn-collect-wait sequence in `runGhPrList` with a single `proc.run` call, keeping every existing log message and `FetchResult` branch:
 
@@ -1075,7 +1087,7 @@ Then update the term switch at line 62 to the lowercase tag:
 
 Add `const proc = @import("../../proc.zig");` to the imports.
 
-- [ ] **Step 10: Convert `src/ui/components/diff_overlay.zig`**
+- [x] **Step 10: Convert `src/ui/components/diff_overlay.zig`**
 
 Change the field type at line 125:
 
@@ -1091,7 +1103,7 @@ Replace the `Child.init` block at line 550 with `proc.run`, and update the term 
 
 Add `const proc = @import("../../proc.zig");` to the imports. Read the surrounding 40 lines before editing so the existing error branches and buffer ownership are preserved exactly.
 
-- [ ] **Step 11: Convert the `src/shell.zig` test**
+- [x] **Step 11: Convert the `src/shell.zig` test**
 
 Lines 1183-1188 run `tic` in a test. Replace with:
 
@@ -1102,7 +1114,7 @@ Lines 1183-1188 run `tic` in a test. Replace with:
 
 Add `const proc = @import("proc.zig");` to the imports.
 
-- [ ] **Step 12: Verify no call site was missed**
+- [x] **Step 12: Verify no call site was missed**
 
 Run: `grep -rn 'std\.process\.Child' src`
 Expected: only `src/proc.zig` (the wrapper's own internals).
@@ -1110,7 +1122,7 @@ Expected: only `src/proc.zig` (the wrapper's own internals).
 Run: `grep -rn '\.Exited\|\.Signal\b\|\.Stopped\b' src | grep -v 'src/proc.zig'`
 Expected: no output.
 
-- [ ] **Step 13: Verify build, tests, and lint**
+- [x] **Step 13: Verify build, tests, and lint**
 
 Run: `nix develop --command zig build`
 Expected: exit 0.
@@ -1125,7 +1137,7 @@ Expected: exit 0.
 
 Run: `nix develop --command zig build run`, then: press ⌘P to open the PR dropdown in a git repo with open pull requests and confirm the list populates (exercises `pr_dropdown_fetch.zig`); open the diff overlay and confirm the diff renders (exercises `diff_overlay.zig`); click a URL in terminal output and confirm it opens in the browser (exercises `os/open.zig`); trigger "open config" and confirm the editor launches (exercises `runtime.zig:2958`). Also confirm the PR dropdown shows its "gh not found" state when `gh` is absent from `PATH` — that branch is the one most likely to be broken by the error-mapping change.
 
-- [ ] **Step 15: Format and commit**
+- [x] **Step 15: Format and commit**
 
 ```bash
 nix develop --command zig fmt src/
@@ -1137,7 +1149,7 @@ replacing them with std.process.spawn/run, which need an io context.
 proc.Term uses 0.16's lowercase tag names so caller switches are final."
 ```
 
-- [ ] **Step 16: Open the Prep 3 PR**
+- [x] **Step 16: Open the Prep 3 PR**
 
 Use the `managing-github` skill. This PR contains Task 4 and Task 5.
 

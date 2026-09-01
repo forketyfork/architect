@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
+const proc = @import("../../proc.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
@@ -122,7 +123,7 @@ const Cache = struct {
 const GitResult = struct {
     stdout: []u8,
     stderr: []u8,
-    term: std.process.Child.Term,
+    term: proc.Term,
 };
 
 pub const DiffOverlayComponent = struct {
@@ -547,55 +548,23 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn runGitCommand(self: *DiffOverlayComponent, cwd: []const u8, argv: []const []const u8) !GitResult {
-        var child = std.process.Child.init(argv, self.allocator);
-        child.cwd = cwd;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        child.spawn() catch |err| {
-            log.warn("failed to spawn git command: {}", .{err});
-            return error.SpawnFailed;
-        };
-
-        var stdout = std.ArrayList(u8).initCapacity(self.allocator, 1024) catch |err| {
-            log.warn("failed to allocate stdout buffer: {}", .{err});
-            return error.OutputAllocFailed;
-        };
-        errdefer stdout.deinit(self.allocator);
-        var stderr = std.ArrayList(u8).initCapacity(self.allocator, 256) catch |err| {
-            log.warn("failed to allocate stderr buffer: {}", .{err});
-            return error.OutputAllocFailed;
-        };
-        errdefer stderr.deinit(self.allocator);
-
-        child.collectOutput(self.allocator, &stdout, &stderr, max_output_bytes) catch |err| {
-            log.warn("failed to collect git command output: {}", .{err});
-            const terminate = child.kill() catch |kill_err| switch (kill_err) {
-                error.AlreadyTerminated => child.wait() catch |wait_err| {
-                    log.warn("failed to wait on git command: {}", .{wait_err});
-                    return error.WaitFailed;
-                },
-                else => {
-                    log.warn("failed to terminate git command: {}", .{kill_err});
-                    return error.TerminateFailed;
-                },
-            };
-            _ = terminate;
+        const result = proc.run(self.allocator, .{
+            .argv = argv,
+            .cwd = cwd,
+            .max_output_bytes = max_output_bytes,
+        }) catch |err| {
+            log.warn("failed to run git command: {}", .{err});
             return switch (err) {
                 error.StdoutStreamTooLong, error.StderrStreamTooLong => error.OutputTooLarge,
+                error.OutOfMemory => error.OutputAllocFailed,
                 else => error.ReadFailed,
             };
         };
 
-        const term = child.wait() catch |err| {
-            log.warn("failed to wait on git command: {}", .{err});
-            return error.WaitFailed;
-        };
-
         return .{
-            .stdout = try stdout.toOwnedSlice(self.allocator),
-            .stderr = try stderr.toOwnedSlice(self.allocator),
-            .term = term,
+            .stdout = result.stdout,
+            .stderr = result.stderr,
+            .term = result.term,
         };
     }
 
@@ -609,7 +578,7 @@ pub const DiffOverlayComponent = struct {
 
     fn gitExitErrorText(_: *DiffOverlayComponent, result: GitResult) ?[]const u8 {
         return switch (result.term) {
-            .Exited => |code| if (code == 0)
+            .exited => |code| if (code == 0)
                 null
             else if (result.stderr.len > 0)
                 result.stderr
