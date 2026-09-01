@@ -46,7 +46,7 @@
             just
             ruff
             shellcheck
-            zig.packages.${system}."0.15.2"
+            zig.packages.${system}."0.16.0"
             pkg-config
             gw
           ];

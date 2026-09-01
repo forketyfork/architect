@@ -1215,7 +1215,7 @@ Every filesystem transformation in Tasks 6, 10, and 11 comes from this table, ve
 - Consumes: the four verified hashes from Task 1
 - Produces: a `build.zig` that 0.16 can execute, so the compiler reaches `src/`
 
-- [ ] **Step 1: Bump the toolchain in `flake.nix`**
+- [x] **Step 1: Bump the toolchain in `flake.nix`**
 
 ```nix
             zig.packages.${system}."0.16.0"
@@ -1223,7 +1223,7 @@ Every filesystem transformation in Tasks 6, 10, and 11 comes from this table, ve
 
 Leave the macOS SDK workaround block alone for now; Task 14 handles it.
 
-- [ ] **Step 2: Bump `build.zig.zon`**
+- [x] **Step 2: Bump `build.zig.zon`**
 
 Use the hashes recorded in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory.md` from Task 1 Step 4. Do not invent hashes; if the inventory is missing any, re-run `zig fetch` for that URL.
 
@@ -1261,7 +1261,7 @@ Use the hashes recorded in `docs/superpowers/plans/2026-08-28-zig-0-16-inventory
 
 The `zwanzig` URL is unchanged — v0.15.1's `src/compat.zig` already supports 0.16.0 — but its hash must still be regenerated if 0.16 changed the hash format.
 
-- [ ] **Step 3: Rename the build graph's env map**
+- [x] **Step 3: Rename the build graph's env map**
 
 `std.Build.Graph.env_map` is `environ_map` in 0.16. Task 2 already routed all four reads through the graph, so this is a mechanical rename of four occurrences in `build.zig`:
 
@@ -1272,7 +1272,7 @@ The `zwanzig` URL is unchanged — v0.15.1's `src/compat.zig` already supports 0
 Run: `grep -c 'b\.graph\.environ_map\.get' build.zig`
 Expected: `4`.
 
-- [ ] **Step 4: Convert `build.zig`'s filesystem and subprocess calls**
+- [x] **Step 4: Convert `build.zig`'s filesystem and subprocess calls**
 
 `sdkExists` uses `std.fs.openDirAbsolute` and `findXcrunSdkRoot` uses `std.process.Child.run`. Both need `io`, which comes from `b.graph.io`. Thread it as a parameter rather than reaching for a global:
 
@@ -1320,12 +1320,12 @@ fn sdkExists(io: std.Io, path: []const u8) bool {
 
 Note the `Term` tag is now lowercase `.exited`. Update the three callers to pass `io`: `findSdkRoot` becomes `findSdkRoot(b)` still (it has `b`, so it uses `b.graph.io` internally and passes it down), `findDeveloperDirSdkRoot(b)` likewise, and each `sdkExists(candidate)` call becomes `sdkExists(b.graph.io, candidate)`, with `findXcrunSdkRoot(b.allocator)` becoming `findXcrunSdkRoot(b.allocator, b.graph.io)`.
 
-- [ ] **Step 5: Verify `build.zig` itself compiles under 0.16**
+- [x] **Step 5: Verify `build.zig` itself compiles under 0.16**
 
 Run: `nix develop --command bash -c 'zig build --help > /dev/null'`
 Expected: exit 0. This executes the build script without building the project, isolating build-script errors from source errors. If it fails, the diagnostics are all in `build.zig` — fix them before continuing.
 
-- [ ] **Step 6: Confirm dependency resolution and capture the source error baseline**
+- [x] **Step 6: Confirm dependency resolution and capture the source error baseline**
 
 Run: `nix develop --command bash -c 'zig build 2>&1 | tee .tmp/flip-errors.txt' || true`
 
@@ -1335,7 +1335,7 @@ Expected: no output. Any dependency-resolution error here is a Task 1 regression
 Run: `grep -c 'error:' .tmp/flip-errors.txt`
 Expected: a large number, all pointing into `src/`. Record it; later tasks compare against it.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add flake.nix build.zig.zon build.zig
