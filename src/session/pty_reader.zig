@@ -4,12 +4,11 @@ const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const grid_layout = @import("../app/grid_layout.zig");
 const posix_util = @import("../posix_util.zig");
+const wake_pipe = @import("../wake_pipe.zig");
 
 const log = std.log.scoped(.pty_reader);
 
-const poll_timeout_ms: i32 = 100;
-const full_buffer_retry_ns: u64 = 2 * std.time.ns_per_ms;
-const poll_error_backoff_ns: u64 = 10 * std.time.ns_per_ms;
+const full_buffer_retry_ms: i32 = 2;
 
 /// Bytes buffered per session between the reader thread and the main
 /// thread. This absorbs producer bursts without making VT parsing
@@ -175,40 +174,48 @@ fn isWakeWorthy(revents: i16) bool {
 /// returning guarantees the reader can no longer touch the fd or buffer.
 pub const PtyReader = struct {
     io: std.Io,
+    wake: *const wake_pipe.WakePipe,
     mutex: std.Io.Mutex = .init,
     entries: [grid_layout.max_terminals]Entry = undefined,
     entry_count: usize = 0,
 
-    pub fn init(io: std.Io) PtyReader {
-        return .{ .io = io };
+    pub fn init(io: std.Io, wake: *const wake_pipe.WakePipe) PtyReader {
+        return .{ .io = io, .wake = wake };
     }
 
     pub fn register(self: *PtyReader, fd: posix.fd_t, buffer: *PtyOutputBuffer) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        std.debug.assert(self.entry_count < self.entries.len);
-        self.entries[self.entry_count] = .{ .fd = fd, .buffer = buffer };
-        self.entry_count += 1;
+        {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            std.debug.assert(self.entry_count < self.entries.len);
+            self.entries[self.entry_count] = .{ .fd = fd, .buffer = buffer };
+            self.entry_count += 1;
+        }
+        self.wake.signal();
     }
 
     pub fn retire(self: *PtyReader, fd: posix.fd_t) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        for (self.entries[0..self.entry_count], 0..) |entry, i| {
-            if (entry.fd == fd) {
-                self.entries[i] = self.entries[self.entry_count - 1];
-                self.entry_count -= 1;
-                return;
+        {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            for (self.entries[0..self.entry_count], 0..) |entry, i| {
+                if (entry.fd == fd) {
+                    self.entries[i] = self.entries[self.entry_count - 1];
+                    self.entry_count -= 1;
+                    break;
+                }
             }
         }
+        self.wake.signal();
     }
 
     /// Snapshot pollable fds and report whether a zero-length snapshot was
     /// caused by full buffers. Closed buffers do not need a short retry.
     fn snapshotPollfds(
         self: *PtyReader,
-        out: *[grid_layout.max_terminals]posix.pollfd,
+        out: []posix.pollfd,
     ) PollSnapshot {
+        std.debug.assert(out.len >= grid_layout.max_terminals);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         var count: usize = 0;
@@ -274,25 +281,26 @@ pub fn start(
 }
 
 fn run(ctx: ReaderContext) void {
-    var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
+    // One extra slot for the wake pipe.
+    var pollfds: [grid_layout.max_terminals + 1]posix.pollfd = undefined;
 
     while (!ctx.stop.load(.seq_cst)) {
-        const snapshot = ctx.reader.snapshotPollfds(&pollfds);
-        if (snapshot.count == 0) {
-            const retry_ns = if (snapshot.has_full_buffer)
-                full_buffer_retry_ns
-            else
-                @as(u64, @intCast(poll_timeout_ms)) * std.time.ns_per_ms;
-            clock.sleepNanos(ctx.io, retry_ns);
-            continue;
-        }
+        const snapshot = ctx.reader.snapshotPollfds(pollfds[0..grid_layout.max_terminals]);
+        pollfds[snapshot.count] = ctx.reader.wake.pollfd();
+        const nfds = snapshot.count + 1;
 
-        const ready = posix.poll(pollfds[0..snapshot.count], poll_timeout_ms) catch |err| {
+        // A full ring buffer cannot be polled (POLLIN would spin); retry
+        // shortly so the consumer's drain is picked up. Otherwise block.
+        const timeout_ms: i32 = if (snapshot.has_full_buffer) full_buffer_retry_ms else -1;
+
+        const ready = posix.poll(pollfds[0..nfds], timeout_ms) catch |err| {
             log.debug("poll failed: {}", .{err});
-            clock.sleepNanos(ctx.io, poll_error_backoff_ns);
+            clock.sleepNanos(ctx.io, wake_pipe.poll_error_backoff_ns);
             continue;
         };
         if (ready == 0) continue;
+
+        if (pollfds[snapshot.count].revents != 0) ctx.reader.wake.drain();
 
         if (ctx.reader.pumpReadyFds(pollfds[0..snapshot.count])) {
             if (!ctx.wake_pending.swap(true, .seq_cst)) {
@@ -473,15 +481,17 @@ test "PtyReader register/retire updates the poll snapshot" {
     const allocator = std.testing.allocator;
     const buffer = try PtyOutputBuffer.createWithCapacity(allocator, std.testing.io, 16);
     defer buffer.destroy(allocator);
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
 
-    var reader = PtyReader.init(std.testing.io);
+    var reader = PtyReader.init(std.testing.io, &wake);
     reader.register(7, buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
-    try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(&pollfds).count);
+    try std.testing.expectEqual(@as(usize, 1), reader.snapshotPollfds(pollfds[0..]).count);
     try std.testing.expectEqual(@as(posix.fd_t, 7), pollfds[0].fd);
 
     reader.retire(7);
-    try std.testing.expectEqual(@as(usize, 0), reader.snapshotPollfds(&pollfds).count);
+    try std.testing.expectEqual(@as(usize, 0), reader.snapshotPollfds(pollfds[0..]).count);
 }
 
 test "PtyReader snapshot distinguishes full and closed buffers" {
@@ -498,21 +508,62 @@ test "PtyReader snapshot distinguishes full and closed buffers" {
     closed_buffer.eof = true;
     closed_buffer.mutex.unlock(closed_buffer.io);
 
-    var reader = PtyReader.init(std.testing.io);
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+    var reader = PtyReader.init(std.testing.io, &wake);
     reader.register(7, full_buffer);
     reader.register(8, closed_buffer);
     var pollfds: [grid_layout.max_terminals]posix.pollfd = undefined;
 
-    var snapshot = reader.snapshotPollfds(&pollfds);
+    var snapshot = reader.snapshotPollfds(pollfds[0..]);
     try std.testing.expectEqual(@as(usize, 0), snapshot.count);
     try std.testing.expect(snapshot.has_full_buffer);
 
     var drain: [1]u8 = undefined;
     _ = full_buffer.consume(&drain);
-    snapshot = reader.snapshotPollfds(&pollfds);
+    snapshot = reader.snapshotPollfds(pollfds[0..]);
     try std.testing.expectEqual(@as(usize, 1), snapshot.count);
     try std.testing.expect(!snapshot.has_full_buffer);
     try std.testing.expectEqual(@as(posix.fd_t, 7), pollfds[0].fd);
+}
+
+test "registering an fd wakes a reader that is blocked with nothing to poll" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+    var reader = PtyReader.init(io, &wake);
+    var stop = std.atomic.Value(bool).init(false);
+    var wake_pending = std.atomic.Value(bool).init(false);
+
+    const thread = try start(io, &reader, &stop, &wake_pending, null);
+    defer {
+        stop.store(true, .seq_cst);
+        wake.signal();
+        thread.join();
+    }
+
+    // Let the reader block in poll with an empty registry.
+    clock.sleepNanos(io, 20 * std.time.ns_per_ms);
+
+    var fds: [2]posix.fd_t = undefined;
+    try makeNonBlockingPipe(&fds);
+    defer _ = std.c.close(fds[1]);
+    const buffer = try PtyOutputBuffer.createWithCapacity(allocator, io, 64);
+    defer buffer.destroy(allocator);
+
+    reader.register(fds[0], buffer);
+    _ = try posix_util.write(fds[1], "hello");
+
+    // Old code needed the 100 ms poll timeout to notice the new fd; now the
+    // register() signal must wake the reader immediately.
+    try std.testing.expect(waitForBufferBytes(io, buffer, 50));
+
+    reader.retire(fds[0]);
+    _ = std.c.close(fds[0]);
 }
 
 test "PtyReader thread drains a pipe into the buffer and posts one wake" {
@@ -527,7 +578,9 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     defer _ = std.c.close(fds[0]);
     defer _ = std.c.close(fds[1]);
 
-    var reader = PtyReader.init(threaded.io());
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+    var reader = PtyReader.init(threaded.io(), &wake);
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
     var wake_count = atomic.Value(usize).init(0);
@@ -538,6 +591,7 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     });
     defer {
         stop.store(true, .seq_cst);
+        wake.signal();
         thread.join();
     }
 
@@ -572,13 +626,16 @@ test "PtyReader.retire prevents any further reads of the fd" {
     defer _ = std.c.close(fds[0]);
     defer _ = std.c.close(fds[1]);
 
-    var reader = PtyReader.init(threaded.io());
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+    var reader = PtyReader.init(threaded.io(), &wake);
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
 
     const thread = try start(threaded.io(), &reader, &stop, &wake_pending, null);
     defer {
         stop.store(true, .seq_cst);
+        wake.signal();
         thread.join();
     }
 
