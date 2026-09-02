@@ -30,6 +30,7 @@ pub const UiHost = struct {
 
     view_mode: app_state.ViewMode,
     focused_session: usize,
+    previous_session: usize = 0,
     focused_cwd: ?[]const u8,
     focused_has_foreground_process: bool,
     animating_rect: ?geom.Rect = null,

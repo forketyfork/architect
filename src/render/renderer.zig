@@ -88,20 +88,6 @@ pub const RenderCache = struct {
         return &self.entries[idx];
     }
 
-    /// True when a session at `idx` contributes visible pixels in the given
-    /// view mode. Sessions that are not visible must not trigger renders:
-    /// in Full view, background sessions keep producing output (their
-    /// `render_epoch` advances) but are never presented, so counting them
-    /// would keep the app rendering and presenting full-window frames at the
-    /// maximum rate for content nobody sees.
-    pub fn sessionVisibleInMode(mode: app_state.ViewMode, idx: usize, focused: usize, previous: usize) bool {
-        return switch (mode) {
-            .Grid, .GridResizing, .Expanding, .Collapsing => true,
-            .Full => idx == focused,
-            .PanningLeft, .PanningRight, .PanningUp, .PanningDown => idx == focused or idx == previous,
-        };
-    }
-
     pub fn anyDirty(
         self: *RenderCache,
         sessions: []const *SessionState,
@@ -112,7 +98,7 @@ pub const RenderCache = struct {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
             if (!session.spawned) continue;
-            if (!sessionVisibleInMode(mode, i, focused, previous)) continue;
+            if (!app_state.sessionVisibleInMode(mode, i, focused, previous)) continue;
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
         }
         return false;
@@ -172,18 +158,6 @@ pub fn planRefresh(previous: ?ContentKey, next: ContentKey, terminal_wide_dirty:
         .previous_cursor_row = if (prev.cursor_shown) @as(usize, prev.cursor_y) else null,
         .current_cursor_row = if (next.cursor_shown) @as(usize, next.cursor_y) else null,
     } };
-}
-
-test "sessionVisibleInMode gates background sessions per view mode" {
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.Grid, 3, 0, 0));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.GridResizing, 3, 0, 0));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.Expanding, 3, 0, 0));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.Collapsing, 3, 0, 0));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.Full, 2, 2, 0));
-    try std.testing.expect(!RenderCache.sessionVisibleInMode(.Full, 3, 2, 0));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 2, 2, 5));
-    try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 5, 2, 5));
-    try std.testing.expect(!RenderCache.sessionVisibleInMode(.PanningLeft, 3, 2, 5));
 }
 
 fn testKey() ContentKey {
