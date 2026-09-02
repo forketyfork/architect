@@ -23,7 +23,34 @@ repeatable six-session setup, follow the isolated-instance procedure below,
 run the probe in Grid and Full view, and probe the daily instance. The metrics
 overlay also reports loop iterations, presented frames, deferred output
 renders, skipped epoch bumps, and full/partial cache refresh rates; the latter
-counters are populated by later tasks in the CPU reduction plan.
+counters distinguish full-texture redraws from row-level partial refreshes.
+
+## Dirty tracking
+
+The renderer owns ghostty-vt dirty-bit consumption after refreshing a session's
+persistent render-target texture. It takes the full path for a new or recreated
+texture; terminal- or screen-wide dirty flags; a dirty page; viewport, layout,
+hovered-link, color, or dead-state changes in the cache `ContentKey`; cache
+composition/render-mode changes; and baked wave overlays. A normal scrollback
+scroll also takes the full path because its viewport pin changes the key.
+
+When the key differs only in cursor position and there are no wide/page dirty
+bits, the renderer clears and redraws just dirty row strips plus the previous
+and current cursor rows. Each strip is cleared to the session background before
+the row is rasterized, so overwriting wide CJK or emoji glyphs cannot leave
+pixels behind. Rows near full-cell glyphs or box-drawing characters always take
+the full path because `renderClusterFill` overdraws by `pad_px` and procedural
+box drawing can also extend past its cell rectangle. Full refreshes clear
+terminal, screen, page, and row dirty bits; partial refreshes clear only row
+dirty bits and leave wider dirty sources for a future full refresh.
+
+`ghostty marks only the printed row dirty for an in-place rewrite and the page
+for a scroll` in `src/render/renderer.zig` is the upgrade canary for this
+contract. Ghostty also marks the row a cursor moved *off* dirty in
+`Screen.cursorChangePin`; that expected false positive is safe because the
+partial path redraws both cursor rows. The canary uses a no-scrollback terminal
+for its scroll assertion so it exercises the in-place page-dirty path; regular
+scrollback scrolling is guarded by the viewport key instead.
 
 ### Energy baseline (2026-09-02)
 
