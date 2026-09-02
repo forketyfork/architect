@@ -8,6 +8,7 @@ const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
 const colors_mod = @import("../colors.zig");
+const metrics_mod = @import("../metrics.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
@@ -82,6 +83,93 @@ const synchronized_output_timeout_ms: i64 = 1000;
 pub const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
 var next_session_id = std.atomic.Value(usize).init(0);
+
+/// True if any field of a packed struct of bools is set. Used for ghostty's
+/// `Terminal.Dirty` and `Screen.Dirty`, whose field lists may grow with
+/// ghostty upgrades; sizing from the type keeps this correct.
+pub fn anyDirtyBit(dirty: anytype) bool {
+    const T = @TypeOf(dirty);
+    const int_type = std.meta.Int(.unsigned, @bitSizeOf(T));
+    return @as(int_type, @bitCast(dirty)) != 0;
+}
+
+const RowRegion = enum { active, viewport };
+
+fn anyDirtyRow(screen: *ghostty_vt.Screen, region: RowRegion) bool {
+    const origin: ghostty_vt.point.Point = switch (region) {
+        .active => .{ .active = .{} },
+        .viewport => .{ .viewport = .{} },
+    };
+    var it = screen.pages.rowIterator(.right_down, origin, null);
+    while (it.next()) |pin| {
+        if (pin.isDirty()) return true;
+    }
+    return false;
+}
+
+/// The non-cell state that affects what the renderer draws. Rows and cells
+/// are covered by ghostty's own dirty bits; this covers everything else.
+pub const VisibleSnapshot = struct {
+    cursor_x: u16,
+    cursor_y: u16,
+    cursor_style: ghostty_vt.Screen.CursorStyle,
+    cursor_visible: bool,
+    active_screen: @TypeOf(@as(ghostty_vt.Terminal, undefined).screens.active_key),
+    viewport_node: ?*const anyopaque,
+    viewport_y: u32,
+    background: ?ghostty_vt.color.RGB,
+    foreground: ?ghostty_vt.color.RGB,
+    cursor_color: ?ghostty_vt.color.RGB,
+};
+
+pub fn captureVisibleSnapshot(terminal: *const ghostty_vt.Terminal) VisibleSnapshot {
+    const screen = terminal.screens.active;
+    const viewport_pin = screen.pages.pin(.{ .viewport = .{} });
+    return .{
+        .cursor_x = screen.cursor.x,
+        .cursor_y = screen.cursor.y,
+        .cursor_style = screen.cursor.cursor_style,
+        .cursor_visible = terminal.modes.get(.cursor_visible),
+        .active_screen = terminal.screens.active_key,
+        .viewport_node = if (viewport_pin) |p| @ptrCast(p.node) else null,
+        .viewport_y = if (viewport_pin) |p| p.y else 0,
+        .background = terminal.colors.background.get(),
+        .foreground = terminal.colors.foreground.get(),
+        .cursor_color = terminal.colors.cursor.get(),
+    };
+}
+
+/// Mirrors ghostty's own renderer rule (src/terminal/render.zig): a redraw is
+/// needed when any terminal- or screen-wide dirty flag is set, the viewport
+/// moved, or any row in the viewport/active area is dirty. Cursor position,
+/// visibility, style, and dynamic colors are compared explicitly because
+/// ghostty does not mark rows dirty for them. False positives are fine;
+/// a false negative would leave a stale frame on screen.
+pub fn terminalVisibleStateChanged(terminal: *ghostty_vt.Terminal, before: VisibleSnapshot) bool {
+    if (anyDirtyBit(terminal.flags.dirty)) return true;
+    if (anyDirtyBit(terminal.screens.active.dirty)) return true;
+    if (!std.meta.eql(before, captureVisibleSnapshot(terminal))) return true;
+    if (anyDirtyRow(terminal.screens.active, .viewport)) return true;
+    if (anyDirtyRow(terminal.screens.active, .active)) return true;
+    return false;
+}
+
+fn clearTerminalRenderDirty(terminal: *ghostty_vt.Terminal) void {
+    terminal.flags.dirty = .{};
+    const screen = terminal.screens.active;
+    screen.dirty = .{};
+    inline for (.{ RowRegion.viewport, RowRegion.active }) |region| {
+        const origin: ghostty_vt.point.Point = switch (region) {
+            .active => .{ .active = .{} },
+            .viewport => .{ .viewport = .{} },
+        };
+        var it = screen.pages.rowIterator(.right_down, origin, null);
+        while (it.next()) |pin| {
+            pin.node.page().dirty = false;
+            pin.rowAndCell().row.dirty = false;
+        }
+    }
+}
 
 pub const SessionState = struct {
     slot_index: usize,
@@ -537,6 +625,11 @@ pub const SessionState = struct {
         self.render_epoch +%= 1;
     }
 
+    /// Called by the renderer after it has redrawn the whole session texture.
+    pub fn clearRenderDirty(self: *SessionState) void {
+        if (self.terminal) |*terminal| clearTerminalRenderDirty(terminal);
+    }
+
     pub fn synchronizedOutputActive(self: *const SessionState) bool {
         if (!self.spawned or self.dead) return false;
         if (self.terminal) |*terminal| {
@@ -631,6 +724,7 @@ pub const SessionState = struct {
 
         var bytes_consumed: usize = 0;
         while (shouldContinueDraining(bytes_consumed, max_process_output_bytes_per_call)) {
+            const icon_before = self.agent_icon;
             const read_len = cappedReadLen(self.output_buf.len, bytes_consumed, max_process_output_bytes_per_call);
             const n = buffer.consume(self.output_buf[0..read_len]);
             if (n == 0) {
@@ -648,11 +742,23 @@ pub const SessionState = struct {
                 };
             }
             const was_synchronized_output = self.synchronizedOutputActive();
+            const before = if (self.terminal) |*terminal| captureVisibleSnapshot(terminal) else null;
             stream.nextSlice(self.output_buf[0..n]);
             if (stream.handler.hasSemanticFailure()) return error.VtSemanticFailure;
             const processed_at_ms = clock.nowMillis(self.io);
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
-            self.markDirty();
+
+            const changed = blk: {
+                if (self.agent_icon != icon_before) break :blk true;
+                const terminal = &(self.terminal orelse break :blk true);
+                const snapshot = before orelse break :blk true;
+                break :blk terminalVisibleStateChanged(terminal, snapshot);
+            };
+            if (changed) {
+                self.markDirty();
+            } else {
+                metrics_mod.increment(.epoch_bumps_skipped);
+            }
 
             // Keep draining until the PTY would block (or the byte budget is
             // hit) to avoid frame-bounded throttling of bursty output (e.g.
@@ -1133,6 +1239,74 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.terminal.?.modes.set(.synchronized_output, true);
     try std.testing.expect(session.expireSynchronizedOutput(5100));
     try std.testing.expect(!session.synchronizedOutputActive());
+}
+
+test "visible state change: printing marks a change, mode-only chunks do not" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 3, .max_scrollback_bytes = 0 });
+    defer terminal.deinit(allocator);
+
+    // Fresh terminal: nothing has been drawn, so the first print is a change.
+    var before = captureVisibleSnapshot(&terminal);
+    try terminal.printString("hi");
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+
+    clearTerminalRenderDirty(&terminal);
+    before = captureVisibleSnapshot(&terminal);
+    // Toggling synchronized output and cursor visibility back and forth
+    // leaves the picture identical.
+    terminal.modes.set(.synchronized_output, true);
+    terminal.modes.set(.synchronized_output, false);
+    terminal.modes.set(.cursor_visible, false);
+    terminal.modes.set(.cursor_visible, true);
+    try std.testing.expect(!terminalVisibleStateChanged(&terminal, before));
+
+    // Cursor visibility that stays flipped is a change.
+    terminal.modes.set(.cursor_visible, false);
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+}
+
+test "visible state change: cursor movement, palette, scroll, and screen switch are changes" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 3, .max_scrollback_bytes = 1024 });
+    defer terminal.deinit(allocator);
+    try terminal.printString("abc");
+    clearTerminalRenderDirty(&terminal);
+
+    var before = captureVisibleSnapshot(&terminal);
+    terminal.setCursorPos(1, 1);
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+
+    clearTerminalRenderDirty(&terminal);
+    before = captureVisibleSnapshot(&terminal);
+    terminal.flags.dirty.palette = true;
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+
+    clearTerminalRenderDirty(&terminal);
+    before = captureVisibleSnapshot(&terminal);
+    try terminal.printString("\n\n\n\n");
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+
+    clearTerminalRenderDirty(&terminal);
+    before = captureVisibleSnapshot(&terminal);
+    _ = try terminal.switchScreen(.alternate);
+    try std.testing.expect(terminalVisibleStateChanged(&terminal, before));
+}
+
+test "clearTerminalRenderDirty resets every dirty source" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 3, .max_scrollback_bytes = 0 });
+    defer terminal.deinit(allocator);
+    try terminal.printString("x\n\n\n");
+    terminal.flags.dirty.clear = true;
+    terminal.screens.active.dirty.selection = true;
+
+    clearTerminalRenderDirty(&terminal);
+
+    try std.testing.expect(!anyDirtyBit(terminal.flags.dirty));
+    try std.testing.expect(!anyDirtyBit(terminal.screens.active.dirty));
+    try std.testing.expect(!anyDirtyRow(terminal.screens.active, .active));
+    try std.testing.expect(!anyDirtyRow(terminal.screens.active, .viewport));
 }
 
 test "SessionState assigns incrementing ids" {

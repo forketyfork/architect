@@ -234,7 +234,7 @@ vt_stream.zig -> ghostty-vt parser
     | state machine updates
     v
 Terminal cell buffer (content, attributes, colors)
-    | session.render_epoch += 1
+    | render_epoch += 1 only if ghostty's dirty bits / cursor / viewport / colors changed (`terminalVisibleStateChanged`)
     v
 Renderer cache dirty check (presented_epoch < render_epoch?)
     | yes -> re-render
@@ -522,7 +522,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-004: Epoch-Based Render Cache Invalidation
 
-- **Decision:** Each `SessionState` maintains a monotonic `render_epoch` counter that increments on terminal content changes. The renderer's `RenderCache` tracks the last presented epoch per session and only re-renders when epochs diverge. A session's dirty state is a request for a frame, not a presentation guarantee: `app/frame_schedule.zig` may defer output-only requests to a 30 FPS cadence, while input and other interactive demand renders immediately. The frame loop has no periodic re-render.
+- **Decision:** Each `SessionState` maintains a monotonic `render_epoch` counter that increments on terminal content changes. The renderer's `RenderCache` tracks the last presented epoch per session and only re-renders when epochs diverge. A session's dirty state is a request for a frame, not a presentation guarantee: `app/frame_schedule.zig` may defer output-only requests to a 30 FPS cadence, while input and other interactive demand renders immediately. The frame loop has no periodic re-render. `processOutput` advances the epoch only when ghostty-vt's terminal or screen dirty bits, dirty rows in the visible regions, viewport pin, cursor state, active screen, dynamic colors, or agent icon indicate a visible change. The renderer owns those dirty bits and clears them after refreshing a session's cache texture.
 - **Context:** Re-rendering all terminal cells every frame is expensive (glyph shaping, texture creation). Most frames in a multi-terminal grid have no changes in most sessions. Epoch comparison is O(1) per session and avoids deep content diffing. Separating the render request from presentation lets frequent terminal output share a bounded cadence without delaying interactive input.
 - **Alternatives considered:**
   - *Dirty-flag per cell* -- rejected because tracking individual cell changes is memory-intensive and the granularity is unnecessary when the renderer caches entire session textures.

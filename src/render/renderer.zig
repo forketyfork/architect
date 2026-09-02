@@ -9,6 +9,7 @@ const easing = @import("../anim/easing.zig");
 const font_mod = @import("../font.zig");
 const FontVariant = font_mod.Variant;
 const session_state = @import("../session/state.zig");
+const metrics_mod = @import("../metrics.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const primitives = @import("../gfx/primitives.zig");
 const dpi = @import("../dpi.zig");
@@ -1086,6 +1087,8 @@ fn refreshSessionCacheTexture(
     if (cache_overlays) {
         renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     }
+    session.clearRenderDirty();
+    metrics_mod.increment(.cache_full_refreshes);
     cache_entry.cache_epoch = session.render_epoch;
     cache_entry.cache_composition = composition;
     cache_entry.cache_render_mode = render_mode;
