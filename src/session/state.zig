@@ -171,6 +171,20 @@ fn clearTerminalRenderDirty(terminal: *ghostty_vt.Terminal) void {
     }
 }
 
+fn clearTerminalRenderDirtyRows(terminal: *ghostty_vt.Terminal) void {
+    const screen = terminal.screens.active;
+    inline for (.{ RowRegion.viewport, RowRegion.active }) |region| {
+        const origin: ghostty_vt.point.Point = switch (region) {
+            .active => .{ .active = .{} },
+            .viewport => .{ .viewport = .{} },
+        };
+        var it = screen.pages.rowIterator(.right_down, origin, null);
+        while (it.next()) |pin| {
+            pin.rowAndCell().row.dirty = false;
+        }
+    }
+}
+
 pub const SessionState = struct {
     slot_index: usize,
     id: usize,
@@ -628,6 +642,11 @@ pub const SessionState = struct {
     /// Called by the renderer after it has redrawn the whole session texture.
     pub fn clearRenderDirty(self: *SessionState) void {
         if (self.terminal) |*terminal| clearTerminalRenderDirty(terminal);
+    }
+
+    /// Called by the renderer after it has redrawn the dirty session rows.
+    pub fn clearRenderDirtyRows(self: *SessionState) void {
+        if (self.terminal) |*terminal| clearTerminalRenderDirtyRows(terminal);
     }
 
     pub fn synchronizedOutputActive(self: *const SessionState) bool {
@@ -1307,6 +1326,36 @@ test "clearTerminalRenderDirty resets every dirty source" {
     try std.testing.expect(!anyDirtyBit(terminal.screens.active.dirty));
     try std.testing.expect(!anyDirtyRow(terminal.screens.active, .active));
     try std.testing.expect(!anyDirtyRow(terminal.screens.active, .viewport));
+}
+
+test "clearRenderDirtyRows keeps terminal, screen, and page dirty bits" {
+    const allocator = std.testing.allocator;
+    const size = pty_mod.winsize{
+        .ws_row = 3,
+        .ws_col = 10,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    const notify_sock: [:0]const u8 = "sock";
+
+    var session = try SessionState.init(allocator, std.testing.io, 0, "/bin/zsh", size, notify_sock, colors_mod.Theme.default(), null);
+    defer session.deinit(allocator);
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 3, .max_scrollback_bytes = 0 });
+    session.spawned = true;
+
+    const terminal = &session.terminal.?;
+    try terminal.printString("x");
+    terminal.flags.dirty.clear = true;
+    terminal.screens.active.dirty.selection = true;
+    const pin = terminal.screens.active.pages.pin(.{ .active = .{} }) orelse return error.TestUnexpectedResult;
+    pin.node.page().dirty = true;
+
+    session.clearRenderDirtyRows();
+
+    try std.testing.expect(anyDirtyBit(terminal.flags.dirty));
+    try std.testing.expect(anyDirtyBit(terminal.screens.active.dirty));
+    try std.testing.expect(pin.node.page().dirty);
+    try std.testing.expect(!pin.rowAndCell().row.dirty);
 }
 
 test "SessionState assigns incrementing ids" {

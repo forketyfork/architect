@@ -524,7 +524,7 @@ fn renderSession(
     show_onboarding: bool,
     onboarding_displayed: *bool,
 ) RenderError!void {
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed, .all);
     renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     cache_entry.presented_epoch = session.render_epoch;
 }
@@ -534,6 +534,11 @@ const ContentLayout = struct {
     origin_x: c_int,
     origin_y: c_int,
     first_row_pin: ?ghostty_vt.Pin,
+};
+
+const RowSelection = union(enum) {
+    all,
+    changed: PartialRows,
 };
 
 fn sessionColors(terminal: *const ghostty_vt.Terminal, theme: *const colors.Theme) struct { background: c.SDL_Color, foreground: c.SDL_Color } {
@@ -567,7 +572,7 @@ fn computeContentLayout(
     const terminal = session.terminal orelse return null;
     const screen = terminal.screens.active;
     const cursor = screen.cursor;
-    const colors_for_session = sessionColors(terminal, theme);
+    const colors_for_session = sessionColors(&terminal, theme);
 
     const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * scale)));
     const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_height)) * scale)));
@@ -632,6 +637,7 @@ fn renderSessionContent(
     ui_scale: f32,
     show_onboarding: bool,
     onboarding_displayed: *bool,
+    rows: RowSelection,
 ) RenderError!void {
     if (!session.spawned) return;
 
@@ -641,7 +647,7 @@ fn renderSessionContent(
     };
 
     const layout = computeContentLayout(session, view, rect, scale, is_focused, font, term_cols, term_rows, is_grid_view, theme, ui_scale) orelse {
-        const colors_for_empty_layout = sessionColors(terminal, theme);
+        const colors_for_empty_layout = sessionColors(&terminal, theme);
         _ = c.SDL_SetRenderDrawColor(renderer, colors_for_empty_layout.background.r, colors_for_empty_layout.background.g, colors_for_empty_layout.background.b, colors_for_empty_layout.background.a);
         const empty_bg_rect = c.SDL_FRect{
             .x = @floatFromInt(rect.x),
@@ -655,14 +661,19 @@ fn renderSessionContent(
     const session_bg_color = layout.key.session_bg;
     const session_fg_color = layout.key.session_fg;
 
-    _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
-    const bg_rect = c.SDL_FRect{
-        .x = @floatFromInt(rect.x),
-        .y = @floatFromInt(rect.y),
-        .w = @floatFromInt(rect.w),
-        .h = @floatFromInt(rect.h),
-    };
-    _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+    switch (rows) {
+        .all => {
+            _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
+            const bg_rect = c.SDL_FRect{
+                .x = @floatFromInt(rect.x),
+                .y = @floatFromInt(rect.y),
+                .w = @floatFromInt(rect.w),
+                .h = @floatFromInt(rect.h),
+            };
+            _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+        },
+        .changed => {},
+    }
     const screen = terminal.screens.active;
     const cursor = screen.cursor;
     const cursor_col: usize = layout.key.cursor_x;
@@ -710,11 +721,28 @@ fn renderSessionContent(
 
         const current_row_pin = row_pin orelse continue;
         row_pin = current_row_pin.down(1);
+        const source_row = row + active_row_offset;
+        switch (rows) {
+            .all => {},
+            .changed => |selection| {
+                const is_cursor_row = (selection.previous_cursor_row != null and selection.previous_cursor_row.? == source_row) or
+                    (selection.current_cursor_row != null and selection.current_cursor_row.? == source_row);
+                if (!current_row_pin.isDirty() and !is_cursor_row) continue;
+
+                _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, 255);
+                const strip = c.SDL_FRect{
+                    .x = @floatFromInt(origin_x),
+                    .y = @floatFromInt(origin_y + @as(c_int, @intCast(row)) * cell_height_actual),
+                    .w = @floatFromInt(@as(c_int, @intCast(visible_cols)) * cell_width_actual),
+                    .h = @floatFromInt(cell_height_actual),
+                };
+                _ = c.SDL_RenderFillRect(renderer, &strip);
+            },
+        }
         const row_cells = current_row_pin.node.page().getCells(current_row_pin.rowAndCell().row);
 
         var col: usize = 0;
         while (col < visible_cols) : (col += 1) {
-            const source_row = row + active_row_offset;
             const cell = &row_cells[col];
             var cell_pin = current_row_pin;
             cell_pin.x = @intCast(col);
@@ -898,7 +926,7 @@ fn renderSessionContent(
         }
     }
 
-    if (shouldShowOnboarding(show_onboarding, is_focused, session.slot_index, session.dead)) {
+    if (rows == .all and shouldShowOnboarding(show_onboarding, is_focused, session.slot_index, session.dead)) {
         if (try renderOnboardingHint(
             font,
             origin_x,
@@ -1144,6 +1172,7 @@ fn releaseCacheTexture(cache_entry: *RenderCache.Entry) void {
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
     cache_entry.cache_render_mode = .full;
+    cache_entry.content_key = null;
 }
 
 /// Returns the session's own VT dimensions, or the passed-in fallback when the
@@ -1184,6 +1213,7 @@ fn ensureCacheTexture(renderer: *c.SDL_Renderer, cache_entry: *RenderCache.Entry
     cache_entry.cache_epoch = 0;
     cache_entry.cache_composition = .content_only;
     cache_entry.cache_render_mode = .full;
+    cache_entry.content_key = null;
     return true;
 }
 
@@ -1228,6 +1258,27 @@ fn cacheComposition(cache_overlays: bool) RenderCache.CacheComposition {
 
 fn cacheRenderMode(is_grid_view: bool) RenderCache.CacheRenderMode {
     return if (is_grid_view) .grid else .full;
+}
+
+fn anyPageDirty(screen: *const ghostty_vt.Screen) bool {
+    var it = screen.pages.rowIterator(.right_down, .{ .active = .{} }, null);
+    while (it.next()) |pin| {
+        if (pin.node.page().dirty) return true;
+    }
+    return false;
+}
+
+test "anyPageDirty detects page-level dirtiness" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 3, .max_scrollback_bytes = 0 });
+    defer terminal.deinit(allocator);
+
+    terminal.screens.active.pages.clearDirty();
+    try std.testing.expect(!anyPageDirty(terminal.screens.active));
+
+    const pin = terminal.screens.active.pages.pin(.{ .active = .{} }) orelse return error.TestUnexpectedResult;
+    pin.node.page().dirty = true;
+    try std.testing.expect(anyPageDirty(terminal.screens.active));
 }
 
 fn cacheNeedsRefresh(
@@ -1290,16 +1341,36 @@ fn refreshSessionCacheTexture(
     const tex = cache_entry.texture orelse return;
     _ = c.SDL_SetRenderTarget(renderer, tex);
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_NONE);
-    _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
-    _ = c.SDL_RenderClear(renderer);
 
     const local_rect = Rect{ .x = 0, .y = 0, .w = rect.w, .h = rect.h };
-    try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
-    if (cache_overlays) {
-        renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+    const layout = computeContentLayout(session, view, local_rect, scale, is_focused, font, term_cols, term_rows, is_grid_view, theme, ui_scale) orelse return;
+    const terminal = session.terminal orelse return;
+    const terminal_wide_dirty = session_state.anyDirtyBit(terminal.flags.dirty) or session_state.anyDirtyBit(terminal.screens.active.dirty);
+    const plan: RefreshPlan = if (cache_overlays or
+        cache_entry.cache_composition != composition or
+        cache_entry.cache_render_mode != render_mode)
+        .full
+    else
+        planRefresh(cache_entry.content_key, layout.key, terminal_wide_dirty, anyPageDirty(terminal.screens.active));
+
+    switch (plan) {
+        .full => {
+            _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
+            _ = c.SDL_RenderClear(renderer);
+            try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed, .all);
+            if (cache_overlays) {
+                renderSessionOverlays(renderer, session, view, local_rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
+            }
+            session.clearRenderDirty();
+            metrics_mod.increment(.cache_full_refreshes);
+        },
+        .partial => |selection| {
+            try renderSessionContent(renderer, session, view, local_rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed, .{ .changed = selection });
+            session.clearRenderDirtyRows();
+            metrics_mod.increment(.cache_partial_refreshes);
+        },
     }
-    session.clearRenderDirty();
-    metrics_mod.increment(.cache_full_refreshes);
+    cache_entry.content_key = layout.key;
     cache_entry.cache_epoch = session.render_epoch;
     cache_entry.cache_composition = composition;
     cache_entry.cache_render_mode = render_mode;
@@ -1372,7 +1443,7 @@ fn renderSessionCached(
         return;
     }
 
-    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed);
+    try renderSessionContent(renderer, session, view, rect, scale, is_focused, font, term_cols, term_rows, current_time_ms, is_grid_view, theme, ui_scale, show_onboarding, onboarding_displayed, .all);
     cache_entry.presented_epoch = session.render_epoch;
 }
 
