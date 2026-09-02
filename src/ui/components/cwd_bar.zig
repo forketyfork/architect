@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_state = @import("../../app/app_state.zig");
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
 const types = @import("../types.zig");
@@ -40,6 +41,10 @@ fn marqueePhase(now_ms: i64, scroll_range: c_int) MarqueePhase {
         return .{ .scrolling = @intFromFloat(progress * scroll_range_f) };
     }
     return .idle_end;
+}
+
+fn marqueeEnabled(view_mode: app_state.ViewMode, window_focused: bool) bool {
+    return view_mode == .Grid and window_focused;
 }
 
 pub fn reservedHeight(ui_scale: f32) c_int {
@@ -159,7 +164,7 @@ pub const CwdBarComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *CwdBarComponent = @ptrCast(@alignCast(self_ptr));
-        if (host.view_mode != .Grid) return false;
+        if (!marqueeEnabled(host.view_mode, host.window_focused)) return false;
 
         const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
         const border_thickness = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
@@ -440,11 +445,14 @@ pub const CwdBarComponent = struct {
             _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
 
             const scroll_range = parent_width - available_width;
-            const scroll_offset = switch (marqueePhase(host.now_ms, scroll_range)) {
-                .idle_start => 0,
-                .scrolling => |offset| offset,
-                .idle_end => scroll_range,
-            };
+            const scroll_offset: c_int = if (marqueeEnabled(host.view_mode, host.window_focused))
+                switch (marqueePhase(host.now_ms, scroll_range)) {
+                    .idle_start => 0,
+                    .scrolling => |offset| offset,
+                    .idle_end => scroll_range,
+                }
+            else
+                0;
 
             const parent_x = basename_x - parent_width + scroll_offset;
             _ = c.SDL_RenderTexture(renderer, parent_texture, null, &c.SDL_FRect{
@@ -548,4 +556,10 @@ test "marqueePhase wraps at the cycle boundary" {
         .scrolling => |offset| try std.testing.expectEqual(@as(c_int, 0), offset),
         .idle_start, .idle_end => try std.testing.expect(false),
     }
+}
+
+test "marqueeEnabled requires focused Grid view" {
+    try std.testing.expect(marqueeEnabled(.Grid, true));
+    try std.testing.expect(!marqueeEnabled(.Grid, false));
+    try std.testing.expect(!marqueeEnabled(.Full, true));
 }

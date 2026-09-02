@@ -16,6 +16,7 @@ pub const SDL_GetWindowSizeInPixels = c_import.SDL_GetWindowSizeInPixels;
 pub const SDL_GetWindowSize = c_import.SDL_GetWindowSize;
 pub const SDL_GetWindowFlags = c_import.SDL_GetWindowFlags;
 pub const SDL_WINDOW_OCCLUDED = c_import.SDL_WINDOW_OCCLUDED;
+pub const SDL_WINDOW_INPUT_FOCUS = c_import.SDL_WINDOW_INPUT_FOCUS;
 pub const SDL_GetWindowDisplayScale = c_import.SDL_GetWindowDisplayScale;
 pub const SDL_WINDOW_HIGH_PIXEL_DENSITY = c_import.SDL_WINDOW_HIGH_PIXEL_DENSITY;
 pub const SDL_CreateRenderer = c_import.SDL_CreateRenderer;
