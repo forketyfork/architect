@@ -28,7 +28,7 @@ pub const MetricsOverlayComponent = struct {
     const bg_padding: c_int = 8;
     const bg_alpha: u8 = 180;
     const border_alpha: u8 = 120;
-    const max_lines: usize = 8;
+    const max_lines: usize = 11;
     const max_line_length: usize = 64;
 
     pub fn init(allocator: std.mem.Allocator) !*MetricsOverlayComponent {
@@ -178,6 +178,33 @@ pub const MetricsOverlayComponent = struct {
         lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Frames: {d}", .{frame_count}) catch |err| blk: {
             log.warn("failed to format frames: {}", .{err});
             break :blk "Frames: ?";
+        };
+        line_count += 1;
+
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Loop/s: {d:.1}  Present/s: {d:.1}", .{
+            metrics_ptr.getRate(.loop_iterations, self.cached_elapsed_ms),
+            fps,
+        }) catch |err| blk: {
+            log.warn("failed to format loop rate line: {}", .{err});
+            break :blk "Loop/s: ?";
+        };
+        line_count += 1;
+
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Deferred/s: {d:.1}  Skipped epochs/s: {d:.1}", .{
+            metrics_ptr.getRate(.output_render_deferrals, self.cached_elapsed_ms),
+            metrics_ptr.getRate(.epoch_bumps_skipped, self.cached_elapsed_ms),
+        }) catch |err| blk: {
+            log.warn("failed to format deferral line: {}", .{err});
+            break :blk "Deferred/s: ?";
+        };
+        line_count += 1;
+
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "Cache full/s: {d:.1}  partial/s: {d:.1}", .{
+            metrics_ptr.getRate(.cache_full_refreshes, self.cached_elapsed_ms),
+            metrics_ptr.getRate(.cache_partial_refreshes, self.cached_elapsed_ms),
+        }) catch |err| blk: {
+            log.warn("failed to format cache refresh line: {}", .{err});
+            break :blk "Cache full/s: ?";
         };
         line_count += 1;
 

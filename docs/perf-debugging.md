@@ -3,6 +3,33 @@
 Techniques for investigating Architect rendering/terminal performance, distilled
 from the grid/full toggle lag investigation (July 2026, follow-up to issue #299).
 
+## Measuring CPU and wakeups
+
+Use `scripts/perf/cpu_probe.sh <pid> [seconds]` on macOS to sample a live
+Architect process. The script uses macOS `top -stats idlew` to report average
+CPU percentage and idle wakeups per second, then compares each thread's
+cumulative CPU time from `ps -M` before and after the sampling window. It
+defaults to a 30-second window; pass the same duration for before/after
+comparisons. The probe is macOS-only because both `top -stats idlew` and
+`ps -M` are macOS options.
+
+Use a `-Doptimize=ReleaseFast` build for performance measurements. For the
+repeatable six-session setup, follow the isolated-instance procedure below,
+run the probe in Grid and Full view, and probe the daily instance. The metrics
+overlay also reports loop iterations, presented frames, deferred output
+renders, skipped epoch bumps, and full/partial cache refresh rates; the latter
+counters are populated by later tasks in the CPU reduction plan.
+
+### Energy baseline (2026-09-02)
+
+Baseline capture is pending a macOS maintainer run.
+
+| Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta |
+| --- | --- | --- | --- |
+| isolated 6-session Grid | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| isolated 6-session Full | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| daily instance | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+
 ## Reproducing without manual UI interaction
 
 - Run an isolated instance with a **short** fake `HOME` (e.g. `/tmp/arch-ph`):
