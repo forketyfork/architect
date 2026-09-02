@@ -63,6 +63,7 @@ pub const RenderCache = struct {
         presented_epoch: u64 = 0,
         cache_composition: CacheComposition = .content_only,
         cache_render_mode: CacheRenderMode = .full,
+        content_key: ?ContentKey = null,
     };
 
     pub fn init(allocator: std.mem.Allocator, session_count: usize) !RenderCache {
@@ -118,6 +119,61 @@ pub const RenderCache = struct {
     }
 };
 
+pub const PartialRows = struct {
+    previous_cursor_row: ?usize,
+    current_cursor_row: ?usize,
+};
+
+pub const RefreshPlan = union(enum) {
+    full,
+    partial: PartialRows,
+};
+
+/// Everything besides cell contents that determines the pixels of a session
+/// texture. If any field other than the cursor position differs from the key
+/// stored with the cache, the whole texture is redrawn; cursor moves only
+/// redraw the old and new cursor rows.
+pub const ContentKey = struct {
+    cursor_x: u16,
+    cursor_y: u16,
+    cursor_shown: bool,
+    top_node: ?*const anyopaque,
+    top_y: u32,
+    active_row_offset: usize,
+    viewing_scrollback: bool,
+    visible_rows: usize,
+    visible_cols: usize,
+    cell_w: c_int,
+    cell_h: c_int,
+    hovered_link_start: ?ghostty_vt.Pin,
+    hovered_link_end: ?ghostty_vt.Pin,
+    dead: bool,
+    session_bg: c.SDL_Color,
+    session_fg: c.SDL_Color,
+
+    fn sameExceptCursor(a: ContentKey, b: ContentKey) bool {
+        var a_nc = a;
+        var b_nc = b;
+        a_nc.cursor_x = 0;
+        a_nc.cursor_y = 0;
+        a_nc.cursor_shown = false;
+        b_nc.cursor_x = 0;
+        b_nc.cursor_y = 0;
+        b_nc.cursor_shown = false;
+        return std.meta.eql(a_nc, b_nc);
+    }
+};
+
+pub fn planRefresh(previous: ?ContentKey, next: ContentKey, terminal_wide_dirty: bool, any_page_dirty: bool) RefreshPlan {
+    const prev = previous orelse return .full;
+    if (terminal_wide_dirty or any_page_dirty) return .full;
+    if (!ContentKey.sameExceptCursor(prev, next)) return .full;
+    return .{ .partial = .{
+        .previous_cursor_row = if (prev.cursor_shown) @as(usize, prev.cursor_y) else null,
+        .current_cursor_row = if (next.cursor_shown) @as(usize, next.cursor_y) else null,
+    } };
+}
+
 test "sessionVisibleInMode gates background sessions per view mode" {
     try std.testing.expect(RenderCache.sessionVisibleInMode(.Grid, 3, 0, 0));
     try std.testing.expect(RenderCache.sessionVisibleInMode(.GridResizing, 3, 0, 0));
@@ -128,6 +184,88 @@ test "sessionVisibleInMode gates background sessions per view mode" {
     try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 2, 2, 5));
     try std.testing.expect(RenderCache.sessionVisibleInMode(.PanningLeft, 5, 2, 5));
     try std.testing.expect(!RenderCache.sessionVisibleInMode(.PanningLeft, 3, 2, 5));
+}
+
+fn testKey() ContentKey {
+    return .{
+        .cursor_x = 3,
+        .cursor_y = 5,
+        .cursor_shown = true,
+        .top_node = @ptrFromInt(0x1000),
+        .top_y = 0,
+        .active_row_offset = 0,
+        .viewing_scrollback = false,
+        .visible_rows = 24,
+        .visible_cols = 80,
+        .cell_w = 9,
+        .cell_h = 18,
+        .hovered_link_start = null,
+        .hovered_link_end = null,
+        .dead = false,
+        .session_bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+        .session_fg = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    };
+}
+
+test "planRefresh: no previous key or wide dirty flags force a full refresh" {
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(null, testKey(), false, false));
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), testKey(), true, false));
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), testKey(), false, true));
+}
+
+test "planRefresh: viewport, size, hover, focus, or color changes force a full refresh" {
+    var next = testKey();
+    next.top_y = 1;
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), next, false, false));
+
+    next = testKey();
+    next.visible_cols = 79;
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), next, false, false));
+
+    next = testKey();
+    next.hovered_link_start = .{ .node = @ptrFromInt(0x1000), .x = 1, .y = 2 };
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), next, false, false));
+
+    next = testKey();
+    next.session_bg.r = 1;
+    try std.testing.expectEqual(RefreshPlan.full, planRefresh(testKey(), next, false, false));
+}
+
+test "planRefresh: cursor-only movement is partial and names both cursor rows" {
+    var next = testKey();
+    next.cursor_y = 7;
+    const plan = planRefresh(testKey(), next, false, false);
+    try std.testing.expectEqual(RefreshPlan{ .partial = .{ .previous_cursor_row = 5, .current_cursor_row = 7 } }, plan);
+}
+
+test "planRefresh: hidden cursor contributes no cursor row" {
+    var prev = testKey();
+    prev.cursor_shown = false;
+    const plan = planRefresh(prev, testKey(), false, false);
+    try std.testing.expectEqual(RefreshPlan{ .partial = .{ .previous_cursor_row = null, .current_cursor_row = 5 } }, plan);
+}
+
+test "ghostty marks only the printed row dirty for an in-place rewrite and the page for a scroll" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 4, .max_scrollback_bytes = 4096 });
+    defer terminal.deinit(allocator);
+    try terminal.printString("a\nb\nc");
+    terminal.screens.active.pages.clearDirty();
+
+    // Rewrite row 1 in place.
+    terminal.setCursorPos(2, 1);
+    try terminal.printString("B");
+    const pages = terminal.screens.active.pages;
+    try std.testing.expect(!pages.isDirty(.{ .active = .{ .x = 0, .y = 0 } }));
+    try std.testing.expect(pages.isDirty(.{ .active = .{ .x = 0, .y = 1 } }));
+    try std.testing.expect(!pages.isDirty(.{ .active = .{ .x = 0, .y = 2 } }));
+
+    // Scrolling the active area dirties every row (page-level dirty).
+    terminal.screens.active.pages.clearDirty();
+    terminal.setCursorPos(4, 1);
+    try terminal.printString("\n");
+    try std.testing.expect(pages.isDirty(.{ .active = .{ .x = 0, .y = 0 } }));
+    try std.testing.expect(pages.isDirty(.{ .active = .{ .x = 0, .y = 3 } }));
 }
 
 pub fn render(
