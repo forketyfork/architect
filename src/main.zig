@@ -64,6 +64,7 @@ test {
     _ = @import("session/pty_reader.zig");
     _ = @import("session/state.zig");
     _ = @import("shell.zig");
+    _ = @import("ui/components/cwd_bar.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
     _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");

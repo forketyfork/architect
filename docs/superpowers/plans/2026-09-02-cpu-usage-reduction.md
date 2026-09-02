@@ -4,7 +4,7 @@
 
 **Goal:** Make Architect's main thread go idle whenever no pixel on screen needs to change, so the app stops averaging ~12% CPU around the clock and drops out of macOS's "using significant energy" list while agent TUIs keep running inside it.
 
-**Architecture:** Presentation becomes change-driven end to end. Terminal output only advances a session's `render_epoch` when ghostty-vt's own dirty tracking says the visible state changed; the renderer redraws only dirty rows into the cached session texture and clears those dirty bits; the frame loop presents output-driven frames at a capped cadence (immediate only right after user input), drops the unconditional periodic re-render, and sleeps until the next real deadline instead of a fixed short idle tick. Background threads block in `poll(2)` on their fds plus a self-pipe instead of sleeping in 10 ms loops.
+**Architecture:** Presentation becomes change-driven end to end. Terminal output only advances a session's `render_epoch` when ghostty-vt's own dirty tracking says the visible state changed; the renderer redraws only dirty rows into the cached session texture and clears those dirty bits; the frame loop presents output-driven frames at a capped cadence (immediate only right after user input), drops the unconditional 250 ms re-render, and sleeps until the next real deadline instead of a fixed 50 ms tick. Background threads block in `poll(2)` on their fds plus a self-pipe instead of sleeping in 10 ms loops.
 
 **Tech Stack:** Zig 0.16, SDL3 (`SDL_WaitEventTimeout`, `SDL_RenderPresent`), ghostty-vt dirty tracking (`Terminal.flags.dirty`, `Screen.dirty`, `Page.dirty`, `Row.dirty`, `Pin.isDirty()`), `poll(2)`, existing SDL wake-event plumbing (`platform.pushWakeEventFromOpaque`).
 
@@ -18,14 +18,14 @@ Why the loop never idles (`src/app/runtime.zig`):
 
 1. A frame is rendered and presented whenever `animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale` (line ~3398). Every PTY chunk from a visible session bumps its `render_epoch` (`SessionState.processOutput`, `src/session/state.zig:655`) regardless of whether the VT model changed visibly, so `any_session_dirty` is true most of the time with 7 agent TUIs animating spinners, timers, and status lines 24/7. The app log confirmed the focused claude session forcing ~6-10 cache re-renders per second nonstop while the user was away.
 2. When not idle, `computeFrameWaitDecision` (line 171) returns `.none` with vsync on: the loop is paced only by the present call.
-3. `max_idle_render_gap_ns` (line 56) forces a full render + present on a periodic render floor, even with zero activity — a guaranteed 4 fps floor.
-4. The idle wait is a fixed short interval (`idle_frame_ns`), i.e. 20 wakeups/s with nothing to do.
+3. `max_idle_render_gap_ns = 250 ms` (line 56) forces a full render + present every 250 ms forever, even with zero activity — a guaranteed 4 fps floor.
+4. The idle wait is a fixed 50 ms (`idle_frame_ns`), i.e. 20 wakeups/s with nothing to do.
 5. The notify and control socket threads busy-poll `accept()` with a 10 ms sleep each (`src/session/notify.zig:206`, `src/app/control.zig:416`) — up to ~200 wakeups/s. The PTY reader polls with a 100 ms timeout (`src/session/pty_reader.zig:10`) — another 10/s. The process had 24.7M cumulative idle wakeups (~57/s over uptime); macOS weights idle wakeups heavily in its energy-impact score.
 6. Debug-level logging was on (~10 lines/s, 1.7 GB of rotated logs). Minor, user-side (`[logging].min_level`), not addressed by code in this plan.
 
 Each full render re-rasterizes every cell of every dirty visible session into its cache texture (`renderSessionContent`: per-cell style lookup, color resolution, glyph-run shaping, one `SDL_RenderTexture` per run, per-cell background fills), composites all session textures plus UI, and presents. Ghostty avoids the equivalent cost with row-level dirty bits that the renderer consumes and clears (`src/terminal/render.zig` in ghostty: full rebuild only when `Terminal.flags.dirty`/`Screen.dirty` has any bit set, the size changed, or the viewport pin moved; otherwise only rows with `Row.dirty` or on a page with `Page.dirty` are rebuilt, and the bits are cleared afterwards). Architect never reads or clears those bits today.
 
-Proven: CPU totals and thread attribution, the continuous-present profile, the render gate and no-sleep pacing, the 10 ms accept polls, the 100 ms reader poll, the periodic render floor, the 6-10/s cache re-renders in the log. Inferred: that agent TUI output is the dominant source of `any_session_dirty` (it correlates with the log and with how these TUIs repaint). Task 1 turns that inference into a measured baseline before anything changes.
+Proven: CPU totals and thread attribution, the continuous-present profile, the render gate and no-sleep pacing, the 10 ms accept polls, the 100 ms reader poll, the 250 ms floor, the 6-10/s cache re-renders in the log. Inferred: that agent TUI output is the dominant source of `any_session_dirty` (it correlates with the log and with how these TUIs repaint). Task 1 turns that inference into a measured baseline before anything changes.
 
 ## Global Constraints
 
@@ -33,7 +33,7 @@ Proven: CPU totals and thread attribution, the continuous-present profile, the r
 - NEVER pipe `zig build test` in the success-determining call (pipes mask failures). Run it bare, check the exit code, only then grep logs.
 - Every new file with tests MUST be added to the `test { _ = @import(...); }` block in `src/main.zig`; `scripts/check-test-registry.sh` (part of `just lint`) enforces this.
 - No bare `catch {}` / `catch unreachable`; log or propagate every error.
-- No speculative fallbacks: prefer one explicit failure over silent recovery. The periodic re-render floor being removed in Task 4 is exactly such a fallback; do not reintroduce one.
+- No speculative fallbacks: prefer one explicit failure over silent recovery. The 250 ms re-render floor being removed in Task 4 is exactly such a fallback; do not reintroduce one.
 - `io: std.Io` is threaded explicitly as a field right after `allocator` or a parameter right after `allocator`. Never a module-level variable. `src/env.zig` is the only sanctioned module-level accessor.
 - Do not introduce new dependencies.
 - Route UI input/rendering through `UiRoot` only; UI state lives in components.
@@ -626,7 +626,7 @@ git commit -m "perf(pty-reader): block in poll without timeout; wake on registry
 
 ### Task 4: Change-driven frame scheduling
 
-Removes the periodic re-render floor, caps output-driven presents at 30 fps unless the user typed or clicked in the last 500 ms, and sleeps until the next real deadline (up to 1 s) when idle.
+Removes the 250 ms re-render floor, caps output-driven presents at 30 fps unless the user typed or clicked in the last 500 ms, and sleeps until the next real deadline (up to 1 s) when idle.
 
 **Files:**
 - Create: `src/app/frame_schedule.zig`
@@ -1019,7 +1019,7 @@ In `src/app/runtime.zig`:
 
 - [ ] **Step 6: Audit time-dependent UI for missing `wantsFrame`**
 
-The old periodic floor could have been masking components that change with time without requesting frames. Run:
+The 250 ms floor could have been masking components that change with time without requesting frames. Run:
 
 ```bash
 rg -n "now_ms|current_time" src/ui/components/*.zig -l | sort > .tmp/time_users.txt
@@ -1046,14 +1046,14 @@ Expected: PASS.
 
 - [ ] **Step 9: Update docs**
 
-- `docs/ARCHITECTURE.md`: frame-loop diagram title becomes "(per frame; render only on demand, output-driven presents capped at 30 fps, idle wait up to 1 s or the next timer deadline)"; update the top box text; in invariant 2 and ADR-004 add that a session's dirtiness is a *request* for a frame that `app/frame_schedule.zig` may defer, and that there is no periodic re-render.
+- `docs/ARCHITECTURE.md`: frame-loop diagram title "(per frame, ~16ms active / ~50ms idle)" becomes "(per frame; render only on demand, output-driven presents capped at 30 fps, idle wait up to 1 s or the next timer deadline)"; update the top box text; in invariant 2 and ADR-004 add that a session's dirtiness is a *request* for a frame that `app/frame_schedule.zig` may defer, and that there is no periodic re-render.
 - `CLAUDE.md` Repo Notes: add "Frame scheduling lives in `src/app/frame_schedule.zig` (pure, unit-tested). Anything that changes pixels over time must report it (`wantsFrame`, `markDirty`, `UiAction`); there is deliberately no periodic re-render to fall back on."
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add src/app/frame_schedule.zig src/app/runtime.zig src/session/state.zig src/c.zig src/main.zig src/ui/components docs/ARCHITECTURE.md docs/perf-debugging.md CLAUDE.md
-git commit -m "perf(runtime): change-driven frame scheduling; drop periodic re-render floor; cap output-driven presents"
+git commit -m "perf(runtime): change-driven frame scheduling; drop 250ms re-render floor; cap output-driven presents"
 ```
 
 ---
@@ -1660,9 +1660,9 @@ Same procedure as Task 1 Step 6 (isolated 6 x `fake_codex.py` Grid, Full, and th
 ### ADR-016: Change-Driven Presentation
 
 - **Decision:** A frame is presented only when something visible changed, and output-driven frames are paced at 30 fps unless the user interacted in the last 500 ms. Terminal output advances `render_epoch` only when ghostty-vt's dirty tracking (row/page/terminal/screen dirty bits, cursor, viewport, dynamic colors) reports a change; the renderer redraws only dirty rows into the persistent session texture and clears the bits it consumed. There is no periodic re-render and no fixed idle tick: the loop sleeps until the next timer deadline or 1 s, and every background thread blocks in `poll(2)` with a `WakePipe`.
-- **Context:** With seven agent TUIs animating spinners around the clock, the previous "any PTY chunk = present" rule plus a periodic re-render floor and 10 ms socket polls kept the main thread at ~12% CPU for days (see docs/perf-debugging.md, "Energy baseline"), earning macOS's "using significant energy" badge.
+- **Context:** With seven agent TUIs animating spinners around the clock, the previous "any PTY chunk = present" rule plus a 250 ms re-render floor and 10 ms socket polls kept the main thread at ~12% CPU for days (see docs/perf-debugging.md, "Energy baseline"), earning macOS's "using significant energy" badge.
 - **Alternatives considered:**
-  - *Keep the periodic floor as a safety net* — rejected: it is a speculative fallback that hides missing invalidations and costs 4 presents/s forever. Missing invalidations are bugs to fix (Task 4's audit) and the metrics overlay makes them visible.
+  - *Keep the 250 ms floor as a safety net* — rejected: it is a speculative fallback that hides missing invalidations and costs 4 presents/s forever. Missing invalidations are bugs to fix (Task 4's audit) and the metrics overlay makes them visible.
   - *Adopt ghostty's `RenderState` wholesale* — rejected for now: it copies every viewport cell per update, and Architect's renderer walks pins directly; consuming the same dirty bits in place is cheaper and a smaller change. Revisit if the renderer moves to GPU cell buffers.
   - *Configurable output fps cap* — deferred; a constant is enough until someone needs to tune it.
 - **Date:** 2026-09
@@ -1670,7 +1670,7 @@ Same procedure as Task 1 Step 6 (isolated 6 x `fake_codex.py` Grid, Full, and th
 
 - [ ] **Step 3: Final read-through of `CLAUDE.md` Repo Notes and `docs/ARCHITECTURE.md`**
 
-Confirm the notes added by Tasks 2-6 are present, not duplicated, and that no text still describes the short idle tick, periodic floor, 10 ms accept polls, or 100 ms reader poll (`rg -n "periodic floor|old idle tick|10 ms|100ms" docs CLAUDE.md README.md`).
+Confirm the notes added by Tasks 2-6 are present, not duplicated, and that no text still describes the 50 ms idle tick, 250 ms floor, 10 ms accept polls, or 100 ms reader poll (`rg -n "250 ms|250ms|50ms|10 ms|100ms" docs CLAUDE.md README.md`).
 
 - [ ] **Step 4: Commit**
 
@@ -1691,6 +1691,6 @@ git commit -m "docs: record energy results and ADR-016 change-driven presentatio
 
 ## Risks and how the plan contains them
 
-- **Stale frames after removing the periodic floor (Task 4).** Contained by the `wantsFrame` audit step, by keeping every existing `markDirty` call, and by the metrics overlay showing `Present/s` so a missing invalidation is diagnosable. Do not respond to a stale-frame report by re-adding a periodic render; find the missing invalidation.
+- **Stale frames after removing the 250 ms floor (Task 4).** Contained by the `wantsFrame` audit step, by keeping every existing `markDirty` call, and by the metrics overlay showing `Present/s` so a missing invalidation is diagnosable. Do not respond to a stale-frame report by re-adding a periodic render; find the missing invalidation.
 - **False negatives in change detection (Task 5).** The rule is a superset of ghostty's own redraw rule plus explicit cursor/color/screen comparisons; false positives are accepted. The ghostty-semantics test in Task 6 fails loudly on an upstream dirty-model change.
 - **Partial-redraw artifacts (Task 6).** Every cross-row effect (scroll, clear, selection, hover, viewport move, size, focus, colors, baked overlays) is routed to the full path by `planRefresh`; the manual checklist covers each. If an artifact is found, the fix is to add its trigger to `ContentKey` or the wide-dirty inputs, not to skip the partial path.
