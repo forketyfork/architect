@@ -22,13 +22,18 @@ counters are populated by later tasks in the CPU reduction plan.
 
 ### Energy baseline (2026-09-02)
 
-Baseline capture is pending a macOS maintainer run.
+The isolated six-session rows are pending a maintainer run on macOS. The
+daily-instance row was probed on 2026-09-02 against the Homebrew build
+(v0.68.2) during active use, 1h10m after launch; the main thread had already
+accumulated 30m28s of CPU time, about 43% of one core averaged over its
+uptime. Idle wakeups swing widely with activity: two 30-60 s probes minutes
+apart read 38/s and 194/s.
 
-| Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta |
+| Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta (system+user) |
 | --- | --- | --- | --- |
 | isolated 6-session Grid | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
 | isolated 6-session Full | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
-| daily instance | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| daily instance (v0.68.2, active use, 7 sessions) | 14.5-15.4 | 38-194 | main +4.85 s over 30 s; every other thread <= +0.18 s |
 
 ## Reproducing without manual UI interaction
 

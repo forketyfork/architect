@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # macOS-only: top -stats idlew and ps -M use macOS-specific options.
 # Samples CPU% and idle wakeups/s of one process with `top`, and reports how much
-# CPU time each thread accumulated over the window (via `ps -M`).
+# CPU time (system + user) each thread accumulated over the window (via `ps -M`).
 # Usage: scripts/perf/cpu_probe.sh <pid> [seconds]   (default 30 s)
 set -euo pipefail
 
@@ -13,7 +13,27 @@ if ! kill -0 "$pid" 2>/dev/null; then
     exit 1
 fi
 
-before="$(ps -M -p "$pid" | tail -n +2 | awk '{print $NF}')"
+# One line per thread: "<main|thread> <cpu seconds>". `ps -M` prints STIME and
+# UTIME as mm:ss.cc columns; only the first (main) thread row carries COMMAND,
+# so a last field that is not a time marks the main thread.
+thread_cpu_seconds() {
+    ps -M -p "$1" | awk '
+        NR == 1 { next }
+        {
+            total = 0; times = 0; label = "thread"
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[0-9]+:[0-9]+\.[0-9]+$/) {
+                    split($i, part, /[:.]/)
+                    total += part[1] * 60 + part[2] + part[3] / 100
+                    times++
+                }
+            }
+            if ($NF !~ /^[0-9]+:[0-9]+\.[0-9]+$/) label = "main"
+            if (times == 2) printf "%s %.2f\n", label, total
+        }'
+}
+
+before="$(thread_cpu_seconds "$pid")"
 
 # The first top sample reports averages since process start; skip it.
 samples=$((seconds + 1))
@@ -27,7 +47,9 @@ top -l "$samples" -s 1 -pid "$pid" -stats pid,cpu,idlew \
             printf "idle wakeups/s: %.1f\n", (idlew_last - idlew_first) / (n - 1)
         }'
 
-after="$(ps -M -p "$pid" | tail -n +2 | awk '{print $NF}')"
+after="$(thread_cpu_seconds "$pid")"
 
-echo "per-thread cpu time (mm:ss.ms) before -> after:"
-paste <(echo "$before") <(echo "$after") | awk '{ printf "  %s -> %s\n", $1, $2 }'
+# Rows pair up by position; if the thread count changed during the window the
+# tail of the list is misaligned, but the main thread (first row) stays valid.
+echo "per-thread cpu seconds (system+user) before -> after (delta):"
+paste <(echo "$before") <(echo "$after") | awk '{ printf "  %-6s %9.2f -> %9.2f  (+%.2f)\n", $1, $2, $4, $4 - $2 }'
