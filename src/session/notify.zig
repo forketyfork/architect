@@ -5,6 +5,7 @@ const env = @import("../env.zig");
 const app_state = @import("../app/app_state.zig");
 const atomic = std.atomic;
 const posix_util = @import("../posix_util.zig");
+const wake_pipe = @import("../wake_pipe.zig");
 
 const log = std.log.scoped(.notify);
 
@@ -63,6 +64,7 @@ const NotifyContext = struct {
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
+    wake: *const wake_pipe.WakePipe,
     runtime_wake: ?RuntimeWake,
 };
 
@@ -115,6 +117,7 @@ pub fn startNotifyThread(
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
+    wake: *const wake_pipe.WakePipe,
     runtime_wake: ?RuntimeWake,
 ) StartNotifyThreadError!std.Thread {
     _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
@@ -200,12 +203,23 @@ pub fn startNotifyThread(
                 }
             }
 
+            var fds = [_]posix.pollfd{
+                .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 },
+                ctx.wake.pollfd(),
+            };
             while (!ctx.stop.load(.seq_cst)) {
+                fds[0].revents = 0;
+                fds[1].revents = 0;
+                _ = posix.poll(&fds, -1) catch |err| {
+                    log.warn("notify poll failed: {}", .{err});
+                    clock.sleepNanos(ctx.io, wake_pipe.poll_error_backoff_ns);
+                    continue;
+                };
+                if (fds[1].revents != 0) ctx.wake.drain();
+                if (fds[0].revents == 0) continue;
+
                 const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
-                    error.WouldBlock => {
-                        clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
-                        continue;
-                    },
+                    error.WouldBlock => continue,
                     else => {
                         log.debug("accept error: {}", .{err});
                         continue;
@@ -260,6 +274,7 @@ pub fn startNotifyThread(
         .socket_path = socket_path,
         .queue = queue,
         .stop = stop,
+        .wake = wake,
         .runtime_wake = runtime_wake,
     };
     return try std.Thread.spawn(.{}, handler.run, .{ctx});
@@ -355,4 +370,37 @@ test "enqueueNotification skips wake when queueing fails" {
     defer items.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), wake_count);
+}
+
+test "notify thread stops promptly when signaled while blocked in poll" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    std.Io.Dir.cwd().createDirPath(io, ".tmp") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+    var stop = std.atomic.Value(bool).init(false);
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+
+    var sock_path_buf: [128]u8 = undefined;
+    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, ".tmp/notify_stop_{d}.sock", .{std.c.getpid()}, 0);
+    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch |err| std.debug.print("cleanup failed: {}\n", .{err});
+
+    const thread = try startNotifyThread(allocator, io, sock_path, &queue, &stop, &wake, null);
+
+    const started = clock.nowNanos(io);
+    stop.store(true, .seq_cst);
+    wake.signal();
+    thread.join();
+    const elapsed_ns = clock.nowNanos(io) - started;
+    // With the old 10 ms sleep loop this was bounded by the sleep; with poll it
+    // must return as soon as the pipe byte lands. 200 ms is generous headroom.
+    try std.testing.expect(elapsed_ns < 200 * std.time.ns_per_ms);
 }

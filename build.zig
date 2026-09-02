@@ -44,9 +44,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const wake_pipe_mod = b.createModule(.{
+        .root_source_file = b.path("src/wake_pipe.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wake_pipe_mod.addImport("posix_util.zig", posix_util_mod);
     control_mod.addImport("../env.zig", env_mod);
     control_mod.addImport("../clock.zig", clock_mod);
     control_mod.addImport("../posix_util.zig", posix_util_mod);
+    control_mod.addImport("../wake_pipe.zig", wake_pipe_mod);
     mcp_mod.addImport("control", control_mod);
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),

@@ -13,6 +13,11 @@ defaults to a 30-second window; pass the same duration for before/after
 comparisons. The probe is macOS-only because both `top -stats idlew` and
 `ps -M` are macOS options.
 
+The notification and control socket listeners block in `poll(2)` on their
+listening socket plus a `WakePipe` self-pipe, so their former 10 ms accept-loop
+polling does not contribute steady-state wakeups. Shutdown sets each stop flag
+and signals its pipe before joining the listener thread.
+
 Use a `-Doptimize=ReleaseFast` build for performance measurements. For the
 repeatable six-session setup, follow the isolated-instance procedure below,
 run the probe in Grid and Full view, and probe the daily instance. The metrics
