@@ -80,9 +80,15 @@ pub const MetricsOverlayComponent = struct {
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
-    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+    fn sampleDue(now_ms: i64, last_sample_ms: i64) bool {
+        return now_ms - last_sample_ms >= sample_interval_ms;
+    }
+
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *MetricsOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        return self.first_frame.wantsFrame() or self.visible;
+        // The frame loop's 1 s idle ceiling wakes us to observe a due sample.
+        return self.first_frame.wantsFrame() or
+            (self.visible and sampleDue(host.now_ms, self.last_sample_ms));
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
@@ -92,7 +98,7 @@ pub const MetricsOverlayComponent = struct {
         const metrics_ptr = metrics_mod.global orelse return;
 
         var needs_commit = false;
-        if (host.now_ms - self.last_sample_ms >= sample_interval_ms) {
+        if (sampleDue(host.now_ms, self.last_sample_ms)) {
             self.cached_elapsed_ms = metrics_ptr.sampleRates(host.now_ms);
             self.last_sample_ms = host.now_ms;
             self.dirty = true;
@@ -322,3 +328,19 @@ pub const MetricsOverlayComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "metrics overlay samples only when its interval is due" {
+    const last_sample_ms: i64 = 1_000;
+    try std.testing.expect(!MetricsOverlayComponent.sampleDue(
+        last_sample_ms + MetricsOverlayComponent.sample_interval_ms - 1,
+        last_sample_ms,
+    ));
+    try std.testing.expect(MetricsOverlayComponent.sampleDue(
+        last_sample_ms + MetricsOverlayComponent.sample_interval_ms,
+        last_sample_ms,
+    ));
+    try std.testing.expect(MetricsOverlayComponent.sampleDue(
+        MetricsOverlayComponent.sample_interval_ms,
+        0,
+    ));
+}

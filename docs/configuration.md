@@ -140,6 +140,8 @@ When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-ri
 - **Deferred/s and Skipped epochs/s**: Output-render deferrals and invisible output updates per second
 - **Cache full/s and partial/s**: Full and partial session-cache refreshes per second
 
+The overlay requests a frame only when its one-second sample is due, so opening it does not change the presented frame rate it reports (before this fix it forced vsync-rate presents).
+
 Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
 
 ### Logging Configuration
