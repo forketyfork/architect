@@ -26,6 +26,8 @@ pub const WakePipe = struct {
         }
         try setNonBlocking(fds[0]);
         try setNonBlocking(fds[1]);
+        try setCloseOnExec(fds[0]);
+        try setCloseOnExec(fds[1]);
         return .{ .read_fd = fds[0], .write_fd = fds[1] };
     }
 
@@ -70,9 +72,17 @@ fn setNonBlocking(fd: posix.fd_t) posix_util.FcntlError!void {
     _ = try posix_util.fcntl(fd, posix.F.SETFL, @as(u32, @bitCast(o_flags)));
 }
 
+fn setCloseOnExec(fd: posix.fd_t) posix_util.FcntlError!void {
+    const flags = try posix_util.fcntl(fd, posix.F.GETFD, 0);
+    _ = try posix_util.fcntl(fd, posix.F.SETFD, flags | posix.FD_CLOEXEC);
+}
+
 test "signal makes the read end readable and drain clears it" {
     var pipe = try WakePipe.init();
     defer pipe.deinit();
+
+    try std.testing.expect(try posix_util.fcntl(pipe.read_fd, posix.F.GETFD, 0) & posix.FD_CLOEXEC != 0);
+    try std.testing.expect(try posix_util.fcntl(pipe.write_fd, posix.F.GETFD, 0) & posix.FD_CLOEXEC != 0);
 
     var fds = [_]posix.pollfd{pipe.pollfd()};
     try std.testing.expectEqual(@as(usize, 0), try posix.poll(&fds, 0));
