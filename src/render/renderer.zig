@@ -272,6 +272,19 @@ test "ghostty marks only the printed row dirty for an in-place rewrite and the p
     try std.testing.expect(pages.isDirty(.{ .active = .{ .x = 0, .y = 3 } }));
 }
 
+test "rowHasFullCellGlyph identifies only rows containing fill glyphs" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 10, .rows = 2, .max_scrollback_bytes = 0 });
+    defer terminal.deinit(allocator);
+
+    try terminal.printString("\xE2\x96\x88\nx");
+    const pages = terminal.screens.active.pages;
+    const fill_row = pages.pin(.{ .active = .{ .x = 0, .y = 0 } }) orelse return error.TestUnexpectedResult;
+    const text_row = pages.pin(.{ .active = .{ .x = 0, .y = 1 } }) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(rowHasFullCellGlyph(fill_row, 10));
+    try std.testing.expect(!rowHasFullCellGlyph(text_row, 10));
+}
+
 pub fn render(
     renderer: *c.SDL_Renderer,
     render_cache: *RenderCache,
@@ -533,6 +546,7 @@ const ContentLayout = struct {
     key: ContentKey,
     origin_x: c_int,
     origin_y: c_int,
+    drawable_w: c_int,
     first_row_pin: ?ghostty_vt.Pin,
 };
 
@@ -617,6 +631,7 @@ fn computeContentLayout(
         },
         .origin_x = rect.x + padding,
         .origin_y = rect.y + padding,
+        .drawable_w = drawable_w,
         .first_row_pin = first_row_pin,
     };
 }
@@ -683,6 +698,7 @@ fn renderSessionContent(
     const cell_height_actual = layout.key.cell_h;
     const origin_x = layout.origin_x;
     const origin_y = layout.origin_y;
+    const drawable_w = layout.drawable_w;
     const visible_cols = layout.key.visible_cols;
     const visible_rows = layout.key.visible_rows;
     const active_row_offset = layout.key.active_row_offset;
@@ -725,15 +741,13 @@ fn renderSessionContent(
         switch (rows) {
             .all => {},
             .changed => |selection| {
-                const is_cursor_row = (selection.previous_cursor_row != null and selection.previous_cursor_row.? == source_row) or
-                    (selection.current_cursor_row != null and selection.current_cursor_row.? == source_row);
-                if (!current_row_pin.isDirty() and !is_cursor_row) continue;
+                if (!current_row_pin.isDirty() and !partialRowsInclude(selection, source_row)) continue;
 
                 _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, 255);
                 const strip = c.SDL_FRect{
                     .x = @floatFromInt(origin_x),
                     .y = @floatFromInt(origin_y + @as(c_int, @intCast(row)) * cell_height_actual),
-                    .w = @floatFromInt(@as(c_int, @intCast(visible_cols)) * cell_width_actual),
+                    .w = @floatFromInt(drawable_w),
                     .h = @floatFromInt(cell_height_actual),
                 };
                 _ = c.SDL_RenderFillRect(renderer, &strip);
@@ -1281,6 +1295,64 @@ test "anyPageDirty detects page-level dirtiness" {
     try std.testing.expect(anyPageDirty(terminal.screens.active));
 }
 
+fn rowHasFullCellGlyph(pin: ghostty_vt.Pin, cols: usize) bool {
+    const row_cells = pin.node.page().getCells(pin.rowAndCell().row);
+    const visible_cells = row_cells[0..@min(cols, row_cells.len)];
+    for (visible_cells) |cell| {
+        if (cell.content_tag != .codepoint and cell.content_tag != .codepoint_grapheme) continue;
+        if (isFullCellGlyph(cell.content.codepoint.data)) return true;
+    }
+    return false;
+}
+
+fn rowHasOverdrawingGlyph(pin: ghostty_vt.Pin, cols: usize) bool {
+    if (rowHasFullCellGlyph(pin, cols)) return true;
+
+    const row_cells = pin.node.page().getCells(pin.rowAndCell().row);
+    const visible_cells = row_cells[0..@min(cols, row_cells.len)];
+    for (visible_cells) |cell| {
+        if (cell.content_tag != .codepoint and cell.content_tag != .codepoint_grapheme) continue;
+        if (isBoxDrawingChar(cell.content.codepoint.data)) return true;
+    }
+    return false;
+}
+
+fn partialRowsInclude(selection: PartialRows, source_row: usize) bool {
+    return (selection.previous_cursor_row != null and selection.previous_cursor_row.? == source_row) or
+        (selection.current_cursor_row != null and selection.current_cursor_row.? == source_row);
+}
+
+/// Full-cell glyphs and procedural box drawing can overdraw their cell rect.
+/// Any selected row near one must repaint the texture from a clean target.
+fn partialRefreshNeedsFullForOverdrawingGlyph(
+    screen: *const ghostty_vt.Screen,
+    layout: ContentLayout,
+    selection: PartialRows,
+    term_rows: u16,
+) bool {
+    const active_rows: usize = term_rows;
+    if (active_rows == 0) return false;
+
+    var visible_pin = layout.first_row_pin;
+    var row: usize = 0;
+    while (row < layout.key.visible_rows) : (row += 1) {
+        const current_pin = visible_pin orelse continue;
+        visible_pin = current_pin.down(1);
+
+        const source_row = row + layout.key.active_row_offset;
+        if (!current_pin.isDirty() and !partialRowsInclude(selection, source_row)) continue;
+
+        var nearby_row = source_row -| 1;
+        const after_nearby_row = @min(source_row + 2, active_rows);
+        while (nearby_row < after_nearby_row) : (nearby_row += 1) {
+            const nearby_pin = screen.pages.pin(.{ .active = .{ .x = 0, .y = @intCast(nearby_row) } }) orelse continue;
+            if (rowHasOverdrawingGlyph(nearby_pin, layout.key.visible_cols)) return true;
+        }
+    }
+
+    return false;
+}
+
 fn cacheNeedsRefresh(
     cache_entry: *const RenderCache.Entry,
     session_epoch: u64,
@@ -1346,12 +1418,15 @@ fn refreshSessionCacheTexture(
     const layout = computeContentLayout(session, view, local_rect, scale, is_focused, font, term_cols, term_rows, is_grid_view, theme, ui_scale) orelse return;
     const terminal = session.terminal orelse return;
     const terminal_wide_dirty = session_state.anyDirtyBit(terminal.flags.dirty) or session_state.anyDirtyBit(terminal.screens.active.dirty);
-    const plan: RefreshPlan = if (cache_overlays or
+    var plan: RefreshPlan = if (cache_overlays or
         cache_entry.cache_composition != composition or
         cache_entry.cache_render_mode != render_mode)
         .full
     else
         planRefresh(cache_entry.content_key, layout.key, terminal_wide_dirty, anyPageDirty(terminal.screens.active));
+    if (plan == .partial and partialRefreshNeedsFullForOverdrawingGlyph(terminal.screens.active, layout, plan.partial, term_rows)) {
+        plan = .full;
+    }
 
     switch (plan) {
         .full => {

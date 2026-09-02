@@ -38,9 +38,11 @@ When the key differs only in cursor position and there are no wide/page dirty
 bits, the renderer clears and redraws just dirty row strips plus the previous
 and current cursor rows. Each strip is cleared to the session background before
 the row is rasterized, so overwriting wide CJK or emoji glyphs cannot leave
-pixels behind. Full refreshes clear terminal, screen, page, and row dirty bits;
-partial refreshes clear only row dirty bits and leave wider dirty sources for a
-future full refresh.
+pixels behind. Rows near full-cell glyphs or box-drawing characters always take
+the full path because `renderClusterFill` overdraws by `pad_px` and procedural
+box drawing can also extend past its cell rectangle. Full refreshes clear
+terminal, screen, page, and row dirty bits; partial refreshes clear only row
+dirty bits and leave wider dirty sources for a future full refresh.
 
 `ghostty marks only the printed row dirty for an in-place rewrite and the page
 for a scroll` in `src/render/renderer.zig` is the upgrade canary for this
