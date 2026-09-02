@@ -524,10 +524,10 @@ pub const SessionInteractionComponent = struct {
         if (host.view_mode != .Full or host.focused_session >= self.sessions.len) return null;
         const session = self.sessions[host.focused_session];
         const terminal = session.terminal orelse return null;
-        if (terminal.screens.active.selection == null) return null;
+        const selection = terminal.screens.active.selection orelse return null;
         const view = &self.views[host.focused_session];
         if (!view.selection_menu_visible) return null;
-        const cell = view.selection_menu_cell orelse return null;
+        const cell = selectionMenuCellForSelection(&terminal, view, selection) orelse return null;
 
         const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
         const pill_w = dpi.scale(selection_pill_width, host.ui_scale);
@@ -960,6 +960,14 @@ fn selectionCellForPin(
     return .{ .col = coords.x, .row = @intCast(coords.y) };
 }
 
+fn selectionMenuCellForSelection(
+    terminal: *const ghostty_vt.Terminal,
+    view: *const SessionViewState,
+    selection: ghostty_vt.Selection,
+) ?SessionViewState.SelectionCell {
+    return selectionCellForPin(terminal, view, selection.bottomRight(terminal.screens.active));
+}
+
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
 }
@@ -1297,6 +1305,60 @@ test "selection action pill becomes visible only after release" {
     try std.testing.expect(!view.selection_menu_visible);
 }
 
+test "scrolling preserves the selection action pill" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback_bytes = 10 * 32,
+    });
+    defer session.terminal.?.deinit(allocator);
+
+    var view = SessionViewState{
+        .selection_menu_cell = .{ .col = 4, .row = 1 },
+        .selection_menu_visible = true,
+    };
+
+    scrollSession(&session, &view, -1, 100);
+
+    try std.testing.expect(view.selection_menu_visible);
+}
+
+test "selection action pill follows its selection through scrollback" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
+        .cols = 10,
+        .rows = 4,
+        .max_scrollback_bytes = 10 * 64,
+    });
+    defer terminal.deinit(allocator);
+
+    try terminal.screens.active.testWriteString("zero\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine");
+
+    var pages = &terminal.screens.active.pages;
+    pages.scroll(.{ .top = {} });
+    var view = SessionViewState{ .is_viewing_scrollback = true };
+    const start = pages.pin(.{ .viewport = .{ .x = 0, .y = 1 } }) orelse return error.TestUnexpectedResult;
+    const end = pages.pin(.{ .viewport = .{ .x = 3, .y = 2 } }) orelse return error.TestUnexpectedResult;
+    try terminal.screens.active.select(ghostty_vt.Selection.init(start, end, false));
+    view.selection_menu_visible = true;
+
+    const selection = terminal.screens.active.selection orelse return error.TestUnexpectedResult;
+    const before = selectionMenuCellForSelection(&terminal, &view, selection) orelse return error.TestUnexpectedResult;
+
+    pages.scroll(.{ .delta_row = 1 });
+    const after = selectionMenuCellForSelection(&terminal, &view, selection) orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(before.col, after.col);
+    try std.testing.expectEqual(before.row - 1, after.row);
+}
+
 fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, now: i64) void {
     if (!session.spawned) return;
 
@@ -1308,7 +1370,6 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
         var pages = &terminal.screens.active.pages;
         pages.scroll(.{ .delta_row = delta });
         view.is_viewing_scrollback = (pages.viewport != .active);
-        view.hideSelectionMenu();
         view.terminal_scrollbar.noteActivity(now);
         session.markDirty();
     }
@@ -1344,7 +1405,6 @@ fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_ti
             var pages = &terminal.screens.active.pages;
             pages.scroll(.{ .delta_row = scroll_lines });
             view.is_viewing_scrollback = (pages.viewport != .active);
-            view.hideSelectionMenu();
             view.terminal_scrollbar.noteActivity(now_ms);
             session.markDirty();
         }
