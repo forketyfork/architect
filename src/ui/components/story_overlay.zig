@@ -546,6 +546,8 @@ pub const StoryOverlayComponent = struct {
 
     fn renderFn(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *StoryOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.overlay.first_frame.markDrawn();
+        self.scrollbar_state.markDrawn();
         if (!self.overlay.visible) return;
 
         const font_cache = assets.font_cache orelse return;
@@ -603,11 +605,9 @@ pub const StoryOverlayComponent = struct {
         };
         if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
             scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
-            self.scrollbar_state.markDrawn();
         } else {
             self.scrollbar_state.hideNow();
         }
-        self.overlay.first_frame.markDrawn();
     }
 
     fn renderContent(

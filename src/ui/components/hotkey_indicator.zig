@@ -76,6 +76,7 @@ pub const HotkeyIndicatorComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *HotkeyIndicatorComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (!self.active) return;
 
         const elapsed = host.now_ms - self.start_ms;
@@ -201,8 +202,6 @@ pub const HotkeyIndicatorComponent = struct {
             x += self.font.cell_width;
             idx = end;
         }
-
-        self.first_frame.markDrawn();
     }
 
     fn getAlpha(self: *const HotkeyIndicatorComponent, now_ms: i64) u8 {
