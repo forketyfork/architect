@@ -3,6 +3,38 @@
 Techniques for investigating Architect rendering/terminal performance, distilled
 from the grid/full toggle lag investigation (July 2026, follow-up to issue #299).
 
+## Measuring CPU and wakeups
+
+Use `scripts/perf/cpu_probe.sh <pid> [seconds]` on macOS to sample a live
+Architect process. The script uses macOS `top -stats idlew` to report average
+CPU percentage and idle wakeups per second, then compares each thread's
+cumulative CPU time from `ps -M` before and after the sampling window. It
+defaults to a 30-second window; pass the same duration for before/after
+comparisons. The probe is macOS-only because both `top -stats idlew` and
+`ps -M` are macOS options.
+
+Use a `-Doptimize=ReleaseFast` build for performance measurements. For the
+repeatable six-session setup, follow the isolated-instance procedure below,
+run the probe in Grid and Full view, and probe the daily instance. The metrics
+overlay also reports loop iterations, presented frames, deferred output
+renders, skipped epoch bumps, and full/partial cache refresh rates; the latter
+counters are populated by later tasks in the CPU reduction plan.
+
+### Energy baseline (2026-09-02)
+
+The isolated six-session rows are pending a maintainer run on macOS. The
+daily-instance row was probed on 2026-09-02 against the Homebrew build
+(v0.68.2) during active use, 1h10m after launch; the main thread had already
+accumulated 30m28s of CPU time, about 43% of one core averaged over its
+uptime. Idle wakeups swing widely with activity: two 30-60 s probes minutes
+apart read 38/s and 194/s.
+
+| Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta (system+user) |
+| --- | --- | --- | --- |
+| isolated 6-session Grid | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| isolated 6-session Full | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| daily instance (v0.68.2, active use, 7 sessions) | 14.5-15.4 | 38-194 | main +4.85 s over 30 s; every other thread <= +0.18 s |
+
 ## Reproducing without manual UI interaction
 
 - Run an isolated instance with a **short** fake `HOME` (e.g. `/tmp/arch-ph`):

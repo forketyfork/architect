@@ -1878,6 +1878,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
         var next_event = waitForNextFrame(next_frame_wait);
         const frame_start_ns: i128 = clock.nowNanos(io);
         const now = clock.nowMillis(io);
+        metrics_mod.increment(.loop_iterations);
         if (relaunch_trace_frames > 0) {
             log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
                 @tagName(anim_state.mode),

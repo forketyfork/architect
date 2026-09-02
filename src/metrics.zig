@@ -5,7 +5,16 @@ pub const MetricKind = enum(u8) {
     glyph_cache_misses,
     glyph_cache_evictions,
     glyph_cache_size,
+    /// Frames actually presented with SDL_RenderPresent.
     frame_count,
+    /// Iterations of the main loop, presented or not.
+    loop_iterations,
+    /// Output-only frames postponed by the output render cadence cap.
+    output_render_deferrals,
+    /// processOutput calls that consumed bytes without a visible change.
+    epoch_bumps_skipped,
+    cache_full_refreshes,
+    cache_partial_refreshes,
 };
 
 const metric_count = @typeInfo(MetricKind).@"enum".fields.len;

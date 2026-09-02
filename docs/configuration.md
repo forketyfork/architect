@@ -136,6 +136,9 @@ When enabled, press `Cmd+Shift+M` to toggle the metrics overlay in the bottom-ri
 - **Glyph hits/s**: Glyph cache hits per second
 - **Glyph misses/s**: Glyph cache misses per second
 - **Glyph evictions/s**: Glyph cache evictions per second
+- **Loop/s and Present/s**: Main-loop iterations and frames presented per second
+- **Deferred/s and Skipped epochs/s**: Output-render deferrals and invisible output updates per second
+- **Cache full/s and partial/s**: Full and partial session-cache refreshes per second
 
 Metrics collection has zero overhead when disabled (no allocations, null pointer checks compile away).
 
