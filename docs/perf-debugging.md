@@ -54,23 +54,50 @@ scrollback scrolling is guarded by the viewport key instead.
 
 ### Energy baseline (2026-09-02)
 
-The isolated rows were captured on 2026-09-02 from `main` at commit e21ffb1
-(Task 1 merged, nothing else): six `scripts/perf/fake_codex.py 3000 1000`
-sessions, each rewriting its spinner line every 100 ms, window 1400x900,
-no user input during the 60 s window. Full view costs more main-thread CPU
-than Grid even though only one session is visible, because every spinner
-tick re-rasterizes the whole 138x46-cell texture. The
+The six isolated result rows below are ReleaseFast builds, each measured by the
+maintainer on macOS with an isolated instance, six
+`scripts/perf/fake_codex.py 3000 1000` sessions rewriting a spinner row at
+10 Hz, no user input during a 60 s probe, and a 1400x900 window. Full view
+costs more main-thread CPU than Grid in the baseline even though only one
+session is visible, because every spinner tick re-rasterizes the whole
+138x46-cell texture. The
 daily-instance row was probed on 2026-09-02 against the Homebrew build
 (v0.68.2) during active use, 1h10m after launch; the main thread had already
 accumulated 30m28s of CPU time, about 43% of one core averaged over its
 uptime. Idle wakeups swing widely with activity: two 30-60 s probes minutes
 apart read 38/s and 194/s.
 
-| Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta (system+user) |
-| --- | --- | --- | --- |
-| isolated 6-session Grid (ReleaseFast, unattended) | 22.2 | 116 | main +13.45 s over 60 s; every other thread <= +0.60 s |
-| isolated 6-session Full (ReleaseFast, unattended, 138x46 cells) | 24.6 | 92 | main +18.00 s over 60 s; every other thread <= +0.07 s |
-| daily instance (v0.68.2, active use, 7 sessions) | 14.5-15.4 | 38-194 | main +4.85 s over 30 s; every other thread <= +0.18 s |
+| main commit | scenario | avg CPU% | idle wakeups/s | main thread CPU per 60 s |
+| --- | --- | --- | --- | --- |
+| e21ffb1 (Task 1 only) | Grid | 22.2 | 116 | +13.45 s |
+| e21ffb1 (Task 1 only) | Full, 138x46 cells | 24.6 | 92 | +18.00 s |
+| 5f2b806 (Tasks 2-3: wake pipes) | Grid | 22.8 | 0.1 | +13.52 s |
+| 6b91e05 (Task 4: frame scheduling) | Grid | 14.4 | 0.0 | +8.30 s (54 cache re-renders/s, every tick drawn) |
+| 7def241 (Tasks 5-6 + #389, #392) | Grid | 10.9 | 0.3 | +5.39 s (67 partial cache refreshes/s) |
+| 7def241 (Tasks 5-6 + #389, #392) | Full, 138x46 cells | 3.9 | 0.0 | +1.77 s (11 partial cache refreshes/s) |
+| Homebrew v0.68.2 (before this work) | daily instance, active use, 7 sessions | 14.5-15.4 | 38-194 | +4.85 s over a 30 s probe; other threads <= +0.18 s |
+
+Wakeups vanished with Tasks 2-3 while CPU was unchanged because the CPU was
+all rendering; Task 4 halved presents; the row-level refresh made Full view
+six times cheaper than the baseline because one spinner row is redrawn instead
+of 138x46 cells; the remaining Grid cost is dominated by compositing seven
+textures plus per-tile overlays at up to 30 presents/s.
+
+### Measurement pitfalls
+
+- A probe with near-zero CPU and zero `rendering to cache` debug lines means
+  the window was fully covered, because macOS occlusion suppresses rendering.
+  Always count those lines alongside a probe and keep the window visible.
+- Under change-driven scheduling, any `wantsFrame` that stays true pins the
+  loop at the display refresh rate (120 Hz on the maintainer's display). A
+  sudden 2-3x CPU jump after user interaction is almost always that class of
+  bug; the three found today were fixed in #392, #393, and #395. Hide
+  transitions arm guards too, so `markDrawn()` belongs at the top of `render`
+  before any visibility early return. The metrics overlay's `Present/s` line is
+  the quickest tell since #392.
+- `sample <pid>` shows wall time: `nextDrawable`/semaphore frames are blocked
+  time, not CPU. Look at SDL command-queue, `SDL_FindInHashTable`, line/rect
+  drawing, and glyph leaves for real CPU.
 
 ## Reproducing without manual UI interaction
 
