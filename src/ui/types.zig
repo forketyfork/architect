@@ -18,6 +18,7 @@ pub const UiHost = struct {
 
     window_w: c_int,
     window_h: c_int,
+    window_focused: bool,
     ui_scale: f32,
 
     grid_cols: usize,

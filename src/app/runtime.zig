@@ -1881,6 +1881,9 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
         var next_event = waitForNextFrame(next_wait_timeout_ms);
         const frame_start_ns: i128 = clock.nowNanos(io);
         const now = clock.nowMillis(io);
+        const window_flags = c.SDL_GetWindowFlags(sdl.window);
+        const window_focused = (window_flags & c.SDL_WINDOW_INPUT_FOCUS) != 0;
+        const window_occluded = (window_flags & c.SDL_WINDOW_OCCLUDED) != 0;
         metrics_mod.increment(.loop_iterations);
         if (relaunch_trace_frames > 0) {
             log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
@@ -1931,6 +1934,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
                 now,
                 render_width,
                 render_height,
+                window_focused,
                 ui_scale,
                 cell_width_pixels,
                 cell_height_pixels,
@@ -2749,6 +2753,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
             now,
             render_width,
             render_height,
+            window_focused,
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
@@ -3192,6 +3197,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
                     now,
                     render_width,
                     render_height,
+                    window_focused,
                     ui_scale,
                     cell_width_pixels,
                     cell_height_pixels,
@@ -3382,6 +3388,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
             now,
             render_width,
             render_height,
+            window_focused,
             ui_scale,
             cell_width_pixels,
             cell_height_pixels,
@@ -3399,7 +3406,6 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
-        const window_occluded = (c.SDL_GetWindowFlags(sdl.window) & c.SDL_WINDOW_OCCLUDED) != 0;
         const plan = frame_schedule.schedule(.{
             .now_ns = frame_start_ns,
             .demand = .{
