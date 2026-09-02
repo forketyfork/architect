@@ -135,6 +135,45 @@ pub const CwdBarComponent = struct {
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
 
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
+        const self: *CwdBarComponent = @ptrCast(@alignCast(self_ptr));
+        if (host.view_mode != .Grid) return false;
+
+        const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
+        const border_thickness = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+        const padding = dpi.scale(cwd_padding, host.ui_scale);
+
+        for (host.sessions, 0..) |info, i| {
+            if (!info.spawned or i >= self.session_caches.len) continue;
+
+            const grid_row: c_int = @intCast(i / host.grid_cols);
+            const grid_col: c_int = @intCast(i % host.grid_cols);
+            const cell_rect = Rect{
+                .x = grid_col * host.cell_w,
+                .y = grid_row * host.cell_h,
+                .w = host.cell_w,
+                .h = host.cell_h,
+            };
+            if (cell_rect.w <= border_thickness * 2 or cell_rect.h <= bar_height + border_thickness) continue;
+
+            const bar_rect = Rect{
+                .x = cell_rect.x + border_thickness,
+                .y = cell_rect.y + cell_rect.h - bar_height - border_thickness,
+                .w = cell_rect.w - border_thickness * 2,
+                .h = bar_height,
+            };
+            const cache = &self.session_caches[i];
+            if (cache.parent_tex == null or cache.basename_tex == null) continue;
+
+            const hotkey_width = if (cache.hotkey_grid_index != null) cache.hotkey_w else 0;
+            const hotkey_extra_padding: c_int = if (hotkey_width > 0) padding else 0;
+            const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - hotkey_extra_padding;
+            const available_width = content_right_edge - cache.basename_w - bar_rect.x - padding;
+            if (cache.parent_w > available_width) return true;
+        }
+        return false;
+    }
+
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *CwdBarComponent = @ptrCast(@alignCast(self_ptr));
 
@@ -427,6 +466,7 @@ pub const CwdBarComponent = struct {
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .update = update,
+        .wantsFrame = wantsFrame,
         .render = render,
         .deinit = deinitComp,
     };

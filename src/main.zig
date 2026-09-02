@@ -40,6 +40,7 @@ pub fn main(init: std.process.Init) !void {
 // binary in build.zig.
 test {
     _ = @import("app/app_state.zig");
+    _ = @import("app/frame_schedule.zig");
     _ = @import("app/grid_layout.zig");
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
