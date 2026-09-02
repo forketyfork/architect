@@ -346,6 +346,7 @@ pub const PRDropdownComponent = struct {
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (!self.is_github_repo) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
@@ -380,8 +381,6 @@ pub const PRDropdownComponent = struct {
                 self.flow_animation_start_ms,
             ),
         }
-
-        self.first_frame.markDrawn();
     }
 
     fn entryIndexAtPoint(self: *PRDropdownComponent, host: *const types.UiHost, y: c_int) ?usize {

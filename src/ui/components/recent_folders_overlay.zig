@@ -347,6 +347,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (self.all_folders.items.len == 0) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
@@ -369,8 +370,6 @@ pub const RecentFoldersOverlayComponent = struct {
             .Closed, .Collapsing, .Expanding => self.badge.render(self.allocator, renderer, rect, ui_host.ui_scale, assets, ui_host.theme),
             .Open => self.renderOverlay(renderer, ui_host, rect, ui_host.ui_scale, assets, ui_host.theme),
         }
-
-        self.first_frame.markDrawn();
     }
 
     fn renderOverlay(self: *RecentFoldersOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect, ui_scale: f32, assets: *types.UiAssets, theme: *const colors.Theme) void {

@@ -94,6 +94,7 @@ pub const EscapeHoldComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *EscapeHoldComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (!self.gesture.active) return;
 
         const elapsed = host.now_ms - self.gesture.start_ms;
@@ -255,7 +256,6 @@ pub const EscapeHoldComponent = struct {
                 _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
             }
         }
-        self.first_frame.markDrawn();
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
