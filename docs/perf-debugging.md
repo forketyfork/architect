@@ -27,7 +27,12 @@ counters are populated by later tasks in the CPU reduction plan.
 
 ### Energy baseline (2026-09-02)
 
-The isolated six-session rows are pending a maintainer run on macOS. The
+The isolated rows were captured on 2026-09-02 from `main` at commit e21ffb1
+(Task 1 merged, nothing else): six `scripts/perf/fake_codex.py 3000 1000`
+sessions, each rewriting its spinner line every 100 ms, window 1400x900,
+no user input during the 60 s window. Full view costs more main-thread CPU
+than Grid even though only one session is visible, because every spinner
+tick re-rasterizes the whole 138x46-cell texture. The
 daily-instance row was probed on 2026-09-02 against the Homebrew build
 (v0.68.2) during active use, 1h10m after launch; the main thread had already
 accumulated 30m28s of CPU time, about 43% of one core averaged over its
@@ -36,8 +41,8 @@ apart read 38/s and 194/s.
 
 | Scenario | Average CPU% | Idle wakeups/s | Per-thread CPU-time delta (system+user) |
 | --- | --- | --- | --- |
-| isolated 6-session Grid | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
-| isolated 6-session Full | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer | pending — recorded on macOS by the maintainer |
+| isolated 6-session Grid (ReleaseFast, unattended) | 22.2 | 116 | main +13.45 s over 60 s; every other thread <= +0.60 s |
+| isolated 6-session Full (ReleaseFast, unattended, 138x46 cells) | 24.6 | 92 | main +18.00 s over 60 s; every other thread <= +0.07 s |
 | daily instance (v0.68.2, active use, 7 sessions) | 14.5-15.4 | 38-194 | main +4.85 s over 30 s; every other thread <= +0.18 s |
 
 ## Reproducing without manual UI interaction
