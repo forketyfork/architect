@@ -40,6 +40,7 @@ pub fn main(init: std.process.Init) !void {
 // binary in build.zig.
 test {
     _ = @import("app/app_state.zig");
+    _ = @import("app/frame_schedule.zig");
     _ = @import("app/grid_layout.zig");
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
@@ -63,6 +64,7 @@ test {
     _ = @import("session/pty_reader.zig");
     _ = @import("session/state.zig");
     _ = @import("shell.zig");
+    _ = @import("ui/components/cwd_bar.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
     _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");

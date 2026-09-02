@@ -79,7 +79,7 @@ extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
 const synchronized_output_timeout_ms: i64 = 1000;
-const synchronized_output_quiet_ms: i64 = 100;
+pub const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
 var next_session_id = std.atomic.Value(usize).init(0);
 

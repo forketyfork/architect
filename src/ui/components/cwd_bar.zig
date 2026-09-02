@@ -18,7 +18,29 @@ const cwd_bar_height = metrics.height;
 const cwd_font_size = metrics.font_size;
 const cwd_padding = metrics.padding;
 const marquee_speed: f32 = 30.0;
+const marquee_idle_ms: f32 = 1000.0;
 const fade_fade_width: c_int = 20;
+
+const MarqueePhase = union(enum) {
+    idle_start,
+    scrolling: c_int,
+    idle_end,
+};
+
+fn marqueePhase(now_ms: i64, scroll_range: c_int) MarqueePhase {
+    const scroll_range_f: f32 = @floatFromInt(scroll_range);
+    const scroll_ms: f32 = scroll_range_f / marquee_speed * 1000.0;
+    const cycle_ms: f32 = marquee_idle_ms * 2.0 + scroll_ms;
+    const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
+    const elapsed_ms: f32 = @floatFromInt(@mod(now_ms, cycle_ms_i64));
+
+    if (elapsed_ms < marquee_idle_ms) return .idle_start;
+    if (elapsed_ms < marquee_idle_ms + scroll_ms) {
+        const progress = (elapsed_ms - marquee_idle_ms) / scroll_ms;
+        return .{ .scrolling = @intFromFloat(progress * scroll_range_f) };
+    }
+    return .idle_end;
+}
 
 pub fn reservedHeight(ui_scale: f32) c_int {
     return metrics.reservedHeight(ui_scale, renderer_mod.grid_border_thickness);
@@ -134,6 +156,50 @@ pub const CwdBarComponent = struct {
     }
 
     fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
+
+    fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
+        const self: *CwdBarComponent = @ptrCast(@alignCast(self_ptr));
+        if (host.view_mode != .Grid) return false;
+
+        const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
+        const border_thickness = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+        const padding = dpi.scale(cwd_padding, host.ui_scale);
+
+        for (host.sessions, 0..) |info, i| {
+            if (!info.spawned or i >= self.session_caches.len) continue;
+
+            const grid_row: c_int = @intCast(i / host.grid_cols);
+            const grid_col: c_int = @intCast(i % host.grid_cols);
+            const cell_rect = Rect{
+                .x = grid_col * host.cell_w,
+                .y = grid_row * host.cell_h,
+                .w = host.cell_w,
+                .h = host.cell_h,
+            };
+            if (cell_rect.w <= border_thickness * 2 or cell_rect.h <= bar_height + border_thickness) continue;
+
+            const bar_rect = Rect{
+                .x = cell_rect.x + border_thickness,
+                .y = cell_rect.y + cell_rect.h - bar_height - border_thickness,
+                .w = cell_rect.w - border_thickness * 2,
+                .h = bar_height,
+            };
+            const cache = &self.session_caches[i];
+            if (cache.parent_tex == null or cache.basename_tex == null) continue;
+
+            const hotkey_width = if (cache.hotkey_grid_index != null) cache.hotkey_w else 0;
+            const hotkey_extra_padding: c_int = if (hotkey_width > 0) padding else 0;
+            const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - hotkey_extra_padding;
+            const available_width = content_right_edge - cache.basename_w - bar_rect.x - padding;
+            if (available_width <= 0 or cache.parent_w <= available_width) continue;
+
+            switch (marqueePhase(host.now_ms, cache.parent_w - available_width)) {
+                .scrolling => return true,
+                .idle_start, .idle_end => {},
+            }
+        }
+        return false;
+    }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *CwdBarComponent = @ptrCast(@alignCast(self_ptr));
@@ -374,20 +440,10 @@ pub const CwdBarComponent = struct {
             _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
 
             const scroll_range = parent_width - available_width;
-            const scroll_range_f: f32 = @floatFromInt(scroll_range);
-            const idle_ms: f32 = 1000.0;
-            const scroll_ms: f32 = scroll_range_f / marquee_speed * 1000.0;
-            const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
-            const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
-            const elapsed_ms: f32 = @floatFromInt(@mod(host.now_ms, cycle_ms_i64));
-
-            const scroll_offset: c_int = calc_scroll: {
-                if (elapsed_ms < idle_ms) break :calc_scroll 0;
-                if (elapsed_ms < idle_ms + scroll_ms) {
-                    const progress = (elapsed_ms - idle_ms) / scroll_ms;
-                    break :calc_scroll @intFromFloat(progress * scroll_range_f);
-                }
-                break :calc_scroll scroll_range;
+            const scroll_offset = switch (marqueePhase(host.now_ms, scroll_range)) {
+                .idle_start => 0,
+                .scrolling => |offset| offset,
+                .idle_end => scroll_range,
             };
 
             const parent_x = basename_x - parent_width + scroll_offset;
@@ -427,6 +483,7 @@ pub const CwdBarComponent = struct {
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .update = update,
+        .wantsFrame = wantsFrame,
         .render = render,
         .deinit = deinitComp,
     };
@@ -469,5 +526,26 @@ fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, 
         };
         const indices = [_]c_int{ 0, 1, 2, 1, 3, 2 };
         _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
+    }
+}
+
+test "marqueePhase identifies each phase" {
+    try std.testing.expectEqual(MarqueePhase.idle_start, marqueePhase(999, 30));
+
+    switch (marqueePhase(1_500, 30)) {
+        .scrolling => |offset| try std.testing.expectEqual(@as(c_int, 15), offset),
+        .idle_start, .idle_end => try std.testing.expect(false),
+    }
+
+    try std.testing.expectEqual(MarqueePhase.idle_end, marqueePhase(2_000, 30));
+}
+
+test "marqueePhase wraps at the cycle boundary" {
+    // A 30 px scroll at 30 px/s takes 1 s, so the two 1 s idle phases make
+    // the cycle exactly 3 s.
+    try std.testing.expectEqual(MarqueePhase.idle_start, marqueePhase(3_000, 30));
+    switch (marqueePhase(4_000, 30)) {
+        .scrolling => |offset| try std.testing.expectEqual(@as(c_int, 0), offset),
+        .idle_start, .idle_end => try std.testing.expect(false),
     }
 }

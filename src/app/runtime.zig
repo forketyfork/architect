@@ -8,6 +8,7 @@ const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const proc = @import("../proc.zig");
 const app_state = @import("app_state.zig");
+const frame_schedule = @import("frame_schedule.zig");
 const grid_layout = @import("grid_layout.zig");
 const grid_nav = @import("grid_nav.zig");
 const input_keys = @import("input_keys.zig");
@@ -52,9 +53,6 @@ const min_font_size: c_int = 8;
 const max_font_size: c_int = 96;
 const font_step: c_int = 1;
 const ui_font_size: c_int = 18;
-const active_frame_ns: i128 = 16_666_667;
-const idle_frame_ns: i128 = 50_000_000;
-const max_idle_render_gap_ns: i128 = 250_000_000;
 const foreground_process_cache_ms: i64 = 150;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
@@ -101,11 +99,6 @@ const SpawnSessionContext = struct {
     cell_height_pixels: *c_int,
 };
 
-const FrameWaitDecision = union(enum) {
-    none,
-    wait_ms: c_int,
-};
-
 const ForegroundProcessCache = struct {
     session_idx: ?usize = null,
     last_check_ms: i64 = 0,
@@ -144,20 +137,6 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
     return count;
 }
 
-fn remainingFrameBudgetNs(target_frame_ns: i128, frame_ns: i128) u64 {
-    if (frame_ns >= target_frame_ns) return 0;
-    return @intCast(target_frame_ns - frame_ns);
-}
-
-fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
-    if (remaining_ns == 0) return 0;
-
-    const timeout_ms = 1 + @divFloor(remaining_ns - 1, std.time.ns_per_ms);
-
-    const max_timeout_ms: u64 = @intCast(std.math.maxInt(c_int));
-    return @intCast(@min(timeout_ms, max_timeout_ms));
-}
-
 /// Rendering is suppressed while the window is fully occluded: macOS stops
 /// compositing covered windows and `CAMetalLayer` stops handing out
 /// drawables, so any render attempt blocks the main thread for the full
@@ -169,26 +148,12 @@ fn shouldRenderFrame(window_occluded: bool, wants_render: bool) bool {
     return wants_render and !window_occluded;
 }
 
-fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
-    if (is_idle) {
-        const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
-        return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
-    }
-    if (vsync_enabled) return .none;
-
-    const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(active_frame_ns, frame_ns));
-    return if (timeout_ms > 0) .{ .wait_ms = timeout_ms } else .none;
-}
-
 /// Waits for the next frame using the same interruptible SDL wait mechanism
 /// for both idle and active pacing, so a key press or PTY-watcher wake event
 /// during active-frame pacing is observed immediately instead of waiting out
 /// a fixed, uninterruptible sleep.
-fn waitForNextFrame(wait_decision: FrameWaitDecision) ?c.SDL_Event {
-    return switch (wait_decision) {
-        .none => null,
-        .wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
-    };
+fn waitForNextFrame(timeout_ms: ?c_int) ?c.SDL_Event {
+    return platform.waitEventTimeout(timeout_ms orelse return null);
 }
 
 fn writeRuntimeEvent(message: []const u8, event_name: []const u8, extra_data: []const u8) void {
@@ -378,6 +343,30 @@ fn savePersistenceIfDirty(
     };
     dirty.* = false;
     dirty_since_ms.* = 0;
+}
+
+fn nextTimerDeadlineNs(
+    now_ms: i64,
+    persistence_dirty: bool,
+    persistence_dirty_since_ms: i64,
+    sessions: []const *SessionState,
+    pending_sends: []const PendingSessionSend,
+) ?i128 {
+    var deadline_ms: ?i64 = null;
+    if (persistence_dirty) {
+        deadline_ms = persistence_dirty_since_ms + persistence_save_debounce_ms;
+    }
+    for (sessions) |session| {
+        if (session.synchronizedOutputActive()) {
+            const next = now_ms + session_state.synchronized_output_quiet_ms;
+            deadline_ms = if (deadline_ms) |d| @min(d, next) else next;
+        }
+    }
+    for (pending_sends) |send| {
+        deadline_ms = if (deadline_ms) |d| @min(d, send.deadline_ms) else send.deadline_ms;
+    }
+    const ms = deadline_ms orelse return null;
+    return @as(i128, ms) * std.time.ns_per_ms;
 }
 
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
@@ -1885,9 +1874,11 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     // input, feed PTY output into terminals, apply async notifications, drive
     // animations, and render at the current cadence.
     var last_render_ns: i128 = 0;
-    var next_frame_wait: FrameWaitDecision = .none;
+    var last_input_ns: i128 = 0;
+    var next_wait_timeout_ms: ?c_int = null;
+    var first_frame = true;
     while (running) {
-        var next_event = waitForNextFrame(next_frame_wait);
+        var next_event = waitForNextFrame(next_wait_timeout_ms);
         const frame_start_ns: i128 = clock.nowNanos(io);
         const now = clock.nowMillis(io);
         metrics_mod.increment(.loop_iterations);
@@ -1919,6 +1910,10 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
                 last_focused_session = anim_state.focused_session;
             }
             processed_event = true;
+            switch (event.type) {
+                c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_INPUT, c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL, c.SDL_EVENT_MOUSE_MOTION => last_input_ns = frame_start_ns,
+                else => {},
+            }
             var scaled_event = layout.scaleEventToRender(&event, scale_x, scale_y);
             if (builtin.os.tag == .macos and scaled_event.type == c.SDL_EVENT_KEY_DOWN) {
                 const key = scaled_event.key.key;
@@ -3404,14 +3399,27 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
-        const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
         const window_occluded = (c.SDL_GetWindowFlags(sdl.window) & c.SDL_WINDOW_OCCLUDED) != 0;
-        const should_render = shouldRenderFrame(
-            window_occluded,
-            animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale,
-        );
+        const plan = frame_schedule.schedule(.{
+            .now_ns = frame_start_ns,
+            .demand = .{
+                .first_frame = first_frame,
+                .animating = animating,
+                .ui_wants_frame = ui_needs_frame,
+                .processed_event = processed_event,
+                .had_notifications = had_notifications,
+                .had_control_requests = had_control_requests,
+                .session_output_dirty = any_session_dirty,
+            },
+            .last_present_ns = last_render_ns,
+            .last_input_ns = last_input_ns,
+            .vsync_enabled = sdl.vsync_enabled,
+            .window_occluded = window_occluded,
+            .next_timer_deadline_ns = nextTimerDeadlineNs(now, persistence_dirty, persistence_dirty_since_ms, sessions, pending_sends.items),
+        });
+        if (plan.output_deferred) metrics_mod.increment(.output_render_deferrals);
 
-        if (should_render) {
+        if (shouldRenderFrame(window_occluded, plan.render)) {
             if (relaunch_trace_frames > 0) {
                 log.info("frame trace before render", .{});
             }
@@ -3452,21 +3460,19 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
             }
             metrics_mod.increment(.frame_count);
             last_render_ns = clock.nowNanos(io);
+            first_frame = false;
         }
 
         if (relaunch_trace_frames > 0) {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
-
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;
         }
 
         const frame_end_ns: i128 = clock.nowNanos(io);
-        const frame_ns = frame_end_ns - frame_start_ns;
-        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
+        next_wait_timeout_ms = frame_schedule.waitTimeoutMs(plan.wait, frame_end_ns);
     }
 
     if (builtin.os.tag == .macos) {
@@ -3723,12 +3729,6 @@ test "buildQueuedCommand appends a newline only when needed" {
     try std.testing.expectEqualStrings("echo ok\n", second);
 }
 
-test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
-    try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(0));
-    try std.testing.expectEqual(@as(c_int, 1), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
-    try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
-}
-
 test "markPersistenceDirty keeps the oldest dirty timestamp" {
     var dirty = false;
     var dirty_since_ms: i64 = 0;
@@ -3754,36 +3754,11 @@ test "shouldSavePersistenceNow does not stall forever if the clock moves backwar
     try std.testing.expect(shouldSavePersistenceNow(true, 5_000, 4_000));
 }
 
-test "computeFrameWaitDecision returns idle wait while idle" {
-    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
-    switch (decision) {
-        .wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
-        else => try std.testing.expect(false),
-    }
-}
-
 test "shouldRenderFrame suppresses rendering while the window is occluded" {
     try std.testing.expect(shouldRenderFrame(false, true));
     try std.testing.expect(!shouldRenderFrame(true, true));
     try std.testing.expect(!shouldRenderFrame(false, false));
     try std.testing.expect(!shouldRenderFrame(true, false));
-}
-
-test "computeFrameWaitDecision keeps active pacing without vsync, rounded up to whole ms" {
-    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
-    const expected_ms = waitTimeoutMsFromNs(@intCast(active_frame_ns - (5 * std.time.ns_per_ms)));
-    switch (decision) {
-        .wait_ms => |timeout_ms| try std.testing.expectEqual(expected_ms, timeout_ms),
-        else => try std.testing.expect(false),
-    }
-}
-
-test "computeFrameWaitDecision defers to vsync while active" {
-    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms);
-    switch (decision) {
-        .none => {},
-        else => try std.testing.expect(false),
-    }
 }
 
 test "fullSetForMode promotes focused (and previous during panning) to full size" {

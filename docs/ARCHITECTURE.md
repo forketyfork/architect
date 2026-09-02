@@ -109,7 +109,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 1. **UI components use the vtable interface and communicate via UiAction queue.** Never mutate application state directly from a UI component. Push a `UiAction` to the queue; the main loop drains it after all component updates complete. (See ADR-003.)
 
-2. **Render invalidation uses epoch comparison.** When terminal content changes, increment `render_epoch` on the `SessionState`. The renderer checks whether `presented_epoch` no longer matches `render_epoch` to know whether a session needs to be redrawn this frame, and cached session textures refresh when their stored epoch, overlay composition, or grid/full render mode no longer matches the requested render. This applies to both grid tiles and the steady-state full-screen terminal view. Never force a full re-render. (See ADR-004.) The dirty check only counts sessions visible in the current view mode (`RenderCache.sessionVisibleInMode`): in Full view, background sessions keep producing output but are never presented, so counting them would keep the app compositing and presenting full-window frames at the maximum rate for pixels nobody sees. Two related frame-loop rules: rendering is suppressed entirely while the window is occluded (`shouldRenderFrame` in `app/runtime.zig`) because macOS stops handing out `CAMetalLayer` drawables for covered windows and each render attempt would block the main thread — including PTY draining — for the full ~1s `nextDrawable` timeout; and static UI textures must never be created and destroyed within a single frame (see `ui/components/glyph_badge.zig`) because destroying a texture queued for rendering forces SDL's Metal backend to flush its command queue and acquire a drawable mid-frame.
+2. **Render invalidation uses epoch comparison.** When terminal content changes, increment `render_epoch` on the `SessionState`. The renderer checks whether `presented_epoch` no longer matches `render_epoch` to know whether a session needs to be redrawn this frame, and cached session textures refresh when their stored epoch, overlay composition, or grid/full render mode no longer matches the requested render. This applies to both grid tiles and the steady-state full-screen terminal view. A dirty session is a request for a frame: `app/frame_schedule.zig` may defer output-only demand to its 30 FPS cadence, while interactive demand renders immediately. There is no periodic re-render fallback. Never force a full re-render. (See ADR-004.) The dirty check only counts sessions visible in the current view mode (`RenderCache.sessionVisibleInMode`): in Full view, background sessions keep producing output but are never presented, so counting them would keep the app compositing and presenting full-window frames at the maximum rate for pixels nobody sees. Two related frame-loop rules: rendering is suppressed entirely while the window is occluded (`shouldRenderFrame` in `app/runtime.zig`) because macOS stops handing out `CAMetalLayer` drawables for covered windows and each render attempt would block the main thread — including PTY draining — for the full ~1s `nextDrawable` timeout; and static UI textures must never be created and destroyed within a single frame (see `ui/components/glyph_badge.zig`) because destroying a texture queued for rendering forces SDL's Metal backend to flush its command queue and acquire a drawable mid-frame.
 
 3. **Blocking I/O goes on a background thread with a thread-safe queue.** The frame loop must never block. Any new external I/O source must follow the notification/control socket pattern: background thread + queue + main-loop drain. (See ADR-009.)
 
@@ -148,13 +148,14 @@ runtime.run(io, ...)
     +--> copied into worker-thread contexts
 ```
 
-### Frame Loop (per frame, ~16ms active / ~50ms idle)
+### Frame Loop (per frame; render only on demand, output-driven presents capped at 30 fps, idle wait up to 1 s or the next timer deadline)
 
 ```
                     +--------------------------------------+
                     | SDL_WaitEventTimeout()                |
-                    | (idle: ~50ms budget, active: ~16ms;   |
-                    |  returns early on any wake event)     |
+                    | (render on demand; output-only demand |
+                    |  capped at 30 fps; idle: up to 1 s or  |
+                    |  the next timer deadline; wakes early) |
                     +------------------+-------------------+
                                        | event or timeout
                                        v
@@ -451,6 +452,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `main.zig` | Thin entrypoint + global logging hook registration | `main(init: std.process.Init)`, `std_options.logFn` | `app/runtime`, `logging` |
 | `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main(init: std.process.Init)`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run(io, ...)`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `app/frame_schedule.zig` | Pure change-driven frame scheduling policy: render demand classification, output cadence, timer deadlines, occlusion handling, and SDL wait timeout conversion | `Demand`, `Input`, `Schedule`, `schedule()`, `waitTimeoutMs()` | std |
 | `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard and submitted-paste construction, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `pasteText()`, `buildSubmittedPaste()`, `clearTerminal()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
@@ -520,8 +522,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-004: Epoch-Based Render Cache Invalidation
 
-- **Decision:** Each `SessionState` maintains a monotonic `render_epoch` counter that increments on terminal content changes. The renderer's `RenderCache` tracks the last presented epoch per session and only re-renders when epochs diverge.
-- **Context:** Re-rendering all terminal cells every frame is expensive (glyph shaping, texture creation). Most frames in a multi-terminal grid have no changes in most sessions. Epoch comparison is O(1) per session and avoids deep content diffing.
+- **Decision:** Each `SessionState` maintains a monotonic `render_epoch` counter that increments on terminal content changes. The renderer's `RenderCache` tracks the last presented epoch per session and only re-renders when epochs diverge. A session's dirty state is a request for a frame, not a presentation guarantee: `app/frame_schedule.zig` may defer output-only requests to a 30 FPS cadence, while input and other interactive demand renders immediately. The frame loop has no periodic re-render.
+- **Context:** Re-rendering all terminal cells every frame is expensive (glyph shaping, texture creation). Most frames in a multi-terminal grid have no changes in most sessions. Epoch comparison is O(1) per session and avoids deep content diffing. Separating the render request from presentation lets frequent terminal output share a bounded cadence without delaying interactive input.
 - **Alternatives considered:**
   - *Dirty-flag per cell* -- rejected because tracking individual cell changes is memory-intensive and the granularity is unnecessary when the renderer caches entire session textures.
   - *Timer-based refresh* -- rejected because it wastes GPU cycles re-rendering unchanged terminals and introduces visible latency for changed ones.
@@ -595,7 +597,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 ### ADR-012: FirstFrameGuard Pattern for Idle Throttle Bypass
 
 - **Decision:** When a UI component transitions to a visible state (modal opens, gesture starts), it uses a `FirstFrameGuard` to signal the frame loop that an immediate render is needed, bypassing idle throttling.
-- **Context:** The frame loop throttles to ~20 FPS when idle (no terminal output or user input). Without the guard, newly visible UI elements would appear with up to 250ms delay, creating a perceived lag. The guard ensures the first frame of a transition renders immediately.
+- **Context:** The frame loop sleeps until an event or a real timer deadline when idle. Without the guard, newly visible UI elements could wait for the next idle deadline; the guard ensures the first frame of a transition renders immediately.
 - **Alternatives considered:**
   - *Always render at full rate* -- rejected because it wastes CPU/GPU when nothing is changing, impacting battery life on laptops.
   - *SDL event injection* -- rejected because synthetic events pollute the event queue and complicate event handling logic.
