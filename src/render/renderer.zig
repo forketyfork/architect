@@ -529,6 +529,93 @@ fn renderSession(
     cache_entry.presented_epoch = session.render_epoch;
 }
 
+const ContentLayout = struct {
+    key: ContentKey,
+    origin_x: c_int,
+    origin_y: c_int,
+    first_row_pin: ?ghostty_vt.Pin,
+};
+
+fn sessionColors(terminal: *const ghostty_vt.Terminal, theme: *const colors.Theme) struct { background: c.SDL_Color, foreground: c.SDL_Color } {
+    const base_bg = c.SDL_Color{ .r = theme.background.r, .g = theme.background.g, .b = theme.background.b, .a = 255 };
+    const base_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
+    return .{
+        .background = if (terminal.colors.background.get()) |rgb|
+            c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
+        else
+            base_bg,
+        .foreground = if (terminal.colors.foreground.get()) |rgb|
+            c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
+        else
+            base_fg,
+    };
+}
+
+fn computeContentLayout(
+    session: *const SessionState,
+    view: *const SessionViewState,
+    rect: Rect,
+    scale: f32,
+    is_focused: bool,
+    font: *const font_mod.Font,
+    term_cols: u16,
+    term_rows: u16,
+    is_grid_view: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) ?ContentLayout {
+    const terminal = session.terminal orelse return null;
+    const screen = terminal.screens.active;
+    const cursor = screen.cursor;
+    const colors_for_session = sessionColors(terminal, theme);
+
+    const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_width)) * scale)));
+    const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(font.cell_height)) * scale)));
+
+    const padding: c_int = dpi.scale(terminal_padding, ui_scale);
+    const drawable_w: c_int = rect.w - padding * 2;
+    const grid_reserved_h: c_int = if (is_grid_view and rect.h >= cwd_bar_metrics.minCellHeight(ui_scale, grid_border_thickness))
+        cwd_bar_metrics.reservedHeight(ui_scale, grid_border_thickness)
+    else
+        0;
+    const drawable_h: c_int = rect.h - padding * 2 - grid_reserved_h;
+    if (drawable_w <= 0 or drawable_h <= 0) return null;
+
+    const max_cols_fit: usize = @intCast(@max(0, @divFloor(drawable_w, cell_width_actual)));
+    const max_rows_fit: usize = @intCast(@max(0, @divFloor(drawable_h, cell_height_actual)));
+    const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
+    const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
+    const active_row_offset = activeScreenRowOffset(term_rows, visible_rows, cursor.y, is_grid_view, view.is_viewing_scrollback);
+    const first_row_pin = screen.pages.pin(if (view.is_viewing_scrollback)
+        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = 0 } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = @intCast(active_row_offset) } });
+
+    return .{
+        .key = .{
+            .cursor_x = cursor.x,
+            .cursor_y = cursor.y,
+            .cursor_shown = !view.is_viewing_scrollback and is_focused and !session.dead and terminal.modes.get(.cursor_visible),
+            .top_node = if (first_row_pin) |pin| @ptrCast(pin.node) else null,
+            .top_y = if (first_row_pin) |pin| @intCast(pin.y) else 0,
+            .active_row_offset = active_row_offset,
+            .viewing_scrollback = view.is_viewing_scrollback,
+            .visible_rows = visible_rows,
+            .visible_cols = visible_cols,
+            .cell_w = cell_width_actual,
+            .cell_h = cell_height_actual,
+            .hovered_link_start = view.hovered_link_start,
+            .hovered_link_end = view.hovered_link_end,
+            .dead = session.dead,
+            .session_bg = colors_for_session.background,
+            .session_fg = colors_for_session.foreground,
+        },
+        .origin_x = rect.x + padding,
+        .origin_y = rect.y + padding,
+        .first_row_pin = first_row_pin,
+    };
+}
+
 fn renderSessionContent(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
@@ -553,16 +640,20 @@ fn renderSessionContent(
         return;
     };
 
-    const base_bg = c.SDL_Color{ .r = theme.background.r, .g = theme.background.g, .b = theme.background.b, .a = 255 };
-    const base_fg = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-    const session_bg_color = if (terminal.colors.background.get()) |rgb|
-        c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
-    else
-        base_bg;
-    const session_fg_color = if (terminal.colors.foreground.get()) |rgb|
-        c.SDL_Color{ .r = rgb.r, .g = rgb.g, .b = rgb.b, .a = 255 }
-    else
-        base_fg;
+    const layout = computeContentLayout(session, view, rect, scale, is_focused, font, term_cols, term_rows, is_grid_view, theme, ui_scale) orelse {
+        const colors_for_empty_layout = sessionColors(terminal, theme);
+        _ = c.SDL_SetRenderDrawColor(renderer, colors_for_empty_layout.background.r, colors_for_empty_layout.background.g, colors_for_empty_layout.background.b, colors_for_empty_layout.background.a);
+        const empty_bg_rect = c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .w = @floatFromInt(rect.w),
+            .h = @floatFromInt(rect.h),
+        };
+        _ = c.SDL_RenderFillRect(renderer, &empty_bg_rect);
+        return;
+    };
+    const session_bg_color = layout.key.session_bg;
+    const session_fg_color = layout.key.session_fg;
 
     _ = c.SDL_SetRenderDrawColor(renderer, session_bg_color.r, session_bg_color.g, session_bg_color.b, session_bg_color.a);
     const bg_rect = c.SDL_FRect{
@@ -573,36 +664,17 @@ fn renderSessionContent(
     };
     _ = c.SDL_RenderFillRect(renderer, &bg_rect);
     const screen = terminal.screens.active;
-    const cursor_visible = terminal.modes.get(.cursor_visible);
     const cursor = screen.cursor;
-    const cursor_col: usize = cursor.x;
-    const cursor_row: usize = cursor.y;
-    const should_render_cursor = !view.is_viewing_scrollback and is_focused and !session.dead and cursor_visible;
-    const pages = screen.pages;
-
-    const base_cell_width = font.cell_width;
-    const base_cell_height = font.cell_height;
-
-    const cell_width_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_width)) * scale)));
-    const cell_height_actual: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(base_cell_height)) * scale)));
-
-    const padding: c_int = dpi.scale(terminal_padding, ui_scale);
-    const drawable_w: c_int = rect.w - padding * 2;
-    const grid_reserved_h: c_int = if (is_grid_view and rect.h >= cwd_bar_metrics.minCellHeight(ui_scale, grid_border_thickness))
-        cwd_bar_metrics.reservedHeight(ui_scale, grid_border_thickness)
-    else
-        0;
-    const drawable_h: c_int = rect.h - padding * 2 - grid_reserved_h;
-    if (drawable_w <= 0 or drawable_h <= 0) return;
-
-    const origin_x: c_int = rect.x + padding;
-    const origin_y: c_int = rect.y + padding;
-
-    const max_cols_fit: usize = @intCast(@max(0, @divFloor(drawable_w, cell_width_actual)));
-    const max_rows_fit: usize = @intCast(@max(0, @divFloor(drawable_h, cell_height_actual)));
-    const visible_cols: usize = @min(@as(usize, term_cols), max_cols_fit);
-    const visible_rows: usize = @min(@as(usize, term_rows), max_rows_fit);
-    const active_row_offset = activeScreenRowOffset(term_rows, visible_rows, cursor_row, is_grid_view, view.is_viewing_scrollback);
+    const cursor_col: usize = layout.key.cursor_x;
+    const cursor_row: usize = layout.key.cursor_y;
+    const should_render_cursor = layout.key.cursor_shown;
+    const cell_width_actual = layout.key.cell_w;
+    const cell_height_actual = layout.key.cell_h;
+    const origin_x = layout.origin_x;
+    const origin_y = layout.origin_y;
+    const visible_cols = layout.key.visible_cols;
+    const visible_rows = layout.key.visible_rows;
+    const active_row_offset = layout.key.active_row_offset;
 
     const active_selection = screen.selection;
 
@@ -614,10 +686,7 @@ fn renderSessionContent(
     // amortized O(1), and a `Pin` copy with an updated `.x` is free, so it
     // replaces the extra per-cell `pages.pin(...)` calls used for selection
     // and hovered-link highlighting below.
-    var row_pin = pages.pin(if (view.is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = 0, .y = 0 } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = 0, .y = @intCast(active_row_offset) } });
+    var row_pin = layout.first_row_pin;
 
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
