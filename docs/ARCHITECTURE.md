@@ -596,7 +596,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-012: FirstFrameGuard Pattern for Idle Throttle Bypass
 
-- **Decision:** When a UI component transitions to a visible state (modal opens, gesture starts), it uses a `FirstFrameGuard` to signal the frame loop that an immediate render is needed, bypassing idle throttling. Guards belong to things that can be drawn; a component that owns per-session state must disarm guards for sessions the current view mode cannot render, or the loop presents at vsync rate until they become visible.
+- **Decision:** When a UI component transitions to a visible state (modal opens, gesture starts), it uses a `FirstFrameGuard` to signal the frame loop that an immediate render is needed, bypassing idle throttling. Guards belong to things that can be drawn; a component that owns per-session state must disarm guards for sessions the current view mode cannot render, or the loop presents at vsync rate until they become visible. `markDrawn()` goes at the top of `render`, before any visibility early return, because hide transitions arm the guard too.
 - **Context:** The frame loop sleeps until an event or a real timer deadline when idle. Without the guard, newly visible UI elements could wait for the next idle deadline; the guard ensures the first frame of a transition renders immediately.
 - **Alternatives considered:**
   - *Always render at full rate* -- rejected because it wastes CPU/GPU when nothing is changing, impacting battery life on laptops.

@@ -75,6 +75,7 @@ pub const ToastComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (!self.isVisible(host.now_ms)) return;
 
         const alpha = self.getAlpha(host.now_ms);
@@ -128,7 +129,6 @@ pub const ToastComponent = struct {
         };
 
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
-        self.first_frame.markDrawn();
     }
 
     fn ensureTexture(self: *ToastComponent, renderer: *c.SDL_Renderer, cache: *font_cache.FontCache, theme: *const @import("../../colors.zig").Theme) !void {

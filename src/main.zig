@@ -84,6 +84,7 @@ test {
     _ = @import("ui/components/selection_agent_overlay.zig");
     _ = @import("ui/components/session_interaction.zig");
     _ = @import("ui/components/worktree_overlay.zig");
+    _ = @import("ui/first_frame_guard.zig");
     _ = @import("ui/text_edit.zig");
     _ = @import("ui/text_render.zig");
     _ = @import("url_matcher.zig");

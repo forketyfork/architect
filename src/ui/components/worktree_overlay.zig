@@ -345,19 +345,18 @@ pub const WorktreeOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         if (!self.available and !self.creating and !self.confirming_removal) return;
 
         if (self.creating) {
             _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
             self.renderCreateModal(renderer, ui_host, assets, ui_host.theme);
-            self.first_frame.markDrawn();
             return;
         }
 
         if (self.confirming_removal) {
             _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
             self.renderRemoveModal(renderer, ui_host, assets, ui_host.theme);
-            self.first_frame.markDrawn();
             return;
         }
 
@@ -511,11 +510,8 @@ pub const WorktreeOverlayComponent = struct {
 
         if (self.creating) {
             self.renderCreateModal(renderer, host, assets, host.theme);
-            self.first_frame.markDrawn();
             return;
         }
-
-        self.first_frame.markDrawn();
     }
 
     fn findCurrentWorktreeIndex(self: *WorktreeOverlayComponent, cwd_opt: ?[]const u8) ?usize {

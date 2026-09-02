@@ -147,6 +147,7 @@ pub const HelpOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.first_frame.markDrawn();
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         const radius: c_int = 8;
 
@@ -205,7 +206,6 @@ pub const HelpOverlayComponent = struct {
 
             y_offset += scaled_line_height;
         }
-        self.first_frame.markDrawn();
     }
 
     fn makeTextTexture(

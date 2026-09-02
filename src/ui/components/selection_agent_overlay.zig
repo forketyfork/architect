@@ -471,8 +471,14 @@ pub const SelectionAgentOverlayComponent = struct {
             self.context_scrollbar.wantsFrame(host.now_ms));
     }
 
+    fn frameDrawn(self: *SelectionAgentOverlayComponent) void {
+        self.guard.markDrawn();
+        self.context_scrollbar.markDrawn();
+    }
+
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *SelectionAgentOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.frameDrawn();
         if (!self.visible) return;
         const cache = assets.font_cache orelse return;
         const modal = self.modalRect(host);
@@ -556,7 +562,6 @@ pub const SelectionAgentOverlayComponent = struct {
                 log.warn("failed to render agent dropdown: {}", .{err});
             };
         }
-        self.guard.markDrawn();
     }
 
     fn renderPrompt(self: *SelectionAgentOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, rect: geom.Rect) void {
@@ -666,7 +671,6 @@ pub const SelectionAgentOverlayComponent = struct {
 
         if (scrollbar.computeLayout(rect, host.ui_scale, metrics)) |layout| {
             scrollbar.render(renderer, layout, host.theme.accent, &self.context_scrollbar);
-            self.context_scrollbar.markDrawn();
         } else {
             self.context_scrollbar.hideNow();
         }
@@ -1158,6 +1162,31 @@ test "context preview texture window stays bounded for large selections" {
     const bottom = contextTextureWindow(500_000, 19, 10, 115, 9_500_000);
     try std.testing.expect(bottom.end <= 500_000);
     try std.testing.expect(bottom.end - bottom.first <= 11);
+}
+
+test "hidden selection agent render path clears its first-frame guards" {
+    var component = SelectionAgentOverlayComponent{
+        .allocator = std.testing.allocator,
+        .visible = true,
+        .prompt_focused = false,
+        .agent_dropdown = dropdown_menu.DropdownMenu.init(std.testing.allocator),
+    };
+    defer component.prompt.deinit(std.testing.allocator);
+    defer component.agent_dropdown.deinit();
+
+    var host: types.UiHost = undefined;
+    host.now_ms = 0;
+
+    component.guard.markTransition();
+    try std.testing.expect(SelectionAgentOverlayComponent.wantsFrame(&component, &host));
+
+    component.visible = false;
+    component.guard.markTransition();
+    try std.testing.expect(component.guard.wantsFrame());
+    component.frameDrawn();
+
+    component.visible = true;
+    try std.testing.expect(!SelectionAgentOverlayComponent.wantsFrame(&component, &host));
 }
 
 test "text input while the agent dropdown is open does not leak into the prompt" {

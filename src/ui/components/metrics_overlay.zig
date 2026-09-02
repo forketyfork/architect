@@ -84,6 +84,10 @@ pub const MetricsOverlayComponent = struct {
         return now_ms - last_sample_ms >= sample_interval_ms;
     }
 
+    fn frameDrawn(self: *MetricsOverlayComponent) void {
+        self.first_frame.markDrawn();
+    }
+
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *MetricsOverlayComponent = @ptrCast(@alignCast(self_ptr));
         // The frame loop's 1 s idle ceiling wakes us to observe a due sample.
@@ -93,6 +97,7 @@ pub const MetricsOverlayComponent = struct {
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *MetricsOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.frameDrawn();
         if (!self.visible) return;
 
         const metrics_ptr = metrics_mod.global orelse return;
@@ -153,7 +158,6 @@ pub const MetricsOverlayComponent = struct {
         };
 
         _ = c.SDL_RenderTexture(renderer, texture, null, &dest_rect);
-        self.first_frame.markDrawn();
     }
 
     fn ensureTexture(
@@ -328,6 +332,23 @@ pub const MetricsOverlayComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "hidden metrics toggle clears its first-frame demand on the next render" {
+    const component = try MetricsOverlayComponent.init(std.testing.allocator);
+    defer std.testing.allocator.destroy(component);
+
+    var host: types.UiHost = undefined;
+    host.now_ms = 0;
+
+    component.toggle();
+    try std.testing.expect(MetricsOverlayComponent.wantsFrame(component, &host));
+
+    component.toggle();
+    try std.testing.expect(MetricsOverlayComponent.wantsFrame(component, &host));
+
+    component.frameDrawn();
+    try std.testing.expect(!MetricsOverlayComponent.wantsFrame(component, &host));
+}
 
 test "metrics overlay samples only when its interval is due" {
     const last_sample_ms: i64 = 1_000;

@@ -1626,6 +1626,8 @@ pub const DiffOverlayComponent = struct {
 
     fn renderFn(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        self.overlay.first_frame.markDrawn();
+        self.scrollbar_state.markDrawn();
         if (!self.overlay.visible) return;
 
         const progress = self.overlay.renderProgress(host.now_ms);
@@ -1670,13 +1672,10 @@ pub const DiffOverlayComponent = struct {
 
         if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
             scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
-            self.scrollbar_state.markDrawn();
         } else {
             self.scrollbar_state.hideNow();
         }
         self.renderAgentDropdown(host, renderer, assets, rect);
-
-        self.overlay.first_frame.markDrawn();
     }
 
     fn renderTitle(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, rect: geom.Rect, title_h: c_int, padding: c_int, cache: *Cache) void {
