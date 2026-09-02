@@ -1459,7 +1459,9 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     defer notify_wake.deinit();
     var control_wake = try wake_pipe.WakePipe.init();
     defer control_wake.deinit();
-    var pty_reader_state = pty_reader.PtyReader.init(io);
+    var pty_reader_wake = try wake_pipe.WakePipe.init();
+    defer pty_reader_wake.deinit();
+    var pty_reader_state = pty_reader.PtyReader.init(io, &pty_reader_wake);
 
     var config = config_mod.Config.load(allocator, io) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -1605,6 +1607,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     );
     defer {
         pty_reader_stop.store(true, .seq_cst);
+        pty_reader_wake.signal();
         pty_reader_thread.join();
     }
     var text_input_active = true;
