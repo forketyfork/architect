@@ -213,6 +213,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 
 ## Repo Notes
 - Architect is a Zig app using the ghostty-vt dependency fetched via the Zig package manager; avoid reintroducing a checked-out `ghostty/` path assumption.
+- ghostty-vt dirty bits (`Terminal.flags.dirty`, `Screen.dirty`, `Page.dirty`, `Row.dirty`) are consumed and cleared only by the renderer after refreshing a session's cache texture. Never clear them anywhere else, and never bump `render_epoch` for output that did not change them.
 - User config lives in `~/.config/architect/config.toml`. Maintain compatibility or add migrations when changing config shape.
 - `just` commands mirror zig builds (`just build`, `just run`, `just test`, `just ci`); use them when adjusting CI scripts or docs.
 - Shells spawn as login shells (`zsh -l`), so login profiles (`/etc/zprofile`, `~/.zprofile`) are sourced; nix-darwin `environment.shellAliases` end up in the generated `/etc/zprofile`, which is the place to check when aliases or env values are missing inside Architect.
