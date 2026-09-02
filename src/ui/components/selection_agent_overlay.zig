@@ -1174,6 +1174,7 @@ test "text input while the agent dropdown is open does not leak into the prompt"
         .now_ms = 0,
         .window_w = 800,
         .window_h = 600,
+        .window_focused = true,
         .ui_scale = 1.0,
         .grid_cols = 1,
         .grid_rows = 1,

@@ -843,6 +843,7 @@ fn testHost(now_ms: i64, theme: *const colors.Theme) types.UiHost {
         .now_ms = now_ms,
         .window_w = 1200,
         .window_h = 800,
+        .window_focused = true,
         .ui_scale = 1.0,
         .grid_cols = 2,
         .grid_rows = 2,
