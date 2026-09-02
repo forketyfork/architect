@@ -640,11 +640,10 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 - **Context:** The isolated ReleaseFast baseline measured 22-25% CPU and 116 idle wakeups/s; after the completed work, the final measurements were 10.9% CPU in Grid and 3.9% in Full, with approximately 0 idle wakeups/s.
 - **Alternatives considered:**
   - *Keep the 250 ms floor as a safety net* -- rejected: it is a speculative fallback that hides missing invalidations and costs 4 presents/s forever. Missing invalidations are bugs to fix (Task 4's audit) and the metrics overlay makes them visible.
-  - *Adopt ghostty's `RenderState` wholesale* -- rejected for now: it copies every viewport cell per update, and Architect's renderer walks pins directly; consuming the same dirty bits in place is cheaper and a smaller change. Revisit if the renderer moves to GPU cell buffers.
+  - *Adopt ghostty's `RenderState` wholesale for row-level refresh* -- rejected for now because `RenderState.update` copies every viewport cell per update while Architect's renderer walks pins directly, so consuming the same dirty bits in place (ADR-004) is cheaper and a smaller change. Revisit if the renderer moves to GPU cell buffers.
   - *Configurable output fps cap* -- deferred; a constant is enough until someone needs to tune it.
-  - *Row-level refresh via ghostty `RenderState`* -- rejected in favor of consuming ghostty's dirty bits in place (see ADR-004).
 - **Consequences:**
-  - Every UI component must own bounded frame demand (the #392/#393 lessons; see the corresponding `CLAUDE.md` rule).
+  - Every UI component must own bounded frame demand (the #392/#393/#395 lessons; see the corresponding `CLAUDE.md` rule).
   - Full-cell and box-drawing glyphs force full texture refreshes near them.
   - Process-exit detection can lag by up to 1 s (the idle ceiling).
   - The output cadence cap is a constant (`output_render_interval_ns`) rather than config.

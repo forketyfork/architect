@@ -75,7 +75,7 @@ apart read 38/s and 194/s.
 | 6b91e05 (Task 4: frame scheduling) | Grid | 14.4 | 0.0 | +8.30 s (54 cache re-renders/s, every tick drawn) |
 | 7def241 (Tasks 5-6 + #389, #392) | Grid | 10.9 | 0.3 | +5.39 s (67 partial cache refreshes/s) |
 | 7def241 (Tasks 5-6 + #389, #392) | Full, 138x46 cells | 3.9 | 0.0 | +1.77 s (11 partial cache refreshes/s) |
-| Homebrew v0.68.2 | daily instance (v0.68.2, active use, 7 sessions) | 14.5-15.4 | 38-194 | main +4.85 s over 30 s; every other thread <= +0.18 s |
+| Homebrew v0.68.2 (before this work) | daily instance, active use, 7 sessions | 14.5-15.4 | 38-194 | +4.85 s over a 30 s probe; other threads <= +0.18 s |
 
 Wakeups vanished with Tasks 2-3 while CPU was unchanged because the CPU was
 all rendering; Task 4 halved presents; the row-level refresh made Full view
@@ -91,8 +91,10 @@ textures plus per-tile overlays at up to 30 presents/s.
 - Under change-driven scheduling, any `wantsFrame` that stays true pins the
   loop at the display refresh rate (120 Hz on the maintainer's display). A
   sudden 2-3x CPU jump after user interaction is almost always that class of
-  bug; the two found today were fixed in #392 and #393. The metrics overlay's
-  `Present/s` line is the quickest tell since #392.
+  bug; the three found today were fixed in #392, #393, and #395. Hide
+  transitions arm guards too, so `markDrawn()` belongs at the top of `render`
+  before any visibility early return. The metrics overlay's `Present/s` line is
+  the quickest tell since #392.
 - `sample <pid>` shows wall time: `nextDrawable`/semaphore frames are blocked
   time, not CPU. Look at SDL command-queue, `SDL_FindInHashTable`, line/rect
   drawing, and glyph leaves for real CPU.
