@@ -5,6 +5,7 @@ const atomic = std.atomic;
 const clock = @import("../clock.zig");
 const env = @import("../env.zig");
 const posix_util = @import("../posix_util.zig");
+const wake_pipe = @import("../wake_pipe.zig");
 
 const log = std.log.scoped(.control);
 
@@ -338,6 +339,7 @@ const ControlContext = struct {
     discovery_path: []const u8,
     queue: *SpawnQueue,
     stop: *atomic.Value(bool),
+    wake: *const wake_pipe.WakePipe,
     runtime_wake: ?RuntimeWake,
 };
 
@@ -348,6 +350,7 @@ pub fn startControlThread(
     discovery_path: []const u8,
     queue: *SpawnQueue,
     stop: *atomic.Value(bool),
+    wake: *const wake_pipe.WakePipe,
     runtime_wake: ?RuntimeWake,
 ) std.Thread.SpawnError!std.Thread {
     _ = std.Io.Dir.cwd().deleteFile(io, socket_path) catch |err| switch (err) {
@@ -362,6 +365,7 @@ pub fn startControlThread(
         .discovery_path = discovery_path,
         .queue = queue,
         .stop = stop,
+        .wake = wake,
         .runtime_wake = runtime_wake,
     };
     return try std.Thread.spawn(.{}, controlThreadMain, .{ctx});
@@ -410,12 +414,23 @@ fn controlThreadMain(ctx: ControlContext) !void {
 
     setFdNonBlocking(fd, "control socket");
 
+    var fds = [_]posix.pollfd{
+        .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 },
+        ctx.wake.pollfd(),
+    };
     while (!ctx.stop.load(.seq_cst)) {
+        fds[0].revents = 0;
+        fds[1].revents = 0;
+        _ = posix.poll(&fds, -1) catch |err| {
+            log.warn("control poll failed: {}", .{err});
+            clock.sleepNanos(ctx.io, wake_pipe.poll_error_backoff_ns);
+            continue;
+        };
+        if (fds[1].revents != 0) ctx.wake.drain();
+        if (fds[0].revents == 0) continue;
+
         const conn_fd = posix_util.accept(fd) catch |err| switch (err) {
-            error.WouldBlock => {
-                clock.sleepNanos(ctx.io, std.time.ns_per_ms * 10);
-                continue;
-            },
+            error.WouldBlock => continue,
             else => {
                 log.debug("control accept error: {}", .{err});
                 continue;
@@ -526,7 +541,10 @@ fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8
     const dir_path = std.fs.path.dirname(path) orelse return error.InvalidDiscoveryPath;
     const base_name = std.fs.path.basename(path);
 
-    var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
+    var dir = if (std.fs.path.isAbsolute(dir_path))
+        try std.Io.Dir.openDirAbsolute(io, dir_path, .{})
+    else
+        try std.Io.Dir.cwd().openDir(io, dir_path, .{});
     defer dir.close(io);
 
     var random_suffix: u64 = undefined;
@@ -1008,4 +1026,40 @@ test "SpawnQueue drains queued requests" {
     var empty = queue.drainAll(std.testing.io);
     defer empty.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), empty.items.len);
+}
+
+test "control thread stops promptly when signaled while blocked in poll" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    std.Io.Dir.cwd().createDirPath(io, ".tmp") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    var queue = SpawnQueue{};
+    defer queue.deinit(allocator);
+    var stop = std.atomic.Value(bool).init(false);
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+
+    var sock_path_buf: [128]u8 = undefined;
+    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, ".tmp/control_stop_{d}.sock", .{std.c.getpid()}, 0);
+    const discovery_path = try std.fmt.allocPrint(allocator, ".tmp/control_stop_{d}.json", .{std.c.getpid()});
+    defer allocator.free(discovery_path);
+    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch |err| std.debug.print("cleanup failed: {}\n", .{err});
+    defer std.Io.Dir.cwd().deleteFile(io, discovery_path) catch |err| std.debug.print("cleanup failed: {}\n", .{err});
+
+    const thread = try startControlThread(allocator, io, sock_path, discovery_path, &queue, &stop, &wake, null);
+
+    const started = clock.nowNanos(io);
+    stop.store(true, .seq_cst);
+    wake.signal();
+    thread.join();
+    const elapsed_ns = clock.nowNanos(io) - started;
+    // With the old 10 ms sleep loop this was bounded by the sleep; with poll it
+    // must return as soon as the pipe byte lands. 200 ms is generous headroom.
+    try std.testing.expect(elapsed_ns < 200 * std.time.ns_per_ms);
 }

@@ -85,6 +85,7 @@ test {
     _ = @import("ui/text_render.zig");
     _ = @import("url_matcher.zig");
     _ = @import("vt_stream.zig");
+    _ = @import("wake_pipe.zig");
 
     // cwd.zig guards itself with a top-level @compileError on non-macOS
     // platforms, so it can only be referenced where it can compile.

@@ -20,6 +20,7 @@ const control = @import("control.zig");
 const posix_util = @import("../posix_util.zig");
 const notify = @import("../session/notify.zig");
 const pty_reader = @import("../session/pty_reader.zig");
+const wake_pipe = @import("../wake_pipe.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
@@ -1454,6 +1455,10 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     var control_stop = std.atomic.Value(bool).init(false);
     var pty_reader_stop = std.atomic.Value(bool).init(false);
     var pty_wake_pending = std.atomic.Value(bool).init(false);
+    var notify_wake = try wake_pipe.WakePipe.init();
+    defer notify_wake.deinit();
+    var control_wake = try wake_pipe.WakePipe.init();
+    defer control_wake.deinit();
     var pty_reader_state = pty_reader.PtyReader.init(io);
 
     var config = config_mod.Config.load(allocator, io) catch |err| blk: {
@@ -1557,6 +1562,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
         notify_sock,
         &notify_queue,
         &notify_stop,
+        &notify_wake,
         .{
             .context = &sdl,
             .callback = platform.pushWakeEventFromOpaque,
@@ -1564,6 +1570,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     );
     defer {
         notify_stop.store(true, .seq_cst);
+        notify_wake.signal();
         notify_thread.join();
     }
     const control_thread = try control.startControlThread(
@@ -1573,6 +1580,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
         control_discovery_path,
         &control_queue,
         &control_stop,
+        &control_wake,
         .{
             .context = &sdl,
             .callback = platform.pushWakeEventFromOpaque,
@@ -1580,6 +1588,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     );
     defer {
         control_stop.store(true, .seq_cst);
+        control_wake.signal();
         control.failPending(&control_queue, allocator, io, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(io, control_sock, control_discovery_path);
