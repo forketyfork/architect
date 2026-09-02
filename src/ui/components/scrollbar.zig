@@ -752,3 +752,25 @@ test "state fades in, waits, and fades out with auto-hide timing" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.alpha, 0.001);
     try std.testing.expect(!state.wantsFrame(hidden_at));
 }
+
+test "fade-out guard demands a frame until the scrollbar is drawn" {
+    var state: State = .{};
+    const t0: i64 = 100;
+
+    state.noteActivity(t0);
+    state.markDrawn();
+    state.update(t0 + fade_in_duration_ms);
+
+    const fade_start = t0 + idle_hide_delay_ms + 1;
+    state.update(fade_start);
+    try std.testing.expect(state.phase == .fading_out);
+
+    const hidden_at = fade_start + fade_out_duration_ms + 1;
+    state.update(hidden_at);
+    // Once the fade completes, only the guard still demands this frame. The
+    // renderer clears it after drawing the scrollbar; hidden tiles have no
+    // renderer pass and must be disarmed by their owning component instead.
+    try std.testing.expect(state.wantsFrame(hidden_at));
+    state.markDrawn();
+    try std.testing.expect(!state.wantsFrame(hidden_at));
+}

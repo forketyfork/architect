@@ -25,6 +25,20 @@ pub const ViewMode = enum {
 
 pub const Rect = geom.Rect;
 
+/// True when a session at `idx` contributes visible pixels in the given
+/// view mode. Sessions that are not visible must not trigger renders:
+/// in Full view, background sessions keep producing output (their
+/// `render_epoch` advances) but are never presented, so counting them
+/// would keep the app rendering and presenting full-window frames at the
+/// maximum rate for content nobody sees.
+pub fn sessionVisibleInMode(mode: ViewMode, idx: usize, focused: usize, previous: usize) bool {
+    return switch (mode) {
+        .Grid, .GridResizing, .Expanding, .Collapsing => true,
+        .Full => idx == focused,
+        .PanningLeft, .PanningRight, .PanningUp, .PanningDown => idx == focused or idx == previous,
+    };
+}
+
 pub const AnimationState = struct {
     mode: ViewMode,
     focused_session: usize,
@@ -65,6 +79,18 @@ test "AnimationState.easeInOutCubic" {
 
     const mid = AnimationState.easeInOutCubic(0.5);
     try std.testing.expect(mid > 0.4 and mid < 0.6);
+}
+
+test "sessionVisibleInMode gates background sessions per view mode" {
+    try std.testing.expect(sessionVisibleInMode(.Grid, 3, 0, 0));
+    try std.testing.expect(sessionVisibleInMode(.GridResizing, 3, 0, 0));
+    try std.testing.expect(sessionVisibleInMode(.Expanding, 3, 0, 0));
+    try std.testing.expect(sessionVisibleInMode(.Collapsing, 3, 0, 0));
+    try std.testing.expect(sessionVisibleInMode(.Full, 2, 2, 0));
+    try std.testing.expect(!sessionVisibleInMode(.Full, 3, 2, 0));
+    try std.testing.expect(sessionVisibleInMode(.PanningLeft, 2, 2, 5));
+    try std.testing.expect(sessionVisibleInMode(.PanningLeft, 5, 2, 5));
+    try std.testing.expect(!sessionVisibleInMode(.PanningLeft, 3, 2, 5));
 }
 
 test "AnimationState.interpolateRect" {

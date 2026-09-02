@@ -98,6 +98,7 @@ pub fn makeUiHost(
         .term_rows = term_rows,
         .view_mode = anim_state.mode,
         .focused_session = anim_state.focused_session,
+        .previous_session = anim_state.previous_session,
         .focused_cwd = focused_cwd,
         .focused_has_foreground_process = focused_has_foreground_process,
         .animating_rect = animating_rect,

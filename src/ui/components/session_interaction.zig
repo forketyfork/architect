@@ -594,8 +594,19 @@ pub const SessionInteractionComponent = struct {
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
             const view = &self.views[idx];
+            const visible = app_state.sessionVisibleInMode(
+                host.view_mode,
+                idx,
+                host.focused_session,
+                host.previous_session,
+            );
             updateScrollInertia(session, view, delta_time_s, host.now_ms);
             view.terminal_scrollbar.update(host.now_ms);
+            if (!visible) {
+                // Nothing can draw a hidden tile, so disarm its guard or it
+                // would keep the frame loop at vsync rate until it is shown.
+                view.terminal_scrollbar.markDrawn();
+            }
             if (view.wave_start_time > 0) {
                 const wave_elapsed = host.now_ms - view.wave_start_time;
                 if (wave_elapsed >= wave_total_ms) {
@@ -615,13 +626,32 @@ pub const SessionInteractionComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
-        for (self.views) |view| {
-            if (view.scroll_velocity != 0.0) return true;
-            if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
-            if (view.nav_wave_start_time > 0 and (host.now_ms - view.nav_wave_start_time) < nav_wave_total_ms) return true;
-            if (view.terminal_scrollbar.wantsFrame(host.now_ms)) return true;
+        for (self.views, 0..) |view, idx| {
+            if (sessionWantsFrame(
+                &view,
+                host.view_mode,
+                idx,
+                host.focused_session,
+                host.previous_session,
+                host.now_ms,
+            )) return true;
         }
         return false;
+    }
+
+    fn sessionWantsFrame(
+        view: *const SessionViewState,
+        mode: app_state.ViewMode,
+        idx: usize,
+        focused: usize,
+        previous: usize,
+        now_ms: i64,
+    ) bool {
+        if (!app_state.sessionVisibleInMode(mode, idx, focused, previous)) return false;
+        if (view.scroll_velocity != 0.0) return true;
+        if (view.wave_start_time > 0 and (now_ms - view.wave_start_time) < wave_total_ms) return true;
+        if (view.nav_wave_start_time > 0 and (now_ms - view.nav_wave_start_time) < nav_wave_total_ms) return true;
+        return view.terminal_scrollbar.wantsFrame(now_ms);
     }
 
     const ScrollbarContext = struct {
@@ -1359,6 +1389,62 @@ test "selection action pill follows its selection through scrollback" {
     try std.testing.expectEqual(before.row - 1, after.row);
 }
 
+test "frame demand ignores armed scrollbar guards for hidden sessions" {
+    var hidden_view: SessionViewState = .{};
+    hidden_view.terminal_scrollbar.noteActivity(0);
+    var visible_view: SessionViewState = .{};
+    visible_view.terminal_scrollbar.noteActivity(0);
+
+    try std.testing.expect(hidden_view.terminal_scrollbar.wantsFrame(0));
+    try std.testing.expect(!SessionInteractionComponent.sessionWantsFrame(
+        &hidden_view,
+        .Full,
+        1,
+        0,
+        0,
+        0,
+    ));
+    try std.testing.expect(SessionInteractionComponent.sessionWantsFrame(
+        &visible_view,
+        .Full,
+        0,
+        0,
+        1,
+        0,
+    ));
+}
+
+test "disabled scroll inertia clears frame demand after one update" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    var view = SessionViewState{
+        .scroll_velocity = 1.0,
+        .scroll_remainder = 0.5,
+        .scroll_inertia_allowed = false,
+        .last_scroll_time = 100,
+    };
+
+    try std.testing.expect(SessionInteractionComponent.sessionWantsFrame(
+        &view,
+        .Full,
+        0,
+        0,
+        0,
+        100,
+    ));
+    updateScrollInertia(&session, &view, 1.0 / 60.0, 116);
+    try std.testing.expectEqual(@as(f32, 0.0), view.scroll_velocity);
+    try std.testing.expectEqual(@as(f32, 0.0), view.scroll_remainder);
+    try std.testing.expect(!SessionInteractionComponent.sessionWantsFrame(
+        &view,
+        .Full,
+        0,
+        0,
+        0,
+        116,
+    ));
+}
+
 fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, now: i64) void {
     if (!session.spawned) return;
 
@@ -1380,18 +1466,26 @@ fn scrollSession(session: *SessionState, view: *SessionViewState, delta: isize, 
 }
 
 fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_time_s: f32, now_ms: i64) void {
-    if (!session.spawned) return;
-    if (!view.scroll_inertia_allowed) return;
+    if (!session.spawned) {
+        stopScrollInertia(view);
+        return;
+    }
+    if (!view.scroll_inertia_allowed) {
+        stopScrollInertia(view);
+        return;
+    }
     if (view.scroll_velocity == 0.0) return;
-    if (view.last_scroll_time == 0) return;
+    if (view.last_scroll_time == 0) {
+        stopScrollInertia(view);
+        return;
+    }
 
     const decay_constant: f32 = 7.5;
     const decay_factor = std.math.exp(-decay_constant * delta_time_s);
     const velocity_threshold: f32 = 0.12;
 
     if (@abs(view.scroll_velocity) < velocity_threshold) {
-        view.scroll_velocity = 0.0;
-        view.scroll_remainder = 0.0;
+        stopScrollInertia(view);
         return;
     }
 
@@ -1413,6 +1507,11 @@ fn updateScrollInertia(session: *SessionState, view: *SessionViewState, delta_ti
     }
 
     view.scroll_velocity *= decay_factor;
+}
+
+fn stopScrollInertia(view: *SessionViewState) void {
+    view.scroll_velocity = 0.0;
+    view.scroll_remainder = 0.0;
 }
 
 fn calculateHoveredSession(
