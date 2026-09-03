@@ -7,7 +7,7 @@ const proc = @import("../../proc.zig");
 const log = std.log.scoped(.pr_dropdown);
 pub const gh_output_log_preview_limit: usize = 2 * 1024;
 
-const ResolveExecutableError = std.Io.Dir.AccessError || std.Io.Dir.RealPathFileAllocError;
+const ResolveExecutableError = std.Io.Dir.AccessError || std.Io.Dir.StatFileError || std.Io.Dir.RealPathFileAllocError;
 const known_gh_paths: []const []const u8 = if (builtin.os.tag == .macos)
     &.{ "/opt/homebrew/bin/gh", "/usr/local/bin/gh" }
 else
@@ -110,6 +110,10 @@ fn resolveExecutablePath(
 
         const candidate = try std.fs.path.join(allocator, &.{ directory, name });
         if (std.Io.Dir.cwd().access(io, candidate, .{ .execute = true })) |_| {
+            if (!try isRegularFile(io, candidate)) {
+                allocator.free(candidate);
+                continue;
+            }
             defer allocator.free(candidate);
             return try canonicalizeExecutablePath(allocator, io, candidate);
         } else |err| switch (err) {
@@ -126,10 +130,19 @@ fn resolveExecutablePath(
             error.FileNotFound, error.AccessDenied, error.PermissionDenied => continue,
             else => return err,
         };
+        if (!try isRegularFile(io, candidate)) continue;
         return @as(?[]u8, try canonicalizeExecutablePath(allocator, io, candidate));
     }
 
     return null;
+}
+
+fn isRegularFile(io: std.Io, candidate: []const u8) ResolveExecutableError!bool {
+    const stat = std.Io.Dir.cwd().statFile(io, candidate, .{ .follow_symlinks = true }) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied, error.PermissionDenied => return false,
+        else => return err,
+    };
+    return stat.kind == .file;
 }
 
 fn canonicalizeExecutablePath(
@@ -269,6 +282,42 @@ test "gh resolver skips inaccessible PATH and known candidates" {
     try std.testing.expectEqualStrings(fallback_path, from_path.?);
 
     const known_paths = [_][]const u8{ inaccessible_path, fallback_path };
+    const from_known_paths = try resolveExecutablePath(allocator, io, "", "gh", &known_paths);
+    try std.testing.expect(from_known_paths != null);
+    defer allocator.free(from_known_paths.?);
+    try std.testing.expectEqualStrings(fallback_path, from_known_paths.?);
+}
+
+test "gh resolver skips directory PATH and known candidates" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var path_tmp = std.testing.tmpDir(.{});
+    defer path_tmp.cleanup();
+    try path_tmp.dir.createDir(io, "gh", .default_dir);
+    const path_directory = try path_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path_directory);
+    const directory_path = try std.fs.path.join(allocator, &.{ path_directory, "gh" });
+    defer allocator.free(directory_path);
+
+    var fallback_tmp = std.testing.tmpDir(.{});
+    defer fallback_tmp.cleanup();
+    var fallback_file = try fallback_tmp.dir.createFile(io, "gh", .{ .permissions = .fromMode(0o755) });
+    fallback_file.close(io);
+    const fallback_directory = try fallback_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(fallback_directory);
+    const fallback_path = try std.fs.path.join(allocator, &.{ fallback_directory, "gh" });
+    defer allocator.free(fallback_path);
+    const fallback_only = [_][]const u8{fallback_path};
+
+    const from_path = try resolveExecutablePath(allocator, io, path_directory, "gh", &fallback_only);
+    try std.testing.expect(from_path != null);
+    defer allocator.free(from_path.?);
+    try std.testing.expectEqualStrings(fallback_path, from_path.?);
+
+    const known_paths = [_][]const u8{ directory_path, fallback_path };
     const from_known_paths = try resolveExecutablePath(allocator, io, "", "gh", &known_paths);
     try std.testing.expect(from_known_paths != null);
     defer allocator.free(from_known_paths.?);
