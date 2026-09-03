@@ -1011,6 +1011,56 @@ test "grid active screen rendering follows cursor row" {
     try std.testing.expectEqual(@as(usize, 0), activeScreenRowOffset(50, 0, 49, true, false));
 }
 
+/// Return the geometry of a focused border, including the attention inset.
+fn focusBorderRect(rect: Rect, has_attention: bool, border_thickness: c_int) ?Rect {
+    const inset: c_int = if (has_attention) border_thickness else 0;
+    var focus_rect = rect;
+    focus_rect.x += inset;
+    focus_rect.y += inset;
+    focus_rect.w -= inset * 2;
+    focus_rect.h -= inset * 2;
+    if (focus_rect.w <= 0 or focus_rect.h <= 0) return null;
+    return focus_rect;
+}
+
+/// Draw the focused grid border. Attention borders inset the focus border, so
+/// the cwd bar redraws this after its label to preserve the intended z-order.
+pub fn renderFocusBorder(
+    renderer: *c.SDL_Renderer,
+    rect: Rect,
+    has_attention: bool,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+    draw_fill: bool,
+) void {
+    const focus_blue = theme.palette[12];
+    const border_thickness: c_int = dpi.scale(attention_thickness, ui_scale);
+    const focus_rect = focusBorderRect(rect, has_attention, border_thickness) orelse return;
+
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+    if (draw_fill and !has_attention) {
+        _ = c.SDL_SetRenderDrawColor(renderer, focus_blue.r, focus_blue.g, focus_blue.b, 38);
+        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+            .x = @floatFromInt(focus_rect.x),
+            .y = @floatFromInt(focus_rect.y),
+            .w = @floatFromInt(focus_rect.w),
+            .h = @floatFromInt(focus_rect.h),
+        });
+    }
+    primitives.drawThickBorder(renderer, focus_rect, border_thickness, dpi.scale(6, ui_scale), focus_blue);
+}
+
+test "focused border is inset only for attention tiles" {
+    const rect = Rect{ .x = 10, .y = 20, .w = 100, .h = 80 };
+
+    try std.testing.expectEqual(rect, focusBorderRect(rect, false, 6).?);
+    try std.testing.expectEqual(
+        Rect{ .x = 16, .y = 26, .w = 88, .h = 68 },
+        focusBorderRect(rect, true, 6).?,
+    );
+    try std.testing.expectEqual(@as(?Rect, null), focusBorderRect(Rect{ .x = 0, .y = 0, .w = 12, .h = 12 }, true, 6));
+}
+
 fn renderSessionOverlays(
     renderer: *c.SDL_Renderer,
     session: *SessionState,
@@ -1038,28 +1088,7 @@ fn renderSessionOverlays(
             primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, base_border);
         }
 
-        if (is_focused) {
-            const focus_blue = theme.palette[12];
-            const inset: c_int = if (has_attention) border_thickness else 0;
-            var focus_rect = rect;
-            focus_rect.x += inset;
-            focus_rect.y += inset;
-            focus_rect.w -= inset * 2;
-            focus_rect.h -= inset * 2;
-            if (focus_rect.w > 0 and focus_rect.h > 0) {
-                _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                if (!has_attention) {
-                    _ = c.SDL_SetRenderDrawColor(renderer, focus_blue.r, focus_blue.g, focus_blue.b, 38);
-                    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-                        .x = @floatFromInt(focus_rect.x),
-                        .y = @floatFromInt(focus_rect.y),
-                        .w = @floatFromInt(focus_rect.w),
-                        .h = @floatFromInt(focus_rect.h),
-                    });
-                }
-                primitives.drawThickBorder(renderer, focus_rect, border_thickness, border_radius, focus_blue);
-            }
-        }
+        if (is_focused) renderFocusBorder(renderer, rect, has_attention, theme, ui_scale, true);
     }
 
     if (has_attention) {

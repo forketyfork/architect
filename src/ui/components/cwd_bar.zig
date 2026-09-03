@@ -233,6 +233,9 @@ pub const CwdBarComponent = struct {
                 .h = host.cell_h,
             };
             self.renderCwdBar(renderer, i, info, cell_rect, host, cache, i);
+            if (i == host.focused_session) {
+                renderer_mod.renderFocusBorder(renderer, cell_rect, info.attention, host.theme, host.ui_scale, false);
+            }
         }
     }
 
