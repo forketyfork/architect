@@ -359,7 +359,8 @@ and pull-request pills are unavailable while the focused terminal has a
 foreground process, because their actions send commands to that shell. Their
 event handlers reject input at the same boundary, before the scheduled update
 collapses an already-open picker, so foreground-process input cannot be
-consumed by stale UI.
+consumed by stale UI. A busy transition also clears any pending worktree
+removal confirmation before the modal is hidden.
 
 ### External Notification Path
 

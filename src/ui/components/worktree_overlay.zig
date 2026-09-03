@@ -294,6 +294,7 @@ pub const WorktreeOverlayComponent = struct {
                 self.creating = false;
                 self.escape_pressed = false;
                 self.clearCreateInput();
+                self.clearPendingRemoval();
                 if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
                     self.overlay.startCollapsing(host.now_ms);
                 }
@@ -1675,4 +1676,26 @@ test "worktree pill is hidden while the focused shell is busy" {
     try std.testing.expect(WorktreeOverlayComponent.shouldShowPill(true, false));
     try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(true, true));
     try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(false, false));
+}
+
+test "busy transition clears the removal confirmation modal" {
+    var component: WorktreeOverlayComponent = .{ .allocator = std.testing.allocator, .io = undefined };
+    component.available = true;
+    component.overlay.state = .Open;
+    component.confirming_removal = true;
+    component.pending_removal_index = 0;
+    component.pending_removal_path = try std.testing.allocator.dupe(u8, "/tmp/architect-worktree");
+
+    var host: types.UiHost = undefined;
+    host.now_ms = 100;
+    host.focused_has_foreground_process = true;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    WorktreeOverlayComponent.update(&component, &host, &actions);
+
+    try std.testing.expect(!component.confirming_removal);
+    try std.testing.expectEqual(@as(?usize, null), component.pending_removal_index);
+    try std.testing.expect(component.pending_removal_path == null);
+    try std.testing.expectEqual(ExpandingOverlay.State.Collapsing, component.overlay.state);
 }
