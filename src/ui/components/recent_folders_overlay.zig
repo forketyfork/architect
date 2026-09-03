@@ -31,6 +31,7 @@ pub const RecentFoldersOverlayComponent = struct {
     hovered_entry: ?usize = null,
     escape_pressed: bool = false,
     focused_busy: bool = false,
+    pill_interactive: bool = true,
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
 
@@ -159,6 +160,8 @@ pub const RecentFoldersOverlayComponent = struct {
                 return true;
             }
         }
+
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -301,10 +304,31 @@ pub const RecentFoldersOverlayComponent = struct {
         self.refilter();
     }
 
+    fn closeOverlayImmediately(self: *RecentFoldersOverlayComponent) void {
+        self.overlay.closeImmediately();
+        self.search.clear();
+        self.refilter();
+        self.hovered_entry = null;
+        self.flow_animation_start_ms = 0;
+    }
+
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(folder_count: usize, focused_busy: bool) bool {
+        return folder_count > 0 and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const RecentFoldersOverlayComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.all_folders.items.len, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *RecentFoldersOverlayComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -315,12 +339,11 @@ pub const RecentFoldersOverlayComponent = struct {
             self.focused_busy = busy;
             if (busy) {
                 self.destroyCache();
-                self.hovered_entry = null;
-                self.escape_pressed = false;
-                if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
-                    self.closeOverlay(host.now_ms);
-                }
             }
+        }
+
+        if (!self.pillVisible(host) and self.overlay.state != .Closed) {
+            self.closeOverlayImmediately();
         }
 
         if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
@@ -348,7 +371,7 @@ pub const RecentFoldersOverlayComponent = struct {
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (self.all_folders.items.len == 0) return;
+        if (!self.pillVisible(ui_host)) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
         const radius: c_int = 8;
@@ -867,6 +890,13 @@ fn keyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
     return event;
 }
 
+fn keyUpEvent(key: c.SDL_Keycode) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_UP;
+    event.key.key = key;
+    return event;
+}
+
 fn textEvent(text: [*c]const u8) c.SDL_Event {
     var event: c.SDL_Event = undefined;
     event.type = c.SDL_EVENT_TEXT_INPUT;
@@ -895,17 +925,30 @@ const TestComponent = struct {
         self.actions.deinit();
     }
 
-    fn send(self: *TestComponent, event: c.SDL_Event, now_ms: i64) bool {
-        const host = testHost(now_ms, &self.theme);
+    fn sendWithBusy(self: *TestComponent, event: c.SDL_Event, now_ms: i64, focused_busy: bool) bool {
+        var host = testHost(now_ms, &self.theme);
+        host.focused_has_foreground_process = focused_busy;
         var ev = event;
         return RecentFoldersOverlayComponent.handleEvent(&self.comp, &host, &ev, &self.actions);
     }
+
+    fn send(self: *TestComponent, event: c.SDL_Event, now_ms: i64) bool {
+        return self.sendWithBusy(event, now_ms, false);
+    }
 };
+
+fn addTestFolder(t: *TestComponent) void {
+    const folders = [_]config.Persistence.RecentFolder{
+        .{ .path = "/tmp/architect-test-folder", .count = 1 },
+    };
+    t.comp.setFolders(&folders);
+}
 
 test "Cmd+Backspace clears the search query and Alt+Backspace drops one segment" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "dev/github/architect");
 
@@ -925,6 +968,7 @@ test "plain Backspace still deletes a single character" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "arch");
 
@@ -938,6 +982,7 @@ test "keys typed during the expand animation reach the search query" {
 
     // Cmd+O starts the expand; the overlay is .Expanding, not .Open, for the
     // whole animation, and must already own the keyboard.
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
     try testing.expectEqual(ExpandingOverlay.State.Expanding, t.comp.overlay.state);
 
@@ -953,6 +998,7 @@ test "Cmd+O during the expand animation closes the overlay" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 50));
     try testing.expectEqual(ExpandingOverlay.State.Collapsing, t.comp.overlay.state);
@@ -971,6 +1017,7 @@ test "Cmd+A selects the query and the next keystroke replaces it" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "arch");
 
@@ -1006,8 +1053,61 @@ test "the caret blinks while the picker is open" {
     defer t.deinit();
 
     // Opening resets the blink so the caret is solid on the first frame.
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 1000));
     try testing.expect(t.comp.search.caretVisible(1000));
     try testing.expect(!t.comp.search.caretVisible(1600));
     try testing.expect(t.comp.search.caretVisible(2100));
+}
+
+test "recent folders pill is hidden while the focused shell is busy" {
+    try testing.expect(RecentFoldersOverlayComponent.shouldShowPill(1, false));
+    try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(1, true));
+    try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(0, false));
+}
+
+test "open recent folders picker does not consume input while the focused shell is busy" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    addTestFolder(&t);
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "before");
+
+    try testing.expect(!t.sendWithBusy(textEvent("x"), 0, true));
+    try testing.expectEqualStrings("before", t.comp.search.text());
+
+    try testing.expect(!t.sendWithBusy(keyEvent(c.SDLK_BACKSPACE, 0), 0, true));
+    try testing.expectEqualStrings("before", t.comp.search.text());
+}
+
+test "busy update immediately closes the recent folders picker" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    addTestFolder(&t);
+    t.comp.overlay.state = .Open;
+    t.comp.escape_pressed = true;
+    t.comp.hovered_entry = 0;
+    t.comp.flow_animation_start_ms = 123;
+    try t.comp.search.buf.appendSlice(testing.allocator, "before");
+
+    var host = testHost(200, &t.theme);
+    host.focused_has_foreground_process = true;
+    RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
+
+    try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
+    try testing.expect(!t.comp.overlay.isAnimating());
+    try testing.expectEqualStrings("", t.comp.search.text());
+    try testing.expectEqual(@as(?usize, null), t.comp.hovered_entry);
+    try testing.expect(t.comp.escape_pressed);
+    try testing.expectEqual(@as(i64, 0), t.comp.flow_animation_start_ms);
+
+    try testing.expect(t.sendWithBusy(keyUpEvent(c.SDLK_ESCAPE), 200, true));
+    try testing.expect(!t.comp.escape_pressed);
+
+    host.now_ms = 250;
+    host.focused_has_foreground_process = false;
+    RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
 }

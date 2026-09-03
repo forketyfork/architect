@@ -37,6 +37,7 @@ pub const WorktreeOverlayComponent = struct {
     pending_removal_path: ?[]const u8 = null,
     pending_refresh_ms: i64 = 0,
     escape_pressed: bool = false,
+    pill_interactive: bool = true,
     create_input: text_edit.TextInput = .{
         .separators = text_edit.name_separators,
         .max_len = create_name_max_len,
@@ -141,7 +142,7 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        if (!self.available) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -268,9 +269,21 @@ pub const WorktreeOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.available) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(available: bool, focused_busy: bool) bool {
+        return available and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const WorktreeOverlayComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.available, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *WorktreeOverlayComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -281,14 +294,7 @@ pub const WorktreeOverlayComponent = struct {
             self.focused_busy = busy;
             if (busy) {
                 self.available = false;
-                self.destroyCache();
-                self.hovered_entry = null;
-                self.creating = false;
-                self.escape_pressed = false;
-                self.clearCreateInput();
-                if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
-                    self.overlay.startCollapsing(host.now_ms);
-                }
+                self.closeOverlayImmediately();
             } else {
                 self.needs_refresh = true;
             }
@@ -338,15 +344,15 @@ pub const WorktreeOverlayComponent = struct {
             self.needs_refresh = false;
         }
 
-        if (!self.available and self.overlay.state == .Open) {
-            self.overlay.startCollapsing(host.now_ms);
+        if (!self.pillVisible(host) and self.overlay.state != .Closed) {
+            self.closeOverlayImmediately();
         }
     }
 
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (!self.available and !self.creating and !self.confirming_removal) return;
+        if (!self.pillVisible(ui_host) and !self.creating and !self.confirming_removal) return;
 
         if (self.creating) {
             _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
@@ -575,7 +581,6 @@ pub const WorktreeOverlayComponent = struct {
         self.hovered_entry = null;
         self.clearCreateInput();
         self.creating = false;
-        self.escape_pressed = false;
 
         self.setDisplayBase(cwd);
 
@@ -1033,6 +1038,20 @@ pub const WorktreeOverlayComponent = struct {
             self.allocator.free(err);
             self.create_error = null;
         }
+    }
+
+    fn closeOverlayImmediately(self: *WorktreeOverlayComponent) void {
+        self.overlay.closeImmediately();
+        self.destroyCache();
+        self.hovered_entry = null;
+        self.hovered_remove_btn = null;
+        self.creating = false;
+        self.confirming_removal = false;
+        self.clearCreateInput();
+        self.clearPendingRemoval();
+        self.flow_animation_start_ms = 0;
+        self.modal_confirm_hovered = false;
+        self.modal_cancel_hovered = false;
     }
 
     fn clearPendingRemoval(self: *WorktreeOverlayComponent) void {
@@ -1661,4 +1680,49 @@ test "createModalInputStyle uses the active theme colors" {
     try std.testing.expectEqual(@as(u8, 5), style.placeholder.g);
     try std.testing.expectEqual(@as(u8, 6), style.placeholder.b);
     try std.testing.expectEqual(@as(u8, 150), style.placeholder.a);
+}
+
+test "worktree pill is hidden while the focused shell is busy" {
+    try std.testing.expect(WorktreeOverlayComponent.shouldShowPill(true, false));
+    try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(true, true));
+    try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(false, false));
+}
+
+test "busy transition clears the removal confirmation modal" {
+    var component: WorktreeOverlayComponent = .{ .allocator = std.testing.allocator, .io = undefined };
+    component.available = true;
+    component.overlay.state = .Open;
+    component.confirming_removal = true;
+    component.escape_pressed = true;
+    component.pending_removal_index = 0;
+    component.pending_removal_path = try std.testing.allocator.dupe(u8, "/tmp/architect-worktree");
+    component.flow_animation_start_ms = 123;
+
+    var host: types.UiHost = undefined;
+    host.now_ms = 100;
+    host.focused_has_foreground_process = true;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    WorktreeOverlayComponent.update(&component, &host, &actions);
+
+    try std.testing.expect(!component.confirming_removal);
+    try std.testing.expectEqual(@as(?usize, null), component.pending_removal_index);
+    try std.testing.expect(component.pending_removal_path == null);
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try std.testing.expect(!component.overlay.isAnimating());
+    try std.testing.expectEqual(@as(i64, 0), component.flow_animation_start_ms);
+    try std.testing.expect(component.escape_pressed);
+
+    var escape_release: c.SDL_Event = undefined;
+    escape_release.type = c.SDL_EVENT_KEY_UP;
+    escape_release.key.key = c.SDLK_ESCAPE;
+    try std.testing.expect(WorktreeOverlayComponent.handleEvent(&component, &host, &escape_release, &actions));
+    try std.testing.expect(!component.escape_pressed);
+
+    host.now_ms = 150;
+    host.focused_cwd = null;
+    host.focused_has_foreground_process = false;
+    WorktreeOverlayComponent.update(&component, &host, &actions);
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -83,6 +84,7 @@ pub const PRDropdownComponent = struct {
     cache: ?*view.Cache = null,
     escape_pressed: bool = false,
     focused_busy: bool = false,
+    pill_interactive: bool = true,
     flow_animation_start_ms: i64 = 0,
 
     pub const button_size_small: c_int = 40;
@@ -150,6 +152,8 @@ pub const PRDropdownComponent = struct {
             }
         }
 
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
+
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
@@ -159,7 +163,6 @@ pub const PRDropdownComponent = struct {
 
                 // Cmd+P toggles overlay (only meaningful inside a GitHub repo)
                 if (has_gui and !has_blocking_mod and key == c.SDLK_P) {
-                    if (!self.is_github_repo) return false;
                     if (self.overlay.state == .Open) {
                         self.closeOverlay(host.now_ms);
                     } else {
@@ -232,7 +235,6 @@ pub const PRDropdownComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (!self.is_github_repo) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -281,9 +283,21 @@ pub const PRDropdownComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.is_github_repo) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(is_github_repo: bool, focused_busy: bool) bool {
+        return is_github_repo and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const PRDropdownComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.is_github_repo, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *PRDropdownComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -308,7 +322,7 @@ pub const PRDropdownComponent = struct {
 
         // Close overlay if no longer applicable.
         if (!self.is_github_repo and self.overlay.state != .Closed) {
-            self.closeOverlay(host.now_ms);
+            self.closeOverlayImmediately();
         }
 
         // Block while focused shell is busy with a foreground process.
@@ -317,9 +331,11 @@ pub const PRDropdownComponent = struct {
             self.focused_busy = busy;
             if (busy) {
                 self.destroyCache();
-                self.hovered_entry = null;
-                self.escape_pressed = false;
             }
+        }
+
+        if (!self.pillVisible(host) and self.overlay.state != .Closed) {
+            self.closeOverlayImmediately();
         }
 
         // Pick up completed background fetch results, including results that
@@ -347,7 +363,7 @@ pub const PRDropdownComponent = struct {
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (!self.is_github_repo) return;
+        if (!self.pillVisible(ui_host)) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
         const radius: c_int = 8;
@@ -418,6 +434,14 @@ pub const PRDropdownComponent = struct {
         self.overlay.startCollapsing(now_ms);
         self.search_query.clear();
         self.refilter();
+    }
+
+    fn closeOverlayImmediately(self: *PRDropdownComponent) void {
+        self.overlay.closeImmediately();
+        self.search_query.clear();
+        self.refilter();
+        self.hovered_entry = null;
+        self.flow_animation_start_ms = 0;
     }
 
     fn fetchIsStale(self: *PRDropdownComponent, now_ms: i64) bool {
@@ -713,4 +737,122 @@ pub const PRDropdownComponent = struct {
 
 test "PR dropdown renders below sibling pill overlays" {
     try std.testing.expect(PRDropdownComponent.component_z_index < 1000);
+}
+
+test "pull request pill is hidden while the focused shell is busy" {
+    try std.testing.expect(PRDropdownComponent.shouldShowPill(true, false));
+    try std.testing.expect(!PRDropdownComponent.shouldShowPill(true, true));
+    try std.testing.expect(!PRDropdownComponent.shouldShowPill(false, false));
+}
+
+const testing = std.testing;
+
+fn testTheme() colors.Theme {
+    const base = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    return .{
+        .background = base,
+        .foreground = base,
+        .selection = base,
+        .accent = base,
+        .palette = [_]c.SDL_Color{base} ** 16,
+    };
+}
+
+fn testHost(now_ms: i64, focused_busy: bool, theme: *const colors.Theme) types.UiHost {
+    return .{
+        .now_ms = now_ms,
+        .window_w = 1200,
+        .window_h = 800,
+        .window_focused = true,
+        .ui_scale = 1.0,
+        .grid_cols = 2,
+        .grid_rows = 2,
+        .cell_w = 8,
+        .cell_h = 16,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = focused_busy,
+        .sessions = &.{},
+        .theme = theme,
+    };
+}
+
+fn keyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = key;
+    event.key.mod = mod;
+    return event;
+}
+
+fn keyUpEvent(key: c.SDL_Keycode) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_UP;
+    event.key.key = key;
+    return event;
+}
+
+fn textEvent(text: [*c]const u8) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_TEXT_INPUT;
+    event.text.text = text;
+    return event;
+}
+
+test "open PR picker does not consume input while the focused shell is busy" {
+    var component: PRDropdownComponent = .{ .allocator = testing.allocator, .io = undefined };
+    defer component.search_query.deinit(testing.allocator);
+    component.is_github_repo = true;
+    component.overlay.state = .Open;
+    try component.search_query.buf.appendSlice(testing.allocator, "before");
+
+    var actions = types.UiActionQueue.init(testing.allocator);
+    defer actions.deinit();
+    var theme = testTheme();
+    const host = testHost(0, true, &theme);
+
+    var typed = textEvent("x");
+    try testing.expect(!PRDropdownComponent.handleEvent(&component, &host, &typed, &actions));
+    try testing.expectEqualStrings("before", component.search_query.text());
+
+    var erased = keyEvent(c.SDLK_BACKSPACE, 0);
+    try testing.expect(!PRDropdownComponent.handleEvent(&component, &host, &erased, &actions));
+    try testing.expectEqualStrings("before", component.search_query.text());
+}
+
+test "busy update immediately closes the PR picker" {
+    var component: PRDropdownComponent = .{ .allocator = testing.allocator, .io = undefined };
+    defer component.search_query.deinit(testing.allocator);
+
+    component.is_github_repo = true;
+    component.overlay.state = .Open;
+    component.escape_pressed = true;
+    component.hovered_entry = 0;
+    component.flow_animation_start_ms = 123;
+    try component.search_query.buf.appendSlice(testing.allocator, "before");
+
+    var actions = types.UiActionQueue.init(testing.allocator);
+    defer actions.deinit();
+    var theme = testTheme();
+    var host = testHost(200, true, &theme);
+    PRDropdownComponent.update(&component, &host, &actions);
+
+    try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try testing.expect(!component.overlay.isAnimating());
+    try testing.expectEqualStrings("", component.search_query.text());
+    try testing.expectEqual(@as(?usize, null), component.hovered_entry);
+    try testing.expect(component.escape_pressed);
+    try testing.expectEqual(@as(i64, 0), component.flow_animation_start_ms);
+
+    var escape_release = keyUpEvent(c.SDLK_ESCAPE);
+    try testing.expect(PRDropdownComponent.handleEvent(&component, &host, &escape_release, &actions));
+    try testing.expect(!component.escape_pressed);
+
+    host.now_ms = 250;
+    host.focused_has_foreground_process = false;
+    PRDropdownComponent.update(&component, &host, &actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
 }

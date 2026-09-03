@@ -345,6 +345,35 @@ On Enter / click:
 runtime.zig dispatch: send `gh pr checkout <number>\n` to the focused shell
 ```
 
+### Top-Right Pill Layout
+
+`PillGroupComponent` owns the top-right shortcut row for help, recent folders,
+worktrees, and pull requests. Each overlay reports whether its pill is
+currently available; the group packs available pills from right to left with a
+fixed gap and applies the resulting x-coordinate to the shared
+`ExpandingOverlay` geometry. When availability or the window geometry changes,
+the existing pills interpolate to their new positions with the shared cubic
+easing function. Newly available pills remain staged outside the row while
+existing pills reflow, then enter in a second eased phase once the occupied
+slots are clear.
+If another availability or geometry change arrives during an entrance, the
+group keeps the entrant's current interpolated position instead of restarting
+it offscreen.
+The group also requests frames for the short layout animation, so the
+transition is visible under idle throttling; newly entering pill hit targets are
+disabled until they reach their clear slots. The worktree, recent-folder, and
+pull-request pills are unavailable while the focused terminal has a foreground
+process, because their actions send commands to that shell. Their event
+handlers reject input at the same boundary, before the scheduled update
+collapses an already-open picker, so foreground-process input cannot be
+consumed by stale UI. A busy or otherwise unavailable transition closes the
+recent-folder, PR, and worktree pickers immediately, resetting their
+transient state instead of exposing a partial collapse. It also clears any
+pending worktree removal confirmation before the modal is hidden.
+The group consumes pointer events over an entering pill so an overlapping
+interactive pill underneath cannot receive the click. Pending Escape releases
+remain consumed even if a busy transition closes the picker before key-up.
+
 ### External Notification Path
 
 ```
@@ -482,7 +511,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `ui/components/modal_frame.zig` | Shared chrome for centered modal dialogs: full-window darkening scrim + rounded filled/bordered panel, and the Escape/⌘W dismiss-key check. Used by `confirm_dialog.zig` and `selection_agent_overlay.zig` so their scrim/panel rendering and dismissal keys can't drift independently | `renderScrimAndPanel()`, `isDismissKey()` | `gfx/primitives`, `geom`, `c` |
 | `ui/components/dropdown_menu.zig` | Reusable vertical list menu: owns open/hover/keyboard-nav state and the committed `selected` index, renders its own cached item-label textures, and reports a `.selected`/`.closed` event on click or Enter/Escape so the owning component reacts (persist the pick, or act on it immediately) instead of tracking hit-testing and highlight rendering itself. Used by `selection_agent_overlay.zig`'s agent selector and `diff_overlay.zig`'s "Send to agent" menu | `DropdownMenu`, `openMenu()`, `close()`, `handleKey()`, `handleClick()`, `handleMotion()`, `itemAt()`, `itemRect()`, `render()` | `gfx/primitives`, `font_cache`, `ui/text_render`, `geom`, `c` |
 | `ui/components/selection_agent_overlay.zig` | Selection action form with highlighted agent selector, multiline prompt field, fully wrapped and scrollable selected-context preview, viewport-bounded context textures, cached UI text, and launch action containing the selected terminal context | `SelectionAgentOverlayComponent`, `open()`, `formatAgentPrompt()` | `ui/text_edit`, `ui/text_render`, `ui/first_frame_guard`, `ui/components/modal_frame`, `ui/components/dropdown_menu`, `ui/components/scrollbar`, `gfx/primitives`, `font_cache`, `geom`, `c` |
-| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), PR dropdown, diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar (its clipped parent-path marquee runs only in a focused Grid view), expanding overlay helper (badge-to-panel animation; `State.isOpenOrOpening()` is the canonical "this overlay owns the keyboard and is visible" test, so input is never dropped during the expand), button, confirm dialog (shares its scrim/panel chrome and dismiss-key check with the selection-agent overlay via `ui/components/modal_frame`), marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), PR dropdown, diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, dynamic pill group, cwd bar (its clipped parent-path marquee runs only in a focused Grid view), expanding overlay helper (badge-to-panel animation; `State.isOpenOrOpening()` is the canonical "this overlay owns the keyboard and is visible" test, so input is never dropped during the expand), button, confirm dialog (shares its scrim/panel chrome and dismiss-key check with the selection-agent overlay via `ui/components/modal_frame`), marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. The pill group additionally owns right-aligned placement and eased membership transitions for the top-right shortcut row. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/pill_group.zig` | Dynamic top-right shortcut-pill layout and overlay coordination. Packs currently available pills with fixed spacing, animates existing pills when membership or window geometry changes, stages newly available pills during reflow, eases their entrance afterward, and synchronizes positions with overlay rendering and hit-testing. | `PillGroupComponent`, `PillLayout` | `ui/components/expanding_overlay`, `ui/components/help_overlay`, `ui/components/recent_folders_overlay`, `ui/components/worktree_overlay`, `ui/components/pr_dropdown`, `ui/first_frame_guard`, `anim/easing`, `dpi` |
 | `ui/components/pr_dropdown.zig` | GitHub pull request picker orchestration: owns focused-repository state, input/lifecycle handling, repository-keyed worker jobs, stale-result filtering, branch badges, and checkout actions | `PRDropdownComponent` | `ui/components/pr_dropdown_model`, `ui/components/pr_dropdown_repo`, `ui/components/pr_dropdown_fetch`, `ui/components/pr_dropdown_view`, `ui/components/expanding_overlay`, `ui/components/search_utils`, `ui/text_edit`, `ui/types`, `geom`, `c` |
 | `ui/components/pr_dropdown_model.zig` | Pull request and fetch result types plus pure repository/result matching predicates | `PullRequest`, `FetchStatus`, `FetchResult`, `freeFetchResult()`, `prNumberForBranch()` | std |
 | `ui/components/pr_dropdown_repo.zig` | Synchronous repository discovery: `.git` and worktree config/HEAD resolution and GitHub origin detection | `findRepoRoot()`, `detectGithubOrigin()`, `readCurrentBranch()`, `originUrlIsGithub()` | std |

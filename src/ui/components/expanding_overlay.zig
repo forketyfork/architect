@@ -9,6 +9,7 @@ pub const ExpandingOverlay = struct {
     start_size: c_int,
     target_size: c_int,
     slot: usize,
+    layout_x: ?c_int = null,
     margin: c_int,
     small_size: c_int,
     large_size: c_int,
@@ -46,6 +47,12 @@ pub const ExpandingOverlay = struct {
         self.content_height = height;
     }
 
+    /// Sets the left edge of the collapsed pill. Expanded rectangles keep the
+    /// same right edge, so the panel grows to the left from this position.
+    pub fn setLayoutX(self: *ExpandingOverlay, x: c_int) void {
+        self.layout_x = x;
+    }
+
     pub fn startExpanding(self: *ExpandingOverlay, now: i64) void {
         self.state = .Expanding;
         self.start_time = now;
@@ -61,6 +68,12 @@ pub const ExpandingOverlay = struct {
         self.state = .Collapsing;
         self.start_time = now;
         self.start_size = from;
+        self.target_size = self.small_size;
+    }
+
+    pub fn closeImmediately(self: *ExpandingOverlay) void {
+        self.state = .Closed;
+        self.start_size = self.small_size;
         self.target_size = self.small_size;
     }
 
@@ -91,8 +104,13 @@ pub const ExpandingOverlay = struct {
         _ = window_height;
         const margin = dpi.scale(self.margin, ui_scale);
         const size = self.currentSize(now, ui_scale);
+        const small = dpi.scale(self.small_size, ui_scale);
+        const large = dpi.scale(self.large_size, ui_scale);
         const spacing = dpi.scale(self.small_size + self.margin, ui_scale);
-        const x = window_width - margin - size - @as(c_int, @intCast(self.slot)) * spacing;
+        const x = if (self.layout_x) |collapsed_x|
+            collapsed_x - (size - small)
+        else
+            window_width - margin - size - @as(c_int, @intCast(self.slot)) * spacing;
         const y = margin;
 
         const height = blk: {
@@ -100,8 +118,6 @@ pub const ExpandingOverlay = struct {
                 break :blk size;
             }
 
-            const small = dpi.scale(self.small_size, ui_scale);
-            const large = dpi.scale(self.large_size, ui_scale);
             // content_height is already scaled by the overlay component
             const target_height = self.content_height;
 
@@ -149,4 +165,24 @@ test "collapsing from the open state starts at full size" {
     overlay.startCollapsing(1000);
     try std.testing.expectEqual(@as(c_int, 400), overlay.currentSize(1000, 1.0));
     try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(1200, 1.0));
+}
+
+test "closeImmediately resets the overlay to its collapsed state" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    overlay.startExpanding(0);
+    overlay.closeImmediately();
+
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, overlay.state);
+    try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(100, 1.0));
+    try std.testing.expect(!overlay.isAnimating());
+}
+
+test "layout position keeps the expanded overlay right edge anchored" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    overlay.setLayoutX(600);
+    overlay.startExpanding(0);
+
+    const rect = overlay.rect(100, 800, 800, 1.0);
+    try std.testing.expectEqual(@as(c_int, 420), rect.x);
+    try std.testing.expectEqual(@as(c_int, 640), rect.x + rect.w);
 }

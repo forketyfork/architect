@@ -72,6 +72,7 @@ test {
     _ = @import("ui/components/markdown_parser.zig");
     _ = @import("ui/components/markdown_renderer.zig");
     _ = @import("ui/components/metrics_overlay.zig");
+    _ = @import("ui/components/pill_group.zig");
     _ = @import("ui/components/quit_blocking_overlay.zig");
     _ = @import("ui/components/recent_folders_overlay.zig");
     _ = @import("ui/components/pr_dropdown.zig");
