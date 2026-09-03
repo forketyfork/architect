@@ -71,6 +71,12 @@ pub const ExpandingOverlay = struct {
         self.target_size = self.small_size;
     }
 
+    pub fn closeImmediately(self: *ExpandingOverlay) void {
+        self.state = .Closed;
+        self.start_size = self.small_size;
+        self.target_size = self.small_size;
+    }
+
     pub fn isAnimating(self: *const ExpandingOverlay) bool {
         return self.state == .Expanding or self.state == .Collapsing;
     }
@@ -159,6 +165,16 @@ test "collapsing from the open state starts at full size" {
     overlay.startCollapsing(1000);
     try std.testing.expectEqual(@as(c_int, 400), overlay.currentSize(1000, 1.0));
     try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(1200, 1.0));
+}
+
+test "closeImmediately resets the overlay to its collapsed state" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    overlay.startExpanding(0);
+    overlay.closeImmediately();
+
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, overlay.state);
+    try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(100, 1.0));
+    try std.testing.expect(!overlay.isAnimating());
 }
 
 test "layout position keeps the expanded overlay right edge anchored" {

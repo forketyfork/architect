@@ -303,6 +303,15 @@ pub const RecentFoldersOverlayComponent = struct {
         self.refilter();
     }
 
+    fn closeOverlayImmediately(self: *RecentFoldersOverlayComponent) void {
+        self.overlay.closeImmediately();
+        self.search.clear();
+        self.refilter();
+        self.hovered_entry = null;
+        self.escape_pressed = false;
+        self.flow_animation_start_ms = 0;
+    }
+
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
         if (!self.pillVisible(host)) return false;
@@ -326,16 +335,11 @@ pub const RecentFoldersOverlayComponent = struct {
             self.focused_busy = busy;
             if (busy) {
                 self.destroyCache();
-                self.hovered_entry = null;
-                self.escape_pressed = false;
-                if (self.overlay.state == .Open or self.overlay.state == .Expanding) {
-                    self.closeOverlay(host.now_ms);
-                }
             }
         }
 
-        if (!self.pillVisible(host) and self.overlay.state.isOpenOrOpening()) {
-            self.closeOverlay(host.now_ms);
+        if (!self.pillVisible(host) and self.overlay.state != .Closed) {
+            self.closeOverlayImmediately();
         }
 
         if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
@@ -1064,4 +1068,32 @@ test "open recent folders picker does not consume input while the focused shell 
 
     try testing.expect(!t.sendWithBusy(keyEvent(c.SDLK_BACKSPACE, 0), 0, true));
     try testing.expectEqualStrings("before", t.comp.search.text());
+}
+
+test "busy update immediately closes the recent folders picker" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    addTestFolder(&t);
+    t.comp.overlay.state = .Open;
+    t.comp.escape_pressed = true;
+    t.comp.hovered_entry = 0;
+    t.comp.flow_animation_start_ms = 123;
+    try t.comp.search.buf.appendSlice(testing.allocator, "before");
+
+    var host = testHost(200, &t.theme);
+    host.focused_has_foreground_process = true;
+    RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
+
+    try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
+    try testing.expect(!t.comp.overlay.isAnimating());
+    try testing.expectEqualStrings("", t.comp.search.text());
+    try testing.expectEqual(@as(?usize, null), t.comp.hovered_entry);
+    try testing.expect(!t.comp.escape_pressed);
+    try testing.expectEqual(@as(i64, 0), t.comp.flow_animation_start_ms);
+
+    host.now_ms = 250;
+    host.focused_has_foreground_process = false;
+    RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
 }

@@ -353,13 +353,17 @@ currently available; the group packs available pills from right to left with a
 fixed gap and applies the resulting x-coordinate to the shared
 `ExpandingOverlay` geometry. When availability or the window geometry changes,
 the existing pills interpolate to their new positions with the shared cubic
-easing function. The group also requests frames for the short layout animation,
-so the transition is visible under idle throttling. The worktree, recent-folder,
-and pull-request pills are unavailable while the focused terminal has a
-foreground process, because their actions send commands to that shell. Their
-event handlers reject input at the same boundary, before the scheduled update
+easing function. Newly available pills remain staged outside the row while
+existing pills reflow, then join the row once the occupied slots are clear.
+The group also requests frames for the short layout animation, so the
+transition is visible under idle throttling. The worktree, recent-folder, and
+pull-request pills are unavailable while the focused terminal has a foreground
+process, because their actions send commands to that shell. Their event
+handlers reject input at the same boundary, before the scheduled update
 collapses an already-open picker, so foreground-process input cannot be
-consumed by stale UI. A busy transition also clears any pending worktree
+consumed by stale UI. A busy or otherwise unavailable transition closes the
+recent-folder and PR pickers immediately, resetting their transient state
+instead of exposing a partial collapse. It also clears any pending worktree
 removal confirmation before the modal is hidden.
 
 ### External Notification Path

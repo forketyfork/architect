@@ -317,7 +317,7 @@ pub const PRDropdownComponent = struct {
 
         // Close overlay if no longer applicable.
         if (!self.is_github_repo and self.overlay.state != .Closed) {
-            self.closeOverlay(host.now_ms);
+            self.closeOverlayImmediately();
         }
 
         // Block while focused shell is busy with a foreground process.
@@ -326,12 +326,11 @@ pub const PRDropdownComponent = struct {
             self.focused_busy = busy;
             if (busy) {
                 self.destroyCache();
-                self.hovered_entry = null;
-                self.escape_pressed = false;
             }
         }
-        if (busy and self.overlay.state.isOpenOrOpening()) {
-            self.closeOverlay(host.now_ms);
+
+        if (!self.pillVisible(host) and self.overlay.state != .Closed) {
+            self.closeOverlayImmediately();
         }
 
         // Pick up completed background fetch results, including results that
@@ -430,6 +429,15 @@ pub const PRDropdownComponent = struct {
         self.overlay.startCollapsing(now_ms);
         self.search_query.clear();
         self.refilter();
+    }
+
+    fn closeOverlayImmediately(self: *PRDropdownComponent) void {
+        self.overlay.closeImmediately();
+        self.search_query.clear();
+        self.refilter();
+        self.hovered_entry = null;
+        self.escape_pressed = false;
+        self.flow_animation_start_ms = 0;
     }
 
     fn fetchIsStale(self: *PRDropdownComponent, now_ms: i64) bool {
@@ -802,4 +810,34 @@ test "open PR picker does not consume input while the focused shell is busy" {
     var erased = keyEvent(c.SDLK_BACKSPACE, 0);
     try testing.expect(!PRDropdownComponent.handleEvent(&component, &host, &erased, &actions));
     try testing.expectEqualStrings("before", component.search_query.text());
+}
+
+test "busy update immediately closes the PR picker" {
+    var component: PRDropdownComponent = .{ .allocator = testing.allocator, .io = undefined };
+    defer component.search_query.deinit(testing.allocator);
+
+    component.is_github_repo = true;
+    component.overlay.state = .Open;
+    component.escape_pressed = true;
+    component.hovered_entry = 0;
+    component.flow_animation_start_ms = 123;
+    try component.search_query.buf.appendSlice(testing.allocator, "before");
+
+    var actions = types.UiActionQueue.init(testing.allocator);
+    defer actions.deinit();
+    var theme = testTheme();
+    var host = testHost(200, true, &theme);
+    PRDropdownComponent.update(&component, &host, &actions);
+
+    try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try testing.expect(!component.overlay.isAnimating());
+    try testing.expectEqualStrings("", component.search_query.text());
+    try testing.expectEqual(@as(?usize, null), component.hovered_entry);
+    try testing.expect(!component.escape_pressed);
+    try testing.expectEqual(@as(i64, 0), component.flow_animation_start_ms);
+
+    host.now_ms = 250;
+    host.focused_has_foreground_process = false;
+    PRDropdownComponent.update(&component, &host, &actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
 }
