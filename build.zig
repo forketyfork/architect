@@ -69,8 +69,8 @@ pub fn build(b: *std.Build) void {
         else => "src/c/pty_linux.h",
     };
     _ = addTranslateCModule(b, exe_mod, "c_pty", pty_header, target, optimize);
-    _ = addTranslateCModule(b, exe_mod, "c_stdlib", "src/c/stdlib.h", target, optimize);
-    _ = addTranslateCModule(b, exe_mod, "c_time", "src/c/time.h", target, optimize);
+    _ = addTranslateCModule(b, exe_mod, "c_stdlib", "src/c/libc_stdlib.h", target, optimize);
+    _ = addTranslateCModule(b, exe_mod, "c_time", "src/c/libc_time.h", target, optimize);
 
     if (target.result.os.tag == .macos) {
         _ = addTranslateCModule(b, exe_mod, "c_libproc", "src/c/libproc.h", target, optimize);
