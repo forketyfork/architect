@@ -18,6 +18,7 @@ const argv_len: comptime_int = switch (builtin.os.tag) {
 
 const ThreadContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     argv: [argv_len][]const u8,
 
@@ -27,16 +28,14 @@ const ThreadContext = struct {
     }
 };
 
-pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
-    // Use c_allocator because it's thread-safe and the context is freed on a worker thread.
-    const thread_allocator = std.heap.c_allocator;
+pub fn openUrl(allocator: std.mem.Allocator, io: std.Io, url: []const u8) OpenError!void {
+    const ctx = allocator.create(ThreadContext) catch return error.OutOfMemory;
+    errdefer allocator.destroy(ctx);
 
-    const ctx = thread_allocator.create(ThreadContext) catch return error.OutOfMemory;
-    errdefer thread_allocator.destroy(ctx);
-
-    ctx.allocator = thread_allocator;
-    ctx.url = thread_allocator.dupe(u8, url) catch return error.OutOfMemory;
-    errdefer thread_allocator.free(ctx.url);
+    ctx.allocator = allocator;
+    ctx.io = io;
+    ctx.url = allocator.dupe(u8, url) catch return error.OutOfMemory;
+    errdefer allocator.free(ctx.url);
 
     ctx.argv = switch (builtin.os.tag) {
         .linux, .freebsd => .{ "xdg-open", ctx.url },
@@ -57,9 +56,7 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
 fn openUrlThread(ctx: *ThreadContext) void {
     defer ctx.deinit();
 
-    var threaded: std.Io.Threaded = .init(ctx.allocator, .{});
-    defer threaded.deinit();
-    _ = proc.spawnDetached(ctx.allocator, threaded.io(), &ctx.argv) catch |err| {
+    _ = proc.spawnDetached(ctx.io, &ctx.argv) catch |err| {
         log.warn("failed to open URL '{s}': {}", .{ ctx.url, err });
         return;
     };

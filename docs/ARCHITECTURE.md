@@ -91,7 +91,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- `main(init: std.process.Init)` passes `init.io` to `runtime.run(io, ...)`, which threads it through the application, session, and UI layers. I/O-owning structs store it beside their allocator; worker contexts copy it when their thread outlives the spawner.
+- `main(init: std.process.Init)` passes `init.gpa` and `init.io` to `runtime.run(allocator, io, ...)`, which threads them through the application, session, and UI layers. I/O-owning structs store them together; worker contexts copy `io` when their thread outlives the spawner.
 - Background threads are intentionally limited to four cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY reader (`session/pty_reader.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification listener and control listener block in `poll(2)` on the listening socket plus a `WakePipe` self-pipe (`src/wake_pipe.zig`); shutdown stores the stop flag and signals the pipe, so no thread ever sleeps in a fixed-interval loop. The notification listener, control listener, and PTY reader also post a custom SDL wake event after queueing work or draining PTY bytes, so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY reader blocks in `poll(2)` on the master fds of all spawned sessions plus its `WakePipe`, which `register`/`retire` and shutdown signal; when one becomes readable, it drains it into that session's mutex-guarded ring buffer (`PtyOutputBuffer`, 1 MiB) — so producer processes are never backpressured by render pacing, and DEC-2026 sync windows close in the buffer as fast as the producer writes them. Sessions register their fd+buffer on spawn and retire it during teardown; reads happen only under the registry mutex, so `retire()` returning guarantees the reader can no longer touch the fd or buffer. The main thread's `processOutput` consumes from the buffer (VT parsing stays main-thread-only) and clears a shared `wake_pending` flag at the top of each frame; the reader posts at most one SDL wake event per frame via that flag.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
@@ -139,10 +139,10 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 ```
 main(init: std.process.Init)
-    | init.io
+    | init.gpa, init.io
     v
-runtime.run(io, ...)
-    | explicit parameter or stored field
+runtime.run(allocator, io, ...)
+    | explicit parameters or stored fields
     +--> application and session layers
     +--> UI components that perform I/O
     +--> copied into worker-thread contexts
@@ -482,7 +482,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main(init: std.process.Init)`, `std_options.logFn` | `app/runtime`, `logging` |
 | `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main(init: std.process.Init)`, `run()` | `app/control` module import, std |
-| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run(io, ...)`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run(allocator, io, ...)`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/frame_schedule.zig` | Pure change-driven frame scheduling policy: render demand classification, output cadence, timer deadlines, occlusion handling, and SDL wait timeout conversion | `Demand`, `Input`, `Schedule`, `schedule()`, `waitTimeoutMs()` | std |
 | `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |

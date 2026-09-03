@@ -1030,9 +1030,7 @@ test "SpawnQueue drains queued requests" {
 
 test "control thread stops promptly when signaled while blocked in poll" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     std.Io.Dir.cwd().createDirPath(io, ".tmp") catch |err| switch (err) {
         error.PathAlreadyExists => {},

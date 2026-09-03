@@ -188,6 +188,9 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 - `std.process.Child` keeps only `kill(io)` and `wait(io)`. Creation is `std.process.spawn(io, opts)`; the collect-output pattern is `std.process.run(gpa, io, opts)`. `Child.Term` tags are lowercase (`.exited`, `.signal`, `.stopped`, `.unknown`) and `signal` carries `std.posix.SIG`, not `u32`. Use `src/proc.zig` for the application process helpers.
 - Link and include configuration lives on `std.Build.Module`, not `std.Build.Step.Compile`. `link_libc` is a Module field, settable in `b.createModule`.
 - `std.posix.getenv` is gone. Read the environment through `src/env.zig`.
+- `std.fmt.bufPrintZ` is deprecated; use `std.fmt.bufPrintSentinel(buf, fmt, args, 0)`.
+- Default `std.heap.DebugAllocator` initialization is deprecated; prefer `init.gpa` from `main` or the `.init` declaration when a local allocator is unavoidable.
+- Tests use `std.testing.io` rather than constructing `std.Io.Threaded` instances.
 
 ### Inventory greps for std API migrations
 `const fs = std.fs;` and `const posix = std.posix;` aliases hide call sites from a `std.`-qualified grep — this cost real time during the 0.16 migration. Always match `\b(std\.)?fs\.` and `\b(std\.)?posix\.`. When excluding survivors, put the underscore in the character class: `fs\.[A-Za-z]+` truncates `fs.max_path_bytes` to `fs.max` and lets it slip past the filter.

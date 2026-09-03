@@ -364,7 +364,7 @@ pub const StoryOverlayComponent = struct {
 
                     if (self.linkHitIndexAt(mouse_x, mouse_y)) |hit_idx| {
                         const href = self.link_hits.items[hit_idx].href;
-                        open_url.openUrl(self.allocator, href) catch |err| {
+                        open_url.openUrl(self.allocator, self.io, href) catch |err| {
                             log.warn("failed to open story link {s}: {}", .{ href, err });
                         };
                         return true;

@@ -59,6 +59,7 @@ pub const ToggleResult = enum {
 
 pub const ReaderOverlayComponent = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sessions: []*SessionState,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
@@ -87,10 +88,11 @@ pub const ReaderOverlayComponent = struct {
     const base_font_size: c_int = 14;
     const code_font_size: c_int = 13;
 
-    pub fn init(allocator: std.mem.Allocator, sessions: []*SessionState) !*ReaderOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, sessions: []*SessionState) !*ReaderOverlayComponent {
         const comp = try allocator.create(ReaderOverlayComponent);
         comp.* = .{
             .allocator = allocator,
+            .io = io,
             .sessions = sessions,
             .arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT),
             .pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER),
@@ -794,7 +796,7 @@ pub const ReaderOverlayComponent = struct {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     if (self.linkHitIndexAt(mx, my)) |hit_idx| {
                         const href = self.link_hits.items[hit_idx].href;
-                        open_url.openUrl(self.allocator, href) catch |err| {
+                        open_url.openUrl(self.allocator, self.io, href) catch |err| {
                             log.warn("failed to open reader link {s}: {}", .{ href, err });
                         };
                         return true;

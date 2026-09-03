@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    try runtime.run(init.io, parsed.log_dir_override);
+    try runtime.run(init.gpa, init.io, parsed.log_dir_override);
 }
 
 // Zig only collects tests from files reachable through this block, so every

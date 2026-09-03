@@ -308,10 +308,11 @@ pub const QuitConfirmComponent = struct {
         const plural = if (self.process_count == 1) "" else "s";
         const verb = if (self.process_count == 1) "has" else "have";
         const process_plural = if (self.process_count == 1) "" else "es";
-        return std.fmt.bufPrintZ(
+        return std.fmt.bufPrintSentinel(
             buffer,
             "{d} terminal{s} {s} running process{s}. Quit anyway?",
             .{ self.process_count, plural, verb, process_plural },
+            0,
         ) catch |err| blk: {
             log.warn("failed to format quit message: {}", .{err});
             break :blk "Quit anyway?";

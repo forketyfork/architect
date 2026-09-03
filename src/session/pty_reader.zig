@@ -529,9 +529,7 @@ test "PtyReader snapshot distinguishes full and closed buffers" {
 
 test "registering an fd wakes a reader that is blocked with nothing to poll" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var wake = try wake_pipe.WakePipe.init();
     defer wake.deinit();
@@ -568,9 +566,8 @@ test "registering an fd wakes a reader that is blocked with nothing to poll" {
 
 test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
+    const io = std.testing.io;
+    const buffer = try PtyOutputBuffer.create(allocator, io);
     defer buffer.destroy(allocator);
 
     var fds: [2]posix.fd_t = undefined;
@@ -580,12 +577,12 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
 
     var wake = try wake_pipe.WakePipe.init();
     defer wake.deinit();
-    var reader = PtyReader.init(threaded.io(), &wake);
+    var reader = PtyReader.init(io, &wake);
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
     var wake_count = atomic.Value(usize).init(0);
 
-    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, .{
+    const thread = try start(io, &reader, &stop, &wake_pending, .{
         .context = &wake_count,
         .callback = incrementWakeCount,
     });
@@ -598,27 +595,26 @@ test "PtyReader thread drains a pipe into the buffer and posts one wake" {
     reader.register(fds[0], buffer);
     _ = try posix_util.write(fds[1], "ping");
 
-    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(io, buffer, 2_000));
     try std.testing.expect(wake_pending.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     _ = try posix_util.write(fds[1], "pong");
-    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
+    clock.sleepNanos(io, 300 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(usize, 1), wake_count.load(.seq_cst));
 
     var out: [16]u8 = undefined;
     _ = buffer.consume(&out);
     wake_pending.store(false, .seq_cst);
     _ = try posix_util.write(fds[1], "again");
-    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(io, buffer, 2_000));
     try std.testing.expectEqual(@as(usize, 2), wake_count.load(.seq_cst));
 }
 
 test "PtyReader.retire prevents any further reads of the fd" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const buffer = try PtyOutputBuffer.create(allocator, threaded.io());
+    const io = std.testing.io;
+    const buffer = try PtyOutputBuffer.create(allocator, io);
     defer buffer.destroy(allocator);
 
     var fds: [2]posix.fd_t = undefined;
@@ -628,11 +624,11 @@ test "PtyReader.retire prevents any further reads of the fd" {
 
     var wake = try wake_pipe.WakePipe.init();
     defer wake.deinit();
-    var reader = PtyReader.init(threaded.io(), &wake);
+    var reader = PtyReader.init(io, &wake);
     var stop = atomic.Value(bool).init(false);
     var wake_pending = atomic.Value(bool).init(false);
 
-    const thread = try start(threaded.io(), &reader, &stop, &wake_pending, null);
+    const thread = try start(io, &reader, &stop, &wake_pending, null);
     defer {
         stop.store(true, .seq_cst);
         wake.signal();
@@ -641,12 +637,12 @@ test "PtyReader.retire prevents any further reads of the fd" {
 
     reader.register(fds[0], buffer);
     _ = try posix_util.write(fds[1], "before");
-    try std.testing.expect(waitForBufferBytes(threaded.io(), buffer, 2_000));
+    try std.testing.expect(waitForBufferBytes(io, buffer, 2_000));
     var out: [32]u8 = undefined;
     _ = buffer.consume(&out);
 
     reader.retire(fds[0]);
     _ = try posix_util.write(fds[1], "after");
-    clock.sleepNanos(threaded.io(), 300 * std.time.ns_per_ms);
+    clock.sleepNanos(io, 300 * std.time.ns_per_ms);
     try std.testing.expect(!bufferHasBytes(buffer));
 }

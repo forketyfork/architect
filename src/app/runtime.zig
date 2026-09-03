@@ -1418,11 +1418,7 @@ fn startQuitFlow(
     return false;
 }
 
-pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const u8) !void {
     // Socket listener relays external "awaiting approval / done" signals from
     // shells (or other tools) into the UI thread without blocking rendering.
     var notify_queue = NotificationQueue{};
@@ -1797,7 +1793,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
         pending_sends.deinit(allocator);
     }
 
-    const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
+    const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, io, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
@@ -1863,7 +1859,7 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
     try ui.register(metrics_overlay_component.asComponent());
     const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator, io);
     try ui.register(diff_overlay_component.asComponent());
-    const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
+    const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, io, sessions);
     try ui.register(reader_overlay_component.asComponent());
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator, io);
     try ui.register(story_overlay_component.asComponent());
@@ -2995,11 +2991,11 @@ pub fn run(io: std.Io, log_dir_override: ?[]const u8) !void {
                     if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘,", now);
 
                     if (builtin.os.tag == .macos) {
-                        _ = proc.spawnDetached(allocator, io, &.{ "open", "-t", config_path }) catch |err| {
+                        _ = proc.spawnDetached(io, &.{ "open", "-t", config_path }) catch |err| {
                             std.debug.print("Failed to open config file: {}\n", .{err});
                         };
                     } else {
-                        open_url.openUrl(allocator, config_path) catch |err| {
+                        open_url.openUrl(allocator, io, config_path) catch |err| {
                             std.debug.print("Failed to open config file: {}\n", .{err});
                         };
                     }

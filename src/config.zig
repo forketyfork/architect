@@ -1176,9 +1176,7 @@ test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
 
 test "Persistence save/load round-trip preserves all fields" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1269,9 +1267,7 @@ test "Persistence treats missing onboarding state as already shown" {
 
 test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
