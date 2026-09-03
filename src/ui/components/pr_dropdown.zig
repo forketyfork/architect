@@ -159,7 +159,7 @@ pub const PRDropdownComponent = struct {
 
                 // Cmd+P toggles overlay (only meaningful inside a GitHub repo)
                 if (has_gui and !has_blocking_mod and key == c.SDLK_P) {
-                    if (!self.is_github_repo) return false;
+                    if (!self.pillVisible(host)) return false;
                     if (self.overlay.state == .Open) {
                         self.closeOverlay(host.now_ms);
                     } else {
@@ -232,7 +232,7 @@ pub const PRDropdownComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (!self.is_github_repo) return false;
+                if (!self.pillVisible(host)) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -281,9 +281,17 @@ pub const PRDropdownComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.is_github_repo) return false;
+        if (!self.pillVisible(host)) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(is_github_repo: bool, focused_busy: bool) bool {
+        return is_github_repo and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const PRDropdownComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.is_github_repo, host.focused_has_foreground_process);
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -321,6 +329,9 @@ pub const PRDropdownComponent = struct {
                 self.escape_pressed = false;
             }
         }
+        if (busy and self.overlay.state.isOpenOrOpening()) {
+            self.closeOverlay(host.now_ms);
+        }
 
         // Pick up completed background fetch results, including results that
         // belong to a repository that is no longer focused.
@@ -347,7 +358,7 @@ pub const PRDropdownComponent = struct {
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (!self.is_github_repo) return;
+        if (!self.pillVisible(ui_host)) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
         const radius: c_int = 8;
@@ -713,4 +724,10 @@ pub const PRDropdownComponent = struct {
 
 test "PR dropdown renders below sibling pill overlays" {
     try std.testing.expect(PRDropdownComponent.component_z_index < 1000);
+}
+
+test "pull request pill is hidden while the focused shell is busy" {
+    try std.testing.expect(PRDropdownComponent.shouldShowPill(true, false));
+    try std.testing.expect(!PRDropdownComponent.shouldShowPill(true, true));
+    try std.testing.expect(!PRDropdownComponent.shouldShowPill(false, false));
 }

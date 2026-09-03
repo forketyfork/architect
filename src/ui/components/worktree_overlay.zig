@@ -141,7 +141,7 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        if (!self.available) return false;
+        if (!self.available or host.focused_has_foreground_process) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -268,9 +268,17 @@ pub const WorktreeOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.available) return false;
+        if (!self.pillVisible(host)) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(available: bool, focused_busy: bool) bool {
+        return available and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const WorktreeOverlayComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.available, host.focused_has_foreground_process);
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -346,7 +354,7 @@ pub const WorktreeOverlayComponent = struct {
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (!self.available and !self.creating and !self.confirming_removal) return;
+        if (!self.pillVisible(ui_host) and !self.creating and !self.confirming_removal) return;
 
         if (self.creating) {
             _ = self.ensureCache(renderer, ui_host.ui_scale, assets, ui_host.theme);
@@ -1661,4 +1669,10 @@ test "createModalInputStyle uses the active theme colors" {
     try std.testing.expectEqual(@as(u8, 5), style.placeholder.g);
     try std.testing.expectEqual(@as(u8, 6), style.placeholder.b);
     try std.testing.expectEqual(@as(u8, 150), style.placeholder.a);
+}
+
+test "worktree pill is hidden while the focused shell is busy" {
+    try std.testing.expect(WorktreeOverlayComponent.shouldShowPill(true, false));
+    try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(true, true));
+    try std.testing.expect(!WorktreeOverlayComponent.shouldShowPill(false, false));
 }

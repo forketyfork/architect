@@ -162,6 +162,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (!self.pillVisible(host)) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -214,6 +215,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
                 // Cmd+O toggles overlay
                 if (has_gui and !has_blocking_mod and key == c.SDLK_O) {
+                    if (!self.pillVisible(host)) return false;
                     if (self.overlay.state.isOpenOrOpening()) {
                         self.closeOverlay(host.now_ms);
                     } else {
@@ -303,8 +305,17 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
+        if (!self.pillVisible(host)) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
+    }
+
+    pub fn shouldShowPill(folder_count: usize, focused_busy: bool) bool {
+        return folder_count > 0 and !focused_busy;
+    }
+
+    pub fn pillVisible(self: *const RecentFoldersOverlayComponent, host: *const types.UiHost) bool {
+        return shouldShowPill(self.all_folders.items.len, host.focused_has_foreground_process);
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -321,6 +332,10 @@ pub const RecentFoldersOverlayComponent = struct {
                     self.closeOverlay(host.now_ms);
                 }
             }
+        }
+
+        if (!self.pillVisible(host) and self.overlay.state.isOpenOrOpening()) {
+            self.closeOverlay(host.now_ms);
         }
 
         if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
@@ -348,7 +363,7 @@ pub const RecentFoldersOverlayComponent = struct {
     fn render(self_ptr: *anyopaque, ui_host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.first_frame.markDrawn();
-        if (self.all_folders.items.len == 0) return;
+        if (!self.pillVisible(ui_host)) return;
 
         const rect = self.overlay.rect(ui_host.now_ms, ui_host.window_w, ui_host.window_h, ui_host.ui_scale);
         const radius: c_int = 8;
@@ -902,6 +917,13 @@ const TestComponent = struct {
     }
 };
 
+fn addTestFolder(t: *TestComponent) void {
+    const folders = [_]config.Persistence.RecentFolder{
+        .{ .path = "/tmp/architect-test-folder", .count = 1 },
+    };
+    t.comp.setFolders(&folders);
+}
+
 test "Cmd+Backspace clears the search query and Alt+Backspace drops one segment" {
     var t = TestComponent.init();
     defer t.deinit();
@@ -938,6 +960,7 @@ test "keys typed during the expand animation reach the search query" {
 
     // Cmd+O starts the expand; the overlay is .Expanding, not .Open, for the
     // whole animation, and must already own the keyboard.
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
     try testing.expectEqual(ExpandingOverlay.State.Expanding, t.comp.overlay.state);
 
@@ -953,6 +976,7 @@ test "Cmd+O during the expand animation closes the overlay" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 0));
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 50));
     try testing.expectEqual(ExpandingOverlay.State.Collapsing, t.comp.overlay.state);
@@ -1006,8 +1030,15 @@ test "the caret blinks while the picker is open" {
     defer t.deinit();
 
     // Opening resets the blink so the caret is solid on the first frame.
+    addTestFolder(&t);
     try testing.expect(t.send(keyEvent(c.SDLK_O, c.SDL_KMOD_GUI), 1000));
     try testing.expect(t.comp.search.caretVisible(1000));
     try testing.expect(!t.comp.search.caretVisible(1600));
     try testing.expect(t.comp.search.caretVisible(2100));
+}
+
+test "recent folders pill is hidden while the focused shell is busy" {
+    try testing.expect(RecentFoldersOverlayComponent.shouldShowPill(1, false));
+    try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(1, true));
+    try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(0, false));
 }
