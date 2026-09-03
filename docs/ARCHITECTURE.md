@@ -391,7 +391,9 @@ Status notifications -> SessionStatus updated (idle -> awaiting_approval)
 Story notifications  -> StoryOverlay opens with file content
     |
     v
-Renderer draws attention border / story overlay
+Renderer draws terminal content and borders; the cwd-bar UI component reasserts
+the focused border after its label so attention tiles keep the same focus-border
+z-order as ordinary tiles.
 ```
 
 ### External MCP Spawn Path
@@ -493,13 +495,13 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `session/pty_reader.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and drains readable ones into per-session SPSC ring buffers; registry with retire handshake so teardown can safely close fds | `PtyReader`, `PtyOutputBuffer`, `start()`, `register()`, `retire()` | std (poll, thread) |
 | `wake_pipe.zig` | Non-blocking self-pipe used to wake blocking background-thread polls for PTY registry changes and shutdown | `WakePipe`, `poll_error_backoff_ns` | `posix_util`, std (poll) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
-| `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting, first-launch onboarding hint | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
+| `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting, first-launch onboarding hint. Exposes the shared focused-border primitive used by the cwd-bar UI component to preserve border z-order after the bar label | `render()`, `RenderCache`, `renderFocusBorder()`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
 | `env.zig`, `clock.zig`, `proc.zig` | Process-environment access, I/O-aware timestamps/sleep, and I/O-aware process execution helpers | `get()`, `now*()`, `sleepNanos()`, `run()`, `spawnDetached()` | std |
 | `ui/root.zig` | UI component registry, z-index dispatch, action drain | `UiRoot`, `register()`, `handleEvent()`, `update()`, `render()`, `needsFrame()` | `ui/component`, `ui/types` |
 | `ui/component.zig` | UI component vtable interface | `UiComponent`, `VTable` (handleEvent, update, render, hitTest, wantsFrame, deinit) | `ui/types`, `c` |
-| `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
+| `ui/types.zig` | Shared UI type definitions, including per-session attention state needed by grid chrome | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
 | `ui/session_view_state.zig` | Per-session UI interaction state (selection, scroll, hover, agent status, scrollbar fade/drag state) | `SessionViewState` (selection, scroll offset, hover, status, terminal scrollbar state) | `app/app_state` (for `SessionStatus` enum), `ui/components/scrollbar` |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
 | `ui/text_edit.zig` | Shared text-field model used by every input (worktree name, recent-folder/reader/story search, diff comments). `TextInput` owns the buffer, caret blink phase and select-all flag, and handles Backspace (⌘ clears / ⌥ word / plain one UTF-8 codepoint), ⌘A, ⌘C and ⌘V. Append-only by design: the caret sits at the end and the only selection is "everything". Components keep layout and rendering, reading `caretVisible()`/`select_all` for the visuals. | `TextInput`, `handleKey()`, `insert()`, `caretVisible()`, `touch()`, `DeleteScope`, `scopeFromMods()`, `backspace()`, `isSingleLineChar()`, `name_separators`, `path_separators`, `prose_separators` | `c` (keycodes, clipboard) |
