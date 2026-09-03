@@ -166,11 +166,14 @@ test "gh resolver finds a known location when PATH omits it" {
     file.close(io);
     const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(directory);
+    try tmp.dir.createDir(io, "empty-path", .default_dir);
+    const path_directory = try tmp.dir.realPathFileAlloc(io, "empty-path", allocator);
+    defer allocator.free(path_directory);
     const expected = try std.fs.path.join(allocator, &.{ directory, "gh" });
     defer allocator.free(expected);
     const known_paths = [_][]const u8{expected};
 
-    const resolved = try resolveExecutablePath(allocator, io, "/usr/bin:/bin", "gh", &known_paths);
+    const resolved = try resolveExecutablePath(allocator, io, path_directory, "gh", &known_paths);
     try std.testing.expect(resolved != null);
     defer allocator.free(resolved.?);
     try std.testing.expectEqualStrings(expected, resolved.?);
