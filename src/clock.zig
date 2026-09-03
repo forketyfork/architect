@@ -30,9 +30,7 @@ pub fn sleepNanos(io: std.Io, nanoseconds: u64) void {
 }
 
 test "the three clock reads agree on the same instant" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     const secs = nowSeconds(io);
     const millis = nowMillis(io);
@@ -54,17 +52,13 @@ test "the three clock reads agree on the same instant" {
 }
 
 test "nowSeconds returns a plausible wall-clock time" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
     // 2026-01-01T00:00:00Z. Guards against a clock source that returns
     // uptime or zero instead of Unix time.
-    try std.testing.expect(nowSeconds(threaded.io()) > 1_767_225_600);
+    try std.testing.expect(nowSeconds(std.testing.io) > 1_767_225_600);
 }
 
 test "sleepNanos advances the clock by at least the requested span" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     const requested_ns: u64 = 5 * std.time.ns_per_ms;
     const before = nowNanos(io);

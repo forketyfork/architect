@@ -99,11 +99,10 @@ pub const AcceptError = error{
     BlockedByFirewall,
 } || std.posix.UnexpectedError;
 
-/// Accepts a connection on `sock` without capturing the peer address, mirroring
-/// Zig 0.15.2's `std.posix.accept(sock, null, null, 0)`. `std.Io.net.Server.accept`
-/// cannot be used here: it treats `EAGAIN` on a non-blocking listening socket as a
-/// programmer bug and panics, but the call sites need non-blocking accept to poll
-/// a stop flag alongside listening for connections.
+/// Accepts a connection on `sock` without capturing the peer address. The
+/// `std.Io.net.Server.accept` implementation panics on `EAGAIN` for a
+/// non-blocking listening socket, while the call sites need non-blocking accept
+/// to poll a stop flag alongside listening for connections.
 pub fn accept(sock: std.posix.fd_t) AcceptError!std.posix.fd_t {
     while (true) {
         const rc = std.posix.system.accept(sock, null, null);

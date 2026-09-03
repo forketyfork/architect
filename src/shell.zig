@@ -664,7 +664,7 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
         return;
     };
 
-    const cache_dir_z = std.fmt.bufPrintZ(&terminfo_dir_buf, "{s}/.cache/architect/terminfo", .{home}) catch {
+    const cache_dir_z = std.fmt.bufPrintSentinel(&terminfo_dir_buf, "{s}/.cache/architect/terminfo", .{home}, 0) catch {
         log.warn("Failed to format terminfo cache path", .{});
         return;
     };
@@ -716,7 +716,7 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
 
     // Write terminfo source to temp file (need null-terminated paths for execve)
     var src_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const src_path_z = std.fmt.bufPrintZ(&src_path_buf, "{s}/xterm-ghostty.ti", .{cache_dir}) catch return;
+    const src_path_z = std.fmt.bufPrintSentinel(&src_path_buf, "{s}/xterm-ghostty.ti", .{cache_dir}, 0) catch return;
 
     const src_file = std.Io.Dir.createFileAbsolute(io, src_path_z, .{}) catch |err| {
         log.warn("Failed to create terminfo source file: {}", .{err});
@@ -743,12 +743,15 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
         null,
     };
 
-    const fork_result = std.c.fork();
+    const fork_result = posix_util.fork() catch |err| {
+        log.warn("Failed to fork for tic ({}), falling back to {s}", .{ err, fallback_term });
+        return;
+    };
     if (fork_result == 0) {
         // Child: exec tic
         _ = std.c.execve(tic_path.ptr, &tic_argv, @ptrCast(std.c.environ));
         std.c._exit(1);
-    } else if (fork_result > 0) {
+    } else {
         // Parent: wait for tic to complete
         var status: c_int = 0;
         _ = std.c.waitpid(fork_result, &status, 0);
@@ -760,8 +763,6 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
         } else {
             log.warn("tic failed to compile terminfo (status={}), falling back to {s}", .{ status, fallback_term });
         }
-    } else {
-        log.warn("Failed to fork for tic, falling back to {s}", .{fallback_term});
     }
 }
 
@@ -772,12 +773,12 @@ fn ensureArchitectCommandSetup(io: std.Io) void {
     const runtime_dir = env.get("XDG_RUNTIME_DIR");
     const home = env.get("HOME");
     const base_dir_z: [:0]const u8 = if (runtime_dir) |dir|
-        std.fmt.bufPrintZ(&architect_command_base_buf, "{s}/architect", .{dir}) catch |err| {
+        std.fmt.bufPrintSentinel(&architect_command_base_buf, "{s}/architect", .{dir}, 0) catch |err| {
             log.warn("failed to format architect runtime path: {}", .{err});
             return;
         }
     else if (home) |home_dir|
-        std.fmt.bufPrintZ(&architect_command_base_buf, "{s}/.cache/architect", .{home_dir}) catch |err| {
+        std.fmt.bufPrintSentinel(&architect_command_base_buf, "{s}/.cache/architect", .{home_dir}, 0) catch |err| {
             log.warn("failed to format architect cache path: {}", .{err});
             return;
         }
@@ -795,7 +796,7 @@ fn ensureArchitectCommandSetup(io: std.Io) void {
         },
     };
 
-    const bin_dir_z = std.fmt.bufPrintZ(&architect_command_dir_buf, "{s}/bin", .{base_dir}) catch |err| {
+    const bin_dir_z = std.fmt.bufPrintSentinel(&architect_command_dir_buf, "{s}/bin", .{base_dir}, 0) catch |err| {
         log.warn("failed to format architect bin path: {}", .{err});
         return;
     };
@@ -809,7 +810,7 @@ fn ensureArchitectCommandSetup(io: std.Io) void {
         },
     };
 
-    const script_path_z = std.fmt.bufPrintZ(&architect_command_path_buf, "{s}/architect", .{bin_dir}) catch |err| {
+    const script_path_z = std.fmt.bufPrintSentinel(&architect_command_path_buf, "{s}/architect", .{bin_dir}, 0) catch |err| {
         log.warn("failed to format architect command path: {}", .{err});
         return;
     };
@@ -846,7 +847,7 @@ fn ensureArchitectZshProfileSetup(io: std.Io) void {
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
     var zsh_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const zsh_dir_z = std.fmt.bufPrintZ(&zsh_dir_buf, "{s}/zsh", .{base_dir}) catch |err| {
+    const zsh_dir_z = std.fmt.bufPrintSentinel(&zsh_dir_buf, "{s}/zsh", .{base_dir}, 0) catch |err| {
         log.warn("failed to format architect zsh dir: {}", .{err});
         return;
     };
@@ -860,7 +861,7 @@ fn ensureArchitectZshProfileSetup(io: std.Io) void {
     };
 
     var env_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const env_path_z = std.fmt.bufPrintZ(&env_path_buf, "{s}/.zshenv", .{zsh_dir_z}) catch |err| {
+    const env_path_z = std.fmt.bufPrintSentinel(&env_path_buf, "{s}/.zshenv", .{zsh_dir_z}, 0) catch |err| {
         log.warn("failed to format architect zsh env path: {}", .{err});
         return;
     };
@@ -877,7 +878,7 @@ fn ensureArchitectZshProfileSetup(io: std.Io) void {
     };
 
     var profile_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const profile_path_z = std.fmt.bufPrintZ(&profile_path_buf, "{s}/.zprofile", .{zsh_dir_z}) catch |err| {
+    const profile_path_z = std.fmt.bufPrintSentinel(&profile_path_buf, "{s}/.zprofile", .{zsh_dir_z}, 0) catch |err| {
         log.warn("failed to format architect zsh profile path: {}", .{err});
         return;
     };
@@ -894,7 +895,7 @@ fn ensureArchitectZshProfileSetup(io: std.Io) void {
     };
 
     var rc_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rc_path_z = std.fmt.bufPrintZ(&rc_path_buf, "{s}/.zshrc", .{zsh_dir_z}) catch |err| {
+    const rc_path_z = std.fmt.bufPrintSentinel(&rc_path_buf, "{s}/.zshrc", .{zsh_dir_z}, 0) catch |err| {
         log.warn("failed to format architect zsh rc path: {}", .{err});
         return;
     };
@@ -911,7 +912,7 @@ fn ensureArchitectZshProfileSetup(io: std.Io) void {
     };
 
     var login_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const login_path_z = std.fmt.bufPrintZ(&login_path_buf, "{s}/.zlogin", .{zsh_dir_z}) catch |err| {
+    const login_path_z = std.fmt.bufPrintSentinel(&login_path_buf, "{s}/.zlogin", .{zsh_dir_z}, 0) catch |err| {
         log.warn("failed to format architect zsh login path: {}", .{err});
         return;
     };
@@ -945,7 +946,7 @@ fn configureZshPathInjection(shell_path: []const u8) void {
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
     var zsh_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const zsh_dir_z = std.fmt.bufPrintZ(&zsh_dir_buf, "{s}/zsh", .{base_dir}) catch |err| {
+    const zsh_dir_z = std.fmt.bufPrintSentinel(&zsh_dir_buf, "{s}/zsh", .{base_dir}, 0) catch |err| {
         log.warn("failed to format architect zsh dir for env: {}", .{err});
         return;
     };
@@ -1002,7 +1003,7 @@ fn findExecutableInPath(io: std.Io, name: []const u8) ?[:0]const u8 {
     var it = std.mem.splitScalar(u8, path_env_slice, ':');
     while (it.next()) |dir| {
         if (dir.len == 0) continue;
-        const candidate = std.fmt.bufPrintZ(&tic_path_buf, "{s}/{s}", .{ dir, name }) catch |err| {
+        const candidate = std.fmt.bufPrintSentinel(&tic_path_buf, "{s}/{s}", .{ dir, name }, 0) catch |err| {
             log.warn("failed to format candidate path: {}", .{err});
             continue;
         };
@@ -1040,8 +1041,7 @@ pub const Shell = struct {
             pty_copy.deinit();
         }
 
-        const pid = std.c.fork();
-        if (pid < 0) return error.ForkFailed;
+        const pid = posix_util.fork() catch return error.ForkFailed;
 
         if (pid == 0) {
             // Match ghostty's order: dup2 first so stdin/stdout/stderr point at the
@@ -1169,13 +1169,11 @@ test "pathContainsEntry" {
 test "bundled terminfo compiles to legacy short-int format" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
+    const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const io = threaded.io();
     const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(tmp_path);
 
@@ -1190,7 +1188,7 @@ test "bundled terminfo compiles to legacy short-int format" {
 
     const tic_path = findExecutableInPath(io, "tic") orelse return error.SkipZigTest;
 
-    const term = try proc.spawnDetached(allocator, io, &.{ tic_path, "-x", "-o", tmp_path, src_path });
+    const term = try proc.spawnDetached(io, &.{ tic_path, "-x", "-o", tmp_path, src_path });
     try testing.expectEqual(proc.Term{ .exited = 0 }, term);
 
     // tic stores the compiled entry in either `78/xterm-ghostty` (hashed,

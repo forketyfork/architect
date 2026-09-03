@@ -151,9 +151,7 @@ fn canonicalizeExecutablePath(
 
 test "gh resolver finds an executable in PATH" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -173,9 +171,7 @@ test "gh resolver finds an executable in PATH" {
 
 test "gh resolver canonicalizes relative PATH entries" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -200,9 +196,7 @@ test "gh resolver canonicalizes relative PATH entries" {
 
 test "gh resolver finds a known location when PATH omits it" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -226,9 +220,7 @@ test "gh resolver finds a known location when PATH omits it" {
 
 test "gh resolver reports no executable when PATH and known locations are empty" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -247,9 +239,7 @@ test "gh resolver skips inaccessible PATH and known candidates" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var path_tmp = std.testing.tmpDir(.{});
     defer path_tmp.cleanup();
@@ -284,9 +274,7 @@ test "gh resolver skips inaccessible PATH and known candidates" {
 
 test "gh resolver skips directory PATH and known candidates" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     var path_tmp = std.testing.tmpDir(.{});
     defer path_tmp.cleanup();

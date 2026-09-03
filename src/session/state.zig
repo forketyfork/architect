@@ -1386,8 +1386,7 @@ test "SessionState assigns incrementing ids" {
 
 test "checkAlive skips waitpid polling when a process watcher owns exit detection" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
+    const io = std.testing.io;
     const theme = colors_mod.Theme.default();
     const size = pty_mod.winsize{
         .ws_row = 24,
@@ -1403,14 +1402,14 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     }
     defer _ = std.c.waitpid(pid, null, 0);
     // Give the forked child a moment to exit and become reapable.
-    clock.sleepNanos(threaded.io(), 50 * std.time.ns_per_ms);
+    clock.sleepNanos(io, 50 * std.time.ns_per_ms);
 
     var pipe_fds: [2]std.posix.fd_t = undefined;
     try posix_util.pipe(&pipe_fds);
     // pty.deinit() only closes the master fd; close the slave ourselves.
     defer _ = std.c.close(pipe_fds[0]);
 
-    var session = try SessionState.init(allocator, threaded.io(), 0, "/bin/zsh", size, notify_sock, theme, null);
+    var session = try SessionState.init(allocator, io, 0, "/bin/zsh", size, notify_sock, theme, null);
     // Closes pipe_fds[1] (master) via shell.deinit() -> pty.deinit().
     defer session.deinit(allocator);
 
@@ -1418,7 +1417,7 @@ test "checkAlive skips waitpid polling when a process watcher owns exit detectio
     session.dead = false;
     session.render_epoch = 1;
     session.shell = shell_mod.Shell{
-        .io = threaded.io(),
+        .io = io,
         .pty = .{ .master = pipe_fds[1], .slave = pipe_fds[0] },
         .child_pid = pid,
     };
