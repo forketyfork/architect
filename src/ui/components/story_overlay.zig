@@ -43,6 +43,7 @@ const AnchorPosition = struct {
 pub const StoryOverlayComponent = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    opener: *open_url.Opener,
     overlay: FullscreenOverlay = .{},
     scrollbar_state: scrollbar.State = .{},
 
@@ -74,11 +75,12 @@ pub const StoryOverlayComponent = struct {
     const marker_width: c_int = 20;
     const code_indent: c_int = 8;
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*StoryOverlayComponent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, opener: *open_url.Opener) !*StoryOverlayComponent {
         const comp = try allocator.create(StoryOverlayComponent);
         comp.* = .{
             .allocator = allocator,
             .io = io,
+            .opener = opener,
             .pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER),
             .arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT),
         };
@@ -364,7 +366,7 @@ pub const StoryOverlayComponent = struct {
 
                     if (self.linkHitIndexAt(mouse_x, mouse_y)) |hit_idx| {
                         const href = self.link_hits.items[hit_idx].href;
-                        open_url.openUrl(self.allocator, self.io, href) catch |err| {
+                        self.opener.open(href) catch |err| {
                             log.warn("failed to open story link {s}: {}", .{ href, err });
                         };
                         return true;

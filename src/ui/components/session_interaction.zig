@@ -37,7 +37,7 @@ const CursorKind = enum { arrow, ibeam, pointer };
 
 pub const SessionInteractionComponent = struct {
     allocator: std.mem.Allocator,
-    io: std.Io,
+    opener: *open_url.Opener,
     sessions: []*SessionState,
     views: []SessionViewState,
     font: *font_mod.Font,
@@ -51,7 +51,7 @@ pub const SessionInteractionComponent = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        io: std.Io,
+        opener: *open_url.Opener,
         sessions: []*SessionState,
         font: *font_mod.Font,
     ) !*SessionInteractionComponent {
@@ -66,7 +66,7 @@ pub const SessionInteractionComponent = struct {
 
         self.* = .{
             .allocator = allocator,
-            .io = io,
+            .opener = opener,
             .sessions = sessions,
             .views = views,
             .font = font,
@@ -250,7 +250,7 @@ pub const SessionInteractionComponent = struct {
                                     if (cmd_held) {
                                         if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
                                             defer self.allocator.free(uri);
-                                            open_url.openUrl(self.allocator, self.io, uri) catch |err| {
+                                            self.opener.open(uri) catch |err| {
                                                 log.err("failed to open URL: {}", .{err});
                                             };
                                         } else {

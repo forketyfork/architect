@@ -1595,6 +1595,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         pty_reader_wake.signal();
         pty_reader_thread.join();
     }
+    var opener = open_url.Opener.init(allocator, io);
+    defer opener.deinit();
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
     defer input_source_tracker.deinit();
@@ -1793,7 +1795,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         pending_sends.deinit(allocator);
     }
 
-    const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, io, sessions, &font);
+    const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, &opener, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
@@ -1859,9 +1861,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
     try ui.register(metrics_overlay_component.asComponent());
     const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator, io);
     try ui.register(diff_overlay_component.asComponent());
-    const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, io, sessions);
+    const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, &opener, sessions);
     try ui.register(reader_overlay_component.asComponent());
-    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator, io);
+    const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator, io, &opener);
     try ui.register(story_overlay_component.asComponent());
     const selection_agent_overlay_component = try ui_mod.selection_agent_overlay.SelectionAgentOverlayComponent.init(allocator);
     try ui.register(selection_agent_overlay_component.asComponent());
@@ -2995,7 +2997,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
                             std.debug.print("Failed to open config file: {}\n", .{err});
                         };
                     } else {
-                        open_url.openUrl(allocator, io, config_path) catch |err| {
+                        opener.open(config_path) catch |err| {
                             std.debug.print("Failed to open config file: {}\n", .{err});
                         };
                     }

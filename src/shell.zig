@@ -751,7 +751,7 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
         // Child: exec tic
         _ = std.c.execve(tic_path.ptr, &tic_argv, @ptrCast(std.c.environ));
         std.c._exit(1);
-    } else if (fork_result > 0) {
+    } else {
         // Parent: wait for tic to complete
         var status: c_int = 0;
         _ = std.c.waitpid(fork_result, &status, 0);
@@ -763,8 +763,6 @@ pub fn ensureTerminfoSetup(io: std.Io) void {
         } else {
             log.warn("tic failed to compile terminfo (status={}), falling back to {s}", .{ status, fallback_term });
         }
-    } else {
-        log.warn("Failed to fork for tic, falling back to {s}", .{fallback_term});
     }
 }
 
