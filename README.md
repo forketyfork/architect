@@ -176,6 +176,7 @@ Common settings include font family, theme colors, grid font scale, and logging 
 * **Font not found**: ensure the font is installed and set `font.family` in `config.toml`. The app falls back to `SFNSMono` on macOS.
 * **Missing symbol glyphs**: fallbacks try the bundled Symbols Nerd Font, then `Arial Unicode MS`, then `STIXTwoMath` (if available) before emoji.
 * **Emoji alignment**: single-codepoint emoji are centered using glyph metrics; if they appear off, try a different primary font or font size.
+* **Pull request list says to install `gh`**: Architect checks the inherited `PATH` and the standard Homebrew locations `/opt/homebrew/bin/gh` and `/usr/local/bin/gh`. If `gh` is installed elsewhere, make its executable path available to the app or use a standard Homebrew installation.
 * **Reset configuration**: delete `~/.config/architect/config.toml` and `~/.config/architect/persistence.toml`.
 * **Crash after closing a terminal**: update to the latest build; older builds could crash after terminal close events on macOS.
 * **Known limitations**: emoji fallback is macOS-only; keybindings are currently fixed.
