@@ -37,6 +37,7 @@ pub const WorktreeOverlayComponent = struct {
     pending_removal_path: ?[]const u8 = null,
     pending_refresh_ms: i64 = 0,
     escape_pressed: bool = false,
+    pill_interactive: bool = true,
     create_input: text_edit.TextInput = .{
         .separators = text_edit.name_separators,
         .max_len = create_name_max_len,
@@ -133,6 +134,8 @@ pub const WorktreeOverlayComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
+
         if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
             const key = event.key.key;
             if (key == c.SDLK_ESCAPE) {
@@ -140,8 +143,6 @@ pub const WorktreeOverlayComponent = struct {
                 return true;
             }
         }
-
-        if (!self.available or host.focused_has_foreground_process) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -268,7 +269,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.pillVisible(host)) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
     }
@@ -279,6 +280,11 @@ pub const WorktreeOverlayComponent = struct {
 
     pub fn pillVisible(self: *const WorktreeOverlayComponent, host: *const types.UiHost) bool {
         return shouldShowPill(self.available, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *WorktreeOverlayComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
+        if (!interactive) self.escape_pressed = false;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {

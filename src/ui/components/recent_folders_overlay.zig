@@ -31,6 +31,7 @@ pub const RecentFoldersOverlayComponent = struct {
     hovered_entry: ?usize = null,
     escape_pressed: bool = false,
     focused_busy: bool = false,
+    pill_interactive: bool = true,
     cache: ?*Cache = null,
     flow_animation_start_ms: i64 = 0,
 
@@ -152,6 +153,8 @@ pub const RecentFoldersOverlayComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
+
         if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
             const key = event.key.key;
             if (key == c.SDLK_ESCAPE) {
@@ -159,8 +162,6 @@ pub const RecentFoldersOverlayComponent = struct {
                 return true;
             }
         }
-
-        if (!self.pillVisible(host)) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -314,7 +315,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.pillVisible(host)) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
     }
@@ -325,6 +326,11 @@ pub const RecentFoldersOverlayComponent = struct {
 
     pub fn pillVisible(self: *const RecentFoldersOverlayComponent, host: *const types.UiHost) bool {
         return shouldShowPill(self.all_folders.items.len, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *RecentFoldersOverlayComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
+        if (!interactive) self.escape_pressed = false;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {

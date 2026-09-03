@@ -84,6 +84,7 @@ pub const PRDropdownComponent = struct {
     cache: ?*view.Cache = null,
     escape_pressed: bool = false,
     focused_busy: bool = false,
+    pill_interactive: bool = true,
     flow_animation_start_ms: i64 = 0,
 
     pub const button_size_small: c_int = 40;
@@ -143,6 +144,8 @@ pub const PRDropdownComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
 
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
+
         if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
             const key = event.key.key;
             if (key == c.SDLK_ESCAPE) {
@@ -150,8 +153,6 @@ pub const PRDropdownComponent = struct {
                 return true;
             }
         }
-
-        if (!self.pillVisible(host)) return false;
 
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
@@ -282,7 +283,7 @@ pub const PRDropdownComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *PRDropdownComponent = @ptrCast(@alignCast(self_ptr));
-        if (!self.pillVisible(host)) return false;
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
         const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
         return geom.containsPoint(rect, x, y);
     }
@@ -293,6 +294,11 @@ pub const PRDropdownComponent = struct {
 
     pub fn pillVisible(self: *const PRDropdownComponent, host: *const types.UiHost) bool {
         return shouldShowPill(self.is_github_repo, host.focused_has_foreground_process);
+    }
+
+    pub fn setPillInteractive(self: *PRDropdownComponent, interactive: bool) void {
+        self.pill_interactive = interactive;
+        if (!interactive) self.escape_pressed = false;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {

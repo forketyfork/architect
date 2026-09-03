@@ -357,7 +357,8 @@ easing function. Newly available pills remain staged outside the row while
 existing pills reflow, then enter in a second eased phase once the occupied
 slots are clear.
 The group also requests frames for the short layout animation, so the
-transition is visible under idle throttling. The worktree, recent-folder, and
+transition is visible under idle throttling; newly entering pill hit targets are
+disabled until they reach their clear slots. The worktree, recent-folder, and
 pull-request pills are unavailable while the focused terminal has a foreground
 process, because their actions send commands to that shell. Their event
 handlers reject input at the same boundary, before the scheduled update

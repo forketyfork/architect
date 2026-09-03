@@ -72,7 +72,7 @@ const PillLayout = struct {
         self.target_x = targets;
         const entrance_x = window_w + dpi.scale(pill_size, ui_scale);
         for (0..pill_count) |idx| {
-            const stage = visible[idx] and !self.visible[idx];
+            const stage = visible[idx] and (self.entering[idx] or !self.visible[idx]);
             self.entering[idx] = stage;
             if (stage) {
                 self.start_x[idx] = entrance_x;
@@ -168,6 +168,11 @@ const PillLayout = struct {
 
     fn currentX(self: *const PillLayout, pill: PillKind) c_int {
         return self.current_x[@intFromEnum(pill)];
+    }
+
+    fn pillInteractive(self: *const PillLayout, pill: PillKind) bool {
+        const idx = @intFromEnum(pill);
+        return self.visible[idx] and !self.entering[idx];
     }
 };
 
@@ -303,8 +308,11 @@ pub const PillGroupComponent = struct {
 
     fn applyLayout(self: *PillGroupComponent) void {
         self.pr_dropdown.overlay.setLayoutX(self.layout.currentX(.pull_request));
+        self.pr_dropdown.setPillInteractive(self.layout.pillInteractive(.pull_request));
         self.worktree.overlay.setLayoutX(self.layout.currentX(.worktree));
+        self.worktree.setPillInteractive(self.layout.pillInteractive(.worktree));
         self.recent_folders.overlay.setLayoutX(self.layout.currentX(.recent_folders));
+        self.recent_folders.setPillInteractive(self.layout.pillInteractive(.recent_folders));
         self.help.overlay.setLayoutX(self.layout.currentX(.help));
     }
 
@@ -422,4 +430,32 @@ test "pill layout stages a newly available pill outside the occupied row" {
     _ = layout.update(400, 800, 1.0, with_recent_folders);
     try std.testing.expectEqual(@as(c_int, 680), layout.currentX(.recent_folders));
     try std.testing.expectEqual(@as(c_int, 620), layout.currentX(.pull_request));
+}
+
+test "pill layout disables hit targets while positions are moving" {
+    var layout: PillLayout = .{};
+    const all_visible = [pill_count]bool{ true, true, true, true };
+    _ = layout.update(0, 800, 1.0, all_visible);
+
+    const without_worktree = [pill_count]bool{ true, false, true, true };
+    _ = layout.update(0, 800, 1.0, without_worktree);
+    try std.testing.expect(layout.pillInteractive(.pull_request));
+    try std.testing.expect(layout.pillInteractive(.recent_folders));
+    try std.testing.expect(layout.pillInteractive(.help));
+
+    _ = layout.update(pill_animation_duration_ms, 800, 1.0, without_worktree);
+    try std.testing.expect(layout.pillInteractive(.pull_request));
+    try std.testing.expect(layout.pillInteractive(.recent_folders));
+    try std.testing.expect(layout.pillInteractive(.help));
+
+    const with_worktree = [pill_count]bool{ true, true, true, true };
+    _ = layout.update(pill_animation_duration_ms, 800, 1.0, with_worktree);
+    try std.testing.expect(!layout.pillInteractive(.worktree));
+    try std.testing.expect(layout.pillInteractive(.pull_request));
+    try std.testing.expect(layout.pillInteractive(.recent_folders));
+
+    _ = layout.update(pill_animation_duration_ms + 50, 800, 1.0, with_worktree);
+    try std.testing.expect(!layout.pillInteractive(.worktree));
+    _ = layout.update(pill_animation_duration_ms * 3, 800, 1.0, with_worktree);
+    try std.testing.expect(layout.pillInteractive(.worktree));
 }
