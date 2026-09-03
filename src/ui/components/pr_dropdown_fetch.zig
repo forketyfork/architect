@@ -1,9 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const env = @import("../../env.zig");
 const model = @import("pr_dropdown_model.zig");
 const proc = @import("../../proc.zig");
 
 const log = std.log.scoped(.pr_dropdown);
 pub const gh_output_log_preview_limit: usize = 2 * 1024;
+
+const ResolveExecutableError = std.Io.Dir.AccessError || std.mem.Allocator.Error;
+const known_gh_paths: []const []const u8 = if (builtin.os.tag == .macos)
+    &.{ "/opt/homebrew/bin/gh", "/usr/local/bin/gh" }
+else
+    &.{};
 
 const GhOutputPreview = struct {
     len: usize,
@@ -11,8 +19,23 @@ const GhOutputPreview = struct {
 };
 
 pub fn runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) model.FetchResult {
+    const gh_path = resolveGhPath(allocator, io) catch |err| {
+        log.err("failed to locate gh while listing pull requests: cwd={s} error={s}", .{ cwd, @errorName(err) });
+        return buildFetchError(allocator, "Failed to locate gh: {s}", .{@errorName(err)});
+    } orelse {
+        log.err("gh CLI not found in PATH or known locations while listing pull requests: cwd={s}", .{cwd});
+        return model.FetchResult{
+            .status = .gh_missing,
+            .prs = &[_]model.PullRequest{},
+            .error_message = null,
+        };
+    };
+    defer allocator.free(gh_path);
+
+    log.debug("using gh CLI at {s} while listing pull requests: cwd={s}", .{ gh_path, cwd });
+
     const argv = [_][]const u8{
-        "gh",      "pr",     "list",
+        gh_path,   "pr",     "list",
         "--state", "open",   "--limit",
         "30",      "--json", "number,title,headRefName",
     };
@@ -21,7 +44,7 @@ pub fn runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) mo
         .cwd = cwd,
     }) catch |err| {
         if (err == error.FileNotFound) {
-            log.err("gh CLI not found while listing pull requests: cwd={s}", .{cwd});
+            log.err("gh CLI disappeared while listing pull requests: path={s} cwd={s}", .{ gh_path, cwd });
             return model.FetchResult{
                 .status = .gh_missing,
                 .prs = &[_]model.PullRequest{},
@@ -61,6 +84,115 @@ pub fn runGhPrList(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) mo
         logGhOutputPreview("stdout", result.stdout);
     }
     return fetch_result;
+}
+
+fn resolveGhPath(allocator: std.mem.Allocator, io: std.Io) ResolveExecutableError!?[]u8 {
+    const path_env = env.get("PATH");
+    return resolveExecutablePath(
+        allocator,
+        io,
+        if (path_env) |path| std.mem.sliceTo(path, 0) else "",
+        "gh",
+        known_gh_paths,
+    );
+}
+
+fn resolveExecutablePath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path_env: []const u8,
+    name: []const u8,
+    known_paths: []const []const u8,
+) ResolveExecutableError!?[]u8 {
+    var path_it = std.mem.splitScalar(u8, path_env, ':');
+    while (path_it.next()) |directory| {
+        if (directory.len == 0) continue;
+
+        const candidate = try std.fs.path.join(allocator, &.{ directory, name });
+        if (std.Io.Dir.cwd().access(io, candidate, .{ .execute = true })) |_| {
+            return candidate;
+        } else |err| switch (err) {
+            error.FileNotFound => allocator.free(candidate),
+            else => {
+                allocator.free(candidate);
+                return err;
+            },
+        }
+    }
+
+    for (known_paths) |candidate| {
+        std.Io.Dir.cwd().access(io, candidate, .{ .execute = true }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
+        return @as(?[]u8, try allocator.dupe(u8, candidate));
+    }
+
+    return null;
+}
+
+test "gh resolver finds an executable in PATH" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(io, "gh", .{ .permissions = .fromMode(0o755) });
+    file.close(io);
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const expected = try std.fs.path.join(allocator, &.{ directory, "gh" });
+    defer allocator.free(expected);
+
+    const resolved = try resolveExecutablePath(allocator, io, directory, "gh", &.{});
+    try std.testing.expect(resolved != null);
+    defer allocator.free(resolved.?);
+    try std.testing.expectEqualStrings(expected, resolved.?);
+}
+
+test "gh resolver finds a known location when PATH omits it" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(io, "gh", .{ .permissions = .fromMode(0o755) });
+    file.close(io);
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const expected = try std.fs.path.join(allocator, &.{ directory, "gh" });
+    defer allocator.free(expected);
+    const known_paths = [_][]const u8{expected};
+
+    const resolved = try resolveExecutablePath(allocator, io, "/usr/bin:/bin", "gh", &known_paths);
+    try std.testing.expect(resolved != null);
+    defer allocator.free(resolved.?);
+    try std.testing.expectEqualStrings(expected, resolved.?);
+}
+
+test "gh resolver reports no executable when PATH and known locations are empty" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const missing = try std.fs.path.join(allocator, &.{ directory, "missing-gh" });
+    defer allocator.free(missing);
+    const known_paths = [_][]const u8{missing};
+
+    const resolved = try resolveExecutablePath(allocator, io, "", "gh", &known_paths);
+    try std.testing.expectEqual(@as(?[]u8, null), resolved);
 }
 
 fn logGhOutputPreview(comptime stream_name: []const u8, bytes: []const u8) void {
