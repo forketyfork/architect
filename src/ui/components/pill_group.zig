@@ -72,9 +72,10 @@ const PillLayout = struct {
         self.target_x = targets;
         const entrance_x = window_w + dpi.scale(pill_size, ui_scale);
         for (0..pill_count) |idx| {
-            const stage = visible[idx] and (self.entering[idx] or !self.visible[idx]);
+            const was_entering = self.entering[idx];
+            const stage = visible[idx] and (was_entering or !self.visible[idx]);
             self.entering[idx] = stage;
-            if (stage) {
+            if (stage and !was_entering) {
                 self.start_x[idx] = entrance_x;
                 self.current_x[idx] = entrance_x;
             }
@@ -458,4 +459,21 @@ test "pill layout disables hit targets while positions are moving" {
     try std.testing.expect(!layout.pillInteractive(.worktree));
     _ = layout.update(pill_animation_duration_ms * 3, 800, 1.0, with_worktree);
     try std.testing.expect(layout.pillInteractive(.worktree));
+}
+
+test "pill layout preserves an entrance position across a second layout change" {
+    var layout: PillLayout = .{};
+    const only_help = [pill_count]bool{ false, false, false, true };
+    _ = layout.update(0, 800, 1.0, only_help);
+
+    const with_pull_request = [pill_count]bool{ true, false, false, true };
+    _ = layout.update(0, 800, 1.0, with_pull_request);
+    _ = layout.update(250, 800, 1.0, with_pull_request);
+    const position_before_second_change = layout.currentX(.pull_request);
+    try std.testing.expect(position_before_second_change < 840);
+
+    const with_recent_folders = [pill_count]bool{ true, false, true, true };
+    _ = layout.update(250, 800, 1.0, with_recent_folders);
+    try std.testing.expectEqual(position_before_second_change, layout.currentX(.pull_request));
+    try std.testing.expect(!layout.pillInteractive(.pull_request));
 }

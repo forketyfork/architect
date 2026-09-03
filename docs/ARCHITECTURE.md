@@ -356,6 +356,9 @@ the existing pills interpolate to their new positions with the shared cubic
 easing function. Newly available pills remain staged outside the row while
 existing pills reflow, then enter in a second eased phase once the occupied
 slots are clear.
+If another availability or geometry change arrives during an entrance, the
+group keeps the entrant's current interpolated position instead of restarting
+it offscreen.
 The group also requests frames for the short layout animation, so the
 transition is visible under idle throttling; newly entering pill hit targets are
 disabled until they reach their clear slots. The worktree, recent-folder, and
