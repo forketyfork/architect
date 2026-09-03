@@ -22,7 +22,7 @@ graph TD
     subgraph Platform Layer
         SDL["platform/sdl.zig<br/><i>SDL3 window, renderer, HiDPI</i>"]
         IM["input/mapper.zig<br/><i>Keycodes to VT sequences</i>"]
-        CZIG["c.zig<br/><i>C FFI re-exports</i>"]
+        CZIG["c.zig<br/><i>SDL C FFI re-exports from c_sdl</i>"]
     end
 
     subgraph Session Layer
@@ -489,7 +489,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard and submitted-paste construction, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `pasteText()`, `buildSubmittedPaste()`, `clearTerminal()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
-| `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
+| `c.zig` | SDL3 and SDL3_ttf FFI re-exports from the build-system `c_sdl` module | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | `c_sdl`, SDL3 system libraries |
 | `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit, and main-thread ring-buffer consumption | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `processOutput()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()` | `shell`, `pty`, `pty_reader`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/pty_reader.zig` | Background thread that `poll(2)`s spawned sessions' PTY master fds and drains readable ones into per-session SPSC ring buffers; registry with retire handshake so teardown can safely close fds | `PtyReader`, `PtyOutputBuffer`, `start()`, `register()`, `retire()` | std (poll, thread) |
@@ -574,7 +574,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 ### ADR-006: SDL3 for Rendering and Input
 
 - **Decision:** Use SDL3 as the platform abstraction layer for window management, GPU-accelerated 2D rendering, input events, and font rendering (via SDL3_ttf with HarfBuzz).
-- **Context:** The application needs cross-platform window management, hardware-accelerated texture rendering, and HiDPI support. SDL3 provides all of these with a C API that Zig can import directly via `@cImport`.
+- **Context:** The application needs cross-platform window management, hardware-accelerated texture rendering, and HiDPI support. SDL3 provides all of these with a C API whose declarations are translated at build time and re-exported through `c.zig`.
 - **Alternatives considered:**
   - *Native platform APIs (AppKit/Metal)* -- rejected because it locks the project to macOS; SDL3 allows future Linux/Windows porting.
   - *Vulkan/OpenGL directly* -- rejected because 2D terminal rendering does not need low-level GPU control, and SDL3's renderer API is sufficient and simpler.
@@ -680,4 +680,14 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
   - Full-cell and box-drawing glyphs force full texture refreshes near them.
   - Process-exit detection can lag by up to 1 s (the idle ceiling).
   - The output cadence cap is a constant (`output_render_interval_ns`) rather than config.
+- **Date:** 2026-09
+
+### ADR-017: Build-System C Header Translation
+
+- **Decision:** Translate each C header site with a dedicated `std.Build.addTranslateC` step and a small shim under `src/c/`, then expose the generated declarations to the executable through named private modules. The SDL and SDL_ttf shim is shared by `c.zig`; PTY, libc, time, and macOS process APIs each retain their own module.
+- **Context:** Zig 0.16 provides build-system translation as the supported path for C headers. Architect also has platform-specific headers: the PTY shim varies by target, while the libproc and sysctl shims are only valid on macOS. SDL translation must share the executable's environment-provided include paths and macOS SDK framework path.
+- **Alternatives considered:**
+  - *One monolithic C translation module* -- rejected because a platform-specific or difficult header would make unrelated C declarations fail together and would require non-macOS builds to analyze macOS-only APIs.
+  - *Direct compiler-side header imports* -- rejected because the build-system translation step is the supported Zig 0.16 integration and makes target-specific inputs explicit in `build.zig`.
+- **Consequences:** Each C import site has an isolated translation failure boundary, target-specific headers are only created and imported when applicable, and `src/c.zig` remains the stable SDL symbol surface for the rest of the codebase. The executable continues to own the SDL3, SDL3_ttf, proc, and framework link configuration.
 - **Date:** 2026-09

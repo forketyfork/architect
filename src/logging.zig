@@ -5,9 +5,7 @@ const Dir = std.Io.Dir;
 const File = std.Io.File;
 const clock = @import("clock.zig");
 const env = @import("env.zig");
-const time_c = @cImport({
-    @cInclude("time.h");
-});
+const time_c = @import("c_time");
 
 pub const active_log_filename = "architect.log";
 pub const default_max_file_size_bytes: u64 = 10 * 1024 * 1024;

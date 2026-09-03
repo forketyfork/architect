@@ -62,6 +62,21 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("assets", assets_mod);
 
+    const c_sdl = addTranslateCModule(b, exe_mod, "c_sdl", "src/c/sdl.h", target, optimize);
+    const pty_header = switch (target.result.os.tag) {
+        .macos => "src/c/pty_macos.h",
+        .freebsd => "src/c/pty_freebsd.h",
+        else => "src/c/pty_linux.h",
+    };
+    _ = addTranslateCModule(b, exe_mod, "c_pty", pty_header, target, optimize);
+    _ = addTranslateCModule(b, exe_mod, "c_stdlib", "src/c/stdlib.h", target, optimize);
+    _ = addTranslateCModule(b, exe_mod, "c_time", "src/c/time.h", target, optimize);
+
+    if (target.result.os.tag == .macos) {
+        _ = addTranslateCModule(b, exe_mod, "c_libproc", "src/c/libproc.h", target, optimize);
+        _ = addTranslateCModule(b, exe_mod, "c_sysctl", "src/c/sysctl.h", target, optimize);
+    }
+
     if (b.lazyDependency("ghostty", .{
         .target = target,
         .optimize = optimize,
@@ -98,6 +113,12 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkSystemLibrary("SDL3", .{});
     exe_mod.linkSystemLibrary("SDL3_ttf", .{});
 
+    const framework_path: ?[]const u8 = if (target.result.os.tag == .macos)
+        if (findSdkRoot(b)) |sdk_root| b.fmt("{s}/System/Library/Frameworks", .{sdk_root}) else null
+    else
+        null;
+    addSdlPaths(b, exe_mod, c_sdl, framework_path);
+
     if (target.result.os.tag == .macos) {
         exe.headerpad_max_install_names = true;
         mcp_exe.headerpad_max_install_names = true;
@@ -106,22 +127,6 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkFramework("Carbon", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
         exe_mod.linkFramework("AppKit", .{});
-
-        if (findSdkRoot(b)) |sdk_root| {
-            const framework_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_root});
-            exe_mod.addFrameworkPath(.{ .cwd_relative = framework_path });
-        }
-    }
-
-    if (b.graph.environ_map.get("SDL3_INCLUDE_PATH")) |sdl3_include| {
-        exe_mod.addIncludePath(.{ .cwd_relative = sdl3_include });
-        const lib_path = b.fmt("{s}/../lib", .{sdl3_include});
-        exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
-    }
-    if (b.graph.environ_map.get("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
-        exe_mod.addIncludePath(.{ .cwd_relative = sdl3_ttf_include });
-        const ttf_lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
-        exe_mod.addLibraryPath(.{ .cwd_relative = ttf_lib_path });
     }
 
     b.installArtifact(exe);
@@ -167,6 +172,51 @@ pub fn build(b: *std.Build) void {
 
     const lint_step = b.step("lint", "Run Zwanzig");
     lint_step.dependOn(&run_zwanzig.step);
+}
+
+fn addTranslateCModule(
+    b: *std.Build,
+    exe_mod: *std.Build.Module,
+    name: []const u8,
+    header: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.TranslateC {
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path(header),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    exe_mod.addImport(name, translate_c.createModule());
+    return translate_c;
+}
+
+fn addSdlPaths(
+    b: *std.Build,
+    exe_mod: *std.Build.Module,
+    translate_c: *std.Build.Step.TranslateC,
+    framework_path: ?[]const u8,
+) void {
+    if (b.graph.environ_map.get("SDL3_INCLUDE_PATH")) |sdl3_include| {
+        const include_path: std.Build.LazyPath = .{ .cwd_relative = sdl3_include };
+        exe_mod.addIncludePath(include_path);
+        translate_c.addIncludePath(include_path);
+        const lib_path = b.fmt("{s}/../lib", .{sdl3_include});
+        exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
+    }
+    if (b.graph.environ_map.get("SDL3_TTF_INCLUDE_PATH")) |sdl3_ttf_include| {
+        const include_path: std.Build.LazyPath = .{ .cwd_relative = sdl3_ttf_include };
+        exe_mod.addIncludePath(include_path);
+        translate_c.addIncludePath(include_path);
+        const lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
+        exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
+    }
+    if (framework_path) |path| {
+        const framework_lazy_path: std.Build.LazyPath = .{ .cwd_relative = path };
+        exe_mod.addFrameworkPath(framework_lazy_path);
+        translate_c.addFrameworkPath(framework_lazy_path);
+    }
 }
 
 // Prefer the active developer selection over hardcoded SDK locations so

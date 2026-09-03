@@ -130,7 +130,7 @@ If you are executing in a git worktree, stay within that worktree and do not att
 - macOS stops compositing fully covered windows and `CAMetalLayer` stops returning drawables; any render attempt then blocks the main thread for the full ~1s `nextDrawable` timeout, stalling input and PTY processing. The frame loop gates rendering on the `SDL_WINDOW_OCCLUDED` window flag (`shouldRenderFrame` in `src/app/runtime.zig`); keep any new render/present paths behind the same gate.
 
 ### Adding New SDL3 Key Codes
-When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. SDL3 constants are exposed through the c_import and must be explicitly re-exported in c.zig to be accessible throughout the codebase.
+When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. The build system provides the translated SDL declarations through the `c_sdl` module, and SDL constants must be explicitly re-exported from `src/c.zig` to be accessible throughout the codebase.
 
 **Pattern:**
 ```zig
@@ -181,6 +181,7 @@ const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent "local constant shadows" errors.
 
 ### Zig 0.16 API notes
+- `@cImport` is deprecated in Zig 0.16. C headers are translated through `addTranslateC` modules backed by the shims under `src/c/`.
 - `std.ArrayList(T)` is the unmanaged list: init with `.empty` (or `initCapacity`), and pass the allocator to each method (`list.append(allocator, item)`). `std.ArrayListUnmanaged` is a deprecated alias — do not use it.
 - `std.fs` retains only `path`, `max_path_bytes`, `max_name_bytes`, and the base64 alphabets. Every filesystem operation moved to `std.Io.Dir` / `std.Io.File` and takes an `io` argument. Two irregularities to remember: `Dir.renameAbsolute(old, new, io)` takes `io` **last**, and `makeDirAbsolute`/`makePath` were renamed to `createDirAbsolute`/`createDirPath` rather than merely gaining a parameter.
 - `std.time` retains only its duration constants. Timestamps come from `clock.zig`, which wraps `std.Io.Timestamp.now(io, .real)`. The clock enum tags are `real`, `awake`, `boot`, `cpu_process`, `cpu_thread`.

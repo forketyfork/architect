@@ -8,9 +8,7 @@ const env = @import("env.zig");
 const proc = @import("proc.zig");
 const pty_mod = @import("pty.zig");
 const posix_util = @import("posix_util.zig");
-const libc = @cImport({
-    @cInclude("stdlib.h");
-});
+const libc = @import("c_stdlib");
 
 const log = std.log.scoped(.shell);
 
