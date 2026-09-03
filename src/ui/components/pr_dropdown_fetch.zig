@@ -109,19 +109,13 @@ fn resolveExecutablePath(
         if (directory.len == 0) continue;
 
         const candidate = try std.fs.path.join(allocator, &.{ directory, name });
+        defer allocator.free(candidate);
         if (std.Io.Dir.cwd().access(io, candidate, .{ .execute = true })) |_| {
-            if (!try isRegularFile(io, candidate)) {
-                allocator.free(candidate);
-                continue;
-            }
-            defer allocator.free(candidate);
+            if (!try isRegularFile(io, candidate)) continue;
             return try canonicalizeExecutablePath(allocator, io, candidate);
         } else |err| switch (err) {
-            error.FileNotFound, error.AccessDenied, error.PermissionDenied => allocator.free(candidate),
-            else => {
-                allocator.free(candidate);
-                return err;
-            },
+            error.FileNotFound, error.AccessDenied, error.PermissionDenied => {},
+            else => return err,
         }
     }
 
