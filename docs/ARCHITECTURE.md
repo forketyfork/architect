@@ -370,6 +370,9 @@ consumed by stale UI. A busy or otherwise unavailable transition closes the
 recent-folder, PR, and worktree pickers immediately, resetting their
 transient state instead of exposing a partial collapse. It also clears any
 pending worktree removal confirmation before the modal is hidden.
+The group consumes pointer events over an entering pill so an overlapping
+interactive pill underneath cannot receive the click. Pending Escape releases
+remain consumed even if a busy transition closes the picker before key-up.
 
 ### External Notification Path
 

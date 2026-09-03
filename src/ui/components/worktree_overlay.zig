@@ -134,8 +134,6 @@ pub const WorktreeOverlayComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (!self.pillVisible(host) or !self.pill_interactive) return false;
-
         if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
             const key = event.key.key;
             if (key == c.SDLK_ESCAPE) {
@@ -143,6 +141,8 @@ pub const WorktreeOverlayComponent = struct {
                 return true;
             }
         }
+
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -284,7 +284,6 @@ pub const WorktreeOverlayComponent = struct {
 
     pub fn setPillInteractive(self: *WorktreeOverlayComponent, interactive: bool) void {
         self.pill_interactive = interactive;
-        if (!interactive) self.escape_pressed = false;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -582,7 +581,6 @@ pub const WorktreeOverlayComponent = struct {
         self.hovered_entry = null;
         self.clearCreateInput();
         self.creating = false;
-        self.escape_pressed = false;
 
         self.setDisplayBase(cwd);
 
@@ -1051,7 +1049,6 @@ pub const WorktreeOverlayComponent = struct {
         self.confirming_removal = false;
         self.clearCreateInput();
         self.clearPendingRemoval();
-        self.escape_pressed = false;
         self.flow_animation_start_ms = 0;
         self.modal_confirm_hovered = false;
         self.modal_cancel_hovered = false;
@@ -1696,6 +1693,7 @@ test "busy transition clears the removal confirmation modal" {
     component.available = true;
     component.overlay.state = .Open;
     component.confirming_removal = true;
+    component.escape_pressed = true;
     component.pending_removal_index = 0;
     component.pending_removal_path = try std.testing.allocator.dupe(u8, "/tmp/architect-worktree");
     component.flow_animation_start_ms = 123;
@@ -1714,6 +1712,13 @@ test "busy transition clears the removal confirmation modal" {
     try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
     try std.testing.expect(!component.overlay.isAnimating());
     try std.testing.expectEqual(@as(i64, 0), component.flow_animation_start_ms);
+    try std.testing.expect(component.escape_pressed);
+
+    var escape_release: c.SDL_Event = undefined;
+    escape_release.type = c.SDL_EVENT_KEY_UP;
+    escape_release.key.key = c.SDLK_ESCAPE;
+    try std.testing.expect(WorktreeOverlayComponent.handleEvent(&component, &host, &escape_release, &actions));
+    try std.testing.expect(!component.escape_pressed);
 
     host.now_ms = 150;
     host.focused_cwd = null;

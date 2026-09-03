@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const geom = @import("../../geom.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const HelpOverlayComponent = @import("help_overlay.zig").HelpOverlayComponent;
@@ -175,6 +176,10 @@ const PillLayout = struct {
         const idx = @intFromEnum(pill);
         return self.visible[idx] and !self.entering[idx];
     }
+
+    fn isEntering(self: *const PillLayout, pill: PillKind) bool {
+        return self.entering[@intFromEnum(pill)];
+    }
 };
 
 pub const PillGroupComponent = struct {
@@ -189,6 +194,7 @@ pub const PillGroupComponent = struct {
     last_recent_folders_state: ExpandingOverlay.State = .Closed,
     last_worktree_state: ExpandingOverlay.State = .Closed,
     last_pr_state: ExpandingOverlay.State = .Closed,
+    pointer_blocked: bool = false,
 
     pub const component_z_index: i32 = 1001;
 
@@ -220,11 +226,56 @@ pub const PillGroupComponent = struct {
         self.allocator.destroy(self);
     }
 
-    fn handleEvent(_: *anyopaque, _: *const types.UiHost, _: *const c.SDL_Event, _: *types.UiActionQueue) bool {
+    fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, _: *types.UiActionQueue) bool {
+        const self: *PillGroupComponent = @ptrCast(@alignCast(self_ptr));
+
+        switch (event.type) {
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                const mouse_x: c_int = @intFromFloat(event.button.x);
+                const mouse_y: c_int = @intFromFloat(event.button.y);
+                if (self.containsEnteringPill(host, mouse_x, mouse_y)) {
+                    self.pointer_blocked = true;
+                    return true;
+                }
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (self.pointer_blocked) {
+                    self.pointer_blocked = false;
+                    return true;
+                }
+            },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                if (self.pointer_blocked) return true;
+                const mouse_x: c_int = @intFromFloat(event.motion.x);
+                const mouse_y: c_int = @intFromFloat(event.motion.y);
+                return self.containsEnteringPill(host, mouse_x, mouse_y);
+            },
+            else => {},
+        }
+
         return false;
     }
 
-    fn hitTest(_: *anyopaque, _: *const types.UiHost, _: c_int, _: c_int) bool {
+    fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const self: *PillGroupComponent = @ptrCast(@alignCast(self_ptr));
+        return self.containsEnteringPill(host, x, y);
+    }
+
+    fn containsEnteringPill(self: *const PillGroupComponent, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        const scaled_pill_size = dpi.scale(pill_size, host.ui_scale);
+        const scaled_pill_margin = dpi.scale(pill_margin, host.ui_scale);
+
+        for (layout_order) |pill| {
+            if (!self.layout.isEntering(pill)) continue;
+            const rect = geom.Rect{
+                .x = self.layout.currentX(pill),
+                .y = scaled_pill_margin,
+                .w = scaled_pill_size,
+                .h = scaled_pill_size,
+            };
+            if (geom.containsPoint(rect, x, y)) return true;
+        }
+
         return false;
     }
 
@@ -476,4 +527,37 @@ test "pill layout preserves an entrance position across a second layout change" 
     _ = layout.update(250, 800, 1.0, with_recent_folders);
     try std.testing.expectEqual(position_before_second_change, layout.currentX(.pull_request));
     try std.testing.expect(!layout.pillInteractive(.pull_request));
+}
+
+test "pill group blocks clicks on entering pills" {
+    var group = PillGroupComponent{
+        .allocator = std.testing.allocator,
+        .help = undefined,
+        .recent_folders = undefined,
+        .worktree = undefined,
+        .pr_dropdown = undefined,
+    };
+    group.layout.initialized = true;
+    group.layout.visible = [pill_count]bool{ true, false, false, true };
+    group.layout.entering = [pill_count]bool{ true, false, false, false };
+    group.layout.current_x = [pill_count]c_int{ 760, 0, 0, 740 };
+
+    var host: types.UiHost = undefined;
+    host.ui_scale = 1.0;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_MOUSE_BUTTON_DOWN;
+    event.button.x = 770;
+    event.button.y = 30;
+    try std.testing.expect(PillGroupComponent.handleEvent(&group, &host, &event, &actions));
+    try std.testing.expect(group.pointer_blocked);
+
+    group.layout.entering = [_]bool{false} ** pill_count;
+    event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
+    event.button.x = 500;
+    event.button.y = 500;
+    try std.testing.expect(PillGroupComponent.handleEvent(&group, &host, &event, &actions));
+    try std.testing.expect(!group.pointer_blocked);
 }

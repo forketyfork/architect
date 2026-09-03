@@ -153,8 +153,6 @@ pub const RecentFoldersOverlayComponent = struct {
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *RecentFoldersOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
-        if (!self.pillVisible(host) or !self.pill_interactive) return false;
-
         if (event.type == c.SDL_EVENT_KEY_UP and self.escape_pressed) {
             const key = event.key.key;
             if (key == c.SDLK_ESCAPE) {
@@ -162,6 +160,8 @@ pub const RecentFoldersOverlayComponent = struct {
                 return true;
             }
         }
+
+        if (!self.pillVisible(host) or !self.pill_interactive) return false;
 
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -309,7 +309,6 @@ pub const RecentFoldersOverlayComponent = struct {
         self.search.clear();
         self.refilter();
         self.hovered_entry = null;
-        self.escape_pressed = false;
         self.flow_animation_start_ms = 0;
     }
 
@@ -330,7 +329,6 @@ pub const RecentFoldersOverlayComponent = struct {
 
     pub fn setPillInteractive(self: *RecentFoldersOverlayComponent, interactive: bool) void {
         self.pill_interactive = interactive;
-        if (!interactive) self.escape_pressed = false;
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
@@ -892,6 +890,13 @@ fn keyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
     return event;
 }
 
+fn keyUpEvent(key: c.SDL_Keycode) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_UP;
+    event.key.key = key;
+    return event;
+}
+
 fn textEvent(text: [*c]const u8) c.SDL_Event {
     var event: c.SDL_Event = undefined;
     event.type = c.SDL_EVENT_TEXT_INPUT;
@@ -1095,8 +1100,11 @@ test "busy update immediately closes the recent folders picker" {
     try testing.expect(!t.comp.overlay.isAnimating());
     try testing.expectEqualStrings("", t.comp.search.text());
     try testing.expectEqual(@as(?usize, null), t.comp.hovered_entry);
-    try testing.expect(!t.comp.escape_pressed);
+    try testing.expect(t.comp.escape_pressed);
     try testing.expectEqual(@as(i64, 0), t.comp.flow_animation_start_ms);
+
+    try testing.expect(t.sendWithBusy(keyUpEvent(c.SDLK_ESCAPE), 200, true));
+    try testing.expect(!t.comp.escape_pressed);
 
     host.now_ms = 250;
     host.focused_has_foreground_process = false;
