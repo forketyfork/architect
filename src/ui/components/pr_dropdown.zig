@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const types = @import("../types.zig");
@@ -150,6 +151,8 @@ pub const PRDropdownComponent = struct {
             }
         }
 
+        if (!self.pillVisible(host)) return false;
+
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
@@ -159,7 +162,6 @@ pub const PRDropdownComponent = struct {
 
                 // Cmd+P toggles overlay (only meaningful inside a GitHub repo)
                 if (has_gui and !has_blocking_mod and key == c.SDLK_P) {
-                    if (!self.pillVisible(host)) return false;
                     if (self.overlay.state == .Open) {
                         self.closeOverlay(host.now_ms);
                     } else {
@@ -232,7 +234,6 @@ pub const PRDropdownComponent = struct {
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (!self.pillVisible(host)) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -730,4 +731,75 @@ test "pull request pill is hidden while the focused shell is busy" {
     try std.testing.expect(PRDropdownComponent.shouldShowPill(true, false));
     try std.testing.expect(!PRDropdownComponent.shouldShowPill(true, true));
     try std.testing.expect(!PRDropdownComponent.shouldShowPill(false, false));
+}
+
+const testing = std.testing;
+
+fn testTheme() colors.Theme {
+    const base = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    return .{
+        .background = base,
+        .foreground = base,
+        .selection = base,
+        .accent = base,
+        .palette = [_]c.SDL_Color{base} ** 16,
+    };
+}
+
+fn testHost(now_ms: i64, focused_busy: bool, theme: *const colors.Theme) types.UiHost {
+    return .{
+        .now_ms = now_ms,
+        .window_w = 1200,
+        .window_h = 800,
+        .window_focused = true,
+        .ui_scale = 1.0,
+        .grid_cols = 2,
+        .grid_rows = 2,
+        .cell_w = 8,
+        .cell_h = 16,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = focused_busy,
+        .sessions = &.{},
+        .theme = theme,
+    };
+}
+
+fn keyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = key;
+    event.key.mod = mod;
+    return event;
+}
+
+fn textEvent(text: [*c]const u8) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    event.type = c.SDL_EVENT_TEXT_INPUT;
+    event.text.text = text;
+    return event;
+}
+
+test "open PR picker does not consume input while the focused shell is busy" {
+    var component: PRDropdownComponent = .{ .allocator = testing.allocator, .io = undefined };
+    defer component.search_query.deinit(testing.allocator);
+    component.is_github_repo = true;
+    component.overlay.state = .Open;
+    try component.search_query.buf.appendSlice(testing.allocator, "before");
+
+    var actions = types.UiActionQueue.init(testing.allocator);
+    defer actions.deinit();
+    var theme = testTheme();
+    const host = testHost(0, true, &theme);
+
+    var typed = textEvent("x");
+    try testing.expect(!PRDropdownComponent.handleEvent(&component, &host, &typed, &actions));
+    try testing.expectEqualStrings("before", component.search_query.text());
+
+    var erased = keyEvent(c.SDLK_BACKSPACE, 0);
+    try testing.expect(!PRDropdownComponent.handleEvent(&component, &host, &erased, &actions));
+    try testing.expectEqualStrings("before", component.search_query.text());
 }

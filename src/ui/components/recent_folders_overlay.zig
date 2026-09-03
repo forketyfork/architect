@@ -160,9 +160,10 @@ pub const RecentFoldersOverlayComponent = struct {
             }
         }
 
+        if (!self.pillVisible(host)) return false;
+
         switch (event.type) {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (!self.pillVisible(host)) return false;
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const rect = self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
@@ -215,7 +216,6 @@ pub const RecentFoldersOverlayComponent = struct {
 
                 // Cmd+O toggles overlay
                 if (has_gui and !has_blocking_mod and key == c.SDLK_O) {
-                    if (!self.pillVisible(host)) return false;
                     if (self.overlay.state.isOpenOrOpening()) {
                         self.closeOverlay(host.now_ms);
                     } else {
@@ -910,10 +910,15 @@ const TestComponent = struct {
         self.actions.deinit();
     }
 
-    fn send(self: *TestComponent, event: c.SDL_Event, now_ms: i64) bool {
-        const host = testHost(now_ms, &self.theme);
+    fn sendWithBusy(self: *TestComponent, event: c.SDL_Event, now_ms: i64, focused_busy: bool) bool {
+        var host = testHost(now_ms, &self.theme);
+        host.focused_has_foreground_process = focused_busy;
         var ev = event;
         return RecentFoldersOverlayComponent.handleEvent(&self.comp, &host, &ev, &self.actions);
+    }
+
+    fn send(self: *TestComponent, event: c.SDL_Event, now_ms: i64) bool {
+        return self.sendWithBusy(event, now_ms, false);
     }
 };
 
@@ -928,6 +933,7 @@ test "Cmd+Backspace clears the search query and Alt+Backspace drops one segment"
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "dev/github/architect");
 
@@ -947,6 +953,7 @@ test "plain Backspace still deletes a single character" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "arch");
 
@@ -995,6 +1002,7 @@ test "Cmd+A selects the query and the next keystroke replaces it" {
     var t = TestComponent.init();
     defer t.deinit();
 
+    addTestFolder(&t);
     t.comp.overlay.state = .Open;
     try t.comp.search.buf.appendSlice(testing.allocator, "arch");
 
@@ -1041,4 +1049,19 @@ test "recent folders pill is hidden while the focused shell is busy" {
     try testing.expect(RecentFoldersOverlayComponent.shouldShowPill(1, false));
     try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(1, true));
     try testing.expect(!RecentFoldersOverlayComponent.shouldShowPill(0, false));
+}
+
+test "open recent folders picker does not consume input while the focused shell is busy" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    addTestFolder(&t);
+    t.comp.overlay.state = .Open;
+    try t.comp.search.buf.appendSlice(testing.allocator, "before");
+
+    try testing.expect(!t.sendWithBusy(textEvent("x"), 0, true));
+    try testing.expectEqualStrings("before", t.comp.search.text());
+
+    try testing.expect(!t.sendWithBusy(keyEvent(c.SDLK_BACKSPACE, 0), 0, true));
+    try testing.expectEqualStrings("before", t.comp.search.text());
 }

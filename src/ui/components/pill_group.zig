@@ -37,9 +37,7 @@ const PillLayout = struct {
     animating: bool = false,
 
     fn update(self: *PillLayout, now_ms: i64, window_w: c_int, ui_scale: f32, visible: [pill_count]bool) bool {
-        if (self.initialized) {
-            self.advance(now_ms);
-        }
+        const animation_completed = if (self.initialized) self.advance(now_ms) else false;
 
         const targets = self.calculateTargets(window_w, ui_scale, visible);
         if (!self.initialized) {
@@ -60,7 +58,7 @@ const PillLayout = struct {
             }
         }
 
-        if (!membership_changed and !target_changed) return false;
+        if (!membership_changed and !target_changed) return animation_completed;
 
         self.start_x = self.current_x;
         self.target_x = targets;
@@ -100,14 +98,14 @@ const PillLayout = struct {
         return targets;
     }
 
-    fn advance(self: *PillLayout, now_ms: i64) void {
-        if (!self.animating) return;
+    fn advance(self: *PillLayout, now_ms: i64) bool {
+        if (!self.animating) return false;
 
         const elapsed = now_ms - self.start_time;
         if (elapsed >= pill_animation_duration_ms) {
             self.current_x = self.target_x;
             self.animating = false;
-            return;
+            return true;
         }
 
         const clamped_elapsed: i64 = @max(@as(i64, 0), elapsed);
@@ -121,6 +119,7 @@ const PillLayout = struct {
             const distance = self.target_x[idx] - self.start_x[idx];
             self.current_x[idx] = self.start_x[idx] + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(distance)) * eased));
         }
+        return false;
     }
 
     fn currentX(self: *const PillLayout, pill: PillKind) c_int {
@@ -317,6 +316,20 @@ test "pill layout eases remaining pills into new positions" {
     try std.testing.expect(layout.animating);
 
     _ = layout.update(200, 800, 1.0, without_worktree);
+    try std.testing.expectEqual(@as(c_int, 620), layout.currentX(.pull_request));
+    try std.testing.expect(!layout.animating);
+}
+
+test "pill layout reports when easing reaches its final position" {
+    var layout: PillLayout = .{};
+    const all_visible = [pill_count]bool{ true, true, true, true };
+    _ = layout.update(0, 800, 1.0, all_visible);
+
+    const without_worktree = [pill_count]bool{ true, false, true, true };
+    _ = layout.update(0, 800, 1.0, without_worktree);
+    try std.testing.expect(layout.animating);
+
+    try std.testing.expect(layout.update(pill_animation_duration_ms, 800, 1.0, without_worktree));
     try std.testing.expectEqual(@as(c_int, 620), layout.currentX(.pull_request));
     try std.testing.expect(!layout.animating);
 }

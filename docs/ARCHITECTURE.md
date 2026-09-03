@@ -356,7 +356,10 @@ the existing pills interpolate to their new positions with the shared cubic
 easing function. The group also requests frames for the short layout animation,
 so the transition is visible under idle throttling. The worktree, recent-folder,
 and pull-request pills are unavailable while the focused terminal has a
-foreground process, because their actions send commands to that shell.
+foreground process, because their actions send commands to that shell. Their
+event handlers reject input at the same boundary, before the scheduled update
+collapses an already-open picker, so foreground-process input cannot be
+consumed by stale UI.
 
 ### External Notification Path
 
