@@ -27,6 +27,12 @@ const PillKind = enum(usize) {
 
 const layout_order = [_]PillKind{ .help, .recent_folders, .worktree, .pull_request };
 
+const AnimationPhase = enum {
+    idle,
+    reflow,
+    entrance,
+};
+
 const PillLayout = struct {
     current_x: [pill_count]c_int = [_]c_int{0} ** pill_count,
     start_x: [pill_count]c_int = [_]c_int{0} ** pill_count,
@@ -36,6 +42,7 @@ const PillLayout = struct {
     start_time: i64 = 0,
     initialized: bool = false,
     animating: bool = false,
+    phase: AnimationPhase = .idle,
 
     fn update(self: *PillLayout, now_ms: i64, window_w: c_int, ui_scale: f32, visible: [pill_count]bool) bool {
         const animation_completed = if (self.initialized) self.advance(now_ms) else false;
@@ -65,7 +72,7 @@ const PillLayout = struct {
         self.target_x = targets;
         const entrance_x = window_w + dpi.scale(pill_size, ui_scale);
         for (0..pill_count) |idx| {
-            const stage = visible[idx] and (self.entering[idx] or !self.visible[idx]);
+            const stage = visible[idx] and !self.visible[idx];
             self.entering[idx] = stage;
             if (stage) {
                 self.start_x[idx] = entrance_x;
@@ -75,6 +82,7 @@ const PillLayout = struct {
         self.visible = visible;
         self.start_time = now_ms;
         self.animating = true;
+        self.phase = .reflow;
         return membership_changed;
     }
 
@@ -100,13 +108,42 @@ const PillLayout = struct {
         if (!self.animating) return false;
 
         const elapsed = now_ms - self.start_time;
-        if (elapsed >= pill_animation_duration_ms) {
-            self.current_x = self.target_x;
-            self.entering = [_]bool{false} ** pill_count;
-            self.animating = false;
-            return true;
-        }
+        switch (self.phase) {
+            .idle => return false,
+            .reflow => {
+                if (elapsed >= pill_animation_duration_ms) {
+                    for (0..pill_count) |idx| {
+                        if (!self.entering[idx]) self.current_x[idx] = self.target_x[idx];
+                    }
 
+                    if (self.hasEnteringPills()) {
+                        self.phase = .entrance;
+                        self.start_time += pill_animation_duration_ms;
+                        return self.advance(now_ms);
+                    }
+
+                    return self.finishAnimation();
+                }
+
+                self.applyEasedPositions(now_ms, false);
+            },
+            .entrance => {
+                if (elapsed >= pill_animation_duration_ms) return self.finishAnimation();
+                self.applyEasedPositions(now_ms, true);
+            },
+        }
+        return false;
+    }
+
+    fn hasEnteringPills(self: *const PillLayout) bool {
+        for (self.entering) |entering| {
+            if (entering) return true;
+        }
+        return false;
+    }
+
+    fn applyEasedPositions(self: *PillLayout, now_ms: i64, entering_only: bool) void {
+        const elapsed = now_ms - self.start_time;
         const clamped_elapsed: i64 = @max(@as(i64, 0), elapsed);
         const progress: f32 = @min(
             @as(f32, 1.0),
@@ -115,11 +152,18 @@ const PillLayout = struct {
         const eased = easing.easeInOutCubic(progress);
 
         for (0..pill_count) |idx| {
-            if (self.entering[idx]) continue;
+            if (self.entering[idx] != entering_only) continue;
             const distance = self.target_x[idx] - self.start_x[idx];
             self.current_x[idx] = self.start_x[idx] + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(distance)) * eased));
         }
-        return false;
+    }
+
+    fn finishAnimation(self: *PillLayout) bool {
+        self.current_x = self.target_x;
+        self.entering = [_]bool{false} ** pill_count;
+        self.animating = false;
+        self.phase = .idle;
+        return true;
     }
 
     fn currentX(self: *const PillLayout, pill: PillKind) c_int {
@@ -347,6 +391,12 @@ test "pill layout eases a newly available pill into the compact row" {
     try std.testing.expectEqual(@as(c_int, 740), layout.currentX(.help));
 
     _ = layout.update(200, 800, 1.0, pull_request_and_help);
+    try std.testing.expectEqual(@as(c_int, 840), layout.currentX(.pull_request));
+
+    _ = layout.update(300, 800, 1.0, pull_request_and_help);
+    try std.testing.expectEqual(@as(c_int, 760), layout.currentX(.pull_request));
+
+    _ = layout.update(400, 800, 1.0, pull_request_and_help);
     try std.testing.expectEqual(@as(c_int, 680), layout.currentX(.pull_request));
 }
 
@@ -363,6 +413,13 @@ test "pill layout stages a newly available pill outside the occupied row" {
     try std.testing.expectEqual(@as(c_int, 650), layout.currentX(.pull_request));
 
     _ = layout.update(200, 800, 1.0, with_recent_folders);
+    try std.testing.expectEqual(@as(c_int, 840), layout.currentX(.recent_folders));
+    try std.testing.expectEqual(@as(c_int, 620), layout.currentX(.pull_request));
+
+    _ = layout.update(300, 800, 1.0, with_recent_folders);
+    try std.testing.expectEqual(@as(c_int, 760), layout.currentX(.recent_folders));
+
+    _ = layout.update(400, 800, 1.0, with_recent_folders);
     try std.testing.expectEqual(@as(c_int, 680), layout.currentX(.recent_folders));
     try std.testing.expectEqual(@as(c_int, 620), layout.currentX(.pull_request));
 }
