@@ -133,7 +133,11 @@ fn openUrlThread(ctx: *ThreadContext) void {
     defer ctx.done.store(true, .seq_cst);
 
     _ = proc.spawnDetached(ctx.io, ctx.argv) catch |err| {
-        log.warn("failed to open URL: {}", .{err});
+        if (ctx.owned_url) |url| {
+            log.warn("failed to open URL '{s}': {}", .{ url, err });
+        } else {
+            log.warn("failed to open URL: {}", .{err});
+        }
         return;
     };
 }
