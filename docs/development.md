@@ -73,6 +73,13 @@ zig build run -- --log-dir .tmp/architect-debug-logs
 - **Zwanzig v0.15.1** is pinned as a Zig build dependency and runs as a host-targeted `ReleaseFast` build tool through `zig build lint`. Architect passes its requested target architecture and operating system to Zwanzig for target-aware analysis.
 - **SDL3** and **SDL3_ttf** are provided by Nix. SDL3 is pinned to 3.4.10 via `overlays/sdl3-3-4-10.nix` with binaries cached in the public `forketyfork` Cachix to avoid rebuilds.
 
+SDL3 and the platform C APIs are translated at build time with Zig's built-in
+`addTranslateC` steps using the small header shims under `src/c/`. When SDL is
+provided outside the compiler's default search paths, `SDL3_INCLUDE_PATH` and
+`SDL3_TTF_INCLUDE_PATH` supply the include paths to both translation and
+compilation. On macOS, framework headers use the SDK path discovered from
+`SDKROOT`, `DEVELOPER_DIR`, or `xcrun`, in that order.
+
 ## Tests and Formatting
 
 Run tests:

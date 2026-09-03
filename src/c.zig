@@ -1,10 +1,7 @@
-// Minimal re-export layer that isolates C includes so the rest of the codebase
-// can `@import("c.zig")` without pulling headers repeatedly.
+// Minimal re-export layer that keeps the translated SDL symbols in one place
+// so the rest of the codebase can `@import("c.zig")` without repeating names.
 // zwanzig-disable: identifier-style
-const c_import = @cImport({
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3_ttf/SDL_ttf.h");
-});
+const c_import = @import("c_sdl");
 
 pub const SDL_Init = c_import.SDL_Init;
 pub const SDL_Quit = c_import.SDL_Quit;

@@ -16,10 +16,7 @@ pub const CwdError = error{
     OutOfMemory,
 };
 
-const c = @cImport({
-    @cInclude("libproc.h");
-    @cInclude("sys/proc_info.h");
-});
+const c = @import("c_libproc");
 
 pub fn getCwd(allocator: std.mem.Allocator, pid: std.c.pid_t) CwdError![]const u8 {
     var vnode_info: c.struct_proc_vnodepathinfo = undefined;

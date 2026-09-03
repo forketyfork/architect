@@ -34,20 +34,7 @@ const PosixPty = struct {
     const TIOCSWINSZ = if (builtin.os.tag == .macos) 2148037735 else c.TIOCSWINSZ;
     const TIOCGWINSZ = if (builtin.os.tag == .macos) 1074295912 else c.TIOCGWINSZ;
     extern "c" fn setsid() std.c.pid_t;
-    const c = switch (builtin.os.tag) {
-        .macos => @cImport({
-            @cInclude("sys/ioctl.h");
-            @cInclude("util.h");
-        }),
-        .freebsd => @cImport({
-            @cInclude("termios.h");
-            @cInclude("libutil.h");
-        }),
-        else => @cImport({
-            @cInclude("sys/ioctl.h");
-            @cInclude("pty.h");
-        }),
-    };
+    const c = @import("c_pty");
 
     master: Fd,
     slave: Fd,

@@ -15,11 +15,7 @@ const vt_stream = @import("../vt_stream.zig");
 const pty_reader_mod = @import("pty_reader.zig");
 const posix_util = @import("../posix_util.zig");
 const mac = if (builtin.os.tag == .macos)
-    @cImport({
-        @cInclude("sys/types.h");
-        @cInclude("sys/sysctl.h");
-        @cInclude("sys/proc.h");
-    })
+    @import("c_sysctl")
 else
     struct {};
 
