@@ -6,12 +6,17 @@ class Architect < Formula
   license "MIT"
 
   depends_on "pkg-config" => :build
-  depends_on "zig@0.16" => :build
   depends_on xcode: :build
+  depends_on "zig@0.16" => :build
   depends_on "sdl3"
   depends_on "sdl3_ttf"
 
   def install
+    # addTranslateC does not discover Homebrew dependency headers through the
+    # linker search path, so provide the include roots explicitly.
+    ENV["SDL3_INCLUDE_PATH"] = formula_opt_include("sdl3").to_s
+    ENV["SDL3_TTF_INCLUDE_PATH"] = formula_opt_include("sdl3_ttf").to_s
+
     # Zig 0.16.0 cannot translate Apple headers against the arm64e-only SDK
     # shipped with recent macOS toolchains. Source the helper in the same
     # shell as the build so its SDK selection reaches every compiler step.
@@ -25,7 +30,6 @@ class Architect < Formula
     contents = app_path/"Contents"
     macos = contents/"MacOS"
     resources = contents/"Resources"
-    share = contents/"share/architect"
 
     macos.mkpath
     resources.mkpath

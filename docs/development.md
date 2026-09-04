@@ -77,8 +77,10 @@ SDL3 and the platform C APIs are translated at build time with Zig's built-in
 `addTranslateC` steps using the small header shims under `src/c/`. When SDL is
 provided outside the compiler's default search paths, `SDL3_INCLUDE_PATH` and
 `SDL3_TTF_INCLUDE_PATH` supply the include paths to both translation and
-compilation. On macOS, framework headers use the SDK path discovered from
-`SDKROOT`, `DEVELOPER_DIR`, or `xcrun`, in that order.
+compilation. The Homebrew formula sets these variables from the installed SDL
+formula prefixes before starting the build. On macOS, framework headers use
+the SDK path discovered from `SDKROOT`, `DEVELOPER_DIR`, or `xcrun`, in that
+order.
 
 ## Tests and Formatting
 
