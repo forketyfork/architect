@@ -65,7 +65,6 @@ pub const ReaderOverlayComponent = struct {
     scrollbar_state: scrollbar.State = .{},
 
     session_index: usize = 0,
-    last_render_epoch: u64 = 0,
     wrap_cols: usize = 90,
     layout_char_w_px: c_int = 0,
     pinned_to_bottom: bool = true,
@@ -131,7 +130,7 @@ pub const ReaderOverlayComponent = struct {
         self.layout_char_w_px = 0;
         self.wrap_cols = self.computeWrapCols(host);
         self.overlay.show(now_ms);
-        self.refreshFromSession(host, true);
+        self.loadSnapshotFromSession(host, true);
         return .opened;
     }
 
@@ -169,7 +168,6 @@ pub const ReaderOverlayComponent = struct {
         markdown_renderer.freeLines(self.allocator, &self.lines);
         self.blocks = .empty;
         self.lines = .empty;
-        self.last_render_epoch = 0;
     }
 
     fn clearLinkHits(self: *ReaderOverlayComponent) void {
@@ -177,7 +175,7 @@ pub const ReaderOverlayComponent = struct {
         self.hovered_link = null;
     }
 
-    fn refreshFromSession(self: *ReaderOverlayComponent, host: *const types.UiHost, force_bottom: bool) void {
+    fn loadSnapshotFromSession(self: *ReaderOverlayComponent, host: *const types.UiHost, force_bottom: bool) void {
         if (self.session_index >= self.sessions.len) return;
 
         const session = self.sessions[self.session_index];
@@ -197,7 +195,6 @@ pub const ReaderOverlayComponent = struct {
         };
 
         self.rebuildLines(host, force_bottom);
-        self.last_render_epoch = session.render_epoch;
     }
 
     fn rebuildLines(self: *ReaderOverlayComponent, host: *const types.UiHost, force_bottom: bool) void {
@@ -875,14 +872,9 @@ pub const ReaderOverlayComponent = struct {
             self.rebuildLines(host, false);
         }
 
-        if (self.session_index < self.sessions.len) {
-            const session = self.sessions[self.session_index];
-            if (session.render_epoch != self.last_render_epoch) {
-                self.refreshFromSession(host, false);
-            } else {
-                _ = self.syncScrollMetrics(host);
-            }
-        }
+        // Reader content is an open-time snapshot. Terminal output continues
+        // independently and is captured the next time the overlay opens.
+        _ = self.syncScrollMetrics(host);
 
         if (self.pinned_to_bottom) {
             self.overlay.scroll_offset = self.overlay.max_scroll;
@@ -1695,3 +1687,51 @@ pub const ReaderOverlayComponent = struct {
         .wantsFrame = wantsFrameFn,
     };
 };
+
+test "reader content stays a snapshot while the terminal updates" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.render_epoch = 2;
+    session.terminal = null;
+    var sessions = [_]*SessionState{&session};
+
+    var component = ReaderOverlayComponent{
+        .allocator = allocator,
+        .opener = undefined,
+        .sessions = &sessions,
+        .overlay = .{
+            .visible = true,
+            .animation_state = .open,
+        },
+        .session_index = 0,
+        .raw_text = try allocator.dupe(u8, "captured before live output"),
+    };
+    defer component.clearContent();
+
+    var host = types.UiHost{
+        .now_ms = 1_000,
+        .window_w = 1_200,
+        .window_h = 800,
+        .window_focused = true,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 10,
+        .cell_h = 20,
+        .term_cols = 120,
+        .term_rows = 40,
+        .view_mode = .Full,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = true,
+        .sessions = &[_]types.SessionUiInfo{},
+        .theme = undefined,
+    };
+    var actions = types.UiActionQueue.init(allocator);
+    defer actions.deinit();
+
+    ReaderOverlayComponent.updateFn(&component, &host, &actions);
+
+    try std.testing.expectEqualStrings("captured before live output", component.raw_text.?);
+}

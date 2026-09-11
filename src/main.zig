@@ -81,6 +81,7 @@ test {
     _ = @import("ui/components/pr_dropdown_model.zig");
     _ = @import("ui/components/pr_dropdown_repo.zig");
     _ = @import("ui/components/pr_dropdown_view.zig");
+    _ = @import("ui/components/reader_overlay.zig");
     _ = @import("ui/components/scrollbar.zig");
     _ = @import("ui/components/search_utils.zig");
     _ = @import("ui/components/selection_agent_overlay.zig");
