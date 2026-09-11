@@ -12,6 +12,7 @@ const session_state = @import("../../session/state.zig");
 const scrollbar = @import("scrollbar.zig");
 const comment_layout = @import("diff_comment_layout.zig");
 const dropdown_menu = @import("dropdown_menu.zig");
+const button = @import("button.zig");
 const text_render = @import("../text_render.zig");
 const text_edit = @import("../text_edit.zig");
 
@@ -147,6 +148,9 @@ pub const DiffOverlayComponent = struct {
     delete_hovered_comment: ?usize = null,
     comment_submit_hovered: bool = false,
     comment_cancel_hovered: bool = false,
+    comment_submit_button: button.ButtonTexture = .{},
+    comment_cancel_button: button.ButtonTexture = .{},
+    send_button: button.ButtonTexture = .{},
 
     wrap_cols: usize = 0,
 
@@ -3104,15 +3108,18 @@ pub const DiffOverlayComponent = struct {
             _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
             primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         }
-        const submit_tex = self.makeTextTexture(renderer, fonts.regular, "Submit", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
-        defer c.SDL_DestroyTexture(submit_tex.tex);
-        _ = c.SDL_SetTextureAlphaMod(submit_tex.tex, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderTexture(renderer, submit_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(submit_x + @divFloor(btn_w - submit_tex.w, 2)),
-            .y = @floatFromInt(btn_y + @divFloor(btn_h - submit_tex.h, 2)),
-            .w = @floatFromInt(submit_tex.w),
-            .h = @floatFromInt(submit_tex.h),
-        });
+        renderCachedButtonLabel(
+            &self.comment_submit_button,
+            renderer,
+            fonts.regular,
+            "Submit",
+            .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+            alpha,
+            submit_x,
+            btn_y,
+            btn_w,
+            btn_h,
+        );
 
         // Cancel button
         const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
@@ -3125,15 +3132,18 @@ pub const DiffOverlayComponent = struct {
             _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
             primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         }
-        const cancel_tex = self.makeTextTexture(renderer, fonts.regular, "Cancel", host.theme.foreground) catch return;
-        defer c.SDL_DestroyTexture(cancel_tex.tex);
-        _ = c.SDL_SetTextureAlphaMod(cancel_tex.tex, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderTexture(renderer, cancel_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(cancel_x + @divFloor(btn_w - cancel_tex.w, 2)),
-            .y = @floatFromInt(btn_y + @divFloor(btn_h - cancel_tex.h, 2)),
-            .w = @floatFromInt(cancel_tex.w),
-            .h = @floatFromInt(cancel_tex.h),
-        });
+        renderCachedButtonLabel(
+            &self.comment_cancel_button,
+            renderer,
+            fonts.regular,
+            "Cancel",
+            host.theme.foreground,
+            alpha,
+            cancel_x,
+            btn_y,
+            btn_w,
+            btn_h,
+        );
     }
 
     fn renderEditingCommentAnimated(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, progress: f32, is_closing: bool) void {
@@ -3218,16 +3228,18 @@ pub const DiffOverlayComponent = struct {
         const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, @intFromFloat(220.0 * alpha));
         primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
-        if (self.makeTextTexture(renderer, fonts.regular, "Submit", .{ .r = 255, .g = 255, .b = 255, .a = 255 })) |submit_tex| {
-            defer c.SDL_DestroyTexture(submit_tex.tex);
-            _ = c.SDL_SetTextureAlphaMod(submit_tex.tex, @intFromFloat(255.0 * alpha));
-            _ = c.SDL_RenderTexture(renderer, submit_tex.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(submit_x + @divFloor(btn_w - submit_tex.w, 2)),
-                .y = @floatFromInt(btn_y + @divFloor(btn_h - submit_tex.h, 2)),
-                .w = @floatFromInt(submit_tex.w),
-                .h = @floatFromInt(submit_tex.h),
-            });
-        } else |_| {}
+        renderCachedButtonLabel(
+            &self.comment_submit_button,
+            renderer,
+            fonts.regular,
+            "Submit",
+            .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+            alpha,
+            submit_x,
+            btn_y,
+            btn_w,
+            btn_h,
+        );
 
         const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
         const fg = host.theme.foreground;
@@ -3235,16 +3247,18 @@ pub const DiffOverlayComponent = struct {
         primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
         _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(80.0 * alpha));
         primitives.drawRoundedBorder(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, dpi.scale(4, host.ui_scale));
-        if (self.makeTextTexture(renderer, fonts.regular, "Cancel", host.theme.foreground)) |cancel_tex| {
-            defer c.SDL_DestroyTexture(cancel_tex.tex);
-            _ = c.SDL_SetTextureAlphaMod(cancel_tex.tex, @intFromFloat(255.0 * alpha));
-            _ = c.SDL_RenderTexture(renderer, cancel_tex.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(cancel_x + @divFloor(btn_w - cancel_tex.w, 2)),
-                .y = @floatFromInt(btn_y + @divFloor(btn_h - cancel_tex.h, 2)),
-                .w = @floatFromInt(cancel_tex.w),
-                .h = @floatFromInt(cancel_tex.h),
-            });
-        } else |_| {}
+        renderCachedButtonLabel(
+            &self.comment_cancel_button,
+            renderer,
+            fonts.regular,
+            "Cancel",
+            host.theme.foreground,
+            alpha,
+            cancel_x,
+            btn_y,
+            btn_w,
+            btn_h,
+        );
 
         _ = c.SDL_SetRenderClipRect(renderer, if (had_clip) &prev_clip else null);
     }
@@ -3457,6 +3471,32 @@ pub const DiffOverlayComponent = struct {
         }
     }
 
+    fn renderCachedButtonLabel(
+        cache: *button.ButtonTexture,
+        renderer: *c.SDL_Renderer,
+        font: *c.TTF_Font,
+        label: []const u8,
+        color: c.SDL_Color,
+        alpha: f32,
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+    ) void {
+        cache.ensure(renderer, font, label, color) catch |err| {
+            log.warn("failed to cache diff button label {s}: {}", .{ label, err });
+            return;
+        };
+        const tex = cache.tex orelse return;
+        _ = c.SDL_SetTextureAlphaMod(tex, @intFromFloat(255.0 * alpha));
+        _ = c.SDL_RenderTexture(renderer, tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(x + @divFloor(w - cache.w, 2)),
+            .y = @floatFromInt(y + @divFloor(h - cache.h, 2)),
+            .w = @floatFromInt(cache.w),
+            .h = @floatFromInt(cache.h),
+        });
+    }
+
     fn renderSendButton(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect) void {
         if (!self.hasUnsentComments()) return;
 
@@ -3472,15 +3512,18 @@ pub const DiffOverlayComponent = struct {
         const font_cache = assets.font_cache orelse return;
         const scaled_font_size = dpi.scale(font_size, host.ui_scale);
         const fonts = font_cache.get(scaled_font_size) catch return;
-        const tex = self.makeTextTexture(renderer, fonts.regular, "Send to agent", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
-        defer c.SDL_DestroyTexture(tex.tex);
-        _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(btn.x + @divFloor(btn.w - tex.w, 2)),
-            .y = @floatFromInt(btn.y + @divFloor(btn.h - tex.h, 2)),
-            .w = @floatFromInt(tex.w),
-            .h = @floatFromInt(tex.h),
-        });
+        renderCachedButtonLabel(
+            &self.send_button,
+            renderer,
+            fonts.regular,
+            "Send to agent",
+            .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+            alpha,
+            btn.x,
+            btn.y,
+            btn.w,
+            btn.h,
+        );
     }
 
     fn renderAgentDropdown(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, overlay_rect: geom.Rect) void {
@@ -3505,6 +3548,9 @@ pub const DiffOverlayComponent = struct {
 
     fn destroy(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.comment_submit_button.deinit();
+        self.comment_cancel_button.deinit();
+        self.send_button.deinit();
         self.scrollbar_state.deinit();
         self.clearContent();
         self.agent_dropdown.deinit();

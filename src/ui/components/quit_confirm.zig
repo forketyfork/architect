@@ -22,6 +22,8 @@ pub const QuitConfirmComponent = struct {
     escape_pressed: bool = false,
     cancel_hovered: bool = false,
     quit_hovered: bool = false,
+    cancel_button: button.ButtonTexture = .{},
+    quit_button: button.ButtonTexture = .{},
 
     title_tex: ?*c.SDL_Texture = null,
     title_w: c_int = 0,
@@ -58,6 +60,8 @@ pub const QuitConfirmComponent = struct {
     }
 
     pub fn destroy(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer) void {
+        self.cancel_button.deinit();
+        self.quit_button.deinit();
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
         self.allocator.destroy(self);
@@ -233,7 +237,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.cancel.w),
             .h = @floatFromInt(buttons.cancel.h),
         };
-        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale, self.cancel_hovered);
+        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale, &self.cancel_button, self.cancel_hovered);
 
         const quit_rect = c.SDL_FRect{
             .x = @floatFromInt(buttons.quit.x),
@@ -241,7 +245,7 @@ pub const QuitConfirmComponent = struct {
             .w = @floatFromInt(buttons.quit.w),
             .h = @floatFromInt(buttons.quit.h),
         };
-        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale, self.quit_hovered);
+        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale, &self.quit_button, self.quit_hovered);
     }
 
     fn modalRect(self: *QuitConfirmComponent, host: *const types.UiHost) geom.Rect {
