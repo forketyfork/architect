@@ -1499,7 +1499,7 @@ pub const WorktreeOverlayComponent = struct {
                     log.warn("failed to cache removal path: {}", .{err});
                     return;
                 };
-                self.renderWrappedPath(self.remove_path_cache, renderer, layout.modal.x, message_y, layout.modal.w, scaled_lh);
+                renderWrappedPath(&self.remove_path_cache, renderer, layout.modal.x, message_y, layout.modal.w, scaled_lh);
             }
         }
 
