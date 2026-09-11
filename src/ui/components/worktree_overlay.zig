@@ -49,6 +49,13 @@ pub const WorktreeOverlayComponent = struct {
     flow_animation_start_ms: i64 = 0,
     modal_confirm_hovered: bool = false,
     modal_cancel_hovered: bool = false,
+    modal_confirm_button: button.ButtonTexture = .{},
+    modal_remove_button: button.ButtonTexture = .{},
+    modal_cancel_button: button.ButtonTexture = .{},
+    modal_create_title: button.ButtonTexture = .{},
+    modal_remove_title: button.ButtonTexture = .{},
+    modal_input_text: button.ButtonTexture = .{},
+    modal_error_text: button.ButtonTexture = .{},
 
     const create_name_max_len: usize = 64;
     const button_size_small: c_int = 40;
@@ -119,6 +126,13 @@ pub const WorktreeOverlayComponent = struct {
     fn deinit(self_ptr: *anyopaque, _: *c.SDL_Renderer) void {
         const self: *WorktreeOverlayComponent = @ptrCast(@alignCast(self_ptr));
         self.badge.deinit();
+        self.modal_confirm_button.deinit();
+        self.modal_remove_button.deinit();
+        self.modal_cancel_button.deinit();
+        self.modal_create_title.deinit();
+        self.modal_remove_title.deinit();
+        self.modal_input_text.deinit();
+        self.modal_error_text.deinit();
         self.destroyCache();
         self.clearWorktrees();
         self.clearCreateInput();
@@ -1033,6 +1047,8 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn clearCreateInput(self: *WorktreeOverlayComponent) void {
+        self.modal_input_text.deinit();
+        self.modal_error_text.deinit();
         self.create_input.clear();
         if (self.create_error) |err| {
             self.allocator.free(err);
@@ -1064,6 +1080,7 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn setCreateError(self: *WorktreeOverlayComponent, msg: []const u8) void {
+        self.modal_error_text.deinit();
         if (self.create_error) |err| self.allocator.free(err);
         self.create_error = self.allocator.dupe(u8, msg) catch |err| blk: {
             log.warn("failed to allocate create error message: {}", .{err});
@@ -1079,6 +1096,7 @@ pub const WorktreeOverlayComponent = struct {
     }
 
     fn appendCreateText(self: *WorktreeOverlayComponent, text: []const u8, now_ms: i64) void {
+        self.modal_input_text.deinit();
         _ = self.create_input.insert(self.allocator, text, now_ms);
     }
 
@@ -1109,7 +1127,11 @@ pub const WorktreeOverlayComponent = struct {
                 self.clearCreateInput();
                 return true;
             },
-            else => return self.create_input.handleKey(self.allocator, key, mod, host.now_ms).consumed,
+            else => {
+                const result = self.create_input.handleKey(self.allocator, key, mod, host.now_ms);
+                if (result.text_changed) self.modal_input_text.deinit();
+                return result.consumed;
+            },
         }
     }
 
@@ -1217,19 +1239,18 @@ pub const WorktreeOverlayComponent = struct {
         primitives.drawRoundedBorder(renderer, modal_rect, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Create worktree", title_color) catch |err| blk: {
+        self.modal_create_title.ensure(renderer, title_fonts.regular, "Create worktree", title_color) catch |err| {
             log.warn("failed to create title texture: {}", .{err});
-            break :blk null;
+            return;
         };
-        if (title_tex) |tex| {
-            defer c.SDL_DestroyTexture(tex.tex);
-            const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+        if (self.modal_create_title.tex) |texture| {
+            const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(self.modal_create_title.w))) / 2.0;
             const title_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(10, host.ui_scale)));
-            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+            _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
                 .x = title_x,
                 .y = title_y,
-                .w = @floatFromInt(tex.w),
-                .h = @floatFromInt(tex.h),
+                .w = @floatFromInt(self.modal_create_title.w),
+                .h = @floatFromInt(self.modal_create_title.h),
             });
         }
 
@@ -1249,17 +1270,16 @@ pub const WorktreeOverlayComponent = struct {
         const placeholder = self.create_input.isEmpty();
         const input_text = if (placeholder) "name" else self.create_input.text();
         const input_color = if (placeholder) input_style.placeholder else input_style.text;
-        const input_tex = makeTextTexture(renderer, entry_fonts.regular, input_text, input_color) catch |err| blk: {
+        self.modal_input_text.ensure(renderer, entry_fonts.regular, input_text, input_color) catch |err| {
             log.warn("failed to create input texture: {}", .{err});
-            break :blk null;
+            return;
         };
         const input_pad: f32 = @floatFromInt(dpi.scale(8, host.ui_scale));
         var text_width: f32 = 0;
         var text_height: f32 = 0;
-        if (input_tex) |tex| {
-            defer c.SDL_DestroyTexture(tex.tex);
-            text_width = @floatFromInt(tex.w);
-            text_height = @floatFromInt(tex.h);
+        if (self.modal_input_text.tex) |texture| {
+            text_width = @floatFromInt(self.modal_input_text.w);
+            text_height = @floatFromInt(self.modal_input_text.h);
             if (self.create_input.select_all and !placeholder) {
                 const sel_bg = theme.accent;
                 _ = c.SDL_SetRenderDrawColor(renderer, sel_bg.r, sel_bg.g, sel_bg.b, 110);
@@ -1270,7 +1290,7 @@ pub const WorktreeOverlayComponent = struct {
                     .h = text_height,
                 });
             }
-            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+            _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
                 .x = layout.input.x + input_pad,
                 .y = layout.input.y + input_pad,
                 .w = text_width,
@@ -1287,24 +1307,24 @@ pub const WorktreeOverlayComponent = struct {
         }
 
         // Buttons
-        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Confirm", .primary, theme, host.ui_scale, self.modal_confirm_hovered);
-        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, self.modal_cancel_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Confirm", .primary, theme, host.ui_scale, &self.modal_confirm_button, self.modal_confirm_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, &self.modal_cancel_button, self.modal_cancel_hovered);
 
         // Error message
         if (self.create_error) |err| {
-            const err_tex = makeTextTexture(renderer, entry_fonts.regular, err, c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 }) catch |tex_err| blk: {
+            const err_color = c.SDL_Color{ .r = 255, .g = 99, .b = 99, .a = 255 };
+            self.modal_error_text.ensure(renderer, entry_fonts.regular, err, err_color) catch |tex_err| {
                 log.warn("operation failed: {}", .{tex_err});
-                break :blk null;
+                return;
             };
-            if (err_tex) |tex| {
-                defer c.SDL_DestroyTexture(tex.tex);
+            if (self.modal_error_text.tex) |texture| {
                 const err_x = layout.input.x;
                 const err_y = layout.input.y + layout.input.h + @as(f32, @floatFromInt(dpi.scale(8, host.ui_scale)));
-                _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+                _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
                     .x = err_x,
                     .y = err_y,
-                    .w = @floatFromInt(tex.w),
-                    .h = @floatFromInt(tex.h),
+                    .w = @floatFromInt(self.modal_error_text.w),
+                    .h = @floatFromInt(self.modal_error_text.h),
                 });
             }
         }
@@ -1352,19 +1372,18 @@ pub const WorktreeOverlayComponent = struct {
         primitives.drawRoundedBorder(renderer, delete_modal_rect, modal_radius);
 
         const title_color = c.SDL_Color{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b, .a = 255 };
-        const title_tex = makeTextTexture(renderer, title_fonts.regular, "Remove worktree", title_color) catch |err| blk: {
+        self.modal_remove_title.ensure(renderer, title_fonts.regular, "Remove worktree", title_color) catch |err| {
             log.warn("failed to create title texture: {}", .{err});
-            break :blk null;
+            return;
         };
-        if (title_tex) |tex| {
-            defer c.SDL_DestroyTexture(tex.tex);
-            const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(tex.w))) / 2.0;
+        if (self.modal_remove_title.tex) |texture| {
+            const title_x = layout.modal.x + (layout.modal.w - @as(f32, @floatFromInt(self.modal_remove_title.w))) / 2.0;
             const title_y = layout.modal.y + @as(f32, @floatFromInt(dpi.scale(10, host.ui_scale)));
-            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+            _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
                 .x = title_x,
                 .y = title_y,
-                .w = @floatFromInt(tex.w),
-                .h = @floatFromInt(tex.h),
+                .w = @floatFromInt(self.modal_remove_title.w),
+                .h = @floatFromInt(self.modal_remove_title.h),
             });
         }
 
@@ -1379,8 +1398,8 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Remove", .danger, theme, host.ui_scale, self.modal_confirm_hovered);
-        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, self.modal_cancel_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.confirm, "Remove", .danger, theme, host.ui_scale, &self.modal_remove_button, self.modal_confirm_hovered);
+        button.renderButton(renderer, entry_fonts.regular, layout.cancel, "Cancel", .default, theme, host.ui_scale, &self.modal_cancel_button, self.modal_cancel_hovered);
     }
 
     fn entryCount(self: *WorktreeOverlayComponent) usize {

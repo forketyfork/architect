@@ -15,6 +15,7 @@ const markdown_renderer = @import("markdown_renderer.zig");
 const scrollbar = @import("scrollbar.zig");
 const search_utils = @import("search_utils.zig");
 const text_edit = @import("../text_edit.zig");
+const button = @import("button.zig");
 
 const log = std.log.scoped(.reader_overlay);
 const SessionState = session_state.SessionState;
@@ -80,6 +81,7 @@ pub const ReaderOverlayComponent = struct {
     link_hits: std.ArrayList(LinkHit) = .empty,
     hovered_link: ?usize = null,
     jump_button_hovered: bool = false,
+    jump_button_label: button.ButtonTexture = .{},
 
     arrow_cursor: ?*c.SDL_Cursor = null,
     pointer_cursor: ?*c.SDL_Cursor = null,
@@ -145,6 +147,7 @@ pub const ReaderOverlayComponent = struct {
 
     fn destroy(self: *ReaderOverlayComponent, renderer: *c.SDL_Renderer) void {
         _ = renderer;
+        self.jump_button_label.deinit();
         self.clearContent();
         self.blocks.deinit(self.allocator);
         self.lines.deinit(self.allocator);
@@ -1588,13 +1591,13 @@ pub const ReaderOverlayComponent = struct {
         }
 
         const fonts = try font_cache.get(dpi.scale(13, host.ui_scale));
-        const label_tex = try makeTextTexture(self.allocator, renderer, fonts.bold orelse fonts.regular, "Jump to bottom", host.theme.background);
-        defer c.SDL_DestroyTexture(label_tex.tex);
-        _ = c.SDL_RenderTexture(renderer, label_tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(rect.x + @divFloor(rect.w - label_tex.w, 2)),
-            .y = @floatFromInt(rect.y + @divFloor(rect.h - label_tex.h, 2)),
-            .w = @floatFromInt(label_tex.w),
-            .h = @floatFromInt(label_tex.h),
+        try self.jump_button_label.ensure(renderer, fonts.bold orelse fonts.regular, "Jump to bottom", host.theme.background);
+        const label_tex = self.jump_button_label.tex orelse return;
+        _ = c.SDL_RenderTexture(renderer, label_tex, null, &c.SDL_FRect{
+            .x = @floatFromInt(rect.x + @divFloor(rect.w - self.jump_button_label.w, 2)),
+            .y = @floatFromInt(rect.y + @divFloor(rect.h - self.jump_button_label.h, 2)),
+            .w = @floatFromInt(self.jump_button_label.w),
+            .h = @floatFromInt(self.jump_button_label.h),
         });
     }
 
