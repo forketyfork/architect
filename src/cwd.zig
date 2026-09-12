@@ -19,28 +19,26 @@ pub const CwdError = error{
 const c = @import("c_libproc");
 
 pub fn getCwd(allocator: std.mem.Allocator, pid: std.c.pid_t) CwdError![]const u8 {
-    var vnode_info: c.struct_proc_vnodepathinfo = undefined;
+    var cwd_path: [std.fs.max_path_bytes]u8 = undefined;
 
-    const result = c.proc_pidinfo(
+    const result = c.architect_proc_pid_cwd(
         @intCast(pid),
-        c.PROC_PIDVNODEPATHINFO,
-        0,
-        &vnode_info,
-        @sizeOf(c.struct_proc_vnodepathinfo),
+        &cwd_path,
+        cwd_path.len,
     );
 
+    if (result == c.ARCHITECT_PROC_CWD_BUFFER_TOO_SMALL) {
+        return error.BufferTooSmall;
+    }
     if (result <= 0) {
         log.warn("failed to get cwd for pid {d}", .{pid});
         return error.ProcessNotFound;
     }
 
-    const cwd_path = std.mem.sliceTo(&vnode_info.pvi_cdir.vip_path, 0);
+    const cwd_len: usize = @intCast(result);
+    if (cwd_len >= cwd_path.len) return error.SystemError;
 
-    if (cwd_path.len == 0) {
-        return error.ProcessNotFound;
-    }
-
-    return allocator.dupe(u8, cwd_path);
+    return allocator.dupe(u8, cwd_path[0..cwd_len]);
 }
 
 pub fn getBasename(path: []const u8) []const u8 {

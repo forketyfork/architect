@@ -27,9 +27,9 @@ This document covers local setup, build/test commands, and release steps.
 
    On macOS hosts where the active `MacOSX.sdk` only exposes `arm64e` targets, the Zig 0.16.0 dev shell retains a workaround for native Darwin linking errors such as `undefined symbol: __availability_version_check`. The upstream tracker for this regression is https://codeberg.org/ziglang/zig/issues/31756.
 
-   The dev shell works around that by exposing `MacOSX15.4.sdk` through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for `xcrun --sdk macosx --show-sdk-path`. `build.zig` also resolves framework paths through `DEVELOPER_DIR` and `xcrun` before it falls back to hardcoded SDK locations, so the workaround does not need to force `SDKROOT`. Keeping the shim inside the fake developer tree means tools like `git` can still invoke `/usr/bin/xcrun` without tripping over the overridden `DEVELOPER_DIR`.
+   If `MacOSX15.4.sdk` is installed, the dev shell can expose it through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for `xcrun --sdk macosx --show-sdk-path`. If that legacy SDK has been removed, the helper is a no-op and the build uses the active SDK instead. `build.zig` resolves the SDK through `SDKROOT`, `DEVELOPER_DIR`, `xcrun`, and known installation paths, then supplies its framework and system-library directories explicitly.
 
-   Keep this workaround until a macOS host confirms that Zig handles the arm64e-only SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
+   Keep the workaround until a macOS host confirms that Zig handles the arm64e-only SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, or the legacy 15.4 SDK is unavailable, the shell hook becomes a no-op. Newer SDK framework stubs may re-export `/usr/lib/libobjc.A.dylib`; the build links `objc` explicitly so Zig 0.16 can resolve that dependency from the selected SDK.
 
    The Homebrew formula sources the same helper while building from source, so Homebrew installs receive the SDK selection even though they do not run inside the Nix development shell.
 
@@ -80,7 +80,10 @@ provided outside the compiler's default search paths, `SDL3_INCLUDE_PATH` and
 compilation. The Homebrew formula sets these variables from the installed SDL
 formula prefixes before starting the build. On macOS, framework headers use
 the SDK path discovered from `SDKROOT`, `DEVELOPER_DIR`, or `xcrun`, in that
-order.
+order. The macOS cwd query uses a narrow declaration in `src/c/libproc.h` and
+the compiled `src/c/libproc.c` wrapper rather than translating Apple's full
+Mach/libproc header tree, whose layout is incompatible with Zig 0.16 and the
+new SDK headers.
 
 ## Tests and Formatting
 
