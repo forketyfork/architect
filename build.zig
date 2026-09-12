@@ -1,16 +1,26 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     // GitHub's macOS runners default the deployment target to the host
     // (currently 15.x), which makes release binaries fail to start on older
     // macOS versions. Pin a lower default; callers can still override with
     // -Dtarget.
+    const default_target: std.Target.Query = if (builtin.os.tag == .macos) .{
+        .cpu_arch = builtin.cpu.arch,
+        .os_tag = .macos,
+        .os_version_min = .{ .semver = .{ .major = 12, .minor = 0, .patch = 0 } },
+    } else .{
+        .os_version_min = .{ .semver = .{ .major = 12, .minor = 0, .patch = 0 } },
+    };
     const target = b.standardTargetOptions(.{
-        .default_target = .{
-            .os_version_min = .{ .semver = .{ .major = 12, .minor = 0, .patch = 0 } },
-        },
+        .default_target = default_target,
     });
     const optimize = b.standardOptimizeOption(.{});
+    const sdk_root: ?[]const u8 = if (target.result.os.tag == .macos)
+        findSdkRoot(b)
+    else
+        null;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -73,6 +83,7 @@ pub fn build(b: *std.Build) void {
     _ = addTranslateCModule(b, exe_mod, "c_time", "src/c/libc_time.h", target, optimize);
 
     if (target.result.os.tag == .macos) {
+        exe_mod.addCSourceFile(.{ .file = b.path("src/c/libproc.c") });
         _ = addTranslateCModule(b, exe_mod, "c_libproc", "src/c/libproc.h", target, optimize);
         _ = addTranslateCModule(b, exe_mod, "c_sysctl", "src/c/sysctl.h", target, optimize);
     }
@@ -86,7 +97,6 @@ pub fn build(b: *std.Build) void {
             dep.module("ghostty-vt"),
         );
     }
-
     if (b.lazyDependency("libxev", .{
         .target = target,
         .optimize = optimize,
@@ -109,21 +119,24 @@ pub fn build(b: *std.Build) void {
         .name = "architect-mcp",
         .root_module = mcp_mod,
     });
-
     exe_mod.linkSystemLibrary("SDL3", .{});
     exe_mod.linkSystemLibrary("SDL3_ttf", .{});
 
-    const framework_path: ?[]const u8 = if (target.result.os.tag == .macos)
-        if (findSdkRoot(b)) |sdk_root| b.fmt("{s}/System/Library/Frameworks", .{sdk_root}) else null
+    const framework_path: ?[]const u8 = if (sdk_root) |path|
+        b.fmt("{s}/System/Library/Frameworks", .{path})
     else
         null;
     addSdlPaths(b, exe_mod, c_sdl, framework_path);
 
     if (target.result.os.tag == .macos) {
+        if (sdk_root) |path| {
+            exe_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{path}) });
+        }
         exe.headerpad_max_install_names = true;
         mcp_exe.headerpad_max_install_names = true;
 
         exe_mod.linkSystemLibrary("proc", .{});
+        exe_mod.linkSystemLibrary("objc", .{});
         exe_mod.linkFramework("Carbon", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
         exe_mod.linkFramework("AppKit", .{});

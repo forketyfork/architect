@@ -1,2 +1,4 @@
 #include <sys/ioctl.h>
-#include <util.h>
+#include <termios.h>
+
+int openpty(int *, int *, char *, const struct termios *, const struct winsize *);

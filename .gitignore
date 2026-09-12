@@ -20,3 +20,5 @@ zig-pkg/
 .DS_Store
 
 .tmp/
+.playwright-mcp/
+.idea/
