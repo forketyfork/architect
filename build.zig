@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
     control_mod.addImport("../posix_util.zig", posix_util_mod);
     control_mod.addImport("../wake_pipe.zig", wake_pipe_mod);
     mcp_mod.addImport("control", control_mod);
+    mcp_mod.addImport("../env.zig", env_mod);
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),
         .target = target,
