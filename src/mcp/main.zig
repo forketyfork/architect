@@ -1,5 +1,6 @@
 const std = @import("std");
 const control = @import("control");
+const env = @import("../env.zig");
 
 const log = std.log.scoped(.mcp);
 const protocol_version = "2025-11-25";
@@ -16,6 +17,7 @@ const JsonRpcErrorCode = enum(i32) {
 };
 
 pub fn main(init: std.process.Init) !void {
+    env.init(init.minimal.environ);
     try run(init.gpa, init.io, std.Io.File.stdin(), std.Io.File.stdout());
 }
 
@@ -521,6 +523,96 @@ test "tool failure response is an MCP tool error result" {
     const code = structured_content.object.get("code") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("error", status.string);
     try std.testing.expectEqualStrings("invalid_cwd", code.string);
+}
+
+test "tools/call returns an app-not-running result without aborting" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const runtime_dir_name = try std.fmt.allocPrint(allocator, ".tmp/mcp_runtime_{d}", .{std.c.getpid()});
+    defer allocator.free(runtime_dir_name);
+    std.Io.Dir.cwd().createDirPath(io, runtime_dir_name) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    defer std.Io.Dir.cwd().deleteDir(io, runtime_dir_name) catch |err| {
+        std.debug.print("cleanup failed: {}\n", .{err});
+    };
+
+    const runtime_dir = try std.Io.Dir.cwd().realPathFileAlloc(io, runtime_dir_name, allocator);
+    defer allocator.free(runtime_dir);
+
+    var environ_map = std.process.Environ.Map.init(allocator);
+    defer environ_map.deinit();
+    try environ_map.put("XDG_RUNTIME_DIR", runtime_dir);
+    const environ_block = try environ_map.createPosixBlock(allocator, .{});
+    defer environ_block.deinit(allocator);
+    const environ: std.process.Environ = .{ .block = environ_block };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const empty_args: []const [*:0]const u8 = &.{};
+    const init: std.process.Init = .{
+        .minimal = .{
+            .environ = environ,
+            .args = .{ .vector = empty_args },
+        },
+        .arena = &arena,
+        .gpa = allocator,
+        .io = io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const input = try tmp.dir.createFile(io, "input.jsonl", .{});
+        defer input.close(io);
+        try input.writeStreamingAll(
+            io,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"spawn_session\",\"arguments\":{\"cwd\":\"/tmp\"}}}\n",
+        );
+    }
+
+    const input = try tmp.dir.openFile(io, "input.jsonl", .{});
+    defer input.close(io);
+    const output = try tmp.dir.createFile(io, "output.jsonl", .{});
+    defer output.close(io);
+
+    const saved_stdin = std.c.dup(0);
+    if (saved_stdin < 0) return error.Unexpected;
+    const saved_stdout = std.c.dup(1);
+    if (saved_stdout < 0) {
+        _ = std.c.close(saved_stdin);
+        return error.Unexpected;
+    }
+    defer {
+        if (std.c.dup2(saved_stdin, 0) < 0) std.debug.print("failed to restore stdin\n", .{});
+        if (std.c.dup2(saved_stdout, 1) < 0) std.debug.print("failed to restore stdout\n", .{});
+        _ = std.c.close(saved_stdin);
+        _ = std.c.close(saved_stdout);
+    }
+
+    if (std.c.dup2(input.handle, 0) < 0) return error.Unexpected;
+    if (std.c.dup2(output.handle, 1) < 0) return error.Unexpected;
+    try main(init);
+    if (std.c.dup2(saved_stdin, 0) < 0) return error.Unexpected;
+    if (std.c.dup2(saved_stdout, 1) < 0) return error.Unexpected;
+
+    const response = try tmp.dir.readFileAlloc(io, "output.jsonl", allocator, .limited(16 * 1024));
+    defer allocator.free(response);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, response, "\n"), .{});
+    defer parsed.deinit();
+
+    const result_value = parsed.value.object.get("result") orelse return error.TestUnexpectedResult;
+    const result = result_value.object;
+    const is_error = result.get("isError") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(is_error.bool);
+    const structured_content = result.get("structuredContent") orelse return error.TestUnexpectedResult;
+    const code = structured_content.object.get("code") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("app_not_running", code.string);
 }
 
 test "run discards the rest of an oversized line" {
