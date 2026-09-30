@@ -42,6 +42,7 @@ test {
     _ = @import("app/app_state.zig");
     _ = @import("app/frame_schedule.zig");
     _ = @import("app/grid_layout.zig");
+    _ = @import("app/input_keys.zig");
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
     _ = @import("app/terminal_actions.zig");
@@ -71,6 +72,7 @@ test {
     _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");
     _ = @import("ui/components/expanding_overlay.zig");
+    _ = @import("ui/components/escape_hold.zig");
     _ = @import("ui/components/markdown_parser.zig");
     _ = @import("ui/components/markdown_renderer.zig");
     _ = @import("ui/components/metrics_overlay.zig");

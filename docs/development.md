@@ -106,6 +106,12 @@ isolated runtime directory and verifies the structured error returned when
 Architect is not running. This also covers environment initialization before
 control-socket discovery.
 
+Keyboard regression tests cover all combinations of Shift, Ctrl, Option, and
+Command on navigation and function keys in normal/application cursor modes and
+legacy/Kitty encoding. They also verify exact app shortcuts, compatibility
+bindings, negotiated terminal options, and press-time modifiers for deferred
+Escape input. Extend this coverage when adding a key mapping or shortcut.
+
 Check formatting and script linting:
 ```bash
 just lint

@@ -10,6 +10,27 @@ const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 const log = std.log.scoped(.escape_hold);
 
+test "modified escape does not start the collapse gesture" {
+    var component: EscapeHoldComponent = .{ .allocator = std.testing.allocator, .font = undefined };
+    var host: types.UiHost = undefined;
+    host.view_mode = .Full;
+    host.now_ms = 0;
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_ESCAPE;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    for ([_]c.SDL_Keymod{ c.SDL_KMOD_SHIFT, c.SDL_KMOD_CTRL, c.SDL_KMOD_ALT, c.SDL_KMOD_GUI }) |mod| {
+        event.key.mod = mod;
+        try std.testing.expect(!EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+        try std.testing.expect(!component.gesture.active);
+    }
+    event.key.mod = 0;
+    try std.testing.expect(EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+    try std.testing.expect(component.gesture.active);
+}
+
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
     gesture: HoldGesture = .{},
@@ -51,6 +72,7 @@ pub const EscapeHoldComponent = struct {
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 if (event.key.key == c.SDLK_ESCAPE) {
+                    if ((event.key.mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0) return false;
                     if (!input.canHandleEscapePress(host.view_mode)) return false;
                     if (!event.key.repeat) {
                         self.gesture.start(host.now_ms, esc_hold_total_ms);
