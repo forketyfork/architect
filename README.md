@@ -54,7 +54,9 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
 - VT-compatible 80/132-column mode handling for applications that use DECCOLM
-- Kitty keyboard protocol for enhanced key handling
+- Modified arrows, Home/End, Insert/Delete, PageUp/PageDown, and F1-F12 carry their modifiers to terminal applications; combined Shift/Ctrl/Option/Command keys remain distinct from plain keys
+- Kitty keyboard protocol for enhanced key handling, including distinct modified Enter, Tab, Backspace, and Escape keys and negotiated press/repeat/release reporting for functional and control keys; legacy Shift+Enter uses the xterm modified-key sequence
+- Font shortcuts use Command+Shift+Equals or Command+keypad Plus to increase, and Command+Minus or Command+keypad Minus to decrease; additional Shift on Minus or keypad keys passes through to terminal input
 - Persistent window state and font size across sessions
 
 ## Installation

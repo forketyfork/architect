@@ -294,7 +294,7 @@ Story overlay (on-the-fly font rendering, anchor badges, bezier arrows, search, 
 Physical keyboard
     |
     v
-SDL_EVENT_KEY_DOWN / SDL_EVENT_TEXT_INPUT
+SDL_EVENT_KEY_DOWN / SDL_EVENT_KEY_UP / SDL_EVENT_TEXT_INPUT
     | scaled to render coordinates
     v
 UiRoot.handleEvent() (components by z-index)
@@ -303,7 +303,7 @@ UiRoot.handleEvent() (components by z-index)
 App event switch -> shortcut detection
     | not a shortcut
     v
-input/mapper.zig -> encodeKey() -> VT escape sequence bytes
+input/mapper.zig -> ghostty-vt input encoder -> VT escape sequence bytes
     |
     v
 session.pending_write buffer
@@ -311,6 +311,25 @@ session.pending_write buffer
     v
 PTY write() -> shell process stdin
 ```
+
+Architect adapts SDL functional and control keys to ghostty-vt's shared key
+encoder and passes the focused terminal's encoding options, including cursor
+and keypad modes, modifyOtherKeys, and the active Kitty flags. Exact macOS
+word/line-navigation and shell C0 aliases are explicit compatibility bindings,
+with left/right SDL modifier bits normalized for exact matching;
+additional modifiers pass through the protocol encoder. Grid navigation and
+expansion shortcuts reject extra modifiers so terminal combinations reach the
+focused session. Font shortcuts permit Shift only on main-row Equals.
+The encoder receives the SDL press/repeat/release action and honors negotiated
+Kitty event reporting. The application remembers delivered presses by physical
+scancode, stable session identity, and process generation: repeats and releases
+return to the original terminal, while app-consumed presses produce no terminal
+release and restarted sessions cannot inherit old key events. Releases of
+delivered presses are completed even if an overlay subsequently owns input.
+Layout-dependent text and IME composition stay on SDL's text-input path.
+Plain Escape is deferred for the hold-to-collapse gesture; a short tap sends a
+press followed by a release when the protocol permits one. Modified Escape is
+delivered immediately, including in grid and transition modes.
 
 ### Pull Request Listing Path
 
@@ -489,7 +508,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard and submitted-paste construction, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `pasteText()`, `buildSubmittedPaste()`, `clearTerminal()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
-| `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
+| `input/mapper.zig` | SDL key adaptation, explicit compatibility bindings, shortcut detection; delegates protocol encoding to ghostty-vt | `encodeKeyWithMod()`, `KeyEncodingOptions`, shortcut helpers | `c`, `ghostty-vt` |
 | `c.zig` | SDL3 and SDL3_ttf FFI re-exports from the build-system `c_sdl` module | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | `c_sdl`, SDL3 system libraries |
 | `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit, and main-thread ring-buffer consumption | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `processOutput()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()` | `shell`, `pty`, `pty_reader`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
