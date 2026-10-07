@@ -31,6 +31,35 @@ test "modified escape does not start the collapse gesture" {
     try std.testing.expect(component.gesture.active);
 }
 
+test "plain escape releases short taps and consumes completed holds" {
+    var component: EscapeHoldComponent = .{ .allocator = std.testing.allocator, .font = undefined };
+    var host: types.UiHost = undefined;
+    host.view_mode = .Full;
+    host.now_ms = 0;
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_ESCAPE;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+    try std.testing.expect(EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+    host.now_ms = 699;
+    EscapeHoldComponent.update(&component, &host, &actions);
+    try std.testing.expect(actions.pop() == null);
+    event.type = c.SDL_EVENT_KEY_UP;
+    try std.testing.expect(!EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+    try std.testing.expect(!component.gesture.active);
+
+    host.now_ms = 1000;
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    try std.testing.expect(EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+    host.now_ms = 1700;
+    EscapeHoldComponent.update(&component, &host, &actions);
+    try std.testing.expect(actions.pop().? == .RequestCollapseFocused);
+    event.type = c.SDL_EVENT_KEY_UP;
+    try std.testing.expect(EscapeHoldComponent.handleEvent(&component, &host, &event, &actions));
+    try std.testing.expect(!component.gesture.active);
+}
+
 pub const EscapeHoldComponent = struct {
     allocator: std.mem.Allocator,
     gesture: HoldGesture = .{},

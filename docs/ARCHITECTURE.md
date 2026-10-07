@@ -294,7 +294,7 @@ Story overlay (on-the-fly font rendering, anchor badges, bezier arrows, search, 
 Physical keyboard
     |
     v
-SDL_EVENT_KEY_DOWN / SDL_EVENT_TEXT_INPUT
+SDL_EVENT_KEY_DOWN / SDL_EVENT_KEY_UP / SDL_EVENT_TEXT_INPUT
     | scaled to render coordinates
     v
 UiRoot.handleEvent() (components by z-index)
@@ -315,14 +315,21 @@ PTY write() -> shell process stdin
 Architect adapts SDL functional and control keys to ghostty-vt's shared key
 encoder and passes the focused terminal's encoding options, including cursor
 and keypad modes, modifyOtherKeys, and the active Kitty flags. Exact macOS
-word/line-navigation and shell C0 aliases are explicit compatibility bindings;
+word/line-navigation and shell C0 aliases are explicit compatibility bindings,
+with left/right SDL modifier bits normalized for exact matching;
 additional modifiers pass through the protocol encoder. Grid navigation and
 expansion shortcuts reject extra modifiers so terminal combinations reach the
-focused session. Layout-dependent text and IME composition stay on SDL's text-input
-path. Escape is delivered on release to support the plain-Escape hold gesture,
-with modifiers captured on press so releasing a modifier first cannot change
-the encoded key. Modified Escape remains terminal input in grid and transition
-modes as well.
+focused session. Font shortcuts permit Shift only on main-row Equals.
+The encoder receives the SDL press/repeat/release action and honors negotiated
+Kitty event reporting. The application remembers delivered presses by physical
+scancode, stable session identity, and process generation: repeats and releases
+return to the original terminal, while app-consumed presses produce no terminal
+release and restarted sessions cannot inherit old key events. Releases of
+delivered presses are completed even if an overlay subsequently owns input.
+Layout-dependent text and IME composition stay on SDL's text-input path.
+Plain Escape is deferred for the hold-to-collapse gesture; a short tap sends a
+press followed by a release when the protocol permits one. Modified Escape is
+delivered immediately, including in grid and transition modes.
 
 ### Pull Request Listing Path
 

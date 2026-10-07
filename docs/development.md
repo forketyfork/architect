@@ -109,8 +109,11 @@ control-socket discovery.
 Keyboard regression tests cover all combinations of Shift, Ctrl, Option, and
 Command on navigation and function keys in normal/application cursor modes and
 legacy/Kitty encoding. They also verify exact app shortcuts, compatibility
-bindings, negotiated terminal options, and press-time modifiers for deferred
-Escape input. Extend this coverage when adding a key mapping or shortcut.
+bindings with left/right/both-side SDL modifiers, negotiated terminal options,
+and Kitty press/repeat/release actions. Pipe-backed input tests verify event
+delivery, press ownership across focus changes, invalidation on session restart,
+and deferred Escape tap/hold behavior. Extend this coverage when adding a key
+mapping or shortcut; use side-specific SDL masks to model real keyboard events.
 
 Check formatting and script linting:
 ```bash

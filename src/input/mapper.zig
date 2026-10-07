@@ -13,9 +13,9 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
     return switch (key) {
         // The keypad plus key produces a plus on its own; only the main-row
         // equals key needs Shift to become a plus.
-        c.SDLK_KP_PLUS => .increase,
+        c.SDLK_KP_PLUS => if ((mod & c.SDL_KMOD_SHIFT) == 0) .increase else null,
         c.SDLK_EQUALS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
-        c.SDLK_MINUS, c.SDLK_KP_MINUS => .decrease,
+        c.SDLK_MINUS, c.SDLK_KP_MINUS => if ((mod & c.SDL_KMOD_SHIFT) == 0) .decrease else null,
         else => null,
     };
 }
@@ -79,28 +79,34 @@ pub fn terminalHotkeyLabel(index: usize) ?[]const u8 {
 }
 
 pub const KeyEncodingOptions = ghostty_vt.input.KeyEncodeOptions;
+pub const KeyAction = ghostty_vt.input.KeyAction;
 
-/// Encode functional and control keys. Layout-dependent text is delivered by SDL_TEXT_INPUT.
-pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, options: KeyEncodingOptions, buf: []u8) std.Io.Writer.Error!usize {
+pub fn encodeKeyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod, action: KeyAction, options: KeyEncodingOptions, buf: []u8) std.Io.Writer.Error!usize {
     var writer = std.Io.Writer.fixed(buf);
-    if (compatibilityKeyBinding(key, mod, options)) |sequence| {
-        try writer.writeAll(sequence);
-        return writer.end;
+    if (action != .release) {
+        if (compatibilityKeyBinding(key, mod, options)) |sequence| {
+            try writer.writeAll(sequence);
+            return writer.end;
+        }
     }
 
     const mapped_key = terminalKey(key);
     const printable = key >= 0x20 and key <= 0x7e;
-    if (printable and (mod & c.SDL_KMOD_CTRL) == 0) return 0;
+    const keypad_operator = key == c.SDLK_KP_PLUS or key == c.SDLK_KP_MINUS;
+    const command_font_key = (key == c.SDLK_MINUS or keypad_operator) and (mod & c.SDL_KMOD_GUI) != 0;
+    if ((printable or keypad_operator) and (mod & c.SDL_KMOD_CTRL) == 0 and !command_font_key and action != .release) return 0;
     if (!printable and mapped_key == .unidentified) return 0;
 
     var text: [1]u8 = undefined;
-    if (printable) {
-        text[0] = @intCast(key);
+    const has_text = printable or keypad_operator;
+    if (has_text) {
+        text[0] = if (printable) @intCast(key) else if (key == c.SDLK_KP_PLUS) '+' else '-';
         if ((mod & c.SDL_KMOD_SHIFT) != 0 and std.ascii.isLower(text[0])) {
             text[0] = std.ascii.toUpper(text[0]);
         }
     }
     try ghostty_vt.input.encodeKey(&writer, .{
+        .action = action,
         .key = mapped_key,
         .mods = .{
             .shift = (mod & c.SDL_KMOD_SHIFT) != 0,
@@ -110,14 +116,27 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, options: KeyEncod
             .caps_lock = (mod & c.SDL_KMOD_CAPS) != 0,
             .num_lock = (mod & c.SDL_KMOD_NUM) != 0,
         },
-        .utf8 = if (printable) &text else "",
-        .unshifted_codepoint = if (printable) @intCast(key) else 0,
+        .utf8 = if (has_text) &text else "",
+        .unshifted_codepoint = if (printable) @intCast(key) else if (keypad_operator) text[0] else 0,
     }, options);
     return writer.end;
 }
 
+/// Encode functional and control key presses. Layout-dependent text is delivered by SDL_TEXT_INPUT.
+pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, options: KeyEncodingOptions, buf: []u8) std.Io.Writer.Error!usize {
+    return encodeKeyEvent(key, mod, .press, options, buf);
+}
+
+fn bindingModifiers(mod: c.SDL_Keymod) c.SDL_Keymod {
+    var normalized: c.SDL_Keymod = 0;
+    for ([_]c.SDL_Keymod{ c.SDL_KMOD_SHIFT, c.SDL_KMOD_CTRL, c.SDL_KMOD_ALT, c.SDL_KMOD_GUI }) |group| {
+        if ((mod & group) != 0) normalized |= group;
+    }
+    return normalized;
+}
+
 fn compatibilityKeyBinding(key: c.SDL_Keycode, mod: c.SDL_Keymod, options: KeyEncodingOptions) ?[]const u8 {
-    const binding_mods = mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI);
+    const binding_mods = bindingModifiers(mod);
     const kitty_enabled = options.kitty_flags.int() != 0;
     if (options.kitty_flags.report_events or options.kitty_flags.report_all) return null;
     // Keep shell C0 aliases when no extended protocol was requested.
@@ -168,6 +187,8 @@ fn terminalKey(key: c.SDL_Keycode) ghostty_vt.input.Key {
     return switch (key) {
         c.SDLK_RETURN, c.SDLK_RETURN2 => .enter,
         c.SDLK_KP_ENTER => .numpad_enter,
+        c.SDLK_KP_PLUS => .numpad_add,
+        c.SDLK_KP_MINUS => .numpad_subtract,
         c.SDLK_TAB => .tab,
         c.SDLK_BACKSPACE => .backspace,
         c.SDLK_ESCAPE => .escape,
@@ -530,6 +551,117 @@ test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
 }
 
+test "font shortcuts only accept shift on main-row equals" {
+    for ([_]c.SDL_Keymod{ c.SDL_KMOD_LGUI, c.SDL_KMOD_RGUI, c.SDL_KMOD_GUI }) |gui| {
+        for ([_]c.SDL_Keymod{ c.SDL_KMOD_LSHIFT, c.SDL_KMOD_RSHIFT, c.SDL_KMOD_SHIFT }) |shift| {
+            const mod: c.SDL_Keymod = @intCast(gui | shift);
+            try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, mod).?);
+            for ([_]c.SDL_Keycode{ c.SDLK_MINUS, c.SDLK_KP_MINUS, c.SDLK_KP_PLUS }) |key| {
+                try std.testing.expectEqual(@as(?FontSizeDirection, null), fontSizeShortcut(key, mod));
+            }
+        }
+    }
+}
+
+test "shifted font shortcut variants reach terminal applications" {
+    const options: KeyEncodingOptions = .{ .kitty_flags = .{ .disambiguate = true } };
+    const mod = c.SDL_KMOD_LGUI | c.SDL_KMOD_RSHIFT;
+    var buf: [64]u8 = undefined;
+    const n = try encodeKeyWithMod(c.SDLK_MINUS, mod, options, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[45;10u", buf[0..n]);
+    const cases = [_]struct { key: c.SDL_Keycode, expected: []const u8 }{
+        .{ .key = c.SDLK_KP_PLUS, .expected = "\x1b[57413;10u" },
+        .{ .key = c.SDLK_KP_MINUS, .expected = "\x1b[57412;10u" },
+    };
+    for (cases) |case| {
+        const keypad_n = try encodeKeyWithMod(case.key, mod, options, &buf);
+        try std.testing.expectEqualSlices(u8, case.expected, buf[0..keypad_n]);
+    }
+}
+
+test "compatibility bindings accept either SDL modifier side" {
+    const groups = [_]struct { sides: [3]c.SDL_Keymod, key: c.SDL_Keycode, expected: []const u8 }{
+        .{ .sides = .{ c.SDL_KMOD_LALT, c.SDL_KMOD_RALT, c.SDL_KMOD_ALT }, .key = c.SDLK_LEFT, .expected = "\x1bb" },
+        .{ .sides = .{ c.SDL_KMOD_LGUI, c.SDL_KMOD_RGUI, c.SDL_KMOD_GUI }, .key = c.SDLK_LEFT, .expected = "\x01" },
+        .{ .sides = .{ c.SDL_KMOD_LCTRL, c.SDL_KMOD_RCTRL, c.SDL_KMOD_CTRL }, .key = c.SDLK_I, .expected = "\t" },
+    };
+    var buf: [64]u8 = undefined;
+    for (groups) |group| {
+        for (group.sides) |mod| {
+            for ([_]c.SDL_Keymod{ 0, c.SDL_KMOD_CAPS | c.SDL_KMOD_NUM }) |locks| {
+                const n = try encodeKeyWithMod(group.key, mod | locks, .default, &buf);
+                try std.testing.expectEqualSlices(u8, group.expected, buf[0..n]);
+            }
+        }
+    }
+}
+
+test "kitty key events preserve press repeat and release actions" {
+    const options: KeyEncodingOptions = .{ .kitty_flags = .{ .disambiguate = true, .report_events = true } };
+    var buf: [64]u8 = undefined;
+    const repeat_n = try encodeKeyEvent(c.SDLK_LEFT, c.SDL_KMOD_LSHIFT, .repeat, options, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[1;2:2D", buf[0..repeat_n]);
+    const release_n = try encodeKeyEvent(c.SDLK_LEFT, c.SDL_KMOD_LSHIFT, .release, options, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[1;2:3D", buf[0..release_n]);
+    const press_n = try encodeKeyEvent(c.SDLK_LEFT, c.SDL_KMOD_LSHIFT, .press, options, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[1;2:1D", buf[0..press_n]);
+}
+
+test "key event releases obey negotiated kitty flags and never invoke shell aliases" {
+    var buf: [64]u8 = undefined;
+    const keys = [_]c.SDL_Keycode{ c.SDLK_LEFT, c.SDLK_HOME, c.SDLK_BACKSPACE, c.SDLK_I, c.SDLK_M, c.SDLK_LEFTBRACKET };
+    for (keys) |key| {
+        for ([_]c.SDL_Keymod{ 0, c.SDL_KMOD_LGUI, c.SDL_KMOD_RALT, c.SDL_KMOD_LCTRL }) |mod| {
+            for ([_]KeyEncodingOptions{ .default, .{ .kitty_flags = .{ .disambiguate = true } } }) |options| {
+                try std.testing.expectEqual(@as(usize, 0), try encodeKeyEvent(key, mod, .release, options, &buf));
+                const press_n = try encodeKeyEvent(key, mod, .press, options, &buf);
+                var expected: [64]u8 = undefined;
+                @memcpy(expected[0..press_n], buf[0..press_n]);
+                const repeat_n = try encodeKeyEvent(key, mod, .repeat, options, &buf);
+                try std.testing.expectEqualSlices(u8, expected[0..press_n], buf[0..repeat_n]);
+            }
+        }
+    }
+    const events: KeyEncodingOptions = .{ .kitty_flags = .{ .disambiguate = true, .report_events = true } };
+    const control_release_n = try encodeKeyEvent(c.SDLK_A, 0, .release, events, &buf);
+    try std.testing.expectEqualSlices(u8, "\x1b[97;1:3u", buf[0..control_release_n]);
+    for ([_]c.SDL_Keycode{ c.SDLK_RETURN, c.SDLK_TAB, c.SDLK_BACKSPACE }) |key| {
+        try std.testing.expectEqual(@as(usize, 0), try encodeKeyEvent(key, 0, .release, events, &buf));
+    }
+    const all_events: KeyEncodingOptions = .{ .kitty_flags = .{ .disambiguate = true, .report_events = true, .report_all = true } };
+    const cases = [_]struct { key: c.SDL_Keycode, expected: []const u8 }{
+        .{ .key = c.SDLK_RETURN, .expected = "\x1b[13;1:3u" },
+        .{ .key = c.SDLK_TAB, .expected = "\x1b[9;1:3u" },
+        .{ .key = c.SDLK_BACKSPACE, .expected = "\x1b[127;1:3u" },
+        .{ .key = c.SDLK_F5, .expected = "\x1b[15;1:3~" },
+        .{ .key = c.SDLK_ESCAPE, .expected = "\x1b[27;1:3u" },
+    };
+    for (cases) |case| {
+        const n = try encodeKeyEvent(case.key, 0, .release, all_events, &buf);
+        try std.testing.expectEqualSlices(u8, case.expected, buf[0..n]);
+    }
+}
+
+test "side-specific compatibility modifiers remain exact when combined" {
+    var buf: [64]u8 = undefined;
+    for ([_]c.SDL_Keymod{ c.SDL_KMOD_LCTRL, c.SDL_KMOD_RCTRL, c.SDL_KMOD_CTRL }) |ctrl| {
+        for ([_]c.SDL_Keymod{ c.SDL_KMOD_LALT, c.SDL_KMOD_RALT, c.SDL_KMOD_ALT }) |alt| {
+            const alias_n = try encodeKeyWithMod(c.SDLK_I, ctrl | alt, .default, &buf);
+            try std.testing.expectEqualSlices(u8, "\x1b\t", buf[0..alias_n]);
+        }
+    }
+    for ([_]c.SDL_Keymod{ c.SDL_KMOD_LSHIFT, c.SDL_KMOD_RSHIFT, c.SDL_KMOD_SHIFT }) |shift| {
+        for ([_]c.SDL_Keymod{ c.SDL_KMOD_LALT, c.SDL_KMOD_RALT, c.SDL_KMOD_ALT }) |alt| {
+            const n = try encodeKeyWithMod(c.SDLK_LEFT, alt | shift, .default, &buf);
+            try std.testing.expectEqualSlices(u8, "\x1b[1;4D", buf[0..n]);
+        }
+        for ([_]c.SDL_Keymod{ c.SDL_KMOD_LGUI, c.SDL_KMOD_RGUI, c.SDL_KMOD_GUI }) |gui| {
+            const n = try encodeKeyWithMod(c.SDLK_LEFT, gui | shift, .default, &buf);
+            try std.testing.expectEqualSlices(u8, "\x1b[1;10D", buf[0..n]);
+        }
+    }
+}
+
 test "terminal shortcuts do not consume additional modifiers" {
     try std.testing.expect(expandTerminalShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI));
     for ([_]c.SDL_Keymod{ c.SDL_KMOD_SHIFT, c.SDL_KMOD_CTRL, c.SDL_KMOD_ALT }) |extra| {
@@ -574,7 +706,9 @@ test "encodeKeyWithMod - ordinary printable keys remain on the SDL text path" {
     var buf: [16]u8 = undefined;
     for ([_]bool{ false, true }) |kitty_enabled| {
         for ([_]c.SDL_Keymod{ 0, c.SDL_KMOD_SHIFT, c.SDL_KMOD_ALT }) |mod| {
-            try std.testing.expectEqual(@as(usize, 0), try encodeKeyWithMod(c.SDLK_A, mod, testKeyOptions(false, kitty_enabled), &buf));
+            for ([_]c.SDL_Keycode{ c.SDLK_A, c.SDLK_KP_PLUS, c.SDLK_KP_MINUS }) |key| {
+                try std.testing.expectEqual(@as(usize, 0), try encodeKeyWithMod(key, mod, testKeyOptions(false, kitty_enabled), &buf));
+            }
         }
     }
 }

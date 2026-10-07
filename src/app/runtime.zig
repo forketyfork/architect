@@ -1785,6 +1785,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
     };
     var ime_composition = input_text.ImeComposition{};
     var deferred_escape: input_keys.DeferredEscape = .{};
+    var terminal_key_presses: input_keys.TerminalKeyPresses = .{};
     var last_focused_session: usize = anim_state.focused_session;
     var last_logged_mode = anim_state.mode;
     var relaunch_trace_frames: u8 = 0;
@@ -1952,10 +1953,31 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             ui_host.applyMouseContext(&ui, &event_ui_host, &scaled_event);
 
             if (scaled_event.type == c.SDL_EVENT_KEY_DOWN) {
+                terminal_key_presses.beginPress(&scaled_event);
                 deferred_escape.observePress(scaled_event.key.key, scaled_event.key.mod, scaled_event.key.repeat);
             }
             const ui_consumed = ui.handleEvent(&event_ui_host, &scaled_event);
+            if (scaled_event.type == c.SDL_EVENT_KEY_UP) {
+                if (terminal_key_presses.take(scaled_event.key.scancode)) |target| {
+                    try input_keys.sendToTarget(sessions, target, scaled_event.key.mod, .release);
+                    continue;
+                }
+                if (scaled_event.key.key == c.SDLK_ESCAPE and ui_consumed) _ = deferred_escape.take();
+            }
+            if (scaled_event.type == c.SDL_EVENT_KEY_DOWN and scaled_event.key.key == c.SDLK_ESCAPE and
+                !scaled_event.key.repeat and
+                (scaled_event.key.mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) == 0 and
+                input.canHandleEscapePress(anim_state.mode) and (!ui_consumed or escape_component.gesture.active))
+            {
+                deferred_escape.arm(sessions[anim_state.focused_session]);
+            }
             if (ui_consumed) continue;
+            if (scaled_event.type == c.SDL_EVENT_KEY_DOWN and scaled_event.key.repeat) {
+                if (terminal_key_presses.get(scaled_event.key.scancode)) |target| {
+                    try input_keys.sendToTarget(sessions, target, scaled_event.key.mod, .repeat);
+                    continue;
+                }
+            }
 
             switch (scaled_event.type) {
                 c.SDL_EVENT_QUIT => {
@@ -2566,7 +2588,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
                         } else {
                             if (focused.spawned and !focused.dead) {
                                 session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
-                                try input_keys.handleKeyInput(focused, key, mod);
+                                try terminal_key_presses.handlePress(focused, &scaled_event);
                             }
                         }
                     } else if (input.expandTerminalShortcut(key, mod) and anim_state.mode == .Grid) {
@@ -2604,22 +2626,20 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
                             anim_state.previous_session = clicked_session;
                         }
                         std.debug.print("Expanding session: {d}\n", .{clicked_session});
-                    } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key) and key != c.SDLK_ESCAPE) {
+                    } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key) and
+                        (key != c.SDLK_ESCAPE or (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0))
+                    {
                         session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                         if (anim_state.mode == .Grid) {
                             session_interaction_component.setAttention(anim_state.focused_session, false, now);
                         }
-                        try input_keys.handleKeyInput(focused, key, mod);
+                        try terminal_key_presses.handlePress(focused, &scaled_event);
                     }
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = scaled_event.key.key;
-                    if (key == c.SDLK_ESCAPE and deferred_escape.shouldSend(anim_state.mode)) {
-                        const focused = sessions[anim_state.focused_session];
-                        if (focused.spawned and !focused.dead and focused.shell != null) {
-                            try input_keys.handleKeyInput(focused, key, deferred_escape.mod);
-                        }
-                        std.debug.print("Escape released, sent to terminal\n", .{});
+                    if (key == c.SDLK_ESCAPE) {
+                        try deferred_escape.release(sessions, anim_state.mode);
                     }
                 },
                 else => {},
