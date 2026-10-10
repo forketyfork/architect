@@ -22,8 +22,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Backstop against a hung build (e.g. a stalled Zig compile on the Intel
     # runner) so the job fails fast and frees the runner instead of sitting
-    # until the 6-hour Actions limit. A normal job finishes in well under 10m.
-    timeout-minutes: 30
+    # until the 6-hour Actions limit. Raised from 30m to leave headroom for
+    # notarization, which can take several minutes per architecture.
+    timeout-minutes: 45
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
       ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
@@ -34,6 +35,30 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: architect
+
+      - name: Verify code signing secrets
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          missing=()
+          [[ -z "$APPLE_CERTIFICATE_P12" ]] && missing+=(APPLE_CERTIFICATE_P12)
+          [[ -z "$APPLE_CERTIFICATE_PASSWORD" ]] && missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -z "$APPLE_SIGNING_IDENTITY" ]] && missing+=(APPLE_SIGNING_IDENTITY)
+          [[ -z "$APPLE_KEYCHAIN_PASSWORD" ]] && missing+=(APPLE_KEYCHAIN_PASSWORD)
+          [[ -z "$APPLE_API_KEY_ID" ]] && missing+=(APPLE_API_KEY_ID)
+          [[ -z "$APPLE_API_ISSUER_ID" ]] && missing+=(APPLE_API_ISSUER_ID)
+          [[ -z "$APPLE_API_KEY_P8" ]] && missing+=(APPLE_API_KEY_P8)
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            printf '::error::Missing required signing/notarization secrets: %s\n' "${missing[*]}"
+            echo "See docs/development.md for setup instructions."
+            exit 1
+          fi
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31.11.1
@@ -75,10 +100,50 @@ jobs:
           done
         working-directory: architect
 
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/architect-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/architect-certificate.p12"
+          trap 'rm -f "$CERTIFICATE_PATH"' EXIT
+
+          ( umask 077 && printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode -o "$CERTIFICATE_PATH" )
+
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Bundle libraries and package
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           chmod +x scripts/bundle-macos.sh
           ./scripts/bundle-macos.sh zig-out/bin/architect release zig-out/bin/architect-mcp
+        working-directory: architect
+
+      - name: Notarize application
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          APPLE_API_KEY_PATH="$RUNNER_TEMP/architect-notary-key.p8"
+          trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
+          ( umask 077 && printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH" )
+          chmod +x scripts/notarize-macos.sh
+          APPLE_API_KEY_PATH="$APPLE_API_KEY_PATH" ./scripts/notarize-macos.sh release/Architect.app
+        working-directory: architect
+
+      - name: Package release archive
+        run: |
           cd release
           tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
         working-directory: architect
@@ -99,6 +164,13 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
 
   update-formula:
     needs: build-macos

@@ -54,6 +54,30 @@ if [[ "$SIGN_APP" == true ]]; then
     fi
 fi
 
+# Set APPLE_SIGNING_IDENTITY (e.g. "Developer ID Application: Name (TEAMID)") to
+# sign with a real certificate; otherwise falls back to ad-hoc signing (`-`), which
+# is only good for running the app locally and cannot be notarized.
+SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
+
+sign_binary() {
+    local target="$1"
+    local use_entitlements="$2"
+
+    if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+        if [[ "$use_entitlements" == true ]]; then
+            codesign --force --sign - --entitlements "$ENTITLEMENTS" "$target"
+        else
+            codesign --force --sign - "$target"
+        fi
+    else
+        if [[ "$use_entitlements" == true ]]; then
+            codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp --entitlements "$ENTITLEMENTS" "$target"
+        else
+            codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$target"
+        fi
+    fi
+}
+
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 echo "Including MCP helper: $MCP_EXECUTABLE"
 
@@ -283,20 +307,24 @@ if [[ "$SIGN_APP" == true ]]; then
     shopt -s nullglob
     for lib in "$LIB_DIR"/*.dylib; do
         echo "Signing $(basename "$lib")..."
-        codesign --force --sign - "$lib"
+        sign_binary "$lib" false
     done
     shopt -u nullglob
 
     echo "Signing architect-mcp..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+    sign_binary "$MACOS_DIR/architect-mcp" true
 
     echo "Signing architect..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
+    sign_binary "$MACOS_DIR/architect" true
 
     echo "Signing ${APP_NAME}.app..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR"
+    sign_binary "$APP_DIR" true
 
-    echo "Code signing complete."
+    if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+        echo "Code signing complete (ad-hoc; not notarizable)."
+    else
+        echo "Code signing complete with identity: $SIGNING_IDENTITY"
+    fi
 else
     echo ""
     echo "Removing embedded signatures (--unsigned)..."
