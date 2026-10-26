@@ -53,6 +53,7 @@ test {
     _ = @import("config.zig");
     _ = @import("env.zig");
     _ = @import("font.zig");
+    _ = @import("font_cache.zig");
     _ = @import("gfx/shimmer.zig");
     _ = @import("input/mapper.zig");
     _ = @import("logging.zig");

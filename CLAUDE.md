@@ -258,6 +258,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Do not keep TOML parser-owned maps after `result.deinit()`: duplicate keys and values into your own storage before freeing the parser arena, or later iteration will segfault.
 - `std.mem.span` rejects `[:0]const u8` slices; use `std.mem.sliceTo(ptr, 0)` for `[:0]const u8`, and use `std.mem.span` for `[*c]const u8`/`[*:0]const u8` C pointers.
 - When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser's backing memory causes use-after-free crashes.
+- Pointers from `std.HashMap` `getPtr`/`getOrPut` dangle after any later insert that grows the map. Do not return them from cache-style APIs; return the value (as `FontCache.get` does) or store values behind their own allocation.
 - Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 - xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
 - Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.

@@ -824,7 +824,7 @@ pub const StoryOverlayComponent = struct {
         host: *const types.UiHost,
         line: markdown_renderer.RenderLine,
         run: markdown_renderer.RenderRun,
-        line_fonts: *FontSet,
+        line_fonts: FontSet,
         hovered_href: ?[]const u8,
         x: *c_int,
         y_pos: c_int,
@@ -1011,7 +1011,7 @@ pub const StoryOverlayComponent = struct {
         lh: c_int,
         line_idx: usize,
         line: markdown_renderer.RenderLine,
-        line_fonts: *FontSet,
+        line_fonts: FontSet,
     ) void {
         const query = std.mem.trim(u8, self.search.text(), " \t");
         if (query.len == 0) return;
@@ -1054,7 +1054,7 @@ pub const StoryOverlayComponent = struct {
 
     fn byteOffsetToPixelX(
         line: markdown_renderer.RenderLine,
-        line_fonts: *FontSet,
+        line_fonts: FontSet,
         base_x: c_int,
         max_text_h: c_int,
         target_byte: usize,
@@ -1140,7 +1140,7 @@ pub const StoryOverlayComponent = struct {
 
     // --- Utilities ---
 
-    fn chooseFontForStyle(fonts: *FontSet, style: markdown_parser.InlineStyle, force_bold: bool) *c.TTF_Font {
+    fn chooseFontForStyle(fonts: FontSet, style: markdown_parser.InlineStyle, force_bold: bool) *c.TTF_Font {
         const want_bold = force_bold or style == .bold;
         const want_italic = style == .italic;
 

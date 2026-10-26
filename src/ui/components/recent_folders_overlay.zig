@@ -537,7 +537,7 @@ pub const RecentFoldersOverlayComponent = struct {
         _: *RecentFoldersOverlayComponent,
         renderer: *c.SDL_Renderer,
         host: *const types.UiHost,
-        entry_fonts: *font_cache_mod.FontSet,
+        entry_fonts: font_cache_mod.FontSet,
         path_x: c_int,
         y_offset: c_int,
         lh: c_int,
