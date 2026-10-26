@@ -14,9 +14,13 @@
 //! window position, so every mouse event lands that far from the pointer until
 //! the window moves again (e.g. by leaving and re-entering fullscreen).
 //!
-//! The fix here measures how far SDL's cached window position is from the real
-//! one, read from the NSWindow the same way `windowDidMove:` does, and shifts
-//! the coordinates of mouse events by that amount.
+//! The fix here compares SDL's cached window position with the real one, read
+//! from the NSWindow the same way `windowDidMove:` does, and when they differ
+//! posts `NSWindowDidMoveNotification` so SDL's own `windowDidMove:` recomputes
+//! the position with the current main display height. Repairing the cache,
+//! rather than shifting event coordinates afterwards, keeps every SDL path
+//! consistent: positions SDL already takes from window-local coordinates, and
+//! the focus and clamping checks SDL runs before it queues an event.
 //!
 //! Remove this file once SDL recomputes window positions after the main display
 //! changes (`Cocoa_DisplayReconfigurationCallback` in SDL_cocoamodes.m), or once
@@ -33,16 +37,13 @@ const is_macos = builtin.os.tag == .macos;
 /// in `SDL_GetVersion()` encoding.
 pub const verified_sdl_version: c_int = 3_004_018;
 
-/// How far real window-relative mouse coordinates are from the ones SDL
-/// reports, in window points.
+/// How far SDL's cached window origin is from the real one, in window points.
 pub const Offset = struct {
     x: f32,
     y: f32,
 
     pub const zero: Offset = .{ .x = 0, .y = 0 };
 
-    /// SDL subtracts its cached window origin from the global mouse position,
-    /// so the correction is the cached origin minus the real one.
     pub fn between(sdl_origin: Point, real_origin: Point) Offset {
         return .{ .x = sdl_origin.x - real_origin.x, .y = sdl_origin.y - real_origin.y };
     }
@@ -54,37 +55,18 @@ pub const Offset = struct {
 
 pub const Point = struct { x: f32, y: f32 };
 
-/// Shifts the window-relative coordinates of the mouse events SDL derives from
-/// its cached window position. Drop events use window-local coordinates and are
-/// left alone.
-pub fn applyOffset(event: *c.SDL_Event, offset: Offset) void {
-    switch (event.type) {
-        c.SDL_EVENT_MOUSE_MOTION => {
-            event.motion.x += offset.x;
-            event.motion.y += offset.y;
-        },
-        c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
-            event.button.x += offset.x;
-            event.button.y += offset.y;
-        },
-        c.SDL_EVENT_MOUSE_WHEEL => {
-            event.wheel.mouse_x += offset.x;
-            event.wheel.mouse_y += offset.y;
-        },
-        else => {},
-    }
-}
-
-fn isAffectedEvent(event_type: u32) bool {
-    return switch (event_type) {
-        c.SDL_EVENT_MOUSE_MOTION, c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL => true,
-        else => false,
-    };
+/// Events after which SDL's cached window position may have gone stale:
+/// display reconfigurations and the window moves they cause.
+pub fn mayStaleWindowPosition(event_type: u32) bool {
+    return (event_type >= c.SDL_EVENT_DISPLAY_FIRST and event_type <= c.SDL_EVENT_DISPLAY_LAST) or
+        event_type == c.SDL_EVENT_WINDOW_MOVED or
+        event_type == c.SDL_EVENT_WINDOW_DISPLAY_CHANGED;
 }
 
 /// Hand-written AppKit/CoreGraphics bindings, for the same reasons given in
 /// `macos_input_source.zig`.
 const appkit = if (is_macos) struct {
+    pub const NSPoint = extern struct { x: f64, y: f64 };
     pub const NSRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
     pub const NSOperatingSystemVersion = extern struct { major: isize, minor: isize, patch: isize };
 
@@ -97,70 +79,106 @@ const appkit = if (is_macos) struct {
     extern fn objc_msgSend_stret() callconv(.c) void;
     pub const msg_send_rect_entry = if (builtin.cpu.arch == .x86_64) &objc_msgSend_stret else &objc_msgSend;
 
+    pub extern const NSWindowDidMoveNotification: ?*anyopaque;
+
     pub extern fn CGMainDisplayID() callconv(.c) u32;
     pub extern fn CGDisplayPixelsHigh(display: u32) callconv(.c) usize;
 
     pub const MsgSendId = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
+    pub const MsgSendPost = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) void;
     pub const MsgSendRect = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) NSRect;
     pub const MsgSendRectRect = *const fn (?*anyopaque, ?*anyopaque, NSRect) callconv(.c) NSRect;
     pub const MsgSendVersionBool = *const fn (?*anyopaque, ?*anyopaque, NSOperatingSystemVersion) callconv(.c) u8;
+
+    pub fn sel(name: [*:0]const u8) ?*anyopaque {
+        return sel_registerName(name);
+    }
+
+    pub fn msgSendId(receiver: ?*anyopaque, selector: ?*anyopaque) ?*anyopaque {
+        return @as(MsgSendId, @ptrCast(&objc_msgSend))(receiver, selector);
+    }
 } else struct {};
 
-pub const MousePositionFix = if (is_macos) struct {
+pub const WindowPositionRepair = if (is_macos) struct {
     nswindow: ?*anyopaque = null,
     sel_frame: ?*anyopaque = null,
     sel_content_rect: ?*anyopaque = null,
-    logged_offset: Offset = Offset.zero,
+    sel_post: ?*anyopaque = null,
+    notification_center: ?*anyopaque = null,
 
     /// Inactive below macOS 26, where SDL takes mouse positions from the
     /// event's window-local location and the cached position does not matter.
-    pub fn init(window: *c.SDL_Window) MousePositionFix {
+    pub fn init(window: *c.SDL_Window) WindowPositionRepair {
         if (!sdlUsesCachedWindowPosition()) return .{};
         return initForWindow(window);
     }
 
-    fn initForWindow(window: *c.SDL_Window) MousePositionFix {
+    fn initForWindow(window: *c.SDL_Window) WindowPositionRepair {
         const props = c.SDL_GetWindowProperties(window);
         const nswindow = c.SDL_GetPointerProperty(props, c.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse {
-            log.warn("no NSWindow for the SDL window: {s}; mouse positions stay uncorrected", .{c.SDL_GetError()});
+            log.warn("no NSWindow for the SDL window: {s}; stale window positions stay unrepaired", .{c.SDL_GetError()});
             return .{};
         };
-        const sel_frame = appkit.sel_registerName("frame");
-        const sel_content_rect = appkit.sel_registerName("contentRectForFrameRect:");
-        if (sel_frame == null or sel_content_rect == null) {
-            log.warn("failed to register NSWindow selectors; mouse positions stay uncorrected", .{});
+        const center_class = appkit.objc_getClass("NSNotificationCenter");
+        const sel_default_center = appkit.sel("defaultCenter");
+        const sel_frame = appkit.sel("frame");
+        const sel_content_rect = appkit.sel("contentRectForFrameRect:");
+        const sel_post = appkit.sel("postNotificationName:object:");
+        if (center_class == null or sel_default_center == null or sel_frame == null or sel_content_rect == null or sel_post == null) {
+            log.warn("failed to look up AppKit classes or selectors; stale window positions stay unrepaired", .{});
             return .{};
         }
-        return .{ .nswindow = nswindow, .sel_frame = sel_frame, .sel_content_rect = sel_content_rect };
+        const center = appkit.msgSendId(center_class, sel_default_center) orelse {
+            log.warn("no default NSNotificationCenter; stale window positions stay unrepaired", .{});
+            return .{};
+        };
+        return .{
+            .nswindow = nswindow,
+            .sel_frame = sel_frame,
+            .sel_content_rect = sel_content_rect,
+            .sel_post = sel_post,
+            .notification_center = center,
+        };
     }
 
-    pub fn correct(self: *MousePositionFix, window: *c.SDL_Window, event: *c.SDL_Event) void {
-        if (self.nswindow == null or !isAffectedEvent(event.type)) return;
-        const offset = self.currentOffset(window) orelse return;
-        if (offset.x != self.logged_offset.x or offset.y != self.logged_offset.y) {
-            log.info("SDL window position is off by ({d}, {d}) points; correcting mouse coordinates", .{ offset.x, offset.y });
-            self.logged_offset = offset;
+    /// Re-syncs SDL's cached window position when it differs from the real one.
+    /// Call it before SDL pumps new input, so the events it generates afterwards
+    /// start from a correct origin.
+    pub fn check(self: *const WindowPositionRepair, window: *c.SDL_Window) void {
+        if (self.nswindow == null) return;
+        const stale = self.currentOffset(window) orelse return;
+        if (stale.isZero()) return;
+
+        // SDL listens for this notification as the window's delegate (or as an
+        // explicit observer) and recomputes window->x/y in `windowDidMove:`.
+        @as(appkit.MsgSendPost, @ptrCast(&appkit.objc_msgSend))(self.notification_center, self.sel_post, appkit.NSWindowDidMoveNotification, self.nswindow);
+
+        const remaining = self.currentOffset(window) orelse return;
+        if (remaining.isZero()) {
+            log.info("SDL window position was off by ({d}, {d}) points; re-synced it", .{ stale.x, stale.y });
+        } else {
+            // Expected while a fullscreen transition runs: SDL ignores moves
+            // until the transition ends and then recomputes the position itself.
+            log.debug("SDL window position is off by ({d}, {d}) points and did not re-sync", .{ remaining.x, remaining.y });
         }
-        applyOffset(event, offset);
     }
 
-    fn currentOffset(self: *const MousePositionFix, window: *c.SDL_Window) ?Offset {
+    fn currentOffset(self: *const WindowPositionRepair, window: *c.SDL_Window) ?Offset {
         var sdl_x: c_int = 0;
         var sdl_y: c_int = 0;
         if (!c.SDL_GetWindowPosition(window, &sdl_x, &sdl_y)) {
             log.warn("SDL_GetWindowPosition failed: {s}", .{c.SDL_GetError()});
             return null;
         }
-        const real = self.realContentOrigin();
         return Offset.between(
             .{ .x = @floatFromInt(sdl_x), .y = @floatFromInt(sdl_y) },
-            real,
+            self.realContentOrigin(),
         );
     }
 
     /// The content area's top-left corner in SDL's global coordinates,
     /// computed like `windowDidMove:` but with the current main display height.
-    fn realContentOrigin(self: *const MousePositionFix) Point {
+    fn realContentOrigin(self: *const WindowPositionRepair) Point {
         const msg_send_rect = @as(appkit.MsgSendRect, @ptrCast(appkit.msg_send_rect_entry));
         const msg_send_rect_rect = @as(appkit.MsgSendRectRect, @ptrCast(appkit.msg_send_rect_entry));
         const frame = msg_send_rect(self.nswindow, self.sel_frame);
@@ -175,23 +193,21 @@ pub const MousePositionFix = if (is_macos) struct {
     /// Mirrors SDL's `@available(macOS 26.0, *)` guard in `mouseMoved:`.
     fn sdlUsesCachedWindowPosition() bool {
         const class = appkit.objc_getClass("NSProcessInfo") orelse return false;
-        const sel_process_info = appkit.sel_registerName("processInfo") orelse return false;
-        const sel_at_least = appkit.sel_registerName("isOperatingSystemAtLeastVersion:") orelse return false;
-        const msg_send_id = @as(appkit.MsgSendId, @ptrCast(&appkit.objc_msgSend));
-        const process_info = msg_send_id(class, sel_process_info) orelse return false;
+        const sel_process_info = appkit.sel("processInfo") orelse return false;
+        const sel_at_least = appkit.sel("isOperatingSystemAtLeastVersion:") orelse return false;
+        const process_info = appkit.msgSendId(class, sel_process_info) orelse return false;
         const msg_send_version = @as(appkit.MsgSendVersionBool, @ptrCast(&appkit.objc_msgSend));
         return msg_send_version(process_info, sel_at_least, .{ .major = 26, .minor = 0, .patch = 0 }) != 0;
     }
 } else struct {
-    pub fn init(window: *c.SDL_Window) MousePositionFix {
+    pub fn init(window: *c.SDL_Window) WindowPositionRepair {
         _ = window;
         return .{};
     }
 
-    pub fn correct(self: *MousePositionFix, window: *c.SDL_Window, event: *c.SDL_Event) void {
+    pub fn check(self: *const WindowPositionRepair, window: *c.SDL_Window) void {
         _ = self;
         _ = window;
-        _ = event;
     }
 };
 
@@ -207,63 +223,87 @@ test "offset is SDL's cached window origin minus the real one" {
     const offset = Offset.between(.{ .x = -94, .y = -1117 }, .{ .x = -94, .y = -1080 });
     try std.testing.expectEqual(@as(f32, 0), offset.x);
     try std.testing.expectEqual(@as(f32, -37), offset.y);
-
-    // SDL reported global (-94 + 500, -1080 + 300) - (-94, -1117) = (500, 337)
-    // for a pointer that is 300 pt below the window's real top edge.
-    var motion: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    motion.type = c.SDL_EVENT_MOUSE_MOTION;
-    motion.motion.x = 500;
-    motion.motion.y = 337;
-    applyOffset(&motion, offset);
-    try std.testing.expectEqual(@as(f32, 500), motion.motion.x);
-    try std.testing.expectEqual(@as(f32, 300), motion.motion.y);
+    try std.testing.expect(!offset.isZero());
 }
 
-test "applyOffset corrects button and wheel positions but not drops" {
-    const offset: Offset = .{ .x = 3, .y = -37 };
-
-    var button: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    button.type = c.SDL_EVENT_MOUSE_BUTTON_DOWN;
-    button.button.x = 10;
-    button.button.y = 100;
-    applyOffset(&button, offset);
-    try std.testing.expectEqual(@as(f32, 13), button.button.x);
-    try std.testing.expectEqual(@as(f32, 63), button.button.y);
-
-    var wheel: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    wheel.type = c.SDL_EVENT_MOUSE_WHEEL;
-    wheel.wheel.mouse_x = 10;
-    wheel.wheel.mouse_y = 100;
-    wheel.wheel.y = 1;
-    applyOffset(&wheel, offset);
-    try std.testing.expectEqual(@as(f32, 13), wheel.wheel.mouse_x);
-    try std.testing.expectEqual(@as(f32, 63), wheel.wheel.mouse_y);
-    try std.testing.expectEqual(@as(f32, 1), wheel.wheel.y);
-
-    var drop: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    drop.type = c.SDL_EVENT_DROP_POSITION;
-    drop.drop.x = 10;
-    drop.drop.y = 100;
-    applyOffset(&drop, offset);
-    try std.testing.expectEqual(@as(f32, 10), drop.drop.x);
-    try std.testing.expectEqual(@as(f32, 100), drop.drop.y);
+test "display reconfigurations and window moves trigger a position check" {
+    try std.testing.expect(mayStaleWindowPosition(c.SDL_EVENT_DISPLAY_ADDED));
+    try std.testing.expect(mayStaleWindowPosition(c.SDL_EVENT_DISPLAY_REMOVED));
+    try std.testing.expect(mayStaleWindowPosition(c.SDL_EVENT_DISPLAY_MOVED));
+    try std.testing.expect(mayStaleWindowPosition(c.SDL_EVENT_WINDOW_MOVED));
+    try std.testing.expect(mayStaleWindowPosition(c.SDL_EVENT_WINDOW_DISPLAY_CHANGED));
+    try std.testing.expect(!mayStaleWindowPosition(c.SDL_EVENT_MOUSE_MOTION));
+    try std.testing.expect(!mayStaleWindowPosition(c.SDL_EVENT_WINDOW_RESIZED));
 }
+
+/// A hidden SDL window for tests, with SDL video initialized in the background
+/// so the test process neither shows up in the Dock nor takes focus.
+const TestWindow = if (is_macos) struct {
+    window: *c.SDL_Window,
+
+    fn create() !TestWindow {
+        _ = c.SDL_SetHint("SDL_MAC_BACKGROUND_APP", "1");
+        if (!c.SDL_InitSubSystem(c.SDL_INIT_VIDEO)) return error.SkipZigTest;
+        errdefer c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
+        const window = c.SDL_CreateWindow("mouse workaround test", 320, 200, c.SDL_WINDOW_HIDDEN) orelse
+            return error.SkipZigTest;
+        try std.testing.expect(c.SDL_SetWindowPosition(window, 120, 140));
+        _ = c.SDL_SyncWindow(window);
+        return .{ .window = window };
+    }
+
+    fn destroy(self: TestWindow) void {
+        c.SDL_DestroyWindow(self.window);
+        c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
+    }
+
+    /// Moves the NSWindow while SDL's delegate is detached, so SDL never sees
+    /// the move: the same stale cache a mis-converted move notification leaves.
+    fn moveBehindSdlsBack(self: TestWindow, repair: *const WindowPositionRepair, dx: f64, dy: f64) !void {
+        const sel_delegate = appkit.sel("delegate");
+        const sel_set_delegate = appkit.sel("setDelegate:");
+        const sel_set_frame_origin = appkit.sel("setFrameOrigin:");
+        const delegate = appkit.msgSendId(repair.nswindow, sel_delegate) orelse return error.TestUnexpectedResult;
+
+        const MsgSendSetId = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+        const MsgSendSetPoint = *const fn (?*anyopaque, ?*anyopaque, appkit.NSPoint) callconv(.c) void;
+        const set_delegate = @as(MsgSendSetId, @ptrCast(&appkit.objc_msgSend));
+        const set_origin = @as(MsgSendSetPoint, @ptrCast(&appkit.objc_msgSend));
+        const frame = @as(appkit.MsgSendRect, @ptrCast(appkit.msg_send_rect_entry))(repair.nswindow, repair.sel_frame);
+
+        set_delegate(repair.nswindow, sel_set_delegate, null);
+        set_origin(repair.nswindow, sel_set_frame_origin, .{ .x = frame.x + dx, .y = frame.y + dy });
+        set_delegate(repair.nswindow, sel_set_delegate, delegate);
+        _ = self;
+    }
+} else struct {};
 
 test "real content origin matches SDL's window position while SDL is in sync" {
     if (!is_macos) return error.SkipZigTest;
-    // Keep the test process from showing up in the Dock or taking focus.
-    _ = c.SDL_SetHint("SDL_MAC_BACKGROUND_APP", "1");
-    if (!c.SDL_InitSubSystem(c.SDL_INIT_VIDEO)) return error.SkipZigTest;
-    defer c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
+    const test_window = try TestWindow.create();
+    defer test_window.destroy();
 
-    const window = c.SDL_CreateWindow("mouse workaround test", 320, 200, c.SDL_WINDOW_HIDDEN) orelse
-        return error.SkipZigTest;
-    defer c.SDL_DestroyWindow(window);
-    try std.testing.expect(c.SDL_SetWindowPosition(window, 120, 140));
-    _ = c.SDL_SyncWindow(window);
-
-    var fix = MousePositionFix.initForWindow(window);
-    try std.testing.expect(fix.nswindow != null);
-    const offset = fix.currentOffset(window) orelse return error.TestUnexpectedResult;
+    const repair = WindowPositionRepair.initForWindow(test_window.window);
+    try std.testing.expect(repair.nswindow != null);
+    const offset = repair.currentOffset(test_window.window) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(Offset.zero, offset);
+}
+
+test "check re-syncs a window position SDL missed" {
+    if (!is_macos) return error.SkipZigTest;
+    const test_window = try TestWindow.create();
+    defer test_window.destroy();
+
+    const repair = WindowPositionRepair.initForWindow(test_window.window);
+    try std.testing.expect(repair.nswindow != null);
+
+    // Cocoa's y axis points up, so moving the frame up by 37 pt leaves SDL's
+    // cached top edge 37 pt below the real one.
+    try test_window.moveBehindSdlsBack(&repair, 0, 37);
+    const stale = repair.currentOffset(test_window.window) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Offset{ .x = 0, .y = 37 }, stale);
+
+    repair.check(test_window.window);
+    const after = repair.currentOffset(test_window.window) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Offset.zero, after);
 }
