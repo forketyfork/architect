@@ -17,6 +17,7 @@ pub const SDL_WINDOW_INPUT_FOCUS = c_import.SDL_WINDOW_INPUT_FOCUS;
 pub const SDL_GetWindowDisplayScale = c_import.SDL_GetWindowDisplayScale;
 pub const SDL_WINDOW_HIGH_PIXEL_DENSITY = c_import.SDL_WINDOW_HIGH_PIXEL_DENSITY;
 pub const SDL_CreateRenderer = c_import.SDL_CreateRenderer;
+pub const SDL_CreateSoftwareRenderer = c_import.SDL_CreateSoftwareRenderer;
 pub const SDL_GetRendererName = c_import.SDL_GetRendererName;
 pub const SDL_DestroyRenderer = c_import.SDL_DestroyRenderer;
 pub const SDL_SetRenderDrawColor = c_import.SDL_SetRenderDrawColor;
