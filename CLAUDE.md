@@ -245,6 +245,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Do not store UI state or UI textures in session structs or `app_state.zig`; UI state must live inside UI components or UI-managed assets.
 - Add new UI features by registering components with `UiRoot`; never bypass `UiAction` for UI→app mutations.
 - When a UI component moves into a new visible state (modals expanding, toasts appearing, gesture indicators starting), use `src/ui/first_frame_guard.zig`: call `markTransition()` when the state flips and `markDrawn()` at the top of every render; have `wantsFrame` return `guard.wantsFrame()` so the main loop renders immediately even under idle throttling.
+- Arm the guard when a component *leaves* a visible state too: an indicator or toast expiring, an expand/collapse settling (`ExpandingOverlay.settle`), an immediate close. Once `wantsFrame` turns false nothing repaints, so the last presented frame — drawn mid-fade or at an intermediate size — stays on screen until unrelated input arrives. A time-based expiry therefore needs an explicit state flip in `update()` that arms the guard; a `wantsFrame` that merely compares `now` against a deadline never gets that final frame.
 - Restored terminals use `SessionState.ensureSpawnedWithDir` to launch shells already in the target directory; changing cwd of a live shell is not supported—spawn or restart with the desired path.
 
 ## Rendering & Unicode Notes

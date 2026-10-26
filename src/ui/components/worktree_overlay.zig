@@ -333,17 +333,11 @@ pub const WorktreeOverlayComponent = struct {
             }
         }
 
-        if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
-            self.overlay.state = switch (self.overlay.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => self.overlay.state,
-            };
-            if (self.overlay.state == .Open) {
-                self.first_frame.markTransition();
+        if (self.overlay.settle(host.now_ms)) |settled| {
+            self.first_frame.markTransition();
+            if (settled == .Open) {
                 self.flow_animation_start_ms = host.now_ms;
-            }
-            if (self.overlay.state == .Closed) {
+            } else {
                 self.hovered_entry = null;
                 self.flow_animation_start_ms = 0;
             }
@@ -1150,6 +1144,7 @@ pub const WorktreeOverlayComponent = struct {
 
     fn closeOverlayImmediately(self: *WorktreeOverlayComponent) void {
         self.overlay.closeImmediately();
+        self.first_frame.markTransition();
         self.destroyCache();
         self.hovered_entry = null;
         self.hovered_remove_btn = null;
@@ -1835,6 +1830,7 @@ test "busy transition clears the removal confirmation modal" {
     try std.testing.expect(component.pending_removal_path == null);
     try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
     try std.testing.expect(!component.overlay.isAnimating());
+    try std.testing.expect(WorktreeOverlayComponent.wantsFrame(&component, &host));
     try std.testing.expectEqual(@as(i64, 0), component.flow_animation_start_ms);
     try std.testing.expect(component.escape_pressed);
 
@@ -1849,4 +1845,26 @@ test "busy transition clears the removal confirmation modal" {
     host.focused_has_foreground_process = false;
     WorktreeOverlayComponent.update(&component, &host, &actions);
     try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+}
+
+test "finished collapse demands a frame to draw the collapsed pill" {
+    var component: WorktreeOverlayComponent = .{ .allocator = std.testing.allocator, .io = undefined };
+    // Busy on both sides skips the cwd refresh, which needs real I/O.
+    component.focused_busy = true;
+    component.overlay.state = .Open;
+    component.overlay.startCollapsing(0);
+    component.first_frame.markDrawn();
+
+    var host: types.UiHost = undefined;
+    host.now_ms = component.overlay.duration_ms;
+    host.focused_has_foreground_process = true;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    WorktreeOverlayComponent.update(&component, &host, &actions);
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try std.testing.expect(WorktreeOverlayComponent.wantsFrame(&component, &host));
+
+    component.first_frame.markDrawn();
+    try std.testing.expect(!WorktreeOverlayComponent.wantsFrame(&component, &host));
 }

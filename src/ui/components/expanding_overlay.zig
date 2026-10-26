@@ -81,7 +81,17 @@ pub const ExpandingOverlay = struct {
         return self.state == .Expanding or self.state == .Collapsing;
     }
 
-    pub fn isComplete(self: *const ExpandingOverlay, now: i64) bool {
+    /// Moves a finished expand/collapse to `.Open`/`.Closed` and returns the
+    /// new state, or null while no animation has finished. Callers must request
+    /// a frame on either result: the last animation frame was drawn at an
+    /// intermediate size, and nothing else repaints the final one.
+    pub fn settle(self: *ExpandingOverlay, now: i64) ?State {
+        if (!self.isAnimating() or !self.isComplete(now)) return null;
+        self.state = if (self.state == .Expanding) .Open else .Closed;
+        return self.state;
+    }
+
+    fn isComplete(self: *const ExpandingOverlay, now: i64) bool {
         const elapsed = now - self.start_time;
         return elapsed >= self.duration_ms;
     }
@@ -165,6 +175,21 @@ test "collapsing from the open state starts at full size" {
     overlay.startCollapsing(1000);
     try std.testing.expectEqual(@as(c_int, 400), overlay.currentSize(1000, 1.0));
     try std.testing.expectEqual(@as(c_int, 40), overlay.currentSize(1200, 1.0));
+}
+
+test "settle reports each finished animation exactly once" {
+    var overlay = ExpandingOverlay.init(0, 20, 40, 400, 200);
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, null), overlay.settle(0));
+
+    overlay.startExpanding(0);
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, null), overlay.settle(199));
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, .Open), overlay.settle(200));
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, null), overlay.settle(300));
+
+    overlay.startCollapsing(1000);
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, null), overlay.settle(1199));
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, .Closed), overlay.settle(1200));
+    try std.testing.expectEqual(@as(?ExpandingOverlay.State, null), overlay.settle(1300));
 }
 
 test "closeImmediately resets the overlay to its collapsed state" {

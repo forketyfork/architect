@@ -135,13 +135,8 @@ pub const HelpOverlayComponent = struct {
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
         const self: *HelpOverlayComponent = @ptrCast(@alignCast(self_ptr));
-        if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
-            self.overlay.state = switch (self.overlay.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => self.overlay.state,
-            };
-            if (self.overlay.state == .Open) self.first_frame.markTransition();
+        if (self.overlay.settle(host.now_ms) != null) {
+            self.first_frame.markTransition();
         }
     }
 
@@ -346,3 +341,22 @@ pub const HelpOverlayComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "finished collapse demands a frame to draw the collapsed badge" {
+    var component = HelpOverlayComponent{ .allocator = std.testing.allocator };
+    var host: types.UiHost = undefined;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    component.overlay.state = .Open;
+    component.overlay.startCollapsing(0);
+    component.first_frame.markDrawn();
+
+    host.now_ms = component.overlay.duration_ms;
+    HelpOverlayComponent.update(&component, &host, &actions);
+    try std.testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try std.testing.expect(HelpOverlayComponent.wantsFrame(&component, &host));
+
+    component.first_frame.markDrawn();
+    try std.testing.expect(!HelpOverlayComponent.wantsFrame(&component, &host));
+}

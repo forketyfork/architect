@@ -689,8 +689,10 @@ pub const Font = struct {
     /// texture at draw time. Non-emoji glyphs are rasterized in white once and
     /// tinted per draw via color mod; emoji glyphs are already full-color, so
     /// their mod is explicitly reset to white to avoid inheriting a stale tint
-    /// left on the texture object from a prior draw.
+    /// left on the texture object from a prior draw. Alpha mod is applied to
+    /// both so fading callers (e.g. the hotkey indicator) fade their text.
     fn applyColorMod(texture: *c.SDL_Texture, fallback: Fallback, fg_color: c.SDL_Color) void {
+        _ = c.SDL_SetTextureAlphaMod(texture, fg_color.a);
         if (fallback == .emoji) {
             _ = c.SDL_SetTextureColorMod(texture, white.r, white.g, white.b);
         } else {

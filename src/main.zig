@@ -72,7 +72,10 @@ test {
     _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");
     _ = @import("ui/components/expanding_overlay.zig");
+    _ = @import("ui/components/fullscreen_overlay.zig");
+    _ = @import("ui/components/help_overlay.zig");
     _ = @import("ui/components/escape_hold.zig");
+    _ = @import("ui/components/hotkey_indicator.zig");
     _ = @import("ui/components/markdown_parser.zig");
     _ = @import("ui/components/markdown_renderer.zig");
     _ = @import("ui/components/metrics_overlay.zig");
@@ -89,6 +92,7 @@ test {
     _ = @import("ui/components/search_utils.zig");
     _ = @import("ui/components/selection_agent_overlay.zig");
     _ = @import("ui/components/session_interaction.zig");
+    _ = @import("ui/components/toast.zig");
     _ = @import("ui/components/worktree_overlay.zig");
     _ = @import("ui/first_frame_guard.zig");
     _ = @import("ui/text_edit.zig");

@@ -63,6 +63,9 @@ pub const HotkeyIndicatorComponent = struct {
         const elapsed = host.now_ms - self.start_ms;
         if (elapsed >= display_duration_ms) {
             self.active = false;
+            // The last presented frame still shows the indicator; without one
+            // more frame it stays on screen until something else repaints.
+            self.first_frame.markTransition();
         }
     }
 
@@ -250,4 +253,27 @@ fn countCodepoints(bytes: []const u8) usize {
         idx = end;
     }
     return total;
+}
+
+test "expired indicator demands one frame to erase its last drawn state" {
+    var component = HotkeyIndicatorComponent{ .allocator = std.testing.allocator, .font = undefined };
+    var host: types.UiHost = undefined;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    component.show("⌘↵", 0);
+    component.first_frame.markDrawn();
+
+    host.now_ms = HotkeyIndicatorComponent.display_duration_ms - 10;
+    HotkeyIndicatorComponent.update(&component, &host, &actions);
+    try std.testing.expect(HotkeyIndicatorComponent.wantsFrame(&component, &host));
+    component.first_frame.markDrawn();
+
+    host.now_ms = HotkeyIndicatorComponent.display_duration_ms;
+    HotkeyIndicatorComponent.update(&component, &host, &actions);
+    try std.testing.expect(!component.active);
+    try std.testing.expect(HotkeyIndicatorComponent.wantsFrame(&component, &host));
+
+    component.first_frame.markDrawn();
+    try std.testing.expect(!HotkeyIndicatorComponent.wantsFrame(&component, &host));
 }
