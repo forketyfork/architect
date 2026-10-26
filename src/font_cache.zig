@@ -96,9 +96,13 @@ pub const FontCache = struct {
         self.generation +%= 1;
     }
 
-    pub fn get(self: *FontCache, size: c_int) Error!*FontSet {
+    /// Returns the set by value: the map relocates its entries when a new size
+    /// grows it, so a pointer into it would dangle as soon as the caller fetched
+    /// another size. The fonts themselves stay valid until `reset` bumps
+    /// `generation`.
+    pub fn get(self: *FontCache, size: c_int) Error!FontSet {
         const regular_path = self.regular_path orelse return error.FontUnavailable;
-        if (self.fonts.getPtr(size)) |existing| return existing;
+        if (self.fonts.get(size)) |existing| return existing;
 
         const regular = try openRequiredFont(regular_path, size, "regular");
         errdefer c.TTF_CloseFont(regular);
@@ -143,9 +147,8 @@ pub const FontCache = struct {
         };
         errdefer fonts.close();
 
-        const gop = try self.fonts.getOrPut(size);
-        gop.value_ptr.* = fonts;
-        return gop.value_ptr;
+        try self.fonts.put(size, fonts);
+        return fonts;
     }
 
     fn releaseFonts(self: *FontCache) void {
@@ -203,3 +206,37 @@ pub const FontCache = struct {
         return std.mem.eql(u8, std.mem.sliceTo(a.?, 0), std.mem.sliceTo(b.?, 0));
     }
 };
+
+test "font sets returned by get stay valid after later sizes grow the cache" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    try std.testing.expect(c.TTF_Init());
+    defer c.TTF_Quit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+    const font_path = try std.fs.path.joinZ(allocator, &.{ tmp_path, "regular.ttf" });
+    defer allocator.free(font_path);
+    {
+        const file = try std.Io.Dir.createFileAbsolute(io, font_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, assets.symbols_nerd_font);
+    }
+
+    var cache = FontCache.init(allocator);
+    defer cache.deinit();
+    cache.setPaths(font_path, null, null, null, null, null, null);
+
+    // Callers routinely fetch a second size (e.g. a title font) while still
+    // holding the first one; inserting enough sizes forces the map to grow.
+    const first = try cache.get(10);
+    var size: c_int = 11;
+    while (size < 40) : (size += 1) {
+        _ = try cache.get(size);
+    }
+
+    try std.testing.expectEqual((try cache.get(10)).regular, first.regular);
+}

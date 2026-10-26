@@ -66,7 +66,14 @@ pub const ToastComponent = struct {
         return false;
     }
 
-    fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
+    fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
+        const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
+        if (self.active and !self.isVisible(host.now_ms)) {
+            self.active = false;
+            // The last presented frame still shows the fading toast.
+            self.first_frame.markTransition();
+        }
+    }
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *ToastComponent = @ptrCast(@alignCast(self_ptr));
@@ -249,3 +256,21 @@ pub const ToastComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "expired toast demands one frame to erase its last drawn state" {
+    var component = ToastComponent{ .allocator = std.testing.allocator };
+    var host: types.UiHost = undefined;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+
+    component.show("done", 0);
+    component.first_frame.markDrawn();
+
+    host.now_ms = ToastComponent.notification_duration_ms;
+    ToastComponent.update(&component, &host, &actions);
+    try std.testing.expect(!component.active);
+    try std.testing.expect(ToastComponent.wantsFrame(&component, &host));
+
+    component.first_frame.markDrawn();
+    try std.testing.expect(!ToastComponent.wantsFrame(&component, &host));
+}

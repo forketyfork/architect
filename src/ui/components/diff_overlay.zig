@@ -118,7 +118,13 @@ const Cache = struct {
     font_generation: u64,
     line_height: c_int,
     title: TextTex,
-    lines: []LineTexture,
+    /// Valid until `font_generation` changes, which also invalidates this cache.
+    mono_font: *c.TTF_Font,
+    bold_font: *c.TTF_Font,
+    /// One slot per display row, built the first time the row is drawn: a large
+    /// diff shows a few dozen rows, and rendering every row up front made it
+    /// slow to open.
+    lines: []?LineTexture,
 };
 
 const GitResult = struct {
@@ -1760,21 +1766,13 @@ pub const DiffOverlayComponent = struct {
         ) catch return null;
 
         const line_height_scaled = dpi.scale(line_height, host.ui_scale);
-        const line_textures = self.allocator.alloc(LineTexture, self.display_rows.items.len) catch {
+        const line_textures = self.allocator.alloc(?LineTexture, self.display_rows.items.len) catch {
             c.SDL_DestroyTexture(title_tex.tex);
             return null;
         };
-
-        var idx: usize = 0;
-        while (idx < self.display_rows.items.len) : (idx += 1) {
-            line_textures[idx] = self.buildLineTexture(renderer, host, mono_font, bold_font, self.display_rows.items[idx]) catch |err| blk: {
-                log.warn("failed to build diff line texture: {}", .{err});
-                break :blk LineTexture{ .segments = &.{} };
-            };
-        }
+        @memset(line_textures, null);
 
         const cache = self.allocator.create(Cache) catch {
-            self.destroyLineTextures(line_textures);
             c.SDL_DestroyTexture(title_tex.tex);
             self.allocator.free(line_textures);
             return null;
@@ -1784,6 +1782,8 @@ pub const DiffOverlayComponent = struct {
             .font_generation = generation,
             .line_height = line_height_scaled,
             .title = title_tex,
+            .mono_font = mono_font,
+            .bold_font = bold_font,
             .lines = line_textures,
         };
         self.cache = cache;
@@ -2037,8 +2037,35 @@ pub const DiffOverlayComponent = struct {
         self.cache = null;
     }
 
-    fn destroyLineTextures(self: *DiffOverlayComponent, lines: []LineTexture) void {
-        for (lines) |line| {
+    /// A row whose build fails is stored with no segments, so the failure is
+    /// logged once rather than on every frame the row stays visible.
+    fn lineTexture(self: *DiffOverlayComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, cache: *Cache, row_index: usize) LineTexture {
+        if (cache.lines[row_index]) |built| return built;
+        const built = self.buildLineTexture(renderer, host, cache.mono_font, cache.bold_font, self.display_rows.items[row_index]) catch |err| blk: {
+            log.warn("failed to build diff line texture: {}", .{err});
+            break :blk LineTexture{ .segments = &.{} };
+        };
+        cache.lines[row_index] = built;
+        return built;
+    }
+
+    fn builtLineCount(self: *const DiffOverlayComponent) usize {
+        const cache = self.cache orelse return 0;
+        var count: usize = 0;
+        for (cache.lines) |line| {
+            if (line != null) count += 1;
+        }
+        return count;
+    }
+
+    fn lineBuilt(self: *const DiffOverlayComponent, row_index: usize) bool {
+        const cache = self.cache orelse return false;
+        return row_index < cache.lines.len and cache.lines[row_index] != null;
+    }
+
+    fn destroyLineTextures(self: *DiffOverlayComponent, lines: []?LineTexture) void {
+        for (lines) |maybe_line| {
+            const line = maybe_line orelse continue;
             for (line.segments) |segment| {
                 c.SDL_DestroyTexture(segment.tex);
             }
@@ -2187,7 +2214,7 @@ pub const DiffOverlayComponent = struct {
             }
 
             if (row_index >= cache.lines.len) continue;
-            const line_tex = cache.lines[row_index];
+            const line_tex = self.lineTexture(renderer, host, cache, row_index);
             for (line_tex.segments) |segment| {
                 const tex_alpha: u8 = @intFromFloat(255.0 * alpha);
                 _ = c.SDL_SetTextureAlphaMod(segment.tex, tex_alpha);
@@ -3677,4 +3704,65 @@ test "diff overlay text input while the agent dropdown is open does not leak int
     try std.testing.expect(DiffOverlayComponent.handleEventFn(&component, &host, &text_event, &actions));
     try std.testing.expectEqual(@as(usize, 0), component.editing.?.input.text().len);
     try std.testing.expect(component.agent_dropdown.open);
+}
+
+test "diff overlay builds line textures only for rows it draws" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const colors = @import("../../colors.zig");
+    const font_cache = @import("../../font_cache.zig");
+
+    if (!c.TTF_Init()) return error.SkipZigTest;
+    defer c.TTF_Quit();
+
+    const surface = c.SDL_CreateSurface(800, 600, c.SDL_PIXELFORMAT_RGBA8888) orelse return error.SkipZigTest;
+    defer c.SDL_DestroySurface(surface);
+    const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SkipZigTest;
+    defer c.SDL_DestroyRenderer(renderer);
+
+    var fonts = font_cache.FontCache.init(allocator);
+    defer fonts.deinit();
+    fonts.setPaths("/System/Library/Fonts/SFNSMono.ttf", null, null, null, null, null, null);
+    var assets = types.UiAssets{ .font_cache = &fonts };
+
+    const base = c.SDL_Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const theme = colors.Theme{
+        .background = base,
+        .foreground = base,
+        .selection = base,
+        .accent = base,
+        .palette = [_]c.SDL_Color{base} ** 16,
+    };
+    var host = testUiHost();
+    host.theme = &theme;
+
+    var diff: std.ArrayList(u8) = .empty;
+    defer diff.deinit(allocator);
+    try diff.appendSlice(allocator, "diff --git a/big.txt b/big.txt\n--- a/big.txt\n+++ b/big.txt\n@@ -0,0 +1,1000 @@\n");
+    for (0..1000) |i| {
+        try diff.print(allocator, "+added line {d}\n", .{i});
+    }
+
+    const component = try allocator.create(DiffOverlayComponent);
+    component.* = .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .overlay = .{ .visible = true, .animation_state = .open },
+        .agent_dropdown = dropdown_menu.DropdownMenu.init(allocator),
+    };
+    defer component.destroy(renderer);
+    component.parseDiffOutput(diff.items);
+    const row_count = component.display_rows.items.len;
+    try std.testing.expect(row_count > 1000);
+
+    // A 600 px window shows a few dozen rows; building the other ~1000 up
+    // front is what made large diffs slow to open.
+    DiffOverlayComponent.renderFn(component, &host, renderer, &assets);
+    try std.testing.expect(component.lineBuilt(0));
+    try std.testing.expect(component.builtLineCount() < 100);
+
+    component.overlay.scroll_offset = component.overlay.max_scroll;
+    DiffOverlayComponent.renderFn(component, &host, renderer, &assets);
+    try std.testing.expect(component.lineBuilt(row_count - 1));
+    try std.testing.expect(component.builtLineCount() < 200);
 }

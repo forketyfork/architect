@@ -53,12 +53,14 @@ test {
     _ = @import("config.zig");
     _ = @import("env.zig");
     _ = @import("font.zig");
+    _ = @import("font_cache.zig");
     _ = @import("gfx/shimmer.zig");
     _ = @import("input/mapper.zig");
     _ = @import("logging.zig");
     _ = @import("metrics.zig");
     _ = @import("pty.zig");
     _ = @import("platform/sdl.zig");
+    _ = @import("platform/sdl_mouse_workaround.zig");
     _ = @import("os/open.zig");
     _ = @import("proc.zig");
     _ = @import("render/renderer.zig");
@@ -72,7 +74,10 @@ test {
     _ = @import("ui/components/diff_overlay.zig");
     _ = @import("ui/components/dropdown_menu.zig");
     _ = @import("ui/components/expanding_overlay.zig");
+    _ = @import("ui/components/fullscreen_overlay.zig");
+    _ = @import("ui/components/help_overlay.zig");
     _ = @import("ui/components/escape_hold.zig");
+    _ = @import("ui/components/hotkey_indicator.zig");
     _ = @import("ui/components/markdown_parser.zig");
     _ = @import("ui/components/markdown_renderer.zig");
     _ = @import("ui/components/metrics_overlay.zig");
@@ -89,6 +94,7 @@ test {
     _ = @import("ui/components/search_utils.zig");
     _ = @import("ui/components/selection_agent_overlay.zig");
     _ = @import("ui/components/session_interaction.zig");
+    _ = @import("ui/components/toast.zig");
     _ = @import("ui/components/worktree_overlay.zig");
     _ = @import("ui/first_frame_guard.zig");
     _ = @import("ui/text_edit.zig");

@@ -343,17 +343,11 @@ pub const PRDropdownComponent = struct {
         self.collectFetchResults();
 
         // Advance the expand/collapse animation state machine.
-        if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
-            self.overlay.state = switch (self.overlay.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => self.overlay.state,
-            };
-            if (self.overlay.state == .Open) {
-                self.first_frame.markTransition();
+        if (self.overlay.settle(host.now_ms)) |settled| {
+            self.first_frame.markTransition();
+            if (settled == .Open) {
                 self.flow_animation_start_ms = host.now_ms;
-            }
-            if (self.overlay.state == .Closed) {
+            } else {
                 self.hovered_entry = null;
                 self.flow_animation_start_ms = 0;
             }
@@ -438,6 +432,7 @@ pub const PRDropdownComponent = struct {
 
     fn closeOverlayImmediately(self: *PRDropdownComponent) void {
         self.overlay.closeImmediately();
+        self.first_frame.markTransition();
         self.search_query.clear();
         self.refilter();
         self.hovered_entry = null;
@@ -842,6 +837,7 @@ test "busy update immediately closes the PR picker" {
 
     try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
     try testing.expect(!component.overlay.isAnimating());
+    try testing.expect(PRDropdownComponent.wantsFrame(&component, &host));
     try testing.expectEqualStrings("", component.search_query.text());
     try testing.expectEqual(@as(?usize, null), component.hovered_entry);
     try testing.expect(component.escape_pressed);
@@ -855,4 +851,26 @@ test "busy update immediately closes the PR picker" {
     host.focused_has_foreground_process = false;
     PRDropdownComponent.update(&component, &host, &actions);
     try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+}
+
+test "finished collapse demands a frame to draw the collapsed pill" {
+    var component: PRDropdownComponent = .{ .allocator = testing.allocator, .io = undefined };
+    defer component.search_query.deinit(testing.allocator);
+
+    component.is_github_repo = true;
+    component.overlay.state = .Open;
+    component.overlay.startCollapsing(0);
+    component.first_frame.markDrawn();
+
+    var actions = types.UiActionQueue.init(testing.allocator);
+    defer actions.deinit();
+    var theme = testTheme();
+    const host = testHost(component.overlay.duration_ms, false, &theme);
+
+    PRDropdownComponent.update(&component, &host, &actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, component.overlay.state);
+    try testing.expect(PRDropdownComponent.wantsFrame(&component, &host));
+
+    component.first_frame.markDrawn();
+    try testing.expect(!PRDropdownComponent.wantsFrame(&component, &host));
 }

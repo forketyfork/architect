@@ -23,7 +23,7 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            (import ./overlays/sdl3-3-4-10.nix)
+            (import ./overlays/sdl3-3-4-18.nix)
           ];
           config = {
             allowUnfree = true;

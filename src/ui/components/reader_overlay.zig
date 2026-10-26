@@ -1216,7 +1216,7 @@ pub const ReaderOverlayComponent = struct {
         renderer: *c.SDL_Renderer,
         host: *const types.UiHost,
         line: markdown_renderer.RenderLine,
-        fonts: *FontSet,
+        fonts: FontSet,
         runs: []const markdown_renderer.RenderRun,
         plain_text: []const u8,
         hovered_href: ?[]const u8,
@@ -1321,7 +1321,7 @@ pub const ReaderOverlayComponent = struct {
         renderer: *c.SDL_Renderer,
         host: *const types.UiHost,
         line: markdown_renderer.RenderLine,
-        fonts: *FontSet,
+        fonts: FontSet,
         wrapped_runs: []const WrappedTableRun,
         x: c_int,
         y: c_int,
@@ -1504,7 +1504,7 @@ pub const ReaderOverlayComponent = struct {
         lh: c_int,
         line_idx: usize,
         line: markdown_renderer.RenderLine,
-        line_fonts: *FontSet,
+        line_fonts: FontSet,
     ) void {
         const query = std.mem.trim(u8, self.search.text(), " \t");
         if (query.len == 0) return;
@@ -1541,7 +1541,7 @@ pub const ReaderOverlayComponent = struct {
 
     fn byteOffsetToPixelX(
         line: markdown_renderer.RenderLine,
-        line_fonts: *FontSet,
+        line_fonts: FontSet,
         base_x: c_int,
         max_text_h: c_int,
         target_byte: usize,
@@ -1640,11 +1640,11 @@ pub const ReaderOverlayComponent = struct {
         return host.theme.foreground;
     }
 
-    fn chooseFont(fonts: *FontSet, run: markdown_renderer.RenderRun, force_bold: bool) *c.TTF_Font {
+    fn chooseFont(fonts: FontSet, run: markdown_renderer.RenderRun, force_bold: bool) *c.TTF_Font {
         return chooseFontForStyle(fonts, run.style, force_bold);
     }
 
-    fn chooseFontForStyle(fonts: *FontSet, style: markdown_parser.InlineStyle, force_bold: bool) *c.TTF_Font {
+    fn chooseFontForStyle(fonts: FontSet, style: markdown_parser.InlineStyle, force_bold: bool) *c.TTF_Font {
         const want_bold = force_bold or style == .bold;
         const want_italic = style == .italic;
 

@@ -225,6 +225,13 @@ fn addSdlPaths(
         translate_c.addIncludePath(include_path);
         const lib_path = b.fmt("{s}/../lib", .{sdl3_ttf_include});
         exe_mod.addLibraryPath(.{ .cwd_relative = lib_path });
+        // sdl3.pc carries an rpath for SDL3, but sdl3-ttf.pc carries none, so an
+        // ELF binary linked against SDL3_ttf outside the default loader paths
+        // (e.g. in the Nix store) fails to start. Mach-O records each dylib's
+        // absolute install name instead and needs no rpath.
+        if (exe_mod.resolved_target.?.result.os.tag != .macos) {
+            exe_mod.addRPath(.{ .cwd_relative = lib_path });
+        }
     }
     if (framework_path) |path| {
         const framework_lazy_path: std.Build.LazyPath = .{ .cwd_relative = path };

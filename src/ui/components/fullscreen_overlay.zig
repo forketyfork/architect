@@ -1,3 +1,4 @@
+const std = @import("std");
 const c = @import("../../c.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
@@ -50,12 +51,15 @@ pub const FullscreenOverlay = struct {
         self.first_frame.markTransition();
     }
 
+    /// Each finished animation requests a frame: the last animation frame was
+    /// drawn at an intermediate scale, and nothing else repaints the final one.
     pub fn updateAnimation(self: *FullscreenOverlay, now_ms: i64) ?AnimationEvent {
         const elapsed = now_ms - self.animation_start_ms;
         switch (self.animation_state) {
             .opening => {
                 if (elapsed >= animation_duration_ms) {
                     self.animation_state = .open;
+                    self.first_frame.markTransition();
                     return .became_open;
                 }
             },
@@ -63,6 +67,7 @@ pub const FullscreenOverlay = struct {
                 if (elapsed >= animation_duration_ms) {
                     self.animation_state = .closed;
                     self.visible = false;
+                    self.first_frame.markTransition();
                     return .became_closed;
                 }
             },
@@ -279,3 +284,21 @@ pub const FullscreenOverlay = struct {
         });
     }
 };
+
+test "finished open and close animations each demand a final frame" {
+    var overlay = FullscreenOverlay{};
+
+    overlay.show(0);
+    overlay.first_frame.markDrawn();
+    try std.testing.expectEqual(@as(?AnimationEvent, .became_open), overlay.updateAnimation(FullscreenOverlay.animation_duration_ms));
+    try std.testing.expect(overlay.wantsFrame());
+    overlay.first_frame.markDrawn();
+    try std.testing.expect(!overlay.wantsFrame());
+
+    overlay.hide(1000);
+    overlay.first_frame.markDrawn();
+    try std.testing.expectEqual(@as(?AnimationEvent, .became_closed), overlay.updateAnimation(1000 + FullscreenOverlay.animation_duration_ms));
+    try std.testing.expect(overlay.wantsFrame());
+    overlay.first_frame.markDrawn();
+    try std.testing.expect(!overlay.wantsFrame());
+}

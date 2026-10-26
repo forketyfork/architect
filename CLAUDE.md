@@ -129,6 +129,9 @@ If you are executing in a git worktree, stay within that worktree and do not att
 ### Never render while the window is occluded
 - macOS stops compositing fully covered windows and `CAMetalLayer` stops returning drawables; any render attempt then blocks the main thread for the full ~1s `nextDrawable` timeout, stalling input and PTY processing. The frame loop gates rendering on the `SDL_WINDOW_OCCLUDED` window flag (`shouldRenderFrame` in `src/app/runtime.zig`); keep any new render/present paths behind the same gate.
 
+### Mouse coordinates on macOS 26+
+- SDL derives mouse motion, button, and wheel positions from its cached window position, which can go stale after a display reconfiguration and shift every mouse event by the difference between the displays' heights. `src/platform/sdl_mouse_workaround.zig` detects the stale cache and makes SDL recompute it (via its own `windowDidMove:`) before SDL generates more input events. Fix the cache rather than shifting event coordinates afterwards: some SDL paths already deliver correct window-local positions, and SDL drops or clamps events against the cached position before queuing them. The workaround is temporary: on every SDL bump, re-check it against SDL's Cocoa sources (the `verified_sdl_version` test fails until you do).
+
 ### Adding New SDL3 Key Codes
 When adding references to SDL3 key codes (SDLK_*) or other SDL constants, always add them to `src/c.zig` first instead of searching the web for their values. The build system provides the translated SDL declarations through the `c_sdl` module, and SDL constants must be explicitly re-exported from `src/c.zig` to be accessible throughout the codebase.
 
@@ -245,6 +248,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Do not store UI state or UI textures in session structs or `app_state.zig`; UI state must live inside UI components or UI-managed assets.
 - Add new UI features by registering components with `UiRoot`; never bypass `UiAction` for UI→app mutations.
 - When a UI component moves into a new visible state (modals expanding, toasts appearing, gesture indicators starting), use `src/ui/first_frame_guard.zig`: call `markTransition()` when the state flips and `markDrawn()` at the top of every render; have `wantsFrame` return `guard.wantsFrame()` so the main loop renders immediately even under idle throttling.
+- Arm the guard when a component *leaves* a visible state too: an indicator or toast expiring, an expand/collapse settling (`ExpandingOverlay.settle`), an immediate close. Once `wantsFrame` turns false nothing repaints, so the last presented frame — drawn mid-fade or at an intermediate size — stays on screen until unrelated input arrives. A time-based expiry therefore needs an explicit state flip in `update()` that arms the guard; a `wantsFrame` that merely compares `now` against a deadline never gets that final frame.
 - Restored terminals use `SessionState.ensureSpawnedWithDir` to launch shells already in the target directory; changing cwd of a live shell is not supported—spawn or restart with the desired path.
 
 ## Rendering & Unicode Notes
@@ -257,6 +261,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Do not keep TOML parser-owned maps after `result.deinit()`: duplicate keys and values into your own storage before freeing the parser arena, or later iteration will segfault.
 - `std.mem.span` rejects `[:0]const u8` slices; use `std.mem.sliceTo(ptr, 0)` for `[:0]const u8`, and use `std.mem.span` for `[*c]const u8`/`[*:0]const u8` C pointers.
 - When copying persisted maps (e.g., `[terminals]`), duplicate both key and value slices; borrowing the parser's backing memory causes use-after-free crashes.
+- Pointers from `std.HashMap` `getPtr`/`getOrPut` dangle after any later insert that grows the map. Do not return them from cache-style APIs; return the value (as `FontCache.get` does) or store values behind their own allocation.
 - Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 - xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
 - Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.

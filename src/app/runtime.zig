@@ -26,6 +26,7 @@ const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
 const macos_input = @import("../platform/macos_input_source.zig");
+const sdl_mouse_workaround = @import("../platform/sdl_mouse_workaround.zig");
 const input = @import("../input/mapper.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const pty_mod = @import("../pty.zig");
@@ -1606,6 +1607,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         };
     }
 
+    const window_position_repair = sdl_mouse_workaround.WindowPositionRepair.init(sdl.window);
+
     const renderer = sdl.renderer;
 
     var font_size: c_int = persistence.font_size;
@@ -1878,6 +1881,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
     var next_wait_timeout_ms: ?c_int = null;
     var first_frame = true;
     while (running) {
+        window_position_repair.check(sdl.window);
         var next_event = waitForNextFrame(next_wait_timeout_ms);
         const frame_start_ns: i128 = clock.nowNanos(io);
         const now = clock.nowMillis(io);
@@ -1917,6 +1921,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
                 c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_INPUT, c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL, c.SDL_EVENT_MOUSE_MOTION => last_input_ns = frame_start_ns,
                 else => {},
             }
+            if (sdl_mouse_workaround.mayStaleWindowPosition(event.type)) window_position_repair.check(sdl.window);
             var scaled_event = layout.scaleEventToRender(&event, scale_x, scale_y);
             if (builtin.os.tag == .macos and scaled_event.type == c.SDL_EVENT_KEY_DOWN) {
                 const key = scaled_event.key.key;

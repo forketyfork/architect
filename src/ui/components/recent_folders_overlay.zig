@@ -306,6 +306,7 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn closeOverlayImmediately(self: *RecentFoldersOverlayComponent) void {
         self.overlay.closeImmediately();
+        self.first_frame.markTransition();
         self.search.clear();
         self.refilter();
         self.hovered_entry = null;
@@ -346,17 +347,11 @@ pub const RecentFoldersOverlayComponent = struct {
             self.closeOverlayImmediately();
         }
 
-        if (self.overlay.isAnimating() and self.overlay.isComplete(host.now_ms)) {
-            self.overlay.state = switch (self.overlay.state) {
-                .Expanding => .Open,
-                .Collapsing => .Closed,
-                else => self.overlay.state,
-            };
-            if (self.overlay.state == .Open) {
-                self.first_frame.markTransition();
+        if (self.overlay.settle(host.now_ms)) |settled| {
+            self.first_frame.markTransition();
+            if (settled == .Open) {
                 self.flow_animation_start_ms = host.now_ms;
-            }
-            if (self.overlay.state == .Closed) {
+            } else {
                 self.hovered_entry = null;
                 self.flow_animation_start_ms = 0;
             }
@@ -542,7 +537,7 @@ pub const RecentFoldersOverlayComponent = struct {
         _: *RecentFoldersOverlayComponent,
         renderer: *c.SDL_Renderer,
         host: *const types.UiHost,
-        entry_fonts: *font_cache_mod.FontSet,
+        entry_fonts: font_cache_mod.FontSet,
         path_x: c_int,
         y_offset: c_int,
         lh: c_int,
@@ -1098,6 +1093,7 @@ test "busy update immediately closes the recent folders picker" {
 
     try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
     try testing.expect(!t.comp.overlay.isAnimating());
+    try testing.expect(RecentFoldersOverlayComponent.wantsFrame(&t.comp, &host));
     try testing.expectEqualStrings("", t.comp.search.text());
     try testing.expectEqual(@as(?usize, null), t.comp.hovered_entry);
     try testing.expect(t.comp.escape_pressed);
@@ -1110,4 +1106,22 @@ test "busy update immediately closes the recent folders picker" {
     host.focused_has_foreground_process = false;
     RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
     try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
+}
+
+test "finished collapse demands a frame to draw the collapsed pill" {
+    var t = TestComponent.init();
+    defer t.deinit();
+
+    addTestFolder(&t);
+    t.comp.overlay.state = .Open;
+    t.comp.overlay.startCollapsing(0);
+    t.comp.first_frame.markDrawn();
+
+    const host = testHost(t.comp.overlay.duration_ms, &t.theme);
+    RecentFoldersOverlayComponent.update(&t.comp, &host, &t.actions);
+    try testing.expectEqual(ExpandingOverlay.State.Closed, t.comp.overlay.state);
+    try testing.expect(RecentFoldersOverlayComponent.wantsFrame(&t.comp, &host));
+
+    t.comp.first_frame.markDrawn();
+    try testing.expect(!RecentFoldersOverlayComponent.wantsFrame(&t.comp, &host));
 }

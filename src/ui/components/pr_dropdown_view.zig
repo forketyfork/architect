@@ -392,7 +392,7 @@ pub fn renderOverlay(
 fn renderLabelHighlights(
     renderer: *c.SDL_Renderer,
     host: *const types.UiHost,
-    entry_fonts: *font_cache_mod.FontSet,
+    entry_fonts: font_cache_mod.FontSet,
     label_x: c_int,
     y_offset: c_int,
     line_height: c_int,

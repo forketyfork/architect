@@ -1,12 +1,12 @@
 final: prev: {
   sdl3 = prev.sdl3.overrideAttrs (old: rec {
-    version = "3.4.10";
+    version = "3.4.18";
 
     src = prev.fetchFromGitHub {
       owner = "libsdl-org";
       repo = "SDL";
       rev = "release-${version}";
-      hash = "sha256-6Dph2eLiJUmpQzPWe8EuY5LrWhrFwde2f2dwfgCcWNw=";
+      hash = "sha256-3dP4FJ5OvZI6UPykJpE3hTH6kdW+Nn7gUSf3yiPCobo=";
     };
 
     # Drop nixpkgs' Linux-only zenity substitutions that no longer match SDL 3.4.x.
