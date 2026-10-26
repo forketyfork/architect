@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision Architect in AIR Cloud without Nix, apt, sudo, or root access.
 # Zig supplies the C compiler used for the two SDL builds; all other tools are
-# portable user-space archives. SDL 3.4.10 is parsed from the project's overlay
+# portable user-space archives. SDL 3.4.18 is parsed from the project's overlay
 # so this remains aligned with the normal development environment.
 #
 # This provisions disposable, non-production CI sandboxes rather than release
@@ -101,7 +101,7 @@ download_archive_bin just just-1.40.0.tar.gz "https://github.com/casey/just/rele
 download_archive_bin shellcheck shellcheck-0.10.0.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz" 0.10.0
 download_archive_bin ruff ruff-0.12.10.tar.gz "https://github.com/astral-sh/ruff/releases/download/0.12.10/ruff-x86_64-unknown-linux-gnu.tar.gz" 0.12.10
 
-sdl_version="$(sed -n 's/.*version = "\([0-9][0-9.]*\)".*/\1/p' "$project_dir/overlays/sdl3-3-4-10.nix" | head -1)"
+sdl_version="$(sed -n 's/.*version = "\([0-9][0-9.]*\)".*/\1/p' "$project_dir/overlays/sdl3-3-4-18.nix" | head -1)"
 [ -n "$sdl_version" ] || die "could not read SDL3 version from overlay"
 sdl_ttf_version=3.2.2
 build_sdl() {

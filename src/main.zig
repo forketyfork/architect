@@ -60,6 +60,7 @@ test {
     _ = @import("metrics.zig");
     _ = @import("pty.zig");
     _ = @import("platform/sdl.zig");
+    _ = @import("platform/sdl_mouse_workaround.zig");
     _ = @import("os/open.zig");
     _ = @import("proc.zig");
     _ = @import("render/renderer.zig");
