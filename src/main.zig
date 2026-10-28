@@ -99,6 +99,7 @@ test {
     _ = @import("ui/first_frame_guard.zig");
     _ = @import("ui/text_edit.zig");
     _ = @import("ui/text_render.zig");
+    _ = @import("ui/utf8_text.zig");
     _ = @import("url_matcher.zig");
     _ = @import("vt_stream.zig");
     _ = @import("wake_pipe.zig");

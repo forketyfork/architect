@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("markdown_parser.zig");
+const utf8_text = @import("../utf8_text.zig");
 
 const indent_padding: [parser.max_indent_level * 2]u8 = [_]u8{' '} ** (parser.max_indent_level * 2);
 
@@ -295,7 +296,7 @@ fn appendWrappedLines(
                 .href = href,
                 .anchor_number = run.anchor_number,
             });
-            current_cols += run.text.len;
+            current_cols += utf8_text.columnCount(run.text);
             continue;
         }
 
@@ -313,13 +314,14 @@ fn appendWrappedLines(
                     break;
                 }
 
-                if (!is_space and token.len > wrap_cols) {
+                const token_cols = utf8_text.columnCount(token);
+                if (!is_space and token_cols > wrap_cols) {
                     if (current_cols > 0) {
                         try flushCurrentLine(allocator, lines, &current, heading_level, quote_depth, indent_level);
                         current_cols = 0;
                     }
 
-                    const chunk_len = @min(wrap_cols, token.len);
+                    const chunk_len = utf8_text.prefixLen(token, wrap_cols);
                     const href = if (run.href) |run_href| try allocator.dupe(u8, run_href) else null;
                     try current.append(allocator, .{
                         .text = try allocator.dupe(u8, token[0..chunk_len]),
@@ -328,7 +330,7 @@ fn appendWrappedLines(
                         .href = href,
                         .anchor_number = run.anchor_number,
                     });
-                    current_cols += chunk_len;
+                    current_cols += wrap_cols;
                     token = token[chunk_len..];
 
                     if (current_cols >= wrap_cols) {
@@ -338,7 +340,7 @@ fn appendWrappedLines(
                     continue;
                 }
 
-                if (current_cols + token.len > wrap_cols and current_cols > 0) {
+                if (current_cols + token_cols > wrap_cols and current_cols > 0) {
                     try flushCurrentLine(allocator, lines, &current, heading_level, quote_depth, indent_level);
                     current_cols = 0;
                     if (is_space) {
@@ -355,7 +357,7 @@ fn appendWrappedLines(
                     .href = href,
                     .anchor_number = run.anchor_number,
                 });
-                current_cols += token.len;
+                current_cols += token_cols;
                 token = "";
             }
         }
@@ -709,4 +711,23 @@ test "renderer emits prompt separator line kind" {
     try std.testing.expectEqual(@as(usize, 2), lines.items.len);
     try std.testing.expectEqual(LineKind.prompt_separator, lines.items[0].kind);
     try std.testing.expectEqual(LineKind.text, lines.items[1].kind);
+}
+
+test "renderer splits long non-ASCII tokens on codepoint boundaries" {
+    const allocator = std.testing.allocator;
+
+    // A box-drawing rule is one unbroken token of 3-byte codepoints.
+    const rule = "─" ** 50;
+    var blocks = try parser.parse(allocator, rule);
+    defer parser.freeBlocks(allocator, &blocks);
+
+    var lines = try buildLines(allocator, blocks.items, 20);
+    defer freeLines(allocator, &lines);
+
+    try std.testing.expectEqual(@as(usize, 3), lines.items.len);
+    const expected_cols = [_]usize{ 20, 20, 10 };
+    for (lines.items, expected_cols) |line, cols| {
+        try std.testing.expect(std.unicode.utf8ValidateSlice(line.plain_text));
+        try std.testing.expectEqual(cols, try std.unicode.utf8CountCodepoints(line.plain_text));
+    }
 }

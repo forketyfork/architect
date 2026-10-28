@@ -15,6 +15,7 @@ const markdown_renderer = @import("markdown_renderer.zig");
 const scrollbar = @import("scrollbar.zig");
 const search_utils = @import("search_utils.zig");
 const text_edit = @import("../text_edit.zig");
+const utf8_text = @import("../utf8_text.zig");
 const button = @import("button.zig");
 
 const log = std.log.scoped(.reader_overlay);
@@ -349,7 +350,7 @@ pub const ReaderOverlayComponent = struct {
             var end = i + 1;
             while (end < text.len and text[end] != '\n' and ((text[end] == ' ' or text[end] == '\t') == is_space)) : (end += 1) {}
 
-            var remaining = end - i;
+            var remaining = utf8_text.columnCount(text[i..end]);
             while (remaining > 0) {
                 if (is_space and current_cols == 0) break;
 
@@ -1259,7 +1260,8 @@ pub const ReaderOverlayComponent = struct {
                 while (token.len > 0) {
                     if (is_space and cols == 0) break;
 
-                    if (!is_space and token.len > max_cols) {
+                    const token_cols = utf8_text.columnCount(token);
+                    if (!is_space and token_cols > max_cols) {
                         if (cols > 0) {
                             self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
                             wrapped_runs.clearRetainingCapacity();
@@ -1267,7 +1269,7 @@ pub const ReaderOverlayComponent = struct {
                             draw_y += line_px;
                         }
 
-                        const chunk_len = @min(max_cols, token.len);
+                        const chunk_len = utf8_text.prefixLen(token, max_cols);
                         wrapped_runs.append(self.allocator, .{
                             .text = token[0..chunk_len],
                             .style = run.style,
@@ -1276,7 +1278,7 @@ pub const ReaderOverlayComponent = struct {
                             log.warn("failed to append wrapped table run chunk: {}", .{err});
                             return;
                         };
-                        cols += chunk_len;
+                        cols += max_cols;
                         token = token[chunk_len..];
 
                         if (cols >= max_cols and token.len > 0) {
@@ -1288,7 +1290,7 @@ pub const ReaderOverlayComponent = struct {
                         continue;
                     }
 
-                    if (cols + token.len > max_cols and cols > 0) {
+                    if (cols + token_cols > max_cols and cols > 0) {
                         self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
                         wrapped_runs.clearRetainingCapacity();
                         cols = 0;
@@ -1307,7 +1309,7 @@ pub const ReaderOverlayComponent = struct {
                         log.warn("failed to append wrapped table run token: {}", .{err});
                         return;
                     };
-                    cols += token.len;
+                    cols += token_cols;
                     token = "";
                 }
             }
@@ -1737,4 +1739,10 @@ test "reader content stays a snapshot while the terminal updates" {
     ReaderOverlayComponent.updateFn(&component, &host, &actions);
 
     try std.testing.expectEqualStrings("captured before live output", component.raw_text.?);
+}
+
+test "table cell line count measures codepoints, not bytes" {
+    const rule = "─" ** 30;
+    try std.testing.expectEqual(@as(usize, 3), ReaderOverlayComponent.wrappedLineCount(rule, 10));
+    try std.testing.expectEqual(@as(usize, 2), ReaderOverlayComponent.wrappedLineCount("héllo wörld", 6));
 }

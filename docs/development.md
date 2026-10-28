@@ -102,6 +102,11 @@ its tests compile but silently never run. `scripts/check-test-registry.sh`
 (part of `just lint`) fails the build when a file with tests is missing from
 that block.
 
+`scripts/check-unchecked-utf8.sh` (also part of `just lint`) rejects
+`std.unicode.Utf8Iterator` literals and `Utf8View.initUnchecked`. Both assume
+valid UTF-8, and a malformed byte is undefined behavior in release builds. Use
+`src/ui/utf8_text.zig` for UI text instead.
+
 The MCP test binary drives a complete stdio `tools/call` request against an
 isolated runtime directory and verifies the structured error returned when
 Architect is not running. This also covers environment initialization before
