@@ -307,6 +307,7 @@ fn appendWrappedLines(
             while (token_end < run.text.len and (run.text[token_end] == ' ') == is_space) : (token_end += 1) {}
 
             var token = run.text[token_start..token_end];
+            var token_cols = utf8_text.columnCount(token);
             token_start = token_end;
 
             while (token.len > 0) {
@@ -314,7 +315,6 @@ fn appendWrappedLines(
                     break;
                 }
 
-                const token_cols = utf8_text.columnCount(token);
                 if (!is_space and token_cols > wrap_cols) {
                     if (current_cols > 0) {
                         try flushCurrentLine(allocator, lines, &current, heading_level, quote_depth, indent_level);
@@ -332,6 +332,7 @@ fn appendWrappedLines(
                     });
                     current_cols += wrap_cols;
                     token = token[chunk_len..];
+                    token_cols -= wrap_cols;
 
                     if (current_cols >= wrap_cols) {
                         try flushCurrentLine(allocator, lines, &current, heading_level, quote_depth, indent_level);
@@ -729,5 +730,20 @@ test "renderer splits long non-ASCII tokens on codepoint boundaries" {
     for (lines.items, expected_cols) |line, cols| {
         try std.testing.expect(std.unicode.utf8ValidateSlice(line.plain_text));
         try std.testing.expectEqual(cols, try std.unicode.utf8CountCodepoints(line.plain_text));
+    }
+}
+
+test "renderer splits a long token into full-width chunks" {
+    const allocator = std.testing.allocator;
+
+    var blocks = try parser.parse(allocator, "─" ** 200);
+    defer parser.freeBlocks(allocator, &blocks);
+
+    var lines = try buildLines(allocator, blocks.items, 20);
+    defer freeLines(allocator, &lines);
+
+    try std.testing.expectEqual(@as(usize, 10), lines.items.len);
+    for (lines.items) |line| {
+        try std.testing.expectEqual(@as(usize, 20), try std.unicode.utf8CountCodepoints(line.plain_text));
     }
 }

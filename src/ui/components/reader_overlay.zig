@@ -1256,11 +1256,11 @@ pub const ReaderOverlayComponent = struct {
                 while (token_end < run.text.len and run.text[token_end] != '\n' and ((run.text[token_end] == ' ' or run.text[token_end] == '\t') == is_space)) : (token_end += 1) {}
 
                 var token = run.text[token_start..token_end];
+                var token_cols = utf8_text.columnCount(token);
                 token_start = token_end;
                 while (token.len > 0) {
                     if (is_space and cols == 0) break;
 
-                    const token_cols = utf8_text.columnCount(token);
                     if (!is_space and token_cols > max_cols) {
                         if (cols > 0) {
                             self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
@@ -1280,6 +1280,7 @@ pub const ReaderOverlayComponent = struct {
                         };
                         cols += max_cols;
                         token = token[chunk_len..];
+                        token_cols -= max_cols;
 
                         if (cols >= max_cols and token.len > 0) {
                             self.renderWrappedTableCellLine(renderer, host, line, fonts, wrapped_runs.items, x, draw_y, line_px, hovered_href, progress);
