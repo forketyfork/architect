@@ -53,6 +53,8 @@ Build optimized release:
 zig build -Doptimize=ReleaseFast
 ```
 
+`-Dversion=<version>` sets the version Architect reports to terminal applications in its XTVERSION reply (`Architect <version>`); it defaults to `dev`. The release workflow and the Homebrew formula pass the tag version.
+
 Run the application:
 ```bash
 just run

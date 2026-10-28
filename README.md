@@ -51,7 +51,8 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Git diff overlay title shows the repo root folder being diffed
 - Per-cell cwd bar in grid view reserves space; clipped parent paths marquee only while the Architect window has input focus, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
-- OSC 8 hyperlink support (Cmd+Click to open)
+- OSC 8 hyperlinks and plain-text URLs open with Cmd+Click (Cmd+hover underlines them), including inside TUIs that capture the mouse such as Claude Code's fullscreen mode and Codex; Architect keeps that click instead of reporting it to the app, because mouse reports cannot carry the Cmd key
+- Replies to XTVERSION with `Architect <version>`
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
 - VT-compatible 80/132-column mode handling for applications that use DECCOLM
 - Modified arrows, Home/End, Insert/Delete, PageUp/PageDown, and F1-F12 carry their modifiers to terminal applications; combined Shift/Ctrl/Option/Command keys remain distinct from plain keys

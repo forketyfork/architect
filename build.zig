@@ -66,6 +66,11 @@ pub fn build(b: *std.Build) void {
     control_mod.addImport("../wake_pipe.zig", wake_pipe_mod);
     mcp_mod.addImport("control", control_mod);
     mcp_mod.addImport("../env.zig", env_mod);
+    const version = b.option([]const u8, "version", "Version that Architect reports to terminal applications") orelse "dev";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+    exe_mod.addOptions("build_options", build_options);
+
     const assets_mod = b.createModule(.{
         .root_source_file = b.path("assets/terminfo.zig"),
         .target = target,

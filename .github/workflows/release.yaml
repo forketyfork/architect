@@ -68,8 +68,12 @@ jobs:
       - name: Build release
         timeout-minutes: 20
         run: |
+          VERSION=dev
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
           for i in 1 2 3; do
-            nix develop --command zig build -Doptimize=ReleaseFast && break
+            nix develop --command zig build -Doptimize=ReleaseFast -Dversion="$VERSION" && break
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
