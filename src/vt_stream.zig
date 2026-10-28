@@ -2,8 +2,14 @@ const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("shell.zig");
 const posix_util = @import("posix_util.zig");
+const build_options = @import("build_options");
 
 const log = std.log.scoped(.vt_stream);
+
+/// DCS reply to XTVERSION (`CSI > q`). Apps such as Claude Code use the name to
+/// pick terminal-specific behavior, so it must identify Architect rather than
+/// the embedded ghostty-vt.
+const xtversion_response = "\x1bP>|Architect " ++ build_options.version ++ "\x1b\\";
 
 const ReadonlyHandler = @typeInfo(@TypeOf(ghostty_vt.Terminal.vtHandler)).@"fn".return_type.?;
 const color_operation_value = ghostty_vt.StreamAction.Value(.color_operation);
@@ -58,6 +64,10 @@ pub const Handler = struct {
             .device_attributes => try self.handleDeviceAttributes(value),
             .device_status => try self.handleDeviceStatus(value.request),
             .kitty_keyboard_query => try self.handleKittyKeyboardQuery(),
+            .xtversion => {
+                log.debug("xtversion -> {s}", .{xtversion_response});
+                _ = try self.shell.write(xtversion_response);
+            },
             .color_operation => try self.handleColorOperation(value),
             .request_mode => try self.handleRequestMode(value.mode),
             .request_mode_unknown => try self.handleRequestModeUnknown(value.mode, value.ansi),
@@ -450,6 +460,39 @@ test "stream answers synchronized output mode report queries" {
     stream.nextSlice("\x1b[?2026$p");
     const enabled_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[?2026;1$y", buf[0..enabled_len]);
+}
+
+test "stream answers XTVERSION with the Architect name and version" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    defer terminal.deinit(allocator);
+
+    var pipe_fds: [2]std.posix.fd_t = undefined;
+    try posix_util.pipe(&pipe_fds);
+    defer _ = std.c.close(pipe_fds[0]);
+    defer _ = std.c.close(pipe_fds[1]);
+
+    var shell = shell_mod.Shell{
+        .io = std.testing.io,
+        .pty = .{
+            .master = pipe_fds[1],
+            .slave = pipe_fds[0],
+        },
+        .child_pid = 0,
+    };
+
+    var stream = initStream(allocator, &terminal, &shell);
+    defer stream.deinit();
+
+    var buf: [128]u8 = undefined;
+
+    stream.nextSlice("\x1b[>0q");
+    const len = try std.posix.read(pipe_fds[0], &buf);
+    try std.testing.expectEqualSlices(u8, "\x1bP>|Architect " ++ build_options.version ++ "\x1b\\", buf[0..len]);
 }
 
 test "stream answers unknown mode report queries" {

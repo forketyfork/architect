@@ -22,6 +22,9 @@ pub const SessionViewState = struct {
     selection_pending: bool = false,
     hovered_link_start: ?ghostty_vt.Pin = null,
     hovered_link_end: ?ghostty_vt.Pin = null,
+    /// Set while Architect owns a Cmd+click on a link in a mouse-tracking app,
+    /// so the drag and release of that click are not reported to the app either.
+    link_press_consumed: bool = false,
     wave_start_time: i64 = 0,
     nav_wave_start_time: i64 = 0,
     terminal_scrollbar: scrollbar.State = .{},

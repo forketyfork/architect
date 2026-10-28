@@ -222,6 +222,24 @@ pub const SessionInteractionComponent = struct {
                             view.selection_menu_cell = null;
                         }
                         if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
+                            if (event.button.button == c.SDL_BUTTON_LEFT) {
+                                const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
+                                switch (cmdLinkPress(self.allocator, terminal, pin, view.is_viewing_scrollback, isCmdHeld(), event.button.clicks)) {
+                                    .none => view.link_press_consumed = false,
+                                    .open => |uri| {
+                                        defer self.allocator.free(uri);
+                                        view.link_press_consumed = true;
+                                        self.opener.open(uri) catch |err| {
+                                            log.err("failed to open URL: {}", .{err});
+                                        };
+                                        return true;
+                                    },
+                                    .repeat => {
+                                        view.link_press_consumed = true;
+                                        return true;
+                                    },
+                                }
+                            }
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     const sgr = terminal.modes.get(.mouse_format_sgr);
@@ -245,9 +263,7 @@ pub const SessionInteractionComponent = struct {
                                 } else if (clicks == 2) {
                                     selectWord(focused, view, pin);
                                 } else {
-                                    const mod = c.SDL_GetModState();
-                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-                                    if (cmd_held) {
+                                    if (isCmdHeld()) {
                                         if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback)) |uri| {
                                             defer self.allocator.free(uri);
                                             self.opener.open(uri) catch |err| {
@@ -275,6 +291,11 @@ pub const SessionInteractionComponent = struct {
                     if (focused_idx >= self.sessions.len) return false;
                     const focused = self.sessions[focused_idx];
                     const view = &self.views[focused_idx];
+
+                    if (event.button.button == c.SDL_BUTTON_LEFT and view.link_press_consumed) {
+                        view.link_press_consumed = false;
+                        return true;
+                    }
 
                     if (focused.spawned and focused.terminal != null) {
                         const terminal = &focused.terminal.?;
@@ -324,8 +345,11 @@ pub const SessionInteractionComponent = struct {
                 if (!dragging_scrollbar and host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
                     if (focused_idx < self.sessions.len) {
-                        var focused = self.sessions[focused_idx];
+                        const focused = self.sessions[focused_idx];
                         const view = &self.views[focused_idx];
+
+                        const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
+                        const over_link = updateLinkHover(self.allocator, focused, view, pin, isCmdHeld() and !host.mouse_over_ui);
 
                         if (focused.spawned and focused.terminal != null and !view.is_viewing_scrollback) {
                             const terminal = &focused.terminal.?;
@@ -335,6 +359,11 @@ pub const SessionInteractionComponent = struct {
                                 (event.motion.state & c.SDL_BUTTON_MMASK) != 0 or
                                 (event.motion.state & c.SDL_BUTTON_RMASK) != 0;
                             if (any_tracking or (btn_tracking and btn_held)) {
+                                if (over_link) desired_cursor = .pointer;
+                                if (view.link_press_consumed and (event.motion.state & c.SDL_BUTTON_LMASK) != 0) {
+                                    self.updateCursor(desired_cursor);
+                                    return true;
+                                }
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     const held_btn: ?input.MouseButton = if ((event.motion.state & c.SDL_BUTTON_LMASK) != 0)
                                         .left
@@ -357,8 +386,6 @@ pub const SessionInteractionComponent = struct {
                                 }
                             }
                         }
-
-                        const pin = fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
 
                         if (view.selection_dragging) {
                             if (pin) |p| {
@@ -384,36 +411,10 @@ pub const SessionInteractionComponent = struct {
                             }
                         }
 
-                        if (!host.mouse_over_ui and pin != null and focused.terminal != null) {
-                            const mod = c.SDL_GetModState();
-                            const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-
-                            if (cmd_held) {
-                                if (getLinkMatchAtPin(self.allocator, &focused.terminal.?, pin.?, view.is_viewing_scrollback)) |link_match| {
-                                    desired_cursor = .pointer;
-                                    view.hovered_link_start = link_match.start_pin;
-                                    view.hovered_link_end = link_match.end_pin;
-                                    self.allocator.free(link_match.url);
-                                    focused.markDirty();
-                                } else {
-                                    desired_cursor = .ibeam;
-                                    if (view.hovered_link_start != null) {
-                                        view.clearHover();
-                                        focused.markDirty();
-                                    }
-                                }
-                            } else {
-                                desired_cursor = .ibeam;
-                                if (view.hovered_link_start != null) {
-                                    view.clearHover();
-                                    focused.markDirty();
-                                }
-                            }
-                        } else {
-                            if (view.hovered_link_start != null) {
-                                view.clearHover();
-                                focused.markDirty();
-                            }
+                        if (over_link) {
+                            desired_cursor = .pointer;
+                        } else if (!host.mouse_over_ui and pin != null) {
+                            desired_cursor = .ibeam;
                         }
                     }
                 }
@@ -1295,6 +1296,80 @@ fn getLinkAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Terminal, pi
     return null;
 }
 
+fn isCmdHeld() bool {
+    return (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0;
+}
+
+/// Outcome of a left press while the focused app tracks the mouse.
+const CmdLinkPress = union(enum) {
+    /// Not a Cmd+click on a link: the press is reported to the app.
+    none,
+    /// First click of a Cmd+click on a link. The caller opens and frees `url`.
+    open: []u8,
+    /// Repeat click of a Cmd double or triple click on a link. Swallowed so the
+    /// link opens once and the app does not receive a press it never saw start.
+    repeat,
+};
+
+/// Cmd+click on a link belongs to Architect even while the app tracks the
+/// mouse. SGR mouse reports have no bit for Cmd, so forwarding the click would
+/// hand the app a plain click, which apps either ignore (Claude Code) or treat
+/// as something else.
+fn cmdLinkPress(
+    allocator: std.mem.Allocator,
+    terminal: *ghostty_vt.Terminal,
+    pin: ?ghostty_vt.Pin,
+    is_viewing_scrollback: bool,
+    cmd_held: bool,
+    clicks: u8,
+) CmdLinkPress {
+    if (!cmd_held) return .none;
+    const press_pin = pin orelse return .none;
+    const url = getLinkAtPin(allocator, terminal, press_pin, is_viewing_scrollback) orelse return .none;
+    if (clicks > 1) {
+        allocator.free(url);
+        return .repeat;
+    }
+    return .{ .open = url };
+}
+
+/// Underlines the link under `pin` while Cmd is held and clears the underline
+/// otherwise. Returns whether the pointer is over a link that Cmd+click opens.
+fn updateLinkHover(
+    allocator: std.mem.Allocator,
+    session: *SessionState,
+    view: *SessionViewState,
+    pin: ?ghostty_vt.Pin,
+    cmd_held: bool,
+) bool {
+    const link_match: ?LinkMatch = blk: {
+        if (!cmd_held) break :blk null;
+        const hover_pin = pin orelse break :blk null;
+        const terminal = if (session.terminal) |*terminal| terminal else break :blk null;
+        break :blk getLinkMatchAtPin(allocator, terminal, hover_pin, view.is_viewing_scrollback);
+    };
+
+    if (link_match) |match| {
+        allocator.free(match.url);
+        const unchanged = if (view.hovered_link_start) |start|
+            if (view.hovered_link_end) |end| pinsEqual(start, match.start_pin) and pinsEqual(end, match.end_pin) else false
+        else
+            false;
+        if (!unchanged) {
+            view.hovered_link_start = match.start_pin;
+            view.hovered_link_end = match.end_pin;
+            session.markDirty();
+        }
+        return true;
+    }
+
+    if (view.hovered_link_start != null) {
+        view.clearHover();
+        session.markDirty();
+    }
+    return false;
+}
+
 test "selection action pill anchors to the lower-right selection endpoint" {
     const forward = selectionMenuCellForEndpoints(.{ .col = 2, .row = 3 }, .{ .col = 7, .row = 5 });
     try std.testing.expectEqual(@as(u16, 7), forward.col);
@@ -1642,4 +1717,118 @@ test "cellCodepoint honors content_tag for text and non-text cells" {
         .content_tag = .bg_color_rgb,
         .content = .{ .color_palette = 0xFF },
     }));
+}
+
+/// Enters the alternate screen with SGR any-event mouse tracking, as Claude Code's
+/// fullscreen TUI and Codex do on startup.
+const tracking_tui_prelude = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+
+/// Claude Code writes a reply URL as plain text and skips blank cells with
+/// cursor moves instead of writing spaces.
+const claude_plain_url_reply = tracking_tui_prelude ++
+    "\x1b[10;1H\xe2\x8f\xba\x1b[3GSee\x1b[7Ghttps://github.com/forketyfork/architect/issues\x1b[55Gfor\x1b[59Gdetails";
+
+/// Codex wraps links in OSC 8 hyperlinks and underlines them itself.
+const codex_osc8_reply = tracking_tui_prelude ++
+    "\x1b[10;3HRead \x1b[4m\x1b]8;;https://example.com/osc8-target\x07the docs\x1b]8;;\x07\x1b[24m now";
+
+fn feedTestTerminal(terminal: *ghostty_vt.Terminal, bytes: []const u8) void {
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    stream.nextSlice(bytes);
+}
+
+fn testActivePin(terminal: *ghostty_vt.Terminal, x: u16, y: u16) !ghostty_vt.Pin {
+    return terminal.screens.active.pages.pin(.{ .active = .{ .x = x, .y = y } }) orelse error.TestUnexpectedResult;
+}
+
+test "Cmd+click opens a plain-text link while the app tracks the mouse" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(allocator);
+    feedTestTerminal(&terminal, claude_plain_url_reply);
+    try std.testing.expect(terminalHasMouseTracking(&terminal));
+
+    const press = cmdLinkPress(allocator, &terminal, try testActivePin(&terminal, 11, 9), false, true, 1);
+    switch (press) {
+        .open => |url| {
+            defer allocator.free(url);
+            try std.testing.expectEqualStrings("https://github.com/forketyfork/architect/issues", url);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "Cmd+click opens the OSC 8 target while the app tracks the mouse" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(allocator);
+    feedTestTerminal(&terminal, codex_osc8_reply);
+
+    const press = cmdLinkPress(allocator, &terminal, try testActivePin(&terminal, 9, 9), false, true, 1);
+    switch (press) {
+        .open => |url| {
+            defer allocator.free(url);
+            try std.testing.expectEqualStrings("https://example.com/osc8-target", url);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "clicks that are not Cmd+click on a link are reported to the app" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(allocator);
+    feedTestTerminal(&terminal, claude_plain_url_reply);
+
+    const on_link = try testActivePin(&terminal, 11, 9);
+    try std.testing.expectEqual(CmdLinkPress.none, cmdLinkPress(allocator, &terminal, on_link, false, false, 1));
+    const on_text = try testActivePin(&terminal, 55, 9);
+    try std.testing.expectEqual(CmdLinkPress.none, cmdLinkPress(allocator, &terminal, on_text, false, true, 1));
+    try std.testing.expectEqual(CmdLinkPress.none, cmdLinkPress(allocator, &terminal, null, false, true, 1));
+}
+
+test "repeat Cmd clicks on a link are swallowed without reopening it" {
+    const allocator = std.testing.allocator;
+    var terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(allocator);
+    feedTestTerminal(&terminal, claude_plain_url_reply);
+
+    const on_link = try testActivePin(&terminal, 11, 9);
+    try std.testing.expectEqual(CmdLinkPress.repeat, cmdLinkPress(allocator, &terminal, on_link, false, true, 2));
+    try std.testing.expectEqual(CmdLinkPress.repeat, cmdLinkPress(allocator, &terminal, on_link, false, true, 3));
+}
+
+test "Cmd+hover underlines the whole link and repaints only on change" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.terminal = try ghostty_vt.Terminal.init(std.testing.io, allocator, .{ .cols = 80, .rows = 24 });
+    defer session.terminal.?.deinit(allocator);
+    const terminal = &session.terminal.?;
+    feedTestTerminal(terminal, claude_plain_url_reply);
+
+    var view = SessionViewState{};
+    const on_link = try testActivePin(terminal, 11, 9);
+
+    try std.testing.expect(updateLinkHover(allocator, &session, &view, on_link, true));
+    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
+    const start = view.hovered_link_start orelse return error.TestUnexpectedResult;
+    const end = view.hovered_link_end orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 6), start.x);
+    try std.testing.expectEqual(@as(u16, 52), end.x);
+
+    const elsewhere_on_link = try testActivePin(terminal, 30, 9);
+    try std.testing.expect(updateLinkHover(allocator, &session, &view, elsewhere_on_link, true));
+    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
+
+    try std.testing.expect(!updateLinkHover(allocator, &session, &view, on_link, false));
+    try std.testing.expect(view.hovered_link_start == null);
+    try std.testing.expectEqual(@as(u64, 3), session.render_epoch);
+
+    try std.testing.expect(!updateLinkHover(allocator, &session, &view, on_link, false));
+    try std.testing.expectEqual(@as(u64, 3), session.render_epoch);
 }

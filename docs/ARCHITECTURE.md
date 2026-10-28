@@ -713,3 +713,13 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
   - *Direct compiler-side header imports* -- rejected because the build-system translation step is the supported Zig 0.16 integration and makes target-specific inputs explicit in `build.zig`.
 - **Consequences:** Each C import site has an isolated translation failure boundary, target-specific headers are only created and imported when applicable, and `src/c.zig` remains the stable SDL symbol surface for the rest of the codebase. The executable continues to own the SDL3, SDL3_ttf, proc, and framework link configuration. On macOS, the default target names the host architecture explicitly, the active SDK's framework and system-library paths are passed to Zig, and `objc` is linked explicitly for framework stubs that re-export `/usr/lib/libobjc.A.dylib`. The C wrapper is compiled against the active SDK while Zig translates only the narrow declaration.
 - **Date:** 2026-09
+
+### ADR-018: Cmd+Click on Links Belongs to Architect
+
+- **Decision:** In Full view, a Cmd+left press over a link (OSC 8 or a plain-text URL) is handled by Architect even when the focused app has enabled mouse tracking: Architect opens the link and swallows the press, its drag, and its release instead of reporting them. Cmd+hover underlines the link and shows the pointer cursor in the same situation, while the motion itself is still reported. Every other mouse event is reported to the app as before.
+- **Context:** Full-screen agent TUIs (Claude Code's fullscreen mode, Codex) enable SGR any-event mouse tracking for their whole lifetime. SGR mouse reports have no bit for Cmd, so a forwarded Cmd+click reaches the app as a plain click. Codex opens links on a plain click itself, but Claude Code opens them only when the report carries an Alt/Ctrl bit or when it recognizes the terminal as Ghostty or Warp, so its links did nothing in Architect.
+- **Alternatives considered:**
+  - *Report Cmd as the Alt (Meta) bit* -- rejected because apps give Alt+click its own meaning (Claude Code uses it during selection).
+  - *Identify as Ghostty through `TERM_PROGRAM` or XTVERSION* -- rejected because it misreports the terminal to every app; Architect answers XTVERSION as `Architect <version>`.
+- **Consequences:** Link opening no longer depends on each app's terminal allow-list, and the gesture behaves the same with and without mouse tracking. Apps never see a Cmd+click on a link. Text URLs that an app hard-wraps with cursor positioning (rather than the terminal's soft wrap) are only matched within the row that was clicked.
+- **Date:** 2026-10

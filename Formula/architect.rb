@@ -21,9 +21,10 @@ class Architect < Formula
     # shipped with recent macOS toolchains. Source the helper in the same
     # shell as the build so its SDK selection reaches every compiler step.
     system "sh", "-c",
-           '. "$1" && exec zig build -Doptimize=ReleaseFast',
+           '. "$1" && exec zig build -Doptimize=ReleaseFast -Dversion="$2"',
            "architect-homebrew-build",
-           (buildpath/"scripts/setup-macos-sdk-workaround.sh").to_s
+           (buildpath/"scripts/setup-macos-sdk-workaround.sh").to_s,
+           version.to_s
 
     app_name = "Architect"
     app_path = prefix/"#{app_name}.app"
