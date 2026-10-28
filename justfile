@@ -50,6 +50,7 @@ lint:
     fi
 
     ./scripts/check-test-registry.sh
+    ./scripts/check-unchecked-utf8.sh
 
     zig fmt --check src/
 

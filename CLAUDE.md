@@ -254,6 +254,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 ## Rendering & Unicode Notes
 - Only read `cell.content.codepoint` when `content_tag == .codepoint`; palette-only or non-text cells should render as empty. Misreading other tags produces spurious replacement glyphs.
 - Sanitize incoming codepoints before shaping: replace surrogates or values above `0x10_FFFF` with U+FFFD to prevent `utf8CodepointSequenceLength` errors from malformed TTY/OSC output.
+- Never assume UI text is valid UTF-8: Reader content, file contents, and terminal history can hold malformed bytes. Iterate with `src/ui/utf8_text.zig` (`decodeAt`, `columnCount`, `prefixLen`) instead of `std.unicode.Utf8Iterator`, whose `catch unreachable` makes a release build spin forever on a bad byte. Wrap and truncate by codepoint columns, never by byte offsets, so a split never lands inside a character. `scripts/check-unchecked-utf8.sh` (part of `just lint`) enforces the iterator ban.
 
 ## Known Pitfalls
 - Session teardown can run twice on error paths (errdefer plus outer defer). Keep `SessionState.deinit` idempotent: destroy textures/fonts/watchers, then null pointers and reset flags; in `main.zig` only deinit sessions that were actually constructed.

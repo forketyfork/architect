@@ -15,6 +15,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const geom = @import("../geom.zig");
+const utf8_text = @import("utf8_text.zig");
 
 const log = std.log.scoped(.text_render);
 
@@ -48,9 +49,11 @@ fn isEmojiJoiner(cp: u21) bool {
 }
 
 fn containsEmoji(text: []const u8) bool {
-    var it = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
-    while (it.nextCodepoint()) |cp| {
-        if (isEmojiBase(cp)) return true;
+    var i: usize = 0;
+    while (i < text.len) {
+        const decoded = utf8_text.decodeAt(text, i);
+        if (isEmojiBase(decoded.cp)) return true;
+        i += decoded.len;
     }
     return false;
 }
@@ -67,14 +70,16 @@ const Run = struct {
 /// that point, which only happens for pathological input.
 fn splitRuns(text: []const u8, out: []Run) usize {
     var count: usize = 0;
-    var it = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    var i: usize = 0;
     var run_start: usize = 0;
     var run_emoji = false;
     var started = false;
 
-    while (true) {
-        const offset = it.i;
-        const cp = it.nextCodepoint() orelse break;
+    while (i < text.len) {
+        const offset = i;
+        const decoded = utf8_text.decodeAt(text, i);
+        i += decoded.len;
+        const cp = decoded.cp;
         // A joiner keeps whatever run it lands in, so sequences stay together.
         const is_emoji = if (isEmojiJoiner(cp)) run_emoji else isEmojiBase(cp);
 
@@ -391,6 +396,23 @@ test "splitRuns handles emoji at both ends" {
 test "splitRuns on empty text yields nothing" {
     var runs: [max_runs]Run = undefined;
     try std.testing.expectEqual(0, splitRuns("", &runs));
+}
+
+test "emoji detection advances over malformed UTF-8" {
+    // Text sliced mid-codepoint: leading continuation byte, dangling lead byte.
+    const text = "\x80\xe2\x94\x80ok 🙂\xe2";
+    try std.testing.expect(containsEmoji(text));
+    try std.testing.expect(!containsEmoji("\x80\x80\xff"));
+
+    var runs: [max_runs]Run = undefined;
+    const n = splitRuns(text, &runs);
+    try std.testing.expectEqual(3, n);
+    try std.testing.expectEqualStrings("\x80\xe2\x94\x80ok ", text[runs[0].start..runs[0].end]);
+    try std.testing.expect(!runs[0].emoji);
+    try std.testing.expectEqualStrings("🙂", text[runs[1].start..runs[1].end]);
+    try std.testing.expect(runs[1].emoji);
+    try std.testing.expectEqualStrings("\xe2", text[runs[2].start..runs[2].end]);
+    try std.testing.expect(!runs[2].emoji);
 }
 
 test "composed emoji lines stay at the text line height" {
