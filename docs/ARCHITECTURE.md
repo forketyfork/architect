@@ -721,5 +721,5 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 - **Alternatives considered:**
   - *Report Cmd as the Alt (Meta) bit* -- rejected because apps give Alt+click its own meaning (Claude Code uses it during selection).
   - *Identify as Ghostty through `TERM_PROGRAM` or XTVERSION* -- rejected because it misreports the terminal to every app; Architect answers XTVERSION as `Architect <version>`.
-- **Consequences:** Link opening no longer depends on each app's terminal allow-list, and the gesture behaves the same with and without mouse tracking. Apps never see a Cmd+click on a link. Text URLs that an app hard-wraps with cursor positioning (rather than the terminal's soft wrap) are only matched within the row that was clicked.
+- **Consequences:** Link opening no longer depends on each app's terminal allow-list, and the gesture behaves the same with and without mouse tracking. Apps never see a Cmd+click on a link, and because the claim belongs to the click rather than to a session, switching sessions or view modes mid-click cannot hand its release to another app. Text URLs that an app hard-wraps with cursor positioning (rather than the terminal's soft wrap) are only matched within the row that was clicked.
 - **Date:** 2026-10
