@@ -3347,11 +3347,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             },
         };
 
+        var animation_settled = false;
         if (anim_state.mode == .Expanding or anim_state.mode == .Collapsing or
             anim_state.mode == .PanningLeft or anim_state.mode == .PanningRight or
             anim_state.mode == .PanningUp or anim_state.mode == .PanningDown)
         {
             if (anim_state.isComplete(now)) {
+                animation_settled = true;
                 const previous_mode = anim_state.mode;
                 const next_mode = switch (anim_state.mode) {
                     .Expanding, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => .Full,
@@ -3369,6 +3371,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         // Handle grid resize animation completion
         if (anim_state.mode == .GridResizing) {
             if (grid.updateResize(now)) {
+                animation_settled = true;
                 anim_state.mode = .Grid;
                 // Mark all sessions dirty to refresh render cache
                 for (sessions) |session| {
@@ -3435,6 +3438,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             .demand = .{
                 .first_frame = first_frame,
                 .animating = animating,
+                .animation_settled = animation_settled,
                 .ui_wants_frame = ui_needs_frame,
                 .processed_event = processed_event,
                 .had_notifications = had_notifications,

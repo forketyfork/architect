@@ -22,6 +22,10 @@ pub const idle_wait_floor_ns: i128 = 1_000_000;
 pub const Demand = struct {
     first_frame: bool = false,
     animating: bool = false,
+    /// A view animation reached its end state this iteration. The mode no
+    /// longer counts as animating, but the screen still shows the last
+    /// in-between frame, so the end state needs one frame of its own.
+    animation_settled: bool = false,
     ui_wants_frame: bool = false,
     processed_event: bool = false,
     had_notifications: bool = false,
@@ -29,7 +33,7 @@ pub const Demand = struct {
     session_output_dirty: bool = false,
 
     fn interactive(self: Demand) bool {
-        return self.first_frame or self.animating or self.ui_wants_frame or
+        return self.first_frame or self.animating or self.animation_settled or self.ui_wants_frame or
             self.processed_event or self.had_notifications or self.had_control_requests;
     }
 
@@ -226,6 +230,15 @@ test "interactive demand renders now and keeps active pacing" {
 test "animation alone renders and never defers" {
     var in = base(1005 * ms);
     in.demand.animating = true;
+    in.last_present_ns = 1000 * ms;
+    const s = schedule(in);
+    try std.testing.expect(s.render);
+    try std.testing.expect(!s.output_deferred);
+}
+
+test "a settled animation renders its end state right after the last animated frame" {
+    var in = base(1005 * ms);
+    in.demand.animation_settled = true;
     in.last_present_ns = 1000 * ms;
     const s = schedule(in);
     try std.testing.expect(s.render);
