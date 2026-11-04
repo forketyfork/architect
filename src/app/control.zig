@@ -21,7 +21,12 @@ const log = std.log.scoped(.control);
 pub const max_message_bytes: usize = 512 * 1024;
 pub const max_text_bytes: usize = 256 * 1024;
 const max_cwd_bytes: usize = 4096;
-const max_command_bytes: usize = 16 * 1024;
+/// The command is typed into the new shell, often before its line editor has
+/// put the terminal in raw mode. In canonical mode the kernel keeps at most
+/// MAX_CANON (1024 on macOS) bytes per line and drops the rest, newline
+/// included, so a longer command can silently never run. Leave room for the
+/// newline Architect appends.
+pub const max_command_bytes: usize = 1023;
 const max_display_name_bytes: usize = 512;
 pub const default_wait_timeout_ms: u32 = 30_000;
 pub const max_wait_timeout_ms: u32 = 600_000;
@@ -280,7 +285,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.InvalidArguments => "arguments must be an object",
         error.MissingCwd => "cwd is required",
         error.InvalidCwd => "cwd must be a non-empty string",
-        error.InvalidCommand => "command must be a non-empty string when provided",
+        error.InvalidCommand => "command must be a non-empty string of at most 1023 bytes when provided; put longer commands in a script",
         error.InvalidDisplayName => "display_name must be a non-empty string when provided",
         error.MissingSessionId => "session_id is required",
         error.InvalidSessionId => "session_id must be a non-negative integer",
@@ -1418,6 +1423,23 @@ test "parseRequest rejects invalid shapes with specific errors" {
             };
         }
     }
+}
+
+test "spawn_session accepts commands up to the terminal line limit and rejects longer ones" {
+    const allocator = std.testing.allocator;
+    const command = try allocator.alloc(u8, max_command_bytes + 1);
+    defer allocator.free(command);
+    @memset(command, 'x');
+
+    const fits = try std.fmt.allocPrint(allocator, "{{\"op\":\"spawn_session\",\"arguments\":{{\"cwd\":\"/tmp\",\"command\":\"{s}\"}}}}", .{command[0..max_command_bytes]});
+    defer allocator.free(fits);
+    var accepted = try parseRequestText(allocator, fits);
+    defer accepted.deinit(allocator);
+    try std.testing.expectEqual(max_command_bytes, accepted.spawn_session.command.?.len);
+
+    const too_long = try std.fmt.allocPrint(allocator, "{{\"op\":\"spawn_session\",\"arguments\":{{\"cwd\":\"/tmp\",\"command\":\"{s}\"}}}}", .{command});
+    defer allocator.free(too_long);
+    try std.testing.expectError(error.InvalidCommand, parseRequestText(allocator, too_long));
 }
 
 test "send_input rejects text above the size limit" {

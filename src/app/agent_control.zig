@@ -275,6 +275,40 @@ test "sendInput with require_idle refuses a working agent and writes nothing" {
     try std.testing.expectEqual(@as(usize, 0), test_session.session.pending_write.items.len);
 }
 
+test "a second require_idle send right after a delivery is refused without any hook event" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var test_session: TestSession = undefined;
+    try test_session.init(8, true);
+    defer test_session.deinit();
+    const sessions = [_]*SessionState{&test_session.session};
+
+    var board = agent_state.Board{};
+    defer board.deinit(allocator);
+    try board.track(allocator, io, 8);
+    board.applyHook(io, 8, .ready);
+
+    var first = control.Completion{};
+    try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .session_id = 8,
+        .text = "first",
+        .require_idle = true,
+    }, &first) != null);
+    const first_reply = first.wait(io);
+    defer allocator.free(first_reply.success);
+
+    var second = control.Completion{};
+    try std.testing.expectEqual(@as(?usize, null), sendInput(allocator, io, &sessions, &board, .{
+        .session_id = 8,
+        .text = "second",
+        .require_idle = true,
+    }, &second));
+    try expectFailure(&second, .session_busy);
+
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("\x1b[200~first\x1b[201~\r", try test_session.readWritten(&buf));
+}
+
 test "sendInput reports missing, exited, and not-ready sessions" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

@@ -285,7 +285,7 @@ const tools = [_]Tool{
         .input_schema = oneLine(
             \\{"type":"object","additionalProperties":false,"required":["cwd"],"properties":{
             \\"cwd":{"type":"string","description":"Absolute working directory for the new Architect terminal session."},
-            \\"command":{"type":"string","description":"Optional command text queued into the new shell. Architect appends a newline when needed."},
+            \\"command":{"type":"string","maxLength":1023,"description":"Optional command text typed into the new shell; Architect appends a newline. At most 1023 bytes, the terminal line limit; put longer commands in a script."},
             \\"display_name":{"type":"string","description":"Optional display label reserved for clients and future Architect UI."}}}
         ),
         .output_schema = oneLine(

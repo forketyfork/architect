@@ -51,7 +51,7 @@ Each session has an `agent_state` and a `state_seq`. `state_seq` comes from one 
 | Argument | Type | Notes |
 | --- | --- | --- |
 | `cwd` | string, required | Absolute existing directory |
-| `command` | string | Typed into the new shell; Architect appends a newline when needed |
+| `command` | string, at most 1023 bytes | Typed into the new shell; Architect appends a newline when needed. The shell may still be in canonical mode when the text arrives, and macOS keeps only 1024 bytes per line there, so longer commands are rejected: put them in a script and spawn `exec /path/to/script` |
 | `display_name` | string | Reserved for clients and future Architect UI |
 
 Result: `status: "spawned"`, `session_id`, `slot_index`. `session_id` is also exported to the shell as `ARCHITECT_SESSION_ID`, and ids are never reused while the app runs.
@@ -218,6 +218,8 @@ The installer writes timestamped backups before updating configs (for example:
    ```toml
    notify = ["architect", "notify"]
    ```
+
+Codex reports finished turns only through this `notify` program, so `wait_for_session` needs it to run `architect notify` directly. A wrapper that relays to the previous `notify` program (for example the Codex Computer Use client with `--previous-notify`) did not deliver turn-complete notifications in testing.
 
 If you already have `notify` configured, `architect hook codex` overwrites it,
 prints a warning, and prints the backup file name.

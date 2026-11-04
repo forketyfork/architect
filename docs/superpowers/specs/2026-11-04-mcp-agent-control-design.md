@@ -94,6 +94,14 @@ never overrides a later state.
 Without hooks a session stays `unknown`/`working` forever; the tools still
 work, but waiting for `idle` times out.
 
+The real-agent run also exposed a `spawn_session` limit: Architect types the
+`command` into the new shell, often while the terminal is still in canonical
+mode, where macOS keeps at most 1024 bytes per line. A 1195-byte command was
+lost (nothing ran, the shell sat at its prompt) while a 1495-byte one happened
+to arrive after zsh switched to raw mode. `command` is now limited to 1023
+bytes with an explicit error; long environments and arguments go into a script
+that the command `exec`s.
+
 Building this exposed a race in the notification listener: it read right
 after `accept` and dropped the connection when the hook client had not written
 yet. The hook clients ignore send errors, so a `done` could vanish silently and
@@ -121,8 +129,35 @@ until its timeout. Two options were considered:
 For an agent without a `SessionStart` hook wired up yet, the agent-agnostic
 path is to skip the first delivery entirely: put the first message on the
 command line of `spawn_session` (for example `exec codex "$(cat msg.txt)"`
-with the message in a file, which avoids shell quoting and the 16 KiB `command`
-limit) and wait for `idle` from its first `done`.
+with the message in a file, which avoids shell quoting and the 1023-byte
+`command` limit) and wait for `idle` from its first `done`.
+
+### Verification with real agents
+
+Both CLIs were driven through `architect-mcp` against a separate Architect
+instance:
+
+- Claude Code 2.1.318, started with `exec <script>` running
+  `claude --session-id <uuid>` with the `SessionStart` and `UserPromptSubmit`
+  hooks: `ready` after about 1 s, then two `send_input(require_idle)` turns,
+  each ending in `idle` from `Stop` within 1–4 s. The transcript holds both
+  prompts verbatim and the expected replies.
+- Codex 0.166.0, started with its first message on the command line and
+  `notify = ["architect", "notify"]`: `idle` from the first
+  `agent-turn-complete` after about 5 s, then one `send_input(require_idle)`
+  turn. A second `require_idle` send right after the delivery returned
+  `session_busy` with no hook involved. The rollout holds both prompts and
+  replies.
+
+Observed differences from the fake agent:
+
+- Claude's `Stop` hook can fire before the last assistant line is flushed to
+  the transcript JSONL, so a transcript reader must tolerate a short delay
+  after `idle`.
+- Codex only reports turns to Architect when `notify` runs `architect notify`
+  itself. With a `notify` wrapper that relays to a previous program (the
+  Codex Computer Use client's `--previous-notify`), no `done` arrived, so the
+  session never became `idle`.
 
 ### Where the wait lives
 
@@ -246,10 +281,13 @@ looks for an agent job under the shell, so `list_sessions` reports
   re-spawning with `--resume`.
 - **Codex and Gemini lifecycle hooks.** Codex 0.166 ships a hooks system
   (`codex features list` shows `hooks` as stable and enabled; the binary
-  contains `hooks.json` and the `SessionStart`, `UserPromptSubmit`, and `Stop`
-  events), and Gemini CLI has `SessionStart`. `architect hook codex` still
-  installs only the legacy `notify` program, and `architect hook gemini` only
-  `AfterAgent`/`Notification`. Adding `ready` and `start` there needs each
-  CLI's hook file format confirmed against its documentation; until then a
-  fresh Codex or Gemini session starts with its first message on the command
-  line (see "First delivery after spawn").
+  contains the `SessionStart`, `UserPromptSubmit`, and `Stop` events). Hooks
+  live in `config.toml` as `[[hooks.<Event>]]` tables, and Codex records a
+  trusted hash for each one under `[hooks.state]`, so an installer cannot add
+  a working hook silently; the user has to trust it in Codex. Gemini CLI has
+  `SessionStart` as well. `architect hook codex` still installs only the
+  `notify` program, and `architect hook gemini` only
+  `AfterAgent`/`Notification`. Until `ready` is wired up there, a fresh Codex
+  or Gemini session starts with its first message on the command line (see
+  "First delivery after spawn"). Delivery itself does not need these hooks:
+  `send_input` marks the agent `working`.
