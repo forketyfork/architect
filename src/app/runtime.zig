@@ -943,7 +943,14 @@ fn handleControlRequest(
         .list_sessions => agent_control.listSessions(allocator, io, context.sessions, context.agent_board, pending.completion),
         .send_input => |send| {
             if (agent_control.sendInput(allocator, io, context.sessions, context.agent_board, send, pending.completion)) |slot| {
-                context.session_interaction_component.resetScrollIfNeeded(slot);
+                const interaction = context.session_interaction_component;
+                interaction.resetScrollIfNeeded(slot);
+                // A submitted delivery starts a turn, like a `start` hook; agents
+                // without that hook would otherwise keep the previous `done` look.
+                if (send.submit) {
+                    interaction.setStatus(slot, .running);
+                    interaction.setAttention(slot, false, context.now);
+                }
             }
         },
         .terminate_session => {
@@ -2988,14 +2995,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             .agent_board = &agent_board,
         };
 
-        var control_requests = control_queue.drainAll(io);
-        defer control_requests.deinit(allocator);
-        const had_control_requests = control_requests.items.len > 0;
-        var control_terminations: std.ArrayList(control.PendingRequest) = .empty;
-        defer failControlRequests(allocator, io, &control_terminations);
-        for (control_requests.items) |*request| {
-            handleControlRequest(&spawn_context, request, &control_terminations);
-        }
+        // Track sessions spawned or restored since the last frame before their
+        // first hook arrives, so `applyHook` does not drop it.
+        agent_control.reconcileBoard(allocator, io, &agent_board, sessions, &agent_board_scratch);
 
         var notifications = notify_queue.drainAll(io);
         defer notifications.deinit(allocator);
@@ -3021,6 +3023,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
                     allocator.free(s.path);
                 },
             }
+        }
+
+        // Control requests run after this frame's hook notifications, so a
+        // `require_idle` check sees every signal that arrived before it.
+        var control_requests = control_queue.drainAll(io);
+        defer control_requests.deinit(allocator);
+        const had_control_requests = control_requests.items.len > 0;
+        var control_terminations: std.ArrayList(control.PendingRequest) = .empty;
+        defer failControlRequests(allocator, io, &control_terminations);
+        for (control_requests.items) |*request| {
+            handleControlRequest(&spawn_context, request, &control_terminations);
         }
 
         drainPendingSessionSends(allocator, &pending_sends, sessions, now, &ui);

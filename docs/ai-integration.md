@@ -44,7 +44,7 @@ Each session has an `agent_state` and a `state_seq`. `state_seq` comes from one 
 | `idle` | A hook reported `done` (the turn is over), or `ready` while the state was `unknown` (the agent started and waits for its first prompt) |
 | `exited` | The shell process died or the session was closed |
 
-`send_input` itself moves the state to `working` for every agent. The other transitions come from the hooks below (`architect hook claude|codex|gemini`); without them a session never becomes `idle`. For Claude Code the installer adds `SessionStart` → `ready`, `UserPromptSubmit` → `start`, `Stop` → `done`, and `Notification` → `awaiting_approval`; run `architect hook claude` again to add the first two to an existing setup. `ready` only matters while the state is `unknown`, because `SessionStart` also fires on `/clear` and compaction. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. The Codex and Gemini installers do not add `ready` or `start` yet, so a fresh Codex or Gemini session stays `unknown` until its first `done`: start it with its first message on the command line instead of delivering it with `send_input`.
+A submitted `send_input` itself moves the state to `working` for every agent (and shows the tile as running, as a `start` hook does). The other transitions come from the hooks below (`architect hook claude|codex|gemini`); without them a session never becomes `idle`. For Claude Code the installer adds `SessionStart` → `ready`, `UserPromptSubmit` → `start`, `Stop` → `done`, and `Notification` → `awaiting_approval`; run `architect hook claude` again to add the first two to an existing setup. `ready` only matters while the state is `unknown`, because `SessionStart` also fires on `/clear` and compaction. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. The Codex and Gemini installers do not add `ready` or `start` yet, so a fresh Codex or Gemini session stays `unknown` until its first `done`: start it with its first message on the command line instead of delivering it with `send_input`.
 
 ### `spawn_session`
 
@@ -71,7 +71,7 @@ No arguments. Result: `status: "ok"` and `sessions`, each with `session_id`, `sl
 | `submit` | boolean, default `true` | Press Enter after the text |
 | `require_idle` | boolean, default `false` | Deliver only when `agent_state` is `idle` |
 
-The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state the delivery recorded), and `bracketed_paste`.
+The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. With `submit: false` the text is typed as a draft and the state does not change. Without bracketed paste only one line of at most 1023 bytes is accepted, because the program may still be in canonical mode, where macOS keeps 1024 bytes per line. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state a submitted delivery recorded, or the unchanged state for a draft), and `bracketed_paste`.
 
 ### `wait_for_session`
 
@@ -112,7 +112,7 @@ On `session_busy`, wait for `idle` again and retry. `awaiting_approval` means th
 - `session_not_found`: no session has this id
 - `session_exited`: the session's process exited or the session was closed
 - `session_busy`: `require_idle` was set and the agent is not `idle`
-- `input_not_ready`: the terminal cannot take the input yet, for example multi-line text before the program enabled bracketed paste
+- `input_not_ready`: the terminal cannot take the input yet, for example multi-line or over-long text before the program enabled bracketed paste
 - `input_failed`: writing to the terminal failed
 - `too_many_waiters`: more than 64 `wait_for_session` calls are pending
 - `internal_error`: Architect failed while handling the request

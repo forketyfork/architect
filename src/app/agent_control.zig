@@ -117,7 +117,7 @@ pub fn sendInput(
             error.BracketedPasteUnavailable => completion.fail(
                 io,
                 .input_not_ready,
-                "the terminal has not enabled bracketed paste, so multi-line text would be submitted line by line",
+                "the terminal has not enabled bracketed paste, so only a single line of at most 1023 bytes can be delivered safely",
             ),
             error.NoShell, error.NoTerminal => completion.fail(io, .input_not_ready, "the terminal is not ready for input"),
             error.OutOfMemory => completion.fail(io, .internal_error, "out of memory while encoding the input"),
@@ -132,10 +132,12 @@ pub fn sendInput(
         return null;
     };
 
-    const seq = board.markDelivered(io, session.id) orelse {
+    // Only a submitted delivery starts a turn. An unsubmitted draft produces no
+    // completion hook, so marking it working would leave the agent busy forever.
+    const seq = if (request.submit) board.markDelivered(io, session.id) orelse {
         completion.fail(io, .internal_error, "the session's agent state disappeared during delivery");
         return null;
-    };
+    } else record.seq;
     completion.succeed(allocator, io, control.SendResult, .{
         .session_id = session.id,
         .state_seq = seq,
@@ -307,6 +309,47 @@ test "a second require_idle send right after a delivery is refused without any h
 
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings("\x1b[200~first\x1b[201~\r", try test_session.readWritten(&buf));
+}
+
+test "sendInput without submit leaves the agent idle so the next delivery is accepted" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var test_session: TestSession = undefined;
+    try test_session.init(9, true);
+    defer test_session.deinit();
+    const sessions = [_]*SessionState{&test_session.session};
+
+    var board = agent_state.Board{};
+    defer board.deinit(allocator);
+    try board.track(allocator, io, 9);
+    board.applyHook(io, 9, .done);
+    const idle = board.get(io, 9) orelse return error.TestUnexpectedResult;
+
+    var draft = control.Completion{};
+    try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .session_id = 9,
+        .text = "draft",
+        .submit = false,
+        .require_idle = true,
+    }, &draft) != null);
+    const draft_reply = draft.wait(io);
+    defer allocator.free(draft_reply.success);
+    try std.testing.expectEqual(idle, board.get(io, 9) orelse return error.TestUnexpectedResult);
+
+    var submitted = control.Completion{};
+    try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .session_id = 9,
+        .text = " done",
+        .require_idle = true,
+    }, &submitted) != null);
+    const submitted_reply = submitted.wait(io);
+    defer allocator.free(submitted_reply.success);
+
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\x1b[200~draft\x1b[201~\x1b[200~ done\x1b[201~\r",
+        try test_session.readWritten(&buf),
+    );
 }
 
 test "sendInput reports missing, exited, and not-ready sessions" {

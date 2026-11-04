@@ -169,6 +169,17 @@ earliest deadline as the poll timeout, and answers each wait when the board
 satisfies it, the deadline passes, or the client disconnects. A parked wait
 costs the main loop nothing: no wakeups, no frames, no polling.
 
+A client may half-close its socket after sending the request and keep reading.
+On macOS that looks exactly like a full disconnect (`POLLIN|POLLHUP`, then
+EOF), so EOF keeps the wait parked and removes its fd from the poll set; a
+client that is really gone surfaces when the reply write fails. Data after the
+request line drops the wait.
+
+Within a frame the main loop reconciles session liveness, then applies the
+queued hook notifications, then runs control requests. A `require_idle`
+delivery therefore sees every signal that arrived before it, and a session
+spawned or restored since the last frame is tracked before its first hook.
+
 `list_sessions`, `send_input`, and `terminate_session` touch terminals, so they
 use the existing pattern: the listener queues the request, posts an SDL wake
 event, and blocks until the main loop completes it within the same frame.
@@ -198,9 +209,12 @@ Semantics:
   encoder strips control characters that could end a bracketed paste early),
   then appends Enter when `submit` is true. With `require_idle`, the state check
   and the write happen atomically on the main thread, so two orchestrators
-  cannot both deliver into the same idle turn. If the terminal has not enabled
-  bracketed paste, multi-line text is rejected with `input_not_ready` because
-  each newline would submit a separate line.
+  cannot both deliver into the same idle turn. Only a submitted delivery moves
+  the agent to `working`; an unsubmitted draft starts no turn and produces no
+  completion hook, so it keeps the current state and `state_seq`. If the
+  terminal has not enabled bracketed paste, the program may still be in
+  canonical mode, so only one line of at most 1023 bytes is accepted;
+  multi-line or longer text is rejected with `input_not_ready`.
 - `wait_for_session` matches when the session's state is in `until` and its
   `state_seq` is greater than `after_seq` (default: any). `timeout_ms: 0`
   returns the current state immediately. An `exited` session ends every wait:

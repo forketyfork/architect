@@ -738,7 +738,33 @@ const ParkedWait = struct {
     session_id: usize,
     condition: agent_state.WaitCondition,
     deadline_ms: i64,
+    /// The client closed its sending side. On macOS a half-closed and a fully
+    /// closed peer look identical (POLLIN|POLLHUP, then EOF), so the wait stays
+    /// parked and a client that is really gone shows up as a failed reply write.
+    request_side_closed: bool = false,
 };
+
+const ParkedEvent = enum { keep, drop };
+
+/// Reads from a parked connection that `poll` reported. A parked client has
+/// already sent its request, so EOF means it half-closed, and any data is a
+/// protocol violation.
+fn checkParkedConnection(wait: *ParkedWait) ParkedEvent {
+    var byte: [1]u8 = undefined;
+    const n = posix.read(wait.fd, &byte) catch |err| switch (err) {
+        error.WouldBlock => return .keep,
+        else => {
+            log.debug("dropping wait for session {d}: read failed: {}", .{ wait.session_id, err });
+            return .drop;
+        },
+    };
+    if (n == 0) {
+        wait.request_side_closed = true;
+        return .keep;
+    }
+    log.debug("dropping wait for session {d}: client sent data after its request", .{wait.session_id});
+    return .drop;
+}
 
 const ParkedWaits = struct {
     items: [max_parked_waits]ParkedWait = undefined,
@@ -784,30 +810,42 @@ fn controlThreadMain(ctx: ControlContext) !void {
     };
 
     var fds: [2 + max_parked_waits]posix.pollfd = undefined;
+    // Parked index for each polled connection. Connections whose request side
+    // is closed are not polled: they stay readable at EOF, and Linux reports
+    // POLLHUP even with no events requested, so polling them would spin.
+    var polled_waits: [max_parked_waits]usize = undefined;
     while (!ctx.stop.load(.seq_cst)) {
         fds[0] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
         fds[1] = ctx.wake.pollfd();
-        const parked_count = parked.len;
+        var polled_count: usize = 0;
         for (parked.slice(), 0..) |wait, idx| {
-            fds[2 + idx] = .{ .fd = wait.fd, .events = posix.POLL.IN, .revents = 0 };
+            if (wait.request_side_closed) continue;
+            fds[2 + polled_count] = .{ .fd = wait.fd, .events = posix.POLL.IN, .revents = 0 };
+            polled_waits[polled_count] = idx;
+            polled_count += 1;
         }
 
         const timeout = pollTimeoutMs(parked.slice(), clock.nowMillis(ctx.io));
-        _ = posix.poll(fds[0 .. 2 + parked_count], timeout) catch |err| {
+        _ = posix.poll(fds[0 .. 2 + polled_count], timeout) catch |err| {
             log.warn("control poll failed: {}", .{err});
             clock.sleepNanos(ctx.io, wake_pipe.poll_error_backoff_ns);
             continue;
         };
         if (fds[1].revents != 0) ctx.wake.drain();
 
-        // A parked client never sends more data, so readability means it hung up.
-        var idx = parked_count;
-        while (idx > 0) {
-            idx -= 1;
-            if (fds[2 + idx].revents == 0) continue;
-            log.debug("dropping wait for session {d}: client disconnected", .{parked.items[idx].session_id});
-            _ = std.c.close(parked.items[idx].fd);
-            parked.swapRemove(idx);
+        // Walk backwards so swapRemove only moves entries already visited.
+        var slot = polled_count;
+        while (slot > 0) {
+            slot -= 1;
+            if (fds[2 + slot].revents == 0) continue;
+            const idx = polled_waits[slot];
+            switch (checkParkedConnection(&parked.items[idx])) {
+                .keep => {},
+                .drop => {
+                    _ = std.c.close(parked.items[idx].fd);
+                    parked.swapRemove(idx);
+                },
+            }
         }
 
         resolveParkedWaits(&ctx, &parked, clock.nowMillis(ctx.io));
@@ -1665,6 +1703,53 @@ test "wait_for_session parks on the listener and resolves when the board changes
     defer allocator.free(reply);
     try expectWaitReply(reply, "matched", "idle");
     try std.testing.expect(elapsed_ns < 2 * std.time.ns_per_s);
+}
+
+test "a parked wait survives a client that half-closes after sending its request" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var server = TestServer{ .allocator = allocator, .wake = try wake_pipe.WakePipe.init() };
+    defer server.deinit();
+    try server.start("halfclose");
+    try server.board.track(allocator, io, 6);
+
+    const HalfCloseClient = struct {
+        sock_path: []const u8,
+        reply: ?[]u8 = null,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.reply = self.roundTrip() catch |err| {
+                self.err = err;
+                return;
+            };
+        }
+
+        fn roundTrip(self: *@This()) ![]u8 {
+            const fd = try connectControlSocket(std.testing.io, self.sock_path);
+            defer _ = std.c.close(fd);
+            try writeAllWithTimeout(
+                std.testing.io,
+                fd,
+                "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":6,\"until\":[\"idle\"],\"timeout_ms\":10000}}\n",
+                control_response_write_timeout_ms,
+            );
+            if (std.c.shutdown(fd, std.c.SHUT.WR) != 0) return error.ShutdownFailed;
+            return try readLineFromFd(std.testing.allocator, std.testing.io, fd, max_message_bytes);
+        }
+    };
+
+    var client = HalfCloseClient{ .sock_path = server.sock_path };
+    const client_thread = try std.Thread.spawn(.{}, HalfCloseClient.run, .{&client});
+    // Let the listener park the wait and observe the request-side EOF.
+    clock.sleepNanos(io, 150 * std.time.ns_per_ms);
+    server.board.applyHook(io, 6, .done);
+    client_thread.join();
+
+    if (client.err) |err| return err;
+    const reply = client.reply orelse return error.TestUnexpectedResult;
+    defer allocator.free(reply);
+    try expectWaitReply(reply, "matched", "idle");
 }
 
 test "wait_for_session reports timeouts, exits, and unknown sessions" {

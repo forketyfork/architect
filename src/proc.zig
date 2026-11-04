@@ -29,6 +29,8 @@ pub const RunResult = struct {
 pub const RunOptions = struct {
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
+    /// Replaces the child's environment when set.
+    environ_map: ?*const std.process.Environ.Map = null,
     max_output_bytes: usize = 4 * 1024 * 1024,
 };
 
@@ -46,6 +48,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: RunOptions) !RunRe
     const result = try std.process.run(allocator, io, .{
         .argv = options.argv,
         .cwd = if (options.cwd) |c| .{ .path = c } else .inherit,
+        .environ_map = options.environ_map,
         .stdout_limit = .limited(options.max_output_bytes),
         .stderr_limit = .limited(options.max_output_bytes),
     });
