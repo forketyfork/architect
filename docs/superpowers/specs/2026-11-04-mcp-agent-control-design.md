@@ -284,7 +284,17 @@ looks for an agent job under the shell, so `list_sessions` reports
   contains the `SessionStart`, `UserPromptSubmit`, and `Stop` events). Hooks
   live in `config.toml` as `[[hooks.<Event>]]` tables, and Codex records a
   trusted hash for each one under `[hooks.state]`, so an installer cannot add
-  a working hook silently; the user has to trust it in Codex. Gemini CLI has
+  a working hook silently; the user has to trust it in Codex.
+  Tried with Codex 0.166.0: `SessionStart` (`architect notify ready`),
+  `UserPromptSubmit`, and `Stop` hooks supplied through `-c hooks.<Event>=…`
+  without review produced no `ready` within 45 s while the TUI was running.
+  The binary's messages ("hooks need review before they can run", "New hook -
+  review required") indicate that Codex skips hooks nobody reviewed. Its
+  `--dangerously-bypass-hook-trust` flag would run them for one invocation,
+  but bypassing a safety review is not something Architect or an orchestrator
+  should do on the user's behalf. Whether `SessionStart` fires before the
+  first prompt therefore stays unverified until a user trusts the hooks with
+  Codex's `/hooks` command. Gemini CLI has
   `SessionStart` as well. `architect hook codex` still installs only the
   `notify` program, and `architect hook gemini` only
   `AfterAgent`/`Notification`. Until `ready` is wired up there, a fresh Codex
