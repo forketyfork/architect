@@ -66,8 +66,10 @@ const architect_command_script =
     \\except ImportError:
     \\    tomllib = None
     \\
-    \\VALID_STATES = {"start", "awaiting_approval", "done"}
+    \\VALID_STATES = {"ready", "start", "awaiting_approval", "done"}
     \\
+    \\CLAUDE_READY = "architect notify ready || true"
+    \\CLAUDE_START = "architect notify start || true"
     \\CLAUDE_DONE = "architect notify done || true"
     \\CLAUDE_APPROVAL = "architect notify awaiting_approval || true"
     \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
@@ -298,19 +300,18 @@ const architect_command_script =
     \\    if not isinstance(hooks, dict):
     \\        hooks = {}
     \\        data["hooks"] = hooks
-    \\    stop_groups = hooks.setdefault("Stop", [])
-    \\    notification_groups = hooks.setdefault("Notification", [])
     \\    changed = False
-    \\
-    \\    if not hooks_have_needles(stop_groups, CLAUDE_NEEDLES):
-    \\        group = ensure_group(stop_groups)
-    \\        group["hooks"].append({"type": "command", "command": CLAUDE_DONE})
-    \\        changed = True
-    \\
-    \\    if not hooks_have_needles(notification_groups, CLAUDE_NEEDLES):
-    \\        group = ensure_group(notification_groups)
-    \\        group["hooks"].append({"type": "command", "command": CLAUDE_APPROVAL})
-    \\        changed = True
+    \\    for event, command in (
+    \\        ("SessionStart", CLAUDE_READY),
+    \\        ("UserPromptSubmit", CLAUDE_START),
+    \\        ("Stop", CLAUDE_DONE),
+    \\        ("Notification", CLAUDE_APPROVAL),
+    \\    ):
+    \\        groups = hooks.setdefault(event, [])
+    \\        if not hooks_have_needles(groups, CLAUDE_NEEDLES):
+    \\            group = ensure_group(groups)
+    \\            group["hooks"].append({"type": "command", "command": command})
+    \\            changed = True
     \\
     \\    return changed
     \\

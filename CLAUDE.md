@@ -271,7 +271,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
-- Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}`. The helper `scripts/architect_notify.py` is available if needed.
+- Send a single JSON line to signal UI states: `{"session":N,"state":"ready"|"start"|"awaiting_approval"|"done"}` (`ready` = the agent started; it only affects the MCP agent state while that state is `unknown`). The helper `scripts/architect_notify.py` is available if needed.
 - Story notifications use the same socket: `{"session":N,"type":"story","path":"/absolute/path/to/story.md"}`. The `architect story <file>` subcommand sends this automatically.
 
 ## Done? Share

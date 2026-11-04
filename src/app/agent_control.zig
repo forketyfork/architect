@@ -18,7 +18,7 @@ pub fn hookSignal(status: app_state.SessionStatus) ?agent_state.HookSignal {
         .running => .start,
         .awaiting_approval => .awaiting_approval,
         .done => .done,
-        .idle => null,
+        .idle => .ready,
     };
 }
 
@@ -331,5 +331,5 @@ test "hookSignal maps notification states to agent hook signals" {
     try std.testing.expectEqual(agent_state.HookSignal.start, hookSignal(.running).?);
     try std.testing.expectEqual(agent_state.HookSignal.awaiting_approval, hookSignal(.awaiting_approval).?);
     try std.testing.expectEqual(agent_state.HookSignal.done, hookSignal(.done).?);
-    try std.testing.expectEqual(@as(?agent_state.HookSignal, null), hookSignal(.idle));
+    try std.testing.expectEqual(agent_state.HookSignal.ready, hookSignal(.idle).?);
 }

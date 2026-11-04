@@ -15,6 +15,7 @@ Examples:
 {"session": 0, "state": "start"}
 {"session": 0, "state": "awaiting_approval"}
 {"session": 0, "state": "done"}
+{"session": 0, "state": "ready"}
 ```
 
 ## MCP tools
@@ -40,10 +41,10 @@ Each session has an `agent_state` and a `state_seq`. `state_seq` comes from one 
 | `unknown` | No agent signal since the session started |
 | `working` | `send_input` delivered text, or a hook reported `start` |
 | `awaiting_approval` | A hook reported that the agent waits for a human (for example a permission prompt) |
-| `idle` | A hook reported `done`: the turn is over |
+| `idle` | A hook reported `done` (the turn is over), or `ready` while the state was `unknown` (the agent started and waits for its first prompt) |
 | `exited` | The shell process died or the session was closed |
 
-The state is driven by the hooks below (`architect hook claude|codex|gemini`). Without them a session never becomes `idle`. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. Text a human types directly into the terminal is not observed unless a hook reports `start`.
+`send_input` itself moves the state to `working` for every agent. The other transitions come from the hooks below (`architect hook claude|codex|gemini`); without them a session never becomes `idle`. For Claude Code the installer adds `SessionStart` → `ready`, `UserPromptSubmit` → `start`, `Stop` → `done`, and `Notification` → `awaiting_approval`; run `architect hook claude` again to add the first two to an existing setup. `ready` only matters while the state is `unknown`, because `SessionStart` also fires on `/clear` and compaction. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. The Codex and Gemini installers do not add `ready` or `start` yet, so a fresh Codex or Gemini session stays `unknown` until its first `done`: start it with its first message on the command line instead of delivering it with `send_input`.
 
 ### `spawn_session`
 
@@ -90,10 +91,12 @@ Result: `status` is `matched`, `exited` (the session ended and `until` does not 
 ### Driving an agent turn by turn
 
 ```text
-spawn_session(cwd, command: "exec claude --session-id <uuid> '<first message>'")
-wait_for_session(id, until: ["idle"], timeout_ms: 600000)              -> idle, seq S
-send_input(id, text: "<next message>", require_idle: true)             -> sent, seq D
+spawn_session(cwd, command: "exec claude --session-id <uuid>")
+wait_for_session(id, until: ["idle"], timeout_ms: 60000)               -> idle (ready), seq S
+send_input(id, text: "<first message>", require_idle: true)            -> sent, seq D
 wait_for_session(id, until: ["idle", "awaiting_approval"], after_seq: D) -> idle: turn over
+send_input(id, text: "<next message>", require_idle: true)             -> sent, seq E
+wait_for_session(id, until: ["idle", "awaiting_approval"], after_seq: E) -> idle: turn over
 terminate_session(id)
 ```
 
@@ -159,6 +162,26 @@ The installer writes timestamped backups before updating configs (for example:
    ```json
    {
      "hooks": {
+       "SessionStart": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "architect notify ready || true"
+             }
+           ]
+         }
+       ],
+       "UserPromptSubmit": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "architect notify start || true"
+             }
+           ]
+         }
+       ],
        "Stop": [
          {
            "hooks": [

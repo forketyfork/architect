@@ -24,6 +24,8 @@ pub const StateSet = std.EnumSet(AgentState);
 
 /// Signals delivered by agent hooks over the notification socket.
 pub const HookSignal = enum {
+    /// The agent started and waits for its first prompt (Claude's SessionStart).
+    ready,
     start,
     awaiting_approval,
     done,
@@ -58,6 +60,9 @@ pub const max_exited_records: usize = 128;
 pub fn stateAfterHook(current: AgentState, signal: HookSignal) ?AgentState {
     if (current == .exited) return null;
     return switch (signal) {
+        // SessionStart also fires on /clear and on compaction, possibly mid-turn,
+        // so it only answers "has the agent come up yet?".
+        .ready => if (current == .unknown) .idle else null,
         .start => .working,
         .done => .idle,
         // Claude Code's Notification hook also fires as an idle reminder about
@@ -248,6 +253,13 @@ test "hook signals drive the agent state" {
     try std.testing.expectEqual(AgentState.awaiting_approval, stateAfterHook(.working, .awaiting_approval).?);
     try std.testing.expectEqual(AgentState.idle, stateAfterHook(.awaiting_approval, .done).?);
     try std.testing.expectEqual(@as(?AgentState, null), stateAfterHook(.exited, .done));
+}
+
+test "ready only moves a freshly started agent to idle" {
+    try std.testing.expectEqual(AgentState.idle, stateAfterHook(.unknown, .ready).?);
+    try std.testing.expectEqual(@as(?AgentState, null), stateAfterHook(.working, .ready));
+    try std.testing.expectEqual(@as(?AgentState, null), stateAfterHook(.awaiting_approval, .ready));
+    try std.testing.expectEqual(@as(?AgentState, null), stateAfterHook(.idle, .ready));
 }
 
 test "an approval notification while idle is an idle reminder and is ignored" {

@@ -1,7 +1,7 @@
 # Design: MCP tools for driving interactive agents
 
 **Date:** 2026-11-04
-**Status:** Implemented; open questions listed at the end. Tool reference: [`docs/ai-integration.md`](../../ai-integration.md)
+**Status:** Implemented; follow-ups listed at the end. Tool reference: [`docs/ai-integration.md`](../../ai-integration.md)
 
 ## Goal
 
@@ -23,7 +23,7 @@ or any particular orchestrator.
 - Queueing or scheduling messages inside Architect. Delivery policy belongs to
   the orchestrator.
 - Persisting orchestrator labels or session identity across Architect restarts
-  (see open questions).
+  (see follow-ups).
 
 ## Delivery model
 
@@ -61,7 +61,7 @@ orchestrator                 architect-mcp            Architect app
 | `unknown` | The session spawned (or restarted) and no agent signal arrived yet |
 | `working` | `send_input` delivered text, or a hook sent `start` |
 | `awaiting_approval` | A hook sent `awaiting_approval` while the agent was not idle |
-| `idle` | A hook sent `done` |
+| `idle` | A hook sent `done`, or sent `ready` while the state was `unknown` |
 | `exited` | The shell process died, or the session was closed |
 
 Every transition gets the next value of one app-wide counter, so
@@ -76,16 +76,53 @@ received in the `idle` state leaves the state unchanged. Without this rule an
 idle agent would look blocked a minute after every turn and `require_idle`
 deliveries would fail.
 
-The state is only as good as the hooks. Without hooks a session stays
-`unknown`/`working` forever; the tools still work, but waiting for `idle` times
-out. Typing directly into a managed terminal is not observed unless a hook
-reports `start` (see open questions).
+Delivery itself never depends on a hook: `send_input` with `submit` moves the
+state to `working` and takes a new `state_seq` in the same main-thread step as
+the write, for every CLI. Hooks are needed for the other transitions:
+
+| Hook signal | Claude Code hook installed by `architect hook claude` | Effect |
+| --- | --- | --- |
+| `ready` | `SessionStart` | `unknown` → `idle`; ignored in every other state |
+| `start` | `UserPromptSubmit` | → `working`; covers prompts a human types into the tile |
+| `done` | `Stop` | → `idle` |
+| `awaiting_approval` | `Notification` | → `awaiting_approval`, unless `idle` |
+
+`SessionStart` also fires on `/clear` and on compaction, which can happen in
+the middle of a turn, so `ready` only answers "has the agent come up yet?" and
+never overrides a later state.
+
+Without hooks a session stays `unknown`/`working` forever; the tools still
+work, but waiting for `idle` times out.
 
 Building this exposed a race in the notification listener: it read right
 after `accept` and dropped the connection when the hook client had not written
 yet. The hook clients ignore send errors, so a `done` could vanish silently and
 a waiter would hang until its timeout. The listener now reads with a deadline
 until newline or EOF.
+
+### First delivery after spawn
+
+A freshly spawned session is `unknown` until a hook fires, and Claude fires no
+`Stop` at startup, so a first `wait_for_session(until: ["idle"])` would hang
+until its timeout. Two options were considered:
+
+- **Chosen: a `ready` signal from the agent's `SessionStart` hook.** It comes
+  from the agent process itself once it runs, so it means the agent, not the
+  shell, will read the next input. Verified with Claude Code 2.1.318: `ready`
+  arrived 0.6–1 s after `spawn_session`, and a paste sent right after it was
+  received and answered as a normal prompt (two turns, transcript checked).
+- **Rejected: treat `unknown` as deliverable.** `unknown` also covers the time
+  before the agent runs: the shell is still loading its profile or has not yet
+  executed `exec <agent>`. zsh's line editor enables bracketed paste at its own
+  prompt, so the terminal mode cannot tell the shell from the agent, and text
+  sent then can land in the shell or be consumed by the agent's startup. It
+  would also make `require_idle` pass for any session whose hooks are missing.
+
+For an agent without a `SessionStart` hook wired up yet, the agent-agnostic
+path is to skip the first delivery entirely: put the first message on the
+command line of `spawn_session` (for example `exec codex "$(cat msg.txt)"`
+with the message in a file, which avoids shell quoting and the 16 KiB `command`
+limit) and wait for `idle` from its first `done`.
 
 ### Where the wait lives
 
@@ -149,8 +186,9 @@ it, and should not try: the orchestrator owns the mapping from its
 conversations to agent sessions. The orchestrator spawns one Architect session
 per (agent, conversation) and starts the agent with its native session id:
 
-- first turn: `exec claude --session-id <uuid> '<first message>'` or
-  `exec codex '<first message>'`
+- first turn: `exec claude --session-id <uuid>`, then wait for `idle` (from
+  `ready`) and `send_input`; or, for agents without a `ready` hook,
+  `exec codex "$(cat <file with the first message>)"`
 - later Architect sessions for the same conversation:
   `exec claude --resume <uuid>` / `exec codex resume <id>`
 
@@ -167,7 +205,7 @@ looks for an agent job under the shell, so `list_sessions` reports
 | New `claude -p`/`codex exec` per message, `--resume` by `sessionIds[conversation]` | One Architect session per agent and conversation, started once with `spawn_session` (`command` as above); Mu stores `architect_session_id` next to the native session id |
 | Write the prompt to the child's stdin | `wait_for_session(until: ["idle"], timeout_ms: …)`, then `send_input(text, require_idle: true)`; retry on `session_busy` |
 | Wait for the child to exit | `wait_for_session(until: ["idle", "awaiting_approval"], after_seq: <seq from send_input>)`; `awaiting_approval` means a human is needed in Architect |
-| Parse the final text from stream-json | Not provided by Architect: the agent replies with the Mu CLI itself (as the manual adapter already does), or Mu reads the native transcript |
+| Parse the final text from stream-json | Not provided by Architect: the agent replies with the Mu CLI itself (as the manual adapter already does), or Mu reads the native transcript. Claude's `Stop` hook can fire before the last assistant line is flushed to the transcript JSONL (seen in the verification run), so a transcript reader must tolerate a short delay after `idle` |
 | `stop(id)` kills the process group | `terminate_session` for each of the agent's Architect sessions |
 | Runner restart | `list_sessions` to re-check stored ids; a missing id means the session is gone and must be re-spawned with `--resume` |
 
@@ -197,13 +235,21 @@ looks for an agent job under the shell, so `list_sessions` reports
   races with in-flight turns, loses scrollback per conversation, and couples
   Architect to each agent's slash commands.
 
-## Open questions
+## Follow-ups
 
-1. Should `architect hook claude` also install `UserPromptSubmit → architect
-   notify start`, so manual typing marks the agent `working` and `require_idle`
-   is accurate even when a human interacts with a managed terminal?
-2. Should `terminate_session` offer a graceful mode that sends the agent's exit
-   sequence first (as quit teardown does) before closing the terminal?
-3. Architect restores terminals after a restart with new session ids. Should
-   `spawn_session` accept a client label that `list_sessions` returns and
-   persistence keeps, so an orchestrator can re-attach instead of re-spawning?
+- **Graceful terminate.** `terminate_session` closes the tile. A mode that
+  sends the agent's exit sequence first (as quit teardown does) is not needed
+  by Mu's `stop` and is left for later.
+- **Re-attach after an Architect restart.** Restored terminals get new session
+  ids. A client label that `spawn_session` accepts, `list_sessions` returns,
+  and persistence keeps would let an orchestrator re-attach instead of
+  re-spawning with `--resume`.
+- **Codex and Gemini lifecycle hooks.** Codex 0.166 ships a hooks system
+  (`codex features list` shows `hooks` as stable and enabled; the binary
+  contains `hooks.json` and the `SessionStart`, `UserPromptSubmit`, and `Stop`
+  events), and Gemini CLI has `SessionStart`. `architect hook codex` still
+  installs only the legacy `notify` program, and `architect hook gemini` only
+  `AfterAgent`/`Notification`. Adding `ready` and `start` there needs each
+  CLI's hook file format confirmed against its documentation; until then a
+  fresh Codex or Gemini session starts with its first message on the command
+  line (see "First delivery after spawn").

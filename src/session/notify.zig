@@ -213,6 +213,8 @@ pub fn startNotifyThread(
             const state_str = state_val.string;
             const state = if (std.mem.eql(u8, state_str, "start"))
                 app_state.SessionStatus.running
+            else if (std.mem.eql(u8, state_str, "ready"))
+                app_state.SessionStatus.idle
             else if (std.mem.eql(u8, state_str, "awaiting_approval"))
                 app_state.SessionStatus.awaiting_approval
             else if (std.mem.eql(u8, state_str, "done"))
@@ -434,7 +436,9 @@ test "notify thread stops promptly when signaled while blocked in poll" {
     try std.testing.expect(elapsed_ns < 200 * std.time.ns_per_ms);
 }
 
-test "notify listener waits for a client that writes after connecting" {
+/// Sends `payload` to a fresh notify listener after `delay_ms` and returns the
+/// first notification it queued, or null when none arrived.
+fn notificationFromSocket(name: []const u8, payload: []const u8, delay_ms: u64) !?Notification {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -450,7 +454,7 @@ test "notify listener waits for a client that writes after connecting" {
     defer wake.deinit();
 
     var sock_path_buf: [128]u8 = undefined;
-    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, ".tmp/notify_late_{d}.sock", .{std.c.getpid()}, 0);
+    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, ".tmp/notify_{s}_{d}.sock", .{ name, std.c.getpid() }, 0);
     defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch |err| std.debug.print("cleanup failed: {}\n", .{err});
 
     const thread = try startNotifyThread(allocator, io, sock_path, &queue, &stop, &wake, null);
@@ -469,19 +473,28 @@ test "notify listener waits for a client that writes after connecting" {
             continue;
         };
     };
-    // Give the listener time to accept and attempt its first read before any
-    // byte is available, which is exactly when hook clients raced it.
-    clock.sleepNanos(io, 100 * std.time.ns_per_ms);
+    clock.sleepNanos(io, delay_ms * std.time.ns_per_ms);
     const file: std.Io.File = .{ .handle = stream.socket.handle, .flags = .{ .nonblocking = false } };
-    try file.writeStreamingAll(io, "{\"session\":3,\"state\":\"done\"}\n");
+    try file.writeStreamingAll(io, payload);
     _ = std.c.close(stream.socket.handle);
 
-    var received: ?Notification = null;
-    while (received == null and clock.nowMillis(io) < deadline) {
+    while (clock.nowMillis(io) < deadline) {
         var items = queue.drainAll(io);
         defer items.deinit(allocator);
-        if (items.items.len > 0) received = items.items[0];
-        if (received == null) clock.sleepNanos(io, 5 * std.time.ns_per_ms);
+        if (items.items.len > 0) return items.items[0];
+        clock.sleepNanos(io, 5 * std.time.ns_per_ms);
     }
+    return null;
+}
+
+test "notify listener waits for a client that writes after connecting" {
+    // The delay lets the listener accept and attempt its first read before any
+    // byte is available, which is exactly when hook clients raced it.
+    const received = try notificationFromSocket("late", "{\"session\":3,\"state\":\"done\"}\n", 100);
     try std.testing.expectEqual(@as(?Notification, .{ .status = .{ .session = 3, .state = .done } }), received);
+}
+
+test "notify listener maps the ready state to idle" {
+    const received = try notificationFromSocket("ready", "{\"session\":4,\"state\":\"ready\"}\n", 0);
+    try std.testing.expectEqual(@as(?Notification, .{ .status = .{ .session = 4, .state = .idle } }), received);
 }
