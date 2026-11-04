@@ -109,6 +109,52 @@ fn enqueueNotification(
     }
 }
 
+const notify_read_timeout_ms: i64 = 1000;
+const max_notification_bytes: usize = 1024;
+
+/// Reads one notification line from a freshly accepted connection. `accept`
+/// can return before the client has written anything, so an empty
+/// non-blocking read means "not yet", not "end of message": wait for data
+/// until a newline, EOF, or the timeout.
+fn readNotificationBytes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn_fd: posix.fd_t,
+    buffer: *std.ArrayList(u8),
+) void {
+    const deadline_ms = clock.nowMillis(io) + notify_read_timeout_ms;
+    var tmp: [512]u8 = undefined;
+    while (true) {
+        const n = posix.read(conn_fd, &tmp) catch |err| switch (err) {
+            error.WouldBlock => {
+                const remaining_ms = deadline_ms - clock.nowMillis(io);
+                if (remaining_ms <= 0) {
+                    log.debug("notify connection sent no complete message before the timeout", .{});
+                    return;
+                }
+                var fds = [_]posix.pollfd{.{ .fd = conn_fd, .events = posix.POLL.IN, .revents = 0 }};
+                _ = posix.poll(&fds, @intCast(remaining_ms)) catch |poll_err| {
+                    log.debug("poll error on notify connection: {}", .{poll_err});
+                    return;
+                };
+                continue;
+            },
+            error.ConnectionResetByPeer => return,
+            else => {
+                log.debug("read error on notify connection: {}", .{err});
+                return;
+            },
+        };
+        if (n == 0) return;
+        if (buffer.items.len + n > max_notification_bytes) return;
+        buffer.appendSlice(allocator, tmp[0..n]) catch |err| {
+            log.debug("failed to append to notify buffer: {}", .{err});
+            return;
+        };
+        if (std.mem.indexOfScalar(u8, tmp[0..n], '\n') != null) return;
+    }
+}
+
 pub const StartNotifyThreadError = std.Thread.SpawnError;
 
 pub fn startNotifyThread(
@@ -167,6 +213,8 @@ pub fn startNotifyThread(
             const state_str = state_val.string;
             const state = if (std.mem.eql(u8, state_str, "start"))
                 app_state.SessionStatus.running
+            else if (std.mem.eql(u8, state_str, "ready"))
+                app_state.SessionStatus.idle
             else if (std.mem.eql(u8, state_str, "awaiting_approval"))
                 app_state.SessionStatus.awaiting_approval
             else if (std.mem.eql(u8, state_str, "done"))
@@ -242,22 +290,7 @@ pub fn startNotifyThread(
                 var buffer: std.ArrayList(u8) = .empty;
                 defer buffer.deinit(ctx.allocator);
 
-                var tmp: [512]u8 = undefined;
-                while (true) {
-                    const n = posix.read(conn_fd, &tmp) catch |err| switch (err) {
-                        error.WouldBlock, error.ConnectionResetByPeer => break,
-                        else => {
-                            log.debug("read error on notify connection: {}", .{err});
-                            break;
-                        },
-                    };
-                    if (n == 0) break;
-                    if (buffer.items.len + n > 1024) break;
-                    buffer.appendSlice(ctx.allocator, tmp[0..n]) catch |err| {
-                        log.debug("failed to append to notify buffer: {}", .{err});
-                        break;
-                    };
-                }
+                readNotificationBytes(ctx.allocator, ctx.io, conn_fd, &buffer);
 
                 if (buffer.items.len == 0) continue;
 
@@ -401,4 +434,67 @@ test "notify thread stops promptly when signaled while blocked in poll" {
     // With the old 10 ms sleep loop this was bounded by the sleep; with poll it
     // must return as soon as the pipe byte lands. 200 ms is generous headroom.
     try std.testing.expect(elapsed_ns < 200 * std.time.ns_per_ms);
+}
+
+/// Sends `payload` to a fresh notify listener after `delay_ms` and returns the
+/// first notification it queued, or null when none arrived.
+fn notificationFromSocket(name: []const u8, payload: []const u8, delay_ms: u64) !?Notification {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    std.Io.Dir.cwd().createDirPath(io, ".tmp") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+    var stop = std.atomic.Value(bool).init(false);
+    var wake = try wake_pipe.WakePipe.init();
+    defer wake.deinit();
+
+    var sock_path_buf: [128]u8 = undefined;
+    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, ".tmp/notify_{s}_{d}.sock", .{ name, std.c.getpid() }, 0);
+    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch |err| std.debug.print("cleanup failed: {}\n", .{err});
+
+    const thread = try startNotifyThread(allocator, io, sock_path, &queue, &stop, &wake, null);
+    defer {
+        stop.store(true, .seq_cst);
+        wake.signal();
+        thread.join();
+    }
+
+    const address = try std.Io.net.UnixAddress.init(sock_path);
+    const deadline = clock.nowMillis(io) + 5000;
+    const stream = while (true) {
+        break address.connect(io) catch |err| {
+            if (clock.nowMillis(io) >= deadline) return err;
+            clock.sleepNanos(io, 5 * std.time.ns_per_ms);
+            continue;
+        };
+    };
+    clock.sleepNanos(io, delay_ms * std.time.ns_per_ms);
+    const file: std.Io.File = .{ .handle = stream.socket.handle, .flags = .{ .nonblocking = false } };
+    try file.writeStreamingAll(io, payload);
+    _ = std.c.close(stream.socket.handle);
+
+    while (clock.nowMillis(io) < deadline) {
+        var items = queue.drainAll(io);
+        defer items.deinit(allocator);
+        if (items.items.len > 0) return items.items[0];
+        clock.sleepNanos(io, 5 * std.time.ns_per_ms);
+    }
+    return null;
+}
+
+test "notify listener waits for a client that writes after connecting" {
+    // The delay lets the listener accept and attempt its first read before any
+    // byte is available, which is exactly when hook clients raced it.
+    const received = try notificationFromSocket("late", "{\"session\":3,\"state\":\"done\"}\n", 100);
+    try std.testing.expectEqual(@as(?Notification, .{ .status = .{ .session = 3, .state = .done } }), received);
+}
+
+test "notify listener maps the ready state to idle" {
+    const received = try notificationFromSocket("ready", "{\"session\":4,\"state\":\"ready\"}\n", 0);
+    try std.testing.expectEqual(@as(?Notification, .{ .status = .{ .session = 4, .state = .idle } }), received);
 }

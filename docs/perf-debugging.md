@@ -109,7 +109,8 @@ textures plus per-tile overlays at up to 30 presents/s.
   control socket from the daily instance.
 - Spawn sessions programmatically through the control socket at
   `$HOME/Library/Caches/Architect/runtime/architect_control_<pid>.sock`: send
-  one JSON line `{"cwd": "...", "command": "...", "display_name": "..."}`.
+  one JSON line `{"op": "spawn_session", "arguments": {"cwd": "...", "command": "..."}}`
+  (`scripts/perf/spawn_session.py` does this).
   The command is typed into the new session's shell, so an inline
   `HOME=/Users/<real-user> codex ...` prefix restores the real home for child
   tools while the app itself stays isolated.

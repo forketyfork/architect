@@ -40,7 +40,7 @@ def notify_architect(state: str) -> None:
         pass
 
 
-VALID_STATES = {"start", "awaiting_approval", "done"}
+VALID_STATES = {"ready", "start", "awaiting_approval", "done"}
 
 
 def state_from_notification(raw: str) -> str | None:

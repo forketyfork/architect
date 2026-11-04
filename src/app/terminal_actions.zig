@@ -40,6 +40,50 @@ fn buildSubmittedPastePayload(
     options: ghostty_vt.input.PasteOptions,
 ) SubmittedPasteError![]u8 {
     if (!options.bracketed) return error.BracketedPasteUnavailable;
+    return buildInputPayloadWithOptions(allocator, text, true, options);
+}
+
+/// One canonical-mode line, leaving room for the Enter that submits it.
+pub const max_unbracketed_input_bytes: usize = 1023;
+
+pub const InputPayload = struct {
+    bytes: []u8,
+    bracketed: bool,
+};
+
+/// Encodes text an external client types into a session: a paste (sanitized by
+/// ghostty's paste encoder) followed by Enter when `submit` is set. Without
+/// bracketed paste the receiving program may still be in canonical mode, where
+/// every newline submits a separate line and macOS keeps at most MAX_CANON
+/// (1024) bytes per line, so only one line that fits is accepted.
+pub fn buildInputPayload(
+    allocator: std.mem.Allocator,
+    session: *const SessionState,
+    text: []const u8,
+    submit: bool,
+) SubmittedPasteError!InputPayload {
+    if (session.shell == null) return error.NoShell;
+    const terminal = session.terminal orelse return error.NoTerminal;
+    const options = ghostty_vt.input.PasteOptions.fromTerminal(&terminal);
+    return .{
+        .bytes = try buildInputPayloadWithOptions(allocator, text, submit, options),
+        .bracketed = options.bracketed,
+    };
+}
+
+fn buildInputPayloadWithOptions(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    submit: bool,
+    options: ghostty_vt.input.PasteOptions,
+) SubmittedPasteError![]u8 {
+    // CR submits a line just like LF does, so either would execute part of an
+    // unsubmitted draft or split a submitted message into several lines.
+    if (!options.bracketed and
+        (std.mem.indexOfAny(u8, text, "\r\n") != null or text.len > max_unbracketed_input_bytes))
+    {
+        return error.BracketedPasteUnavailable;
+    }
 
     var mutable_text: ?[]u8 = null;
     defer if (mutable_text) |owned| allocator.free(owned);
@@ -55,7 +99,7 @@ fn buildSubmittedPastePayload(
     errdefer payload.deinit(allocator);
     try payload.ensureTotalCapacity(allocator, text.len + 13);
     for (parts) |part| try payload.appendSlice(allocator, part);
-    try payload.append(allocator, '\r');
+    if (submit) try payload.append(allocator, '\r');
     return payload.toOwnedSlice(allocator);
 }
 
@@ -206,4 +250,58 @@ test "submitted paste requires bracketed paste mode" {
             .{ .bracketed = false },
         ),
     );
+}
+
+test "input payload pastes without Enter when submit is false" {
+    const payload = try buildInputPayloadWithOptions(std.testing.allocator, "draft", false, .{ .bracketed = true });
+    defer std.testing.allocator.free(payload);
+    try std.testing.expectEqualStrings("\x1b[200~draft\x1b[201~", payload);
+}
+
+test "input payload strips an embedded bracketed-paste terminator" {
+    const payload = try buildInputPayloadWithOptions(std.testing.allocator, "a\x1b[201~rm -rf ~\r", true, .{ .bracketed = true });
+    defer std.testing.allocator.free(payload);
+    try std.testing.expect(std.mem.startsWith(u8, payload, "\x1b[200~"));
+    try std.testing.expect(std.mem.endsWith(u8, payload, "\x1b[201~\r"));
+    const body = payload[6 .. payload.len - 7];
+    try std.testing.expect(std.mem.indexOfScalar(u8, body, 0x1b) == null);
+}
+
+test "input payload without bracketed paste accepts one line and rejects several" {
+    const payload = try buildInputPayloadWithOptions(std.testing.allocator, "echo ok", true, .{ .bracketed = false });
+    defer std.testing.allocator.free(payload);
+    try std.testing.expectEqualStrings("echo ok\r", payload);
+
+    try std.testing.expectError(
+        error.BracketedPasteUnavailable,
+        buildInputPayloadWithOptions(std.testing.allocator, "one\ntwo", true, .{ .bracketed = false }),
+    );
+}
+
+test "input payload without bracketed paste rejects carriage returns in both submit modes" {
+    for ([_]bool{ false, true }) |submit| {
+        try std.testing.expectError(
+            error.BracketedPasteUnavailable,
+            buildInputPayloadWithOptions(std.testing.allocator, "echo one\recho two", submit, .{ .bracketed = false }),
+        );
+    }
+}
+
+test "input payload without bracketed paste rejects a line longer than one canonical-mode line" {
+    const allocator = std.testing.allocator;
+    const line = try allocator.alloc(u8, max_unbracketed_input_bytes + 1);
+    defer allocator.free(line);
+    @memset(line, 'x');
+
+    const fits = try buildInputPayloadWithOptions(allocator, line[0..max_unbracketed_input_bytes], true, .{ .bracketed = false });
+    defer allocator.free(fits);
+    try std.testing.expectEqual(max_unbracketed_input_bytes + 1, fits.len);
+
+    try std.testing.expectError(
+        error.BracketedPasteUnavailable,
+        buildInputPayloadWithOptions(allocator, line, true, .{ .bracketed = false }),
+    );
+    const bracketed = try buildInputPayloadWithOptions(allocator, line, true, .{ .bracketed = true });
+    defer allocator.free(bracketed);
+    try std.testing.expectEqual(line.len + 13, bracketed.len);
 }

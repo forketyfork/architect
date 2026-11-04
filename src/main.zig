@@ -36,10 +36,13 @@ pub fn main(init: std.process.Init) !void {
 // never run. A file can also be reached transitively, but that depends on
 // which decls Sema happens to analyze, so the rule is: list every file that
 // declares tests, explicitly. `scripts/check-test-registry.sh` enforces it.
-// mcp/main.zig and app/control.zig are covered by the separate mcp test
+// mcp/main.zig is covered by the separate mcp test
 // binary in build.zig.
 test {
+    _ = @import("app/agent_control.zig");
+    _ = @import("app/agent_state.zig");
     _ = @import("app/app_state.zig");
+    _ = @import("app/control.zig");
     _ = @import("app/frame_schedule.zig");
     _ = @import("app/grid_layout.zig");
     _ = @import("app/input_keys.zig");

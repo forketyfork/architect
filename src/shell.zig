@@ -66,8 +66,10 @@ const architect_command_script =
     \\except ImportError:
     \\    tomllib = None
     \\
-    \\VALID_STATES = {"start", "awaiting_approval", "done"}
+    \\VALID_STATES = {"ready", "start", "awaiting_approval", "done"}
     \\
+    \\CLAUDE_READY = "architect notify ready || true"
+    \\CLAUDE_START = "architect notify start || true"
     \\CLAUDE_DONE = "architect notify done || true"
     \\CLAUDE_APPROVAL = "architect notify awaiting_approval || true"
     \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
@@ -266,17 +268,17 @@ const architect_command_script =
     \\            return None
     \\    return parse_notify_from_text(text)
     \\
-    \\def ensure_group(groups):
-    \\    if not groups:
-    \\        group = {"hooks": []}
-    \\        groups.append(group)
-    \\        return group
-    \\    group = groups[0]
-    \\    if not isinstance(group, dict):
-    \\        group = {"hooks": []}
-    \\        groups[0] = group
-    \\    if not isinstance(group.get("hooks"), list):
-    \\        group["hooks"] = []
+    \\def is_unfiltered_group(group) -> bool:
+    \\    if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+    \\        return False
+    \\    return group.get("matcher") in (None, "", "*")
+    \\
+    \\def ensure_unfiltered_group(groups):
+    \\    for group in groups:
+    \\        if is_unfiltered_group(group):
+    \\            return group
+    \\    group = {"hooks": []}
+    \\    groups.append(group)
     \\    return group
     \\
     \\def ensure_matcher_group(groups):
@@ -298,19 +300,25 @@ const architect_command_script =
     \\    if not isinstance(hooks, dict):
     \\        hooks = {}
     \\        data["hooks"] = hooks
-    \\    stop_groups = hooks.setdefault("Stop", [])
-    \\    notification_groups = hooks.setdefault("Notification", [])
     \\    changed = False
-    \\
-    \\    if not hooks_have_needles(stop_groups, CLAUDE_NEEDLES):
-    \\        group = ensure_group(stop_groups)
-    \\        group["hooks"].append({"type": "command", "command": CLAUDE_DONE})
-    \\        changed = True
-    \\
-    \\    if not hooks_have_needles(notification_groups, CLAUDE_NEEDLES):
-    \\        group = ensure_group(notification_groups)
-    \\        group["hooks"].append({"type": "command", "command": CLAUDE_APPROVAL})
-    \\        changed = True
+    \\    for event, command in (
+    \\        ("SessionStart", CLAUDE_READY),
+    \\        ("UserPromptSubmit", CLAUDE_START),
+    \\        ("Stop", CLAUDE_DONE),
+    \\        ("Notification", CLAUDE_APPROVAL),
+    \\    ):
+    \\        groups = hooks.setdefault(event, [])
+    \\        if not isinstance(groups, list):
+    \\            groups = []
+    \\            hooks[event] = groups
+    \\        # A group with a matcher (for example SessionStart limited to
+    \\        # "resume") would not fire for every event, so only unfiltered
+    \\        # groups count as installed, and ours go into an unfiltered group.
+    \\        unfiltered = [group for group in groups if is_unfiltered_group(group)]
+    \\        if not hooks_have_needles(unfiltered, CLAUDE_NEEDLES):
+    \\            group = ensure_unfiltered_group(groups)
+    \\            group["hooks"].append({"type": "command", "command": command})
+    \\            changed = True
     \\
     \\    return changed
     \\
@@ -1214,4 +1222,85 @@ test "bundled terminfo compiles to legacy short-int format" {
     // macOS's bundled libncurses 5.4.
     try testing.expectEqual(@as(u8, 0x1a), magic[0]);
     try testing.expectEqual(@as(u8, 0x01), magic[1]);
+}
+
+test "architect hook claude installs lifecycle hooks into unfiltered groups, once" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    env.initForTest();
+
+    const python = findExecutableInPath(io, "python3") orelse return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(home);
+
+    const script_path = try std.fs.path.join(allocator, &.{ home, "architect" });
+    defer allocator.free(script_path);
+    {
+        const script = try std.Io.Dir.createFileAbsolute(io, script_path, .{});
+        defer script.close(io);
+        try script.writeStreamingAll(io, architect_command_script);
+    }
+
+    // An existing SessionStart group limited to "resume" must not absorb the
+    // ready hook: it would never fire on a normal startup.
+    const claude_dir = try std.fs.path.join(allocator, &.{ home, ".claude" });
+    defer allocator.free(claude_dir);
+    try std.Io.Dir.createDirAbsolute(io, claude_dir, .default_dir);
+    const settings_path = try std.fs.path.join(allocator, &.{ claude_dir, "settings.json" });
+    defer allocator.free(settings_path);
+    {
+        const settings = try std.Io.Dir.createFileAbsolute(io, settings_path, .{});
+        defer settings.close(io);
+        try settings.writeStreamingAll(io,
+            \\{"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":"architect notify ready || true"}]}]}}
+        );
+    }
+
+    var environ_map = std.process.Environ.Map.init(allocator);
+    defer environ_map.deinit();
+    try environ_map.put("HOME", home);
+    try environ_map.put("PATH", env.get("PATH") orelse "/usr/bin:/bin");
+
+    for (0..2) |_| {
+        const result = try proc.run(allocator, io, .{
+            .argv = &.{ python, script_path, "hook", "claude" },
+            .environ_map = &environ_map,
+        });
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        try testing.expectEqual(proc.Term{ .exited = 0 }, result.term);
+    }
+
+    const settings_text = try std.Io.Dir.cwd().readFileAlloc(io, settings_path, allocator, .limited(64 * 1024));
+    defer allocator.free(settings_text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, settings_text, .{});
+    defer parsed.deinit();
+    const hooks = (parsed.value.object.get("hooks") orelse return error.TestUnexpectedResult).object;
+
+    const expected = [_]struct { event: []const u8, command: []const u8 }{
+        .{ .event = "SessionStart", .command = "architect notify ready || true" },
+        .{ .event = "UserPromptSubmit", .command = "architect notify start || true" },
+        .{ .event = "Stop", .command = "architect notify done || true" },
+        .{ .event = "Notification", .command = "architect notify awaiting_approval || true" },
+    };
+    for (expected) |item| {
+        const groups = (hooks.get(item.event) orelse return error.TestUnexpectedResult).array.items;
+        var unfiltered_count: usize = 0;
+        for (groups) |group| {
+            if (group.object.get("matcher") != null) continue;
+            const group_hooks = group.object.get("hooks") orelse return error.TestUnexpectedResult;
+            for (group_hooks.array.items) |hook| {
+                const command = hook.object.get("command") orelse return error.TestUnexpectedResult;
+                if (std.mem.eql(u8, command.string, item.command)) unfiltered_count += 1;
+            }
+        }
+        testing.expectEqual(@as(usize, 1), unfiltered_count) catch |err| {
+            std.debug.print("event {s}: {d} unfiltered architect hooks\n", .{ item.event, unfiltered_count });
+            return err;
+        };
+    }
 }
