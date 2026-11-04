@@ -1444,7 +1444,9 @@ fn connectToControlSocket(
         candidates.deinit(allocator);
     }
 
-    if (candidates.items.len == 0) return error.NoControlDiscoveryFile;
+    // A request naming an instance fails the same way whether that app left
+    // a stale discovery file, shut down cleanly, or was never there.
+    if (candidates.items.len == 0) return if (target != null) error.TargetInstanceNotRunning else error.NoControlDiscoveryFile;
 
     if (target) |wanted| {
         var idx: usize = candidates.items.len;
@@ -2125,6 +2127,34 @@ test "session requests reach the instance that issued the session and never anot
         try std.testing.expectEqual(ErrorCode.instance_not_found, reply.outcome.failure.code);
         // Answered by the client itself, not by the other app's listener.
         try std.testing.expectEqualStrings("the Architect instance named by instance_id is not running", reply.outcome.failure.message);
+    }
+}
+
+test "a targeted request reports instance_not_found when no Architect is running at all" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var discovery = std.testing.tmpDir(.{});
+    defer discovery.cleanup();
+    const empty_dir = try discovery.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(empty_dir);
+    const missing_dir = try std.fs.path.join(allocator, &.{ empty_dir, "missing" });
+    defer allocator.free(missing_dir);
+
+    var arguments = try std.json.parseFromSlice(std.json.Value, allocator, "{\"instance_id\":\"1-aa\",\"session_id\":0}", .{});
+    defer arguments.deinit();
+
+    for ([_][]const u8{ empty_dir, missing_dir }) |dir| {
+        {
+            var reply = try sendRequestIn(allocator, io, dir, .terminate_session, arguments.value, "1-aa");
+            defer reply.deinit();
+            try std.testing.expectEqual(ErrorCode.instance_not_found, reply.outcome.failure.code);
+        }
+        {
+            var reply = try sendRequestIn(allocator, io, dir, .list_sessions, null, null);
+            defer reply.deinit();
+            try std.testing.expectEqual(ErrorCode.app_not_running, reply.outcome.failure.code);
+        }
     }
 }
 
