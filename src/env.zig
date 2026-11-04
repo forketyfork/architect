@@ -32,7 +32,8 @@ pub fn get(key: []const u8) ?[:0]const u8 {
     return environ.getPosix(key);
 }
 
-fn initForTest() void {
+/// Tests that reach `get` indirectly call this instead of `init`.
+pub fn initForTest() void {
     if (process_environ == null) {
         process_environ = std.testing.environ;
     }

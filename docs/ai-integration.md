@@ -2,7 +2,7 @@
 
 Architect exposes a Unix domain socket to let external tools (Claude Code, Codex, Gemini CLI, etc.) signal UI states.
 
-Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions.
+Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients and orchestrators create terminal sessions, deliver messages to the agents running in them, wait for their turns to end, and close them.
 
 ## Socket Protocol
 
@@ -17,9 +17,9 @@ Examples:
 {"session": 0, "state": "done"}
 ```
 
-## MCP `spawn_session`
+## MCP tools
 
-`architect-mcp` is launched by an MCP client as a stdio server. It exposes exactly one tool, `spawn_session`, and forwards each call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running.
+`architect-mcp` is launched by an MCP client as a stdio server and forwards each tool call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running. It answers one call at a time, so a client that waits on several sessions concurrently runs one helper per waiter.
 
 The running app writes a per-instance discovery file named `architect_control_<uid>_<pid>.json` under `XDG_RUNTIME_DIR` when that is set. Otherwise it uses a stable per-user runtime directory: `~/Library/Caches/Architect/runtime` on macOS, or `~/.cache/architect/runtime` on other platforms. The app logs the full discovery file path together with the socket path. When several Architect instances are running, `architect-mcp` tries the newest reachable discovery entry.
 
@@ -29,57 +29,90 @@ Helper paths:
 - Release app bundle: `Architect.app/Contents/MacOS/architect-mcp`
 - Homebrew: `architect-mcp` on `PATH`, with the app-bundle path under `$(brew --prefix)/Cellar/architect/<version>/Architect.app/Contents/MacOS/architect-mcp` as a fallback
 
-Input schema:
+`tools/list` returns the exact JSON schemas. All results are MCP structured content with a `status` field; failures are tool errors (`isError: true`) with `status: "error"`, a stable `code`, and a `message`.
 
-```json
-{
-  "type": "object",
-  "required": ["cwd"],
-  "additionalProperties": false,
-  "properties": {
-    "cwd": {
-      "type": "string",
-      "description": "Absolute working directory for the new terminal session."
-    },
-    "command": {
-      "type": "string",
-      "description": "Optional command text queued into the new shell. Architect appends a newline when needed."
-    },
-    "display_name": {
-      "type": "string",
-      "description": "Optional display label reserved for clients and future Architect UI."
-    }
-  }
-}
+### Agent state
+
+Each session has an `agent_state` and a `state_seq`. `state_seq` comes from one app-wide counter that increases on every change, so "a change after the one I saw" is `state_seq > after_seq`.
+
+| `agent_state` | Meaning |
+| --- | --- |
+| `unknown` | No agent signal since the session started |
+| `working` | `send_input` delivered text, or a hook reported `start` |
+| `awaiting_approval` | A hook reported that the agent waits for a human (for example a permission prompt) |
+| `idle` | A hook reported `done`: the turn is over |
+| `exited` | The shell process died or the session was closed |
+
+The state is driven by the hooks below (`architect hook claude|codex|gemini`). Without them a session never becomes `idle`. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. Text a human types directly into the terminal is not observed unless a hook reports `start`.
+
+### `spawn_session`
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `cwd` | string, required | Absolute existing directory |
+| `command` | string | Typed into the new shell; Architect appends a newline when needed |
+| `display_name` | string | Reserved for clients and future Architect UI |
+
+Result: `status: "spawned"`, `session_id`, `slot_index`. `session_id` is also exported to the shell as `ARCHITECT_SESSION_ID`, and ids are never reused while the app runs.
+
+To drive an agent, start it with `exec` (for example `exec claude --session-id <uuid>`): the agent then replaces the shell, so when it exits the session exits too and waiters see `exited`. `list_sessions` reports `foreground_agent` only for agents started as a job of the shell, so it is `null` for `exec`-started agents.
+
+### `list_sessions`
+
+No arguments. Result: `status: "ok"` and `sessions`, each with `session_id`, `slot_index`, `cwd`, `foreground_agent` (`claude`, `codex`, `gemini`, or `null`), `agent_state`, and `state_seq`.
+
+### `send_input`
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `session_id` | integer, required | |
+| `text` | string, required | Up to 256 KiB, no NUL bytes |
+| `submit` | boolean, default `true` | Press Enter after the text |
+| `require_idle` | boolean, default `false` | Deliver only when `agent_state` is `idle` |
+
+The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state the delivery recorded), and `bracketed_paste`.
+
+### `wait_for_session`
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `session_id` | integer, required | |
+| `until` | array of `agent_state` values, required | |
+| `after_seq` | integer, default `0` | Only states with a larger `state_seq` match |
+| `timeout_ms` | integer, default `30000`, max `600000` | `0` returns the current state immediately |
+
+Result: `status` is `matched`, `exited` (the session ended and `until` does not contain `exited`), or `timed_out`, plus `session_id`, `agent_state`, and `state_seq`. A timeout is a normal result. Waits are held by the app's control listener and cost the app nothing while they are pending; make sure the MCP client's own tool-call timeout is longer than `timeout_ms`.
+
+### `terminate_session`
+
+`session_id` is required. The session closes like closing its tile: the shell gets SIGTERM, the PTY closes, and the agent receives SIGHUP. Result: `status: "terminated"`, `session_id`.
+
+### Driving an agent turn by turn
+
+```text
+spawn_session(cwd, command: "exec claude --session-id <uuid> '<first message>'")
+wait_for_session(id, until: ["idle"], timeout_ms: 600000)              -> idle, seq S
+send_input(id, text: "<next message>", require_idle: true)             -> sent, seq D
+wait_for_session(id, until: ["idle", "awaiting_approval"], after_seq: D) -> idle: turn over
+terminate_session(id)
 ```
 
-Example tool arguments:
+On `session_busy`, wait for `idle` again and retry. `awaiting_approval` means the agent needs a human in Architect. Use one session per agent conversation: an interactive agent keeps one model context per process, and resuming with the agent's own session id (`claude --resume`, `codex resume`) restores a conversation in a new session.
 
-```json
-{
-  "cwd": "/Users/me/dev/project",
-  "command": "codex",
-  "display_name": "Project task"
-}
-```
+### Error codes
 
-Successful calls return MCP structured content like:
-
-```json
-{
-  "status": "spawned",
-  "session_id": 12,
-  "slot_index": 3
-}
-```
-
-Tool errors use stable codes:
-
-- `invalid_request`: the MCP arguments do not match the schema
-- `app_not_running`: no running Architect app accepted the local control request
+- `invalid_request`: the arguments do not match the schema
+- `app_not_running`: no running Architect app accepted the local control request, or it is shutting down
 - `full_grid`: every Architect terminal slot is already in use
 - `invalid_cwd`: `cwd` is not an absolute existing directory
 - `spawn_failed`: Architect accepted the request but could not create or initialize the terminal session
+- `session_not_found`: no session has this id
+- `session_exited`: the session's process exited or the session was closed
+- `session_busy`: `require_idle` was set and the agent is not `idle`
+- `input_not_ready`: the terminal cannot take the input yet, for example multi-line text before the program enabled bracketed paste
+- `input_failed`: writing to the terminal failed
+- `too_many_waiters`: more than 64 `wait_for_session` calls are pending
+- `internal_error`: Architect failed while handling the request
 
 ## Built-in Command (inside Architect terminals)
 

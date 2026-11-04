@@ -15,7 +15,8 @@ graph TD
 
     subgraph Application Layer
         RT["app/runtime.zig<br/><i>Frame loop, lifetime, config, session spawning</i>"]
-        CTRL["app/control.zig<br/><i>Local control socket, spawn request schema</i>"]
+        CTRL["app/control.zig<br/><i>Local control socket, request schema, parked waits</i>"]
+        AGENT["app/agent_state.zig + agent_control.zig<br/><i>Agent-state board, session I/O for control requests</i>"]
         APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, terminal_actions, worktree"]
     end
 
@@ -52,6 +53,8 @@ graph TD
     MCP --> CTRL
     RT --> APP_MODS
     RT --> CTRL
+    RT --> AGENT
+    CTRL --> AGENT
     RT --> SDL
     RT --> SS
     RT --> REN
@@ -93,7 +96,7 @@ Platform    Session    Rendering    UI Overlay
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
 - `main(init: std.process.Init)` passes `init.gpa` and `init.io` to `runtime.run(allocator, io, ...)`, which threads them through the application, session, and UI layers. I/O-owning structs store them together; worker contexts copy `io` when their thread outlives the spawner.
 - The `architect-mcp` entrypoint initializes the shared process environment from `init.minimal.environ` before handling stdio requests, because control-socket discovery reads environment variables through `env.zig`.
-- Background threads are intentionally limited to five cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY reader (`session/pty_reader.zig`), the bounded URL opener worker set (`os/open.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. The URL opener joins its active workers during runtime shutdown. The notification listener and control listener block in `poll(2)` on the listening socket plus a `WakePipe` self-pipe (`src/wake_pipe.zig`); shutdown stores the stop flag and signals the pipe, so no thread ever sleeps in a fixed-interval loop. The notification listener, control listener, and PTY reader also post a custom SDL wake event after queueing work or draining PTY bytes, so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY reader blocks in `poll(2)` on the master fds of all spawned sessions plus its `WakePipe`, which `register`/`retire` and shutdown signal; when one becomes readable, it drains it into that session's mutex-guarded ring buffer (`PtyOutputBuffer`, 1 MiB) — so producer processes are never backpressured by render pacing, and DEC-2026 sync windows close in the buffer as fast as the producer writes them. Sessions register their fd+buffer on spawn and retire it during teardown; reads happen only under the registry mutex, so `retire()` returning guarantees the reader can no longer touch the fd or buffer. The main thread's `processOutput` consumes from the buffer (VT parsing stays main-thread-only) and clears a shared `wake_pending` flag at the top of each frame; the reader posts at most one SDL wake event per frame via that flag.
+- Background threads are intentionally limited to five cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), the PTY reader (`session/pty_reader.zig`), the bounded URL opener worker set (`os/open.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. The URL opener joins its active workers during runtime shutdown. The notification listener and control listener block in `poll(2)` on the listening socket plus a `WakePipe` self-pipe (`src/wake_pipe.zig`); shutdown stores the stop flag and signals the pipe, so no thread ever sleeps in a fixed-interval loop. The control listener also polls the connections of parked `wait_for_session` calls (at most 64), uses the earliest wait deadline as its poll timeout, and re-evaluates the waits whenever the main thread changes the agent-state board, which signals the same `WakePipe`; a pending wait therefore never wakes the main loop. The notification listener, control listener, and PTY reader also post a custom SDL wake event after queueing work or draining PTY bytes, so the frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly during both idle and active-frame pacing. The PTY reader blocks in `poll(2)` on the master fds of all spawned sessions plus its `WakePipe`, which `register`/`retire` and shutdown signal; when one becomes readable, it drains it into that session's mutex-guarded ring buffer (`PtyOutputBuffer`, 1 MiB) — so producer processes are never backpressured by render pacing, and DEC-2026 sync windows close in the buffer as fast as the producer writes them. Sessions register their fd+buffer on spawn and retire it during teardown; reads happen only under the registry mutex, so `retire()` returning guarantees the reader can no longer touch the fd or buffer. The main thread's `processOutput` consumes from the buffer (VT parsing stays main-thread-only) and clears a shared `wake_pending` flag at the top of each frame; the reader posts at most one SDL wake event per frame via that flag.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins. Every change site only marks a dirty flag and records the time it first became dirty (`markPersistenceDirty`); the actual TOML write happens at most once per frame and only once the dirty state is at least 500ms old (`shouldSavePersistenceNow`), so a window drag or resize does not trigger a synchronous file write per mouse tick. The dirty timestamp is set once per dirty period (not refreshed by later changes), which caps the deferral at the debounce window even under continuous events.
@@ -416,34 +419,37 @@ the focused border after its label so attention tiles keep the same focus-border
 z-order as ordinary tiles.
 ```
 
-### External MCP Spawn Path
+### External MCP Control Path
 
 ```
-MCP client
+MCP client / orchestrator
     | launches architect-mcp over stdio
     v
 src/mcp/main.zig
     | JSON-RPC initialize/tools/list/tools/call
-    | validates spawn_session arguments
+    | validates tool arguments with the shared control schema
     v
-app/control.zig
+app/control.zig (client side)
     | scans per-instance discovery files in XDG_RUNTIME_DIR or stable per-user runtime dir
-    | connects to architect_control_<pid>.sock
+    | sends {"op": <tool>, "arguments": {...}} to architect_control_<pid>.sock
     v
 Control socket listener thread in the running app
-    | parses request and queues PendingSpawn
-    | posts SDL wake event
+    | wait_for_session: answered from the agent-state board, parked until it
+    |                   matches, times out, or the session exits
+    | other ops: queue PendingRequest, post SDL wake event, block on its Completion
     v
 app/runtime.zig main loop
-    | validates cwd, chooses or expands a grid slot
-    | calls SessionState.ensureSpawnedWithDir()
-    | queues optional command into pending_write
+    | spawn_session: validates cwd, chooses or expands a grid slot, ensureSpawnedWithDir()
+    | list_sessions / send_input: app/agent_control.zig (paste encoding, require_idle check)
+    | terminate_session: deferred until after the frame's UI actions, then the same
+    |                    despawn path as closing a tile
     v
-Control response
-    | status + session_id + slot_index, or stable error code
+Control reply {"ok": true, "result": {...}} or {"ok": false, "code", "message"}
     v
 architect-mcp MCP tool result
 ```
+
+Agent hooks feed the same board: the main loop applies each status notification (`start`, `awaiting_approval`, `done`) to `agent_state.Board`, records deliveries from `send_input`, and reconciles session liveness every frame. Every accepted change takes the next app-wide sequence number and signals the control listener. The design and its rejected alternatives are in [`docs/superpowers/specs/2026-11-04-mcp-agent-control-design.md`](superpowers/specs/2026-11-04-mcp-agent-control-design.md).
 
 ### Logging Path
 
@@ -470,7 +476,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | SDL event queue | Keyboard, mouse, window events | Primary user interaction |
 | PTY read | Shell process stdout/stderr | Terminal content updates |
 | Unix domain socket | External AI tools | Status notifications (JSON) |
-| Unix domain socket | `architect-mcp` | Local `spawn_session` control requests |
+| Unix domain socket | `architect-mcp` | Local control requests: spawn, list, send input, wait, terminate |
 | Config files | `~/.config/architect/` | Startup configuration and persistence |
 
 ### Storage
@@ -501,10 +507,12 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main(init: std.process.Init)`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main(init: std.process.Init)`, `run()` | `app/control` module import, std |
+| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes one tool per control operation (`spawn_session`, `list_sessions`, `send_input`, `wait_for_session`, `terminate_session`). | `main(init: std.process.Init)`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run(allocator, io, ...)`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/frame_schedule.zig` | Pure change-driven frame scheduling policy: render demand classification, output cadence, timer deadlines, occlusion handling, and SDL wait timeout conversion | `Demand`, `Input`, `Schedule`, `schedule()`, `waitTimeoutMs()` | std |
-| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
+| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: request schema and validation, discovery file, Unix socket listener with parked waits, request queue, and reply serialization | `Op`, `Request`, `parseArguments()`, `RequestQueue`, `Completion`, `startControlThread()`, `sendRequest()` | `app/agent_state`, std (socket, thread, JSON) |
+| `app/agent_state.zig` | Per-session agent state for orchestrators: hook-driven state machine, app-wide sequence numbers, mutex-guarded board read by the control listener, wait evaluation | `AgentState`, `Board`, `stateAfterHook()`, `evaluateWait()` | std |
+| `app/agent_control.zig` | Main-thread handlers for `list_sessions` and `send_input`, hook-signal mapping, per-frame board reconciliation | `listSessions()`, `sendInput()`, `hookSignal()`, `reconcileBoard()` | `app/control`, `app/agent_state`, `app/terminal_actions`, `session/state` |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard and submitted-paste construction, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `pasteText()`, `buildSubmittedPaste()`, `clearTerminal()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |

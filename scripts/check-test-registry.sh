@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 registry=src/main.zig
 # Files covered by the separate mcp test binary (see build.zig).
-mcp_roots=("src/mcp/main.zig" "src/app/control.zig")
+mcp_roots=("src/mcp/main.zig")
 
 missing=()
 checked=0

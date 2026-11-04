@@ -28,11 +28,12 @@ def find_socket():
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
-    req = {"cwd": sys.argv[1]}
+    arguments = {"cwd": sys.argv[1]}
     if len(sys.argv) > 2:
-        req["command"] = sys.argv[2]
+        arguments["command"] = sys.argv[2]
     if len(sys.argv) > 3:
-        req["display_name"] = sys.argv[3]
+        arguments["display_name"] = sys.argv[3]
+    req = {"op": "spawn_session", "arguments": arguments}
 
     import socket
 

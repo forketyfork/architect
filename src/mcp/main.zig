@@ -6,7 +6,6 @@ const log = std.log.scoped(.mcp);
 const protocol_version = "2025-11-25";
 const server_name = "architect-mcp";
 const server_version = "0.1.0";
-const tool_name = "spawn_session";
 
 const JsonRpcErrorCode = enum(i32) {
     parse_error = -32700,
@@ -133,29 +132,20 @@ fn handleToolsCall(
         try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "tool name is required");
         return;
     };
-    if (name_value != .string or !std.mem.eql(u8, name_value.string, tool_name)) {
+    const op = if (name_value == .string) control.Op.fromString(name_value.string) else null;
+    if (op == null) {
         try writeJsonRpcError(allocator, io, stdout_file, id_value, .invalid_params, "unknown tool");
         return;
     }
 
-    const arguments = params.object.get("arguments") orelse {
-        try writeToolFailure(allocator, io, stdout_file, id_value, .invalid_request, "cwd is required");
+    const arguments = params.object.get("arguments");
+    var request = control.parseArguments(allocator, op.?, arguments) catch |err| {
+        try writeToolFailure(allocator, io, stdout_file, id_value, .invalid_request, control.parseErrorMessage(err));
         return;
     };
-    var request = control.parseSpawnRequestFromValue(allocator, arguments) catch |err| {
-        try writeToolFailure(
-            allocator,
-            io,
-            stdout_file,
-            id_value,
-            .invalid_request,
-            control.parseErrorMessage(err),
-        );
-        return;
-    };
-    defer request.deinit(allocator);
+    request.deinit(allocator);
 
-    var response = control.connectAndSendSpawnRequest(allocator, io, request) catch |err| {
+    var reply = control.sendRequest(allocator, io, op.?, arguments) catch |err| {
         var message_buf: [160]u8 = undefined;
         const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
             log.debug("failed to format Architect contact error: {}", .{fmt_err});
@@ -164,10 +154,10 @@ fn handleToolsCall(
         try writeToolFailure(allocator, io, stdout_file, id_value, .app_not_running, message);
         return;
     };
-    defer response.deinit(allocator);
+    defer reply.deinit();
 
-    switch (response.response) {
-        .success => |success| try writeToolSuccess(allocator, io, stdout_file, id_value, success),
+    switch (reply.outcome) {
+        .success => |result| try writeToolSuccess(allocator, io, stdout_file, id_value, result),
         .failure => |failure| try writeToolFailure(allocator, io, stdout_file, id_value, failure.code, failure.message),
     }
 }
@@ -232,119 +222,154 @@ fn writeToolsListResult(
     try beginRpcResult(&json, id_value);
     try json.objectField("tools");
     try json.beginArray();
-    try writeSpawnSessionTool(&json);
+    for (tools) |tool| {
+        try json.beginObject();
+        try json.objectField("name");
+        try json.write(@tagName(tool.op));
+        try json.objectField("description");
+        try json.write(tool.description);
+        try json.objectField("inputSchema");
+        try json.print("{s}", .{tool.input_schema});
+        try json.objectField("outputSchema");
+        try json.print("{s}", .{tool.output_schema});
+        try json.endObject();
+    }
     try json.endArray();
     try endRpcResult(&json);
 
     try writeJsonLine(io, stdout_file, out.written());
 }
 
-fn writeSpawnSessionTool(json: *std.json.Stringify) !void {
-    try json.beginObject();
-    try json.objectField("name");
-    try json.write(tool_name);
-    try json.objectField("description");
-    try json.write("Ask the running Architect app to create a terminal session in a working directory.");
-    try json.objectField("inputSchema");
-    try writeSpawnInputSchema(json);
-    try json.objectField("outputSchema");
-    try writeSpawnOutputSchema(json);
-    try json.endObject();
+const Tool = struct {
+    op: control.Op,
+    description: []const u8,
+    input_schema: []const u8,
+    output_schema: []const u8,
+};
+
+const session_id_schema =
+    \\{"type":"integer","minimum":0,"description":"Architect session id returned by spawn_session or list_sessions."}
+;
+
+const agent_state_schema =
+    \\{"type":"string","enum":["unknown","working","awaiting_approval","idle","exited"]}
+;
+
+/// Failures share the success schema's `status` field, so every output schema
+/// also allows the error fields.
+const error_properties =
+    \\"code":{"type":"string"},"message":{"type":"string"}
+;
+
+/// Tool schemas are written into a single JSON-RPC line, so the multiline
+/// literals used for readability must not contribute newlines.
+fn oneLine(comptime text: []const u8) []const u8 {
+    comptime {
+        @setEvalBranchQuota(100_000);
+        var buf: [text.len]u8 = undefined;
+        var len: usize = 0;
+        for (text) |byte| {
+            if (byte == '\n') continue;
+            buf[len] = byte;
+            len += 1;
+        }
+        const final = buf[0..len].*;
+        return &final;
+    }
 }
 
-fn writeSpawnInputSchema(json: *std.json.Stringify) !void {
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("object");
-    try json.objectField("additionalProperties");
-    try json.write(false);
-    try json.objectField("required");
-    try json.beginArray();
-    try json.write("cwd");
-    try json.endArray();
-    try json.objectField("properties");
-    try json.beginObject();
-
-    try json.objectField("cwd");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.objectField("description");
-    try json.write("Absolute working directory for the new Architect terminal session.");
-    try json.endObject();
-
-    try json.objectField("command");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.objectField("description");
-    try json.write("Optional command text queued into the new shell. Architect appends a newline when needed.");
-    try json.endObject();
-
-    try json.objectField("display_name");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.objectField("description");
-    try json.write("Optional display label reserved for clients and future Architect UI.");
-    try json.endObject();
-
-    try json.endObject();
-    try json.endObject();
-}
-
-fn writeSpawnOutputSchema(json: *std.json.Stringify) !void {
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("object");
-    try json.objectField("required");
-    try json.beginArray();
-    try json.write("status");
-    try json.endArray();
-    try json.objectField("properties");
-    try json.beginObject();
-
-    try json.objectField("status");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.endObject();
-
-    try json.objectField("session_id");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("integer");
-    try json.endObject();
-
-    try json.objectField("slot_index");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("integer");
-    try json.endObject();
-
-    try json.objectField("code");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.endObject();
-
-    try json.objectField("message");
-    try json.beginObject();
-    try json.objectField("type");
-    try json.write("string");
-    try json.endObject();
-
-    try json.endObject();
-    try json.endObject();
-}
+const tools = [_]Tool{
+    .{
+        .op = .spawn_session,
+        .description = "Ask the running Architect app to create a terminal session in a working directory.",
+        .input_schema = oneLine(
+            \\{"type":"object","additionalProperties":false,"required":["cwd"],"properties":{
+            \\"cwd":{"type":"string","description":"Absolute working directory for the new Architect terminal session."},
+            \\"command":{"type":"string","description":"Optional command text queued into the new shell. Architect appends a newline when needed."},
+            \\"display_name":{"type":"string","description":"Optional display label reserved for clients and future Architect UI."}}}
+        ),
+        .output_schema = oneLine(
+            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
+            \\"session_id":{"type":"integer"},"slot_index":{"type":"integer"},
+        ++ error_properties ++ "}}"),
+    },
+    .{
+        .op = .list_sessions,
+        .description = "List the running Architect terminal sessions with their working directory, foreground agent, " ++
+            "and agent state (driven by the agent hooks installed with `architect hook`).",
+        .input_schema =
+        \\{"type":"object","additionalProperties":false,"properties":{}}
+        ,
+        .output_schema = oneLine(
+            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
+            \\"sessions":{"type":"array","items":{"type":"object","properties":{
+            \\"session_id":{"type":"integer"},"slot_index":{"type":"integer"},
+            \\"cwd":{"type":["string","null"]},"foreground_agent":{"type":["string","null"]},
+            \\"agent_state":
+        ++ agent_state_schema ++
+            \\,"state_seq":{"type":"integer"}}}},
+        ++ error_properties ++ "}}"),
+    },
+    .{
+        .op = .send_input,
+        .description = "Type text into an Architect session as a paste, then press Enter unless submit is false. " ++
+            "Use require_idle to deliver only when the agent finished its turn; the check and the write are atomic.",
+        .input_schema = oneLine(
+            \\{"type":"object","additionalProperties":false,"required":["session_id","text"],"properties":{
+            \\"session_id":
+        ++ session_id_schema ++
+            \\,"text":{"type":"string","minLength":1,"description":"Text to paste. Control characters are stripped like a user paste."},
+            \\"submit":{"type":"boolean","default":true,"description":"Press Enter after the text."},
+            \\"require_idle":{"type":"boolean","default":false,"description":"Fail with session_busy unless the agent state is idle."}}}
+        ),
+        .output_schema = oneLine(
+            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
+            \\"session_id":{"type":"integer"},"state_seq":{"type":"integer"},"bracketed_paste":{"type":"boolean"},
+        ++ error_properties ++ "}}"),
+    },
+    .{
+        .op = .wait_for_session,
+        .description = "Block until an Architect session's agent state is one of `until` with a state_seq greater than " ++
+            "after_seq, the session exits, or timeout_ms passes. timeout_ms 0 returns the current state. " ++
+            "The helper answers one call at a time, so run one helper per concurrent waiter.",
+        .input_schema = oneLine(
+            \\{"type":"object","additionalProperties":false,"required":["session_id","until"],"properties":{
+            \\"session_id":
+        ++ session_id_schema ++
+            \\,"until":{"type":"array","minItems":1,"items":
+        ++ agent_state_schema ++
+            \\},"after_seq":{"type":"integer","minimum":0,"default":0,"description":"Only states recorded after this sequence number match."},
+            \\"timeout_ms":{"type":"integer","minimum":0,"maximum":600000,"default":30000}}}
+        ),
+        .output_schema = oneLine(
+            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string","enum":["matched","exited","timed_out","error"]},
+            \\"session_id":{"type":"integer"},"agent_state":
+        ++ agent_state_schema ++
+            \\,"state_seq":{"type":"integer"},
+        ++ error_properties ++ "}}"),
+    },
+    .{
+        .op = .terminate_session,
+        .description = "Close an Architect terminal session like closing its tile: the shell is terminated and the agent receives SIGHUP.",
+        .input_schema =
+        \\{"type":"object","additionalProperties":false,"required":["session_id"],"properties":{"session_id":
+        ++ session_id_schema ++ "}}",
+        .output_schema =
+        \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},"session_id":{"type":"integer"},
+        ++ error_properties ++ "}}",
+    },
+};
 
 fn writeToolSuccess(
     allocator: std.mem.Allocator,
     io: std.Io,
     stdout_file: std.Io.File,
     id_value: ?std.json.Value,
-    success: control.SpawnSuccess,
+    result: std.json.Value,
 ) !void {
+    const text = try std.json.Stringify.valueAlloc(allocator, result, .{});
+    defer allocator.free(text);
+
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var json: std.json.Stringify = .{ .writer = &out.writer };
@@ -356,18 +381,11 @@ fn writeToolSuccess(
     try json.objectField("type");
     try json.write("text");
     try json.objectField("text");
-    try json.print("\"Spawned Architect session {d} in slot {d}.\"", .{ success.session_id, success.slot_index });
+    try json.write(text);
     try json.endObject();
     try json.endArray();
     try json.objectField("structuredContent");
-    try json.beginObject();
-    try json.objectField("status");
-    try json.write("spawned");
-    try json.objectField("session_id");
-    try json.write(success.session_id);
-    try json.objectField("slot_index");
-    try json.write(success.slot_index);
-    try json.endObject();
+    try json.write(result);
     try json.objectField("isError");
     try json.write(false);
     try endRpcResult(&json);
@@ -380,7 +398,7 @@ fn writeToolFailure(
     io: std.Io,
     stdout_file: std.Io.File,
     id_value: ?std.json.Value,
-    code: control.SpawnErrorCode,
+    code: control.ErrorCode,
     message: []const u8,
 ) !void {
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -470,7 +488,7 @@ fn writeJsonLine(io: std.Io, stdout_file: std.Io.File, bytes: []const u8) !void 
     try stdout_file.writeStreamingAll(io, "\n");
 }
 
-test "tools/list exposes exactly spawn_session" {
+test "tools/list exposes every control operation with valid schemas on one line" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -483,17 +501,25 @@ test "tools/list exposes exactly spawn_session" {
     try writeToolsListResult(allocator, io, out, id);
     out.close(io);
 
-    const input = try tmp.dir.readFileAlloc(io, "tools-list.jsonl", allocator, .limited(16 * 1024));
+    const input = try tmp.dir.readFileAlloc(io, "tools-list.jsonl", allocator, .limited(64 * 1024));
     defer allocator.free(input);
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, input, "\n"), .{});
+    const line = std.mem.trimEnd(u8, input, "\n");
+    try std.testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
     defer parsed.deinit();
 
     const result_value = parsed.value.object.get("result") orelse return error.TestUnexpectedResult;
     const tools_value = result_value.object.get("tools") orelse return error.TestUnexpectedResult;
-    const tools = tools_value.array;
-    try std.testing.expectEqual(@as(usize, 1), tools.items.len);
-    const name_value = tools.items[0].object.get("name") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(tool_name, name_value.string);
+    const listed = tools_value.array.items;
+    const ops = std.enums.values(control.Op);
+    try std.testing.expectEqual(ops.len, listed.len);
+    for (ops, listed) |op, tool| {
+        try std.testing.expectEqualStrings(@tagName(op), tool.object.get("name").?.string);
+        const input_schema = tool.object.get("inputSchema") orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("object", input_schema.object.get("type").?.string);
+        const output_schema = tool.object.get("outputSchema") orelse return error.TestUnexpectedResult;
+        try std.testing.expect(output_schema.object.get("properties").?.object.get("code") != null);
+    }
 }
 
 test "tool failure response is an MCP tool error result" {

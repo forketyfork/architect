@@ -38,7 +38,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Selection-to-agent context** — release after selecting terminal text to reveal a narrow robot button anchored just outside the selection; the button follows the selection while scrolling; choose Claude, Codex, or Gemini in a centered modal with highlighted dropdown navigation, review the fully wrapped context in a scrollable field, enter wrapped multiline instructions, cancel if needed, or launch a new agent in the selected terminal's working directory with the selection submitted as its initial prompt without embedding large contexts in the shell command line
 - **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
-- **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
+- **MCP agent control** — run `architect-mcp` from an MCP client or orchestrator to create terminal sessions, list them with each agent's state, type messages into an agent when its turn is over, wait for the agent to finish without polling, and close sessions
 - **Reader mode** (⌘R) — open a centered markdown snapshot of the selected terminal's history (works in full view and grid); close and reopen it to capture newer output. Includes bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
@@ -142,18 +142,17 @@ On first launch, Architect shows a faint in-terminal hint with the core shortcut
 
 ## MCP
 
-`architect-mcp` is a stdio MCP server for local clients. It exposes one tool, `spawn_session`, which forwards the request to the running Architect app. It does not launch Architect by itself.
+`architect-mcp` is a stdio MCP server for local clients and orchestrators. It forwards each tool call to the running Architect app and does not launch Architect by itself.
 
-`spawn_session` arguments:
-```json
-{
-  "cwd": "/absolute/path/to/worktree",
-  "command": "codex",
-  "display_name": "Issue 291"
-}
-```
+| Tool | What it does |
+| --- | --- |
+| `spawn_session` | Create a terminal session in `cwd`, optionally typing a `command` into its shell |
+| `list_sessions` | List sessions with `cwd`, foreground agent, `agent_state`, and `state_seq` |
+| `send_input` | Paste `text` into a session and press Enter; `require_idle` delivers only when the agent finished its turn |
+| `wait_for_session` | Block until a session's `agent_state` is one of `until` (for example `idle`), the session exits, or `timeout_ms` passes |
+| `terminate_session` | Close a session like closing its tile |
 
-`cwd` is required. `command` and `display_name` are optional. On success, the tool returns structured content with `status`, `session_id`, and `slot_index`. If Architect is not running, the grid is full, `cwd` is invalid, or spawning fails, the tool returns an MCP tool error with a stable `code` and `message`.
+`agent_state` comes from the agent hooks installed with `architect hook claude|codex|gemini`, so install them in agents you want to drive. Tool failures are MCP tool errors with a stable `code` and `message`. See [`docs/ai-integration.md`](docs/ai-integration.md) for the full contracts.
 
 For release downloads, use:
 ```bash
@@ -187,7 +186,7 @@ Common settings include font family, theme colors, grid font scale, and logging 
 
 ## Documentation
 
-* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications, plus the `architect-mcp` `spawn_session` interface.
+* [`docs/ai-integration.md`](docs/ai-integration.md): set up Claude Code, Codex, and Gemini CLI hooks for status notifications, plus the `architect-mcp` tools for spawning, driving, and closing agent sessions.
 * [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): architecture overview and system boundaries.
 * [`docs/configuration.md`](docs/configuration.md): detailed configuration reference for `config.toml` and `persistence.toml`.
 * [`docs/development.md`](docs/development.md): build, test, and release process.
