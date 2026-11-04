@@ -47,6 +47,7 @@ pub fn reconcileBoard(
 pub fn listSessions(
     allocator: std.mem.Allocator,
     io: std.Io,
+    instance_id: []const u8,
     sessions: []const *SessionState,
     board: *agent_state.Board,
     completion: *control.Completion,
@@ -75,7 +76,7 @@ pub fn listSessions(
         };
     }
 
-    completion.succeed(allocator, io, control.ListResult, .{ .sessions = infos.items });
+    completion.succeed(allocator, io, control.ListResult, .{ .instance_id = instance_id, .sessions = infos.items });
 }
 
 /// Writes the request's text into the session and completes the request.
@@ -139,6 +140,7 @@ pub fn sendInput(
         return null;
     } else record.seq;
     completion.succeed(allocator, io, control.SendResult, .{
+        .instance_id = request.instance_id.slice(),
         .session_id = session.id,
         .state_seq = seq,
         .bracketed_paste = payload.bracketed,
@@ -163,6 +165,11 @@ fn trackedRecord(allocator: std.mem.Allocator, io: std.Io, board: *agent_state.B
     };
     return board.get(io, session_id);
 }
+
+const test_instance = control.InstanceId{
+    .buf = ("1-ab" ++ [_]u8{0} ** (control.max_instance_id_bytes - 4)).*,
+    .len = 4,
+};
 
 const TestSession = struct {
     const ghostty_vt = @import("ghostty-vt");
@@ -237,11 +244,12 @@ test "sendInput pastes and submits text, then marks the agent working" {
     var board = agent_state.Board{};
     defer board.deinit(allocator);
     try board.track(allocator, io, 3);
-    board.applyHook(io, 3, .done);
+    _ = board.applyHook(io, 3, .done);
     const idle_seq = (board.get(io, 3) orelse return error.TestUnexpectedResult).seq;
 
     var completion = control.Completion{};
     const slot = sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 3,
         .text = "review this\nplease",
         .require_idle = true,
@@ -275,6 +283,7 @@ test "sendInput with require_idle refuses a working agent and writes nothing" {
 
     var completion = control.Completion{};
     try std.testing.expectEqual(@as(?usize, null), sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 4,
         .text = "second message",
         .require_idle = true,
@@ -294,10 +303,11 @@ test "a second require_idle send right after a delivery is refused without any h
     var board = agent_state.Board{};
     defer board.deinit(allocator);
     try board.track(allocator, io, 8);
-    board.applyHook(io, 8, .ready);
+    _ = board.applyHook(io, 8, .ready);
 
     var first = control.Completion{};
     try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 8,
         .text = "first",
         .require_idle = true,
@@ -307,6 +317,7 @@ test "a second require_idle send right after a delivery is refused without any h
 
     var second = control.Completion{};
     try std.testing.expectEqual(@as(?usize, null), sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 8,
         .text = "second",
         .require_idle = true,
@@ -328,11 +339,12 @@ test "sendInput without submit leaves the agent idle so the next delivery is acc
     var board = agent_state.Board{};
     defer board.deinit(allocator);
     try board.track(allocator, io, 9);
-    board.applyHook(io, 9, .done);
+    _ = board.applyHook(io, 9, .done);
     const idle = board.get(io, 9) orelse return error.TestUnexpectedResult;
 
     var draft = control.Completion{};
     try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 9,
         .text = "draft",
         .submit = false,
@@ -344,6 +356,7 @@ test "sendInput without submit leaves the agent idle so the next delivery is acc
 
     var submitted = control.Completion{};
     try std.testing.expect(sendInput(allocator, io, &sessions, &board, .{
+        .instance_id = test_instance,
         .session_id = 9,
         .text = " done",
         .require_idle = true,
@@ -369,12 +382,13 @@ test "sendInput refuses carriage returns without bracketed paste and writes noth
     var board = agent_state.Board{};
     defer board.deinit(allocator);
     try board.track(allocator, io, 10);
-    board.applyHook(io, 10, .done);
+    _ = board.applyHook(io, 10, .done);
     const idle = board.get(io, 10) orelse return error.TestUnexpectedResult;
 
     for ([_]bool{ false, true }) |submit| {
         var completion = control.Completion{};
         try std.testing.expectEqual(@as(?usize, null), sendInput(allocator, io, &sessions, &board, .{
+            .instance_id = test_instance,
             .session_id = 10,
             .text = "echo one\recho two",
             .submit = submit,
@@ -397,22 +411,22 @@ test "sendInput reports missing, exited, and not-ready sessions" {
     defer board.deinit(allocator);
 
     var not_ready = control.Completion{};
-    _ = sendInput(allocator, io, &sessions, &board, .{ .session_id = 5, .text = "one\ntwo" }, &not_ready);
+    _ = sendInput(allocator, io, &sessions, &board, .{ .instance_id = test_instance, .session_id = 5, .text = "one\ntwo" }, &not_ready);
     try expectFailure(&not_ready, .input_not_ready);
 
     var missing = control.Completion{};
-    _ = sendInput(allocator, io, &sessions, &board, .{ .session_id = 99, .text = "hi" }, &missing);
+    _ = sendInput(allocator, io, &sessions, &board, .{ .instance_id = test_instance, .session_id = 99, .text = "hi" }, &missing);
     try expectFailure(&missing, .session_not_found);
 
     try board.track(allocator, io, 42);
     board.markExited(io, 42);
     var gone = control.Completion{};
-    _ = sendInput(allocator, io, &sessions, &board, .{ .session_id = 42, .text = "hi" }, &gone);
+    _ = sendInput(allocator, io, &sessions, &board, .{ .instance_id = test_instance, .session_id = 42, .text = "hi" }, &gone);
     try expectFailure(&gone, .session_exited);
 
     test_session.session.dead = true;
     var dead = control.Completion{};
-    _ = sendInput(allocator, io, &sessions, &board, .{ .session_id = 5, .text = "hi" }, &dead);
+    _ = sendInput(allocator, io, &sessions, &board, .{ .instance_id = test_instance, .session_id = 5, .text = "hi" }, &dead);
     try expectFailure(&dead, .session_exited);
 }
 

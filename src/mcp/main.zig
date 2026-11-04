@@ -143,9 +143,10 @@ fn handleToolsCall(
         try writeToolFailure(allocator, io, stdout_file, id_value, .invalid_request, control.parseErrorMessage(err));
         return;
     };
+    const target = request.targetInstance();
     request.deinit(allocator);
 
-    var reply = control.sendRequest(allocator, io, op.?, arguments) catch |err| {
+    var reply = control.sendRequest(allocator, io, op.?, arguments, if (target) |*id| id.slice() else null) catch |err| {
         var message_buf: [160]u8 = undefined;
         const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
             log.debug("failed to format Architect contact error: {}", .{fmt_err});
@@ -247,6 +248,10 @@ const Tool = struct {
     output_schema: []const u8,
 };
 
+const instance_id_schema =
+    \\{"type":"string","description":"Architect instance that owns the session, as returned by spawn_session or list_sessions. Session ids are only unique within one instance."}
+;
+
 const session_id_schema =
     \\{"type":"integer","minimum":0,"description":"Architect session id returned by spawn_session or list_sessions."}
 ;
@@ -286,11 +291,12 @@ const tools = [_]Tool{
             \\{"type":"object","additionalProperties":false,"required":["cwd"],"properties":{
             \\"cwd":{"type":"string","description":"Absolute working directory for the new Architect terminal session."},
             \\"command":{"type":"string","maxLength":1023,"description":"Optional command text typed into the new shell; Architect appends a newline. At most 1023 bytes, the terminal line limit; put longer commands in a script."},
-            \\"display_name":{"type":"string","description":"Optional display label reserved for clients and future Architect UI."}}}
+            \\"display_name":{"type":"string","description":"Optional display label reserved for clients and future Architect UI."},
+            \\"instance_id":{"type":"string","description":"Optional Architect instance to spawn in; defaults to the newest running instance."}}}
         ),
         .output_schema = oneLine(
             \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
-            \\"session_id":{"type":"integer"},"slot_index":{"type":"integer"},
+            \\"instance_id":{"type":"string"},"session_id":{"type":"integer"},"slot_index":{"type":"integer"},
         ++ error_properties ++ "}}"),
     },
     .{
@@ -298,10 +304,10 @@ const tools = [_]Tool{
         .description = "List the running Architect terminal sessions with their working directory, foreground agent, " ++
             "and agent state (driven by the agent hooks installed with `architect hook`).",
         .input_schema =
-        \\{"type":"object","additionalProperties":false,"properties":{}}
+        \\{"type":"object","additionalProperties":false,"properties":{"instance_id":{"type":"string","description":"Optional Architect instance to list; defaults to the newest running instance."}}}
         ,
         .output_schema = oneLine(
-            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
+            \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},"instance_id":{"type":"string"},
             \\"sessions":{"type":"array","items":{"type":"object","properties":{
             \\"session_id":{"type":"integer"},"slot_index":{"type":"integer"},
             \\"cwd":{"type":["string","null"]},"foreground_agent":{"type":["string","null"]},
@@ -315,8 +321,10 @@ const tools = [_]Tool{
         .description = "Type text into an Architect session as a paste, then press Enter unless submit is false. " ++
             "Use require_idle to deliver only when the agent finished its turn; the check and the write are atomic.",
         .input_schema = oneLine(
-            \\{"type":"object","additionalProperties":false,"required":["session_id","text"],"properties":{
-            \\"session_id":
+            \\{"type":"object","additionalProperties":false,"required":["instance_id","session_id","text"],"properties":{
+            \\"instance_id":
+        ++ instance_id_schema ++
+            \\,"session_id":
         ++ session_id_schema ++
             \\,"text":{"type":"string","minLength":1,"description":"Text to paste. Control characters are stripped like a user paste."},
             \\"submit":{"type":"boolean","default":true,"description":"Press Enter after the text."},
@@ -324,7 +332,7 @@ const tools = [_]Tool{
         ),
         .output_schema = oneLine(
             \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},
-            \\"session_id":{"type":"integer"},"state_seq":{"type":"integer"},"bracketed_paste":{"type":"boolean"},
+            \\"instance_id":{"type":"string"},"session_id":{"type":"integer"},"state_seq":{"type":"integer"},"bracketed_paste":{"type":"boolean"},
         ++ error_properties ++ "}}"),
     },
     .{
@@ -333,8 +341,10 @@ const tools = [_]Tool{
             "after_seq, the session exits, or timeout_ms passes. timeout_ms 0 returns the current state. " ++
             "The helper answers one call at a time, so run one helper per concurrent waiter.",
         .input_schema = oneLine(
-            \\{"type":"object","additionalProperties":false,"required":["session_id","until"],"properties":{
-            \\"session_id":
+            \\{"type":"object","additionalProperties":false,"required":["instance_id","session_id","until"],"properties":{
+            \\"instance_id":
+        ++ instance_id_schema ++
+            \\,"session_id":
         ++ session_id_schema ++
             \\,"until":{"type":"array","minItems":1,"items":
         ++ agent_state_schema ++
@@ -343,7 +353,7 @@ const tools = [_]Tool{
         ),
         .output_schema = oneLine(
             \\{"type":"object","required":["status"],"properties":{"status":{"type":"string","enum":["matched","exited","timed_out","error"]},
-            \\"session_id":{"type":"integer"},"agent_state":
+            \\"instance_id":{"type":"string"},"session_id":{"type":"integer"},"agent_state":
         ++ agent_state_schema ++
             \\,"state_seq":{"type":"integer"},
         ++ error_properties ++ "}}"),
@@ -352,10 +362,10 @@ const tools = [_]Tool{
         .op = .terminate_session,
         .description = "Close an Architect terminal session like closing its tile: the shell is terminated and the agent receives SIGHUP.",
         .input_schema =
-        \\{"type":"object","additionalProperties":false,"required":["session_id"],"properties":{"session_id":
-        ++ session_id_schema ++ "}}",
+        \\{"type":"object","additionalProperties":false,"required":["instance_id","session_id"],"properties":{"instance_id":
+        ++ instance_id_schema ++ ",\"session_id\":" ++ session_id_schema ++ "}}",
         .output_schema =
-        \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},"session_id":{"type":"integer"},
+        \\{"type":"object","required":["status"],"properties":{"status":{"type":"string"},"instance_id":{"type":"string"},"session_id":{"type":"integer"},
         ++ error_properties ++ "}}",
     },
 };
@@ -519,6 +529,19 @@ test "tools/list exposes every control operation with valid schemas on one line"
         try std.testing.expectEqualStrings("object", input_schema.object.get("type").?.string);
         const output_schema = tool.object.get("outputSchema") orelse return error.TestUnexpectedResult;
         try std.testing.expect(output_schema.object.get("properties").?.object.get("code") != null);
+        // Session ids are only unique per app, so operations on an existing
+        // session must name the instance that owns it.
+        const required = (input_schema.object.get("required") orelse std.json.Value{ .array = .init(allocator) }).array.items;
+        var requires_instance = false;
+        for (required) |field| {
+            if (std.mem.eql(u8, field.string, "instance_id")) requires_instance = true;
+        }
+        const session_op = switch (op) {
+            .send_input, .wait_for_session, .terminate_session => true,
+            .spawn_session, .list_sessions => false,
+        };
+        try std.testing.expectEqual(session_op, requires_instance);
+        try std.testing.expect(input_schema.object.get("properties").?.object.get("instance_id") != null);
     }
 }
 

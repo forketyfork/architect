@@ -73,6 +73,17 @@ pub fn stateAfterHook(current: AgentState, signal: HookSignal) ?AgentState {
     };
 }
 
+/// How the board took a hook signal. The tile UI follows the board except
+/// for the idle reminder: it still shows that the agent wants attention,
+/// while the orchestration state stays `idle`.
+pub const HookOutcome = enum {
+    accepted,
+    /// An `awaiting_approval` received while idle: Claude Code's reminder.
+    idle_reminder,
+    /// The session is untracked or exited, or the signal does not apply.
+    ignored,
+};
+
 pub const WaitCondition = struct {
     until: StateSet,
     after_seq: u64 = 0,
@@ -120,17 +131,21 @@ pub const Board = struct {
         if (try changed) self.notifyChange();
     }
 
-    pub fn applyHook(self: *Board, io: std.Io, session_id: usize, signal: HookSignal) void {
-        const changed = blk: {
+    pub fn applyHook(self: *Board, io: std.Io, session_id: usize, signal: HookSignal) HookOutcome {
+        const outcome: HookOutcome = blk: {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
-            const idx = self.indexOf(session_id) orelse break :blk false;
+            const idx = self.indexOf(session_id) orelse break :blk .ignored;
             const record = &self.records.items[idx];
-            const next = stateAfterHook(record.state, signal) orelse break :blk false;
+            const next = stateAfterHook(record.state, signal) orelse {
+                const reminder = record.state == .idle and signal == .awaiting_approval;
+                break :blk if (reminder) .idle_reminder else .ignored;
+            };
             self.setLocked(record, next);
-            break :blk true;
+            break :blk .accepted;
         };
-        if (changed) self.notifyChange();
+        if (outcome == .accepted) self.notifyChange();
+        return outcome;
     }
 
     /// Records that input was written to the session's terminal and returns
@@ -299,15 +314,15 @@ test "Board tracks deliveries and hooks with increasing sequence numbers" {
     try std.testing.expect(delivered_seq > tracked.seq);
     try std.testing.expectEqual(AgentState.working, board.get(io, 7).?.state);
 
-    board.applyHook(io, 7, .done);
+    _ = board.applyHook(io, 7, .done);
     const idle = board.get(io, 7) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(AgentState.idle, idle.state);
     try std.testing.expect(idle.seq > delivered_seq);
 
-    board.applyHook(io, 7, .awaiting_approval);
+    try std.testing.expectEqual(HookOutcome.idle_reminder, board.applyHook(io, 7, .awaiting_approval));
     try std.testing.expectEqual(idle, board.get(io, 7).?);
 
-    board.applyHook(io, 99, .done);
+    _ = board.applyHook(io, 99, .done);
     try std.testing.expectEqual(@as(?Record, null), board.get(io, 99));
     try std.testing.expectEqual(@as(?u64, null), board.markDelivered(io, 99));
 }
@@ -376,4 +391,19 @@ test "Board keeps a bounded number of exited records, dropping the oldest" {
     try std.testing.expectEqual(@as(?Record, null), board.get(io, 0));
     try std.testing.expectEqual(@as(?Record, null), board.get(io, 1));
     try std.testing.expectEqual(AgentState.exited, board.get(io, max_exited_records + 1).?.state);
+}
+
+test "applyHook reports why a signal was ignored" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var board = Board{};
+    defer board.deinit(allocator);
+
+    try std.testing.expectEqual(HookOutcome.ignored, board.applyHook(io, 1, .done));
+    try board.track(allocator, io, 1);
+    try std.testing.expectEqual(HookOutcome.accepted, board.applyHook(io, 1, .ready));
+    try std.testing.expectEqual(HookOutcome.ignored, board.applyHook(io, 1, .ready));
+    try std.testing.expectEqual(HookOutcome.idle_reminder, board.applyHook(io, 1, .awaiting_approval));
+    board.markExited(io, 1);
+    try std.testing.expectEqual(HookOutcome.ignored, board.applyHook(io, 1, .awaiting_approval));
 }

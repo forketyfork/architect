@@ -76,6 +76,13 @@ received in the `idle` state leaves the state unchanged. Without this rule an
 idle agent would look blocked a minute after every turn and `require_idle`
 deliveries would fail.
 
+The tile follows the agent state with one deliberate exception. Before this
+change every `Notification`, including the reminder, gave the tile its
+"wants attention" highlight, and users rely on that. So an ignored
+`awaiting_approval` received while the state is `idle` still updates the tile;
+every other ignored signal (a mid-turn `ready`, any signal for an exited
+session) leaves the tile unchanged.
+
 Delivery itself never depends on a hook: `send_input` with `submit` moves the
 state to `working` and takes a new `state_seq` in the same main-thread step as
 the write, for every CLI. Hooks are needed for the other transitions:
@@ -193,15 +200,26 @@ process per waiter; each holds one parked connection.
 All tools return MCP structured content. Failures are tool errors
 (`isError: true`) with `status: "error"`, a stable `code`, and a `message`.
 `session_id` is the id returned by `spawn_session` and exported to the shell as
-`ARCHITECT_SESSION_ID`; ids are never reused within one Architect process.
+`ARCHITECT_SESSION_ID`; ids are never reused within one Architect process, but
+every process starts again at 0. A session is therefore addressed by the pair
+(`instance_id`, `session_id`). Each app generates `instance_id` (pid plus a
+random 64-bit value, so a reused pid does not collide) at startup and publishes
+it in its discovery file. `architect-mcp` routes a request that names an
+instance only to that instance's socket and fails with `instance_not_found`
+when it is not running; the app also rejects a request naming another
+instance, which covers stale discovery files. There is no fallback to the
+newest instance for session operations, because a second Architect window
+opened mid-conversation would otherwise receive pastes and terminations meant
+for the first. Routing is stateless per request, so separate helper processes
+(one per concurrent waiter) behave the same.
 
 | Tool | Arguments | Success result |
 | --- | --- | --- |
-| `spawn_session` | `cwd`, optional `command`, `display_name` | `status: "spawned"`, `session_id`, `slot_index` (unchanged) |
-| `list_sessions` | none | `status: "ok"`, `sessions[]` of `session_id`, `slot_index`, `cwd`, `foreground_agent`, `agent_state`, `state_seq` |
-| `send_input` | `session_id`, `text`, optional `submit` (default `true`), `require_idle` (default `false`) | `status: "sent"`, `session_id`, `state_seq`, `bracketed_paste` |
-| `wait_for_session` | `session_id`, `until` (non-empty list of states), optional `after_seq`, `timeout_ms` (default 30000, max 600000) | `status: "matched"`, `"exited"`, or `"timed_out"`, with `session_id`, `agent_state`, `state_seq` |
-| `terminate_session` | `session_id` | `status: "terminated"`, `session_id` |
+| `spawn_session` | `cwd`, optional `command`, `display_name`, `instance_id` | `status: "spawned"`, `instance_id`, `session_id`, `slot_index` |
+| `list_sessions` | optional `instance_id` | `status: "ok"`, `instance_id`, `sessions[]` of `session_id`, `slot_index`, `cwd`, `foreground_agent`, `agent_state`, `state_seq` |
+| `send_input` | `instance_id`, `session_id`, `text`, optional `submit` (default `true`), `require_idle` (default `false`) | `status: "sent"`, `instance_id`, `session_id`, `state_seq`, `bracketed_paste` |
+| `wait_for_session` | `instance_id`, `session_id`, `until` (non-empty list of states), optional `after_seq`, `timeout_ms` (default 30000, max 600000) | `status: "matched"`, `"exited"`, or `"timed_out"`, with `instance_id`, `session_id`, `agent_state`, `state_seq` |
+| `terminate_session` | `instance_id`, `session_id` | `status: "terminated"`, `instance_id`, `session_id` |
 
 Semantics:
 
@@ -224,9 +242,10 @@ Semantics:
   shell gets SIGTERM, the PTY closes, and the agent receives SIGHUP. The grid
   compacts the same way.
 
-Error codes added to the existing set: `session_not_found`, `session_exited`,
-`session_busy` (`require_idle` failed), `input_not_ready`, `too_many_waiters`
-(more than 64 parked waits).
+Error codes added to the existing set: `session_not_found`,
+`instance_not_found`, `session_exited`, `session_busy` (`require_idle`
+failed), `input_not_ready`, `input_failed`, `too_many_waiters` (more than 64
+parked waits), `internal_error`.
 
 ## Per-conversation context
 
@@ -251,12 +270,12 @@ looks for an agent job under the shell, so `list_sessions` reports
 
 | Mu runner today | With Architect |
 | --- | --- |
-| New `claude -p`/`codex exec` per message, `--resume` by `sessionIds[conversation]` | One Architect session per agent and conversation, started once with `spawn_session` (`command` as above); Mu stores `architect_session_id` next to the native session id |
+| New `claude -p`/`codex exec` per message, `--resume` by `sessionIds[conversation]` | One Architect session per agent and conversation, started once with `spawn_session` (`command` as above); Mu stores `instance_id` and `session_id` from the result next to the native session id |
 | Write the prompt to the child's stdin | `wait_for_session(until: ["idle"], timeout_ms: …)`, then `send_input(text, require_idle: true)`; retry on `session_busy` |
 | Wait for the child to exit | `wait_for_session(until: ["idle", "awaiting_approval"], after_seq: <seq from send_input>)`; `awaiting_approval` means a human is needed in Architect |
 | Parse the final text from stream-json | Not provided by Architect: the agent replies with the Mu CLI itself (as the manual adapter already does), or Mu reads the native transcript. Claude's `Stop` hook can fire before the last assistant line is flushed to the transcript JSONL (seen in the verification run), so a transcript reader must tolerate a short delay after `idle` |
 | `stop(id)` kills the process group | `terminate_session` for each of the agent's Architect sessions |
-| Runner restart | `list_sessions` to re-check stored ids; a missing id means the session is gone and must be re-spawned with `--resume` |
+| Runner restart | `list_sessions` with the stored `instance_id` to re-check stored ids; `instance_not_found` or a missing id means the session is gone and must be re-spawned with `--resume` |
 
 ## Rejected alternatives
 

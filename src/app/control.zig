@@ -43,6 +43,7 @@ pub const ErrorCode = enum {
     invalid_cwd,
     spawn_failed,
     session_not_found,
+    instance_not_found,
     session_exited,
     session_busy,
     input_not_ready,
@@ -72,10 +73,50 @@ pub const Op = enum {
     }
 };
 
+pub const max_instance_id_bytes: usize = 32;
+
+/// Identifies one running Architect app. Session ids restart at 0 in every
+/// app, so a session reference is only meaningful together with the
+/// instance that issued it; the pid alone could be reused after a restart.
+pub const InstanceId = struct {
+    buf: [max_instance_id_bytes]u8 = undefined,
+    len: usize = 0,
+
+    pub fn generate(io: std.Io) error{NoSpaceLeft}!InstanceId {
+        var nonce: u64 = undefined;
+        std.Io.random(io, std.mem.asBytes(&nonce));
+        var id = InstanceId{};
+        const written = try std.fmt.bufPrint(&id.buf, "{d}-{x:0>16}", .{ std.c.getpid(), nonce });
+        id.len = written.len;
+        return id;
+    }
+
+    pub fn fromSlice(value: []const u8) error{InvalidInstanceId}!InstanceId {
+        if (value.len == 0 or value.len > max_instance_id_bytes) return error.InvalidInstanceId;
+        for (value) |byte| {
+            const valid = std.ascii.isDigit(byte) or (byte >= 'a' and byte <= 'f') or byte == '-';
+            if (!valid) return error.InvalidInstanceId;
+        }
+        var id = InstanceId{};
+        @memcpy(id.buf[0..value.len], value);
+        id.len = value.len;
+        return id;
+    }
+
+    pub fn slice(self: *const InstanceId) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    pub fn eql(self: *const InstanceId, other: []const u8) bool {
+        return std.mem.eql(u8, self.slice(), other);
+    }
+};
+
 pub const SpawnRequest = struct {
     cwd: []const u8,
     command: ?[]const u8 = null,
     display_name: ?[]const u8 = null,
+    instance_id: ?InstanceId = null,
 
     pub fn deinit(self: *SpawnRequest, allocator: std.mem.Allocator) void {
         allocator.free(self.cwd);
@@ -85,7 +126,12 @@ pub const SpawnRequest = struct {
     }
 };
 
+pub const ListRequest = struct {
+    instance_id: ?InstanceId = null,
+};
+
 pub const SendInputRequest = struct {
+    instance_id: InstanceId,
     session_id: usize,
     text: []const u8,
     submit: bool = true,
@@ -98,18 +144,20 @@ pub const SendInputRequest = struct {
 };
 
 pub const WaitRequest = struct {
+    instance_id: InstanceId,
     session_id: usize,
     condition: agent_state.WaitCondition,
     timeout_ms: u32 = default_wait_timeout_ms,
 };
 
 pub const TerminateRequest = struct {
+    instance_id: InstanceId,
     session_id: usize,
 };
 
 pub const Request = union(Op) {
     spawn_session: SpawnRequest,
-    list_sessions,
+    list_sessions: ListRequest,
     send_input: SendInputRequest,
     wait_for_session: WaitRequest,
     terminate_session: TerminateRequest,
@@ -122,10 +170,23 @@ pub const Request = union(Op) {
         }
         self.* = undefined;
     }
+
+    /// The instance the request is addressed to, if it names one. Session
+    /// operations always do; spawn and list may leave it to the newest app.
+    pub fn targetInstance(self: *const Request) ?InstanceId {
+        return switch (self.*) {
+            .spawn_session => |spawn| spawn.instance_id,
+            .list_sessions => |list| list.instance_id,
+            .send_input => |send| send.instance_id,
+            .wait_for_session => |wait| wait.instance_id,
+            .terminate_session => |terminate| terminate.instance_id,
+        };
+    }
 };
 
 pub const SpawnResult = struct {
     status: []const u8 = "spawned",
+    instance_id: []const u8,
     session_id: usize,
     slot_index: usize,
 };
@@ -141,11 +202,13 @@ pub const SessionInfo = struct {
 
 pub const ListResult = struct {
     status: []const u8 = "ok",
+    instance_id: []const u8,
     sessions: []const SessionInfo,
 };
 
 pub const SendResult = struct {
     status: []const u8 = "sent",
+    instance_id: []const u8,
     session_id: usize,
     state_seq: u64,
     bracketed_paste: bool,
@@ -153,6 +216,7 @@ pub const SendResult = struct {
 
 pub const TerminateResult = struct {
     status: []const u8 = "terminated",
+    instance_id: []const u8,
     session_id: usize,
 };
 
@@ -164,6 +228,7 @@ pub const WaitStatus = enum {
 
 pub const WaitResult = struct {
     status: WaitStatus,
+    instance_id: []const u8,
     session_id: usize,
     agent_state: agent_state.AgentState,
     state_seq: u64,
@@ -291,6 +356,8 @@ pub const ParseError = error{
     InvalidCwd,
     InvalidCommand,
     InvalidDisplayName,
+    MissingInstanceId,
+    InvalidInstanceId,
     MissingSessionId,
     InvalidSessionId,
     MissingText,
@@ -315,6 +382,8 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.InvalidCwd => "cwd must be a non-empty string",
         error.InvalidCommand => "command must be a non-empty string of at most 1023 bytes when provided; put longer commands in a script",
         error.InvalidDisplayName => "display_name must be a non-empty string when provided",
+        error.MissingInstanceId => "instance_id is required; use the instance_id returned by spawn_session or list_sessions",
+        error.InvalidInstanceId => "instance_id must be an instance id returned by Architect",
         error.MissingSessionId => "session_id is required",
         error.InvalidSessionId => "session_id must be a non-negative integer",
         error.MissingText => "text is required",
@@ -363,12 +432,7 @@ pub fn parseArguments(allocator: std.mem.Allocator, op: Op, arguments: ?std.json
 
     return switch (op) {
         .spawn_session => .{ .spawn_session = try parseSpawnArguments(allocator, object) },
-        .list_sessions => blk: {
-            if (object) |map| {
-                if (map.count() > 0) return error.UnknownField;
-            }
-            break :blk .list_sessions;
-        },
+        .list_sessions => .{ .list_sessions = try parseListArguments(object) },
         .send_input => .{ .send_input = try parseSendInputArguments(allocator, object) },
         .wait_for_session => .{ .wait_for_session = try parseWaitArguments(object) },
         .terminate_session => .{ .terminate_session = try parseTerminateArguments(object) },
@@ -381,6 +445,7 @@ fn parseSpawnArguments(allocator: std.mem.Allocator, object: ?std.json.ObjectMap
     var cwd: ?[]const u8 = null;
     var command: ?[]const u8 = null;
     var display_name: ?[]const u8 = null;
+    var instance_id: ?InstanceId = null;
     errdefer {
         if (cwd) |value| allocator.free(value);
         if (command) |value| allocator.free(value);
@@ -400,6 +465,8 @@ fn parseSpawnArguments(allocator: std.mem.Allocator, object: ?std.json.ObjectMap
         } else if (std.mem.eql(u8, key, "display_name")) {
             if (field_value == .null) continue;
             display_name = try duplicateStringField(allocator, field_value, max_display_name_bytes, error.InvalidDisplayName);
+        } else if (std.mem.eql(u8, key, "instance_id")) {
+            instance_id = try parseInstanceId(field_value);
         } else {
             return error.UnknownField;
         }
@@ -409,12 +476,28 @@ fn parseSpawnArguments(allocator: std.mem.Allocator, object: ?std.json.ObjectMap
         .cwd = cwd orelse return error.MissingCwd,
         .command = command,
         .display_name = display_name,
+        .instance_id = instance_id,
     };
+}
+
+fn parseListArguments(object: ?std.json.ObjectMap) ParseError!ListRequest {
+    const map = object orelse return .{};
+    var request = ListRequest{};
+    var iter = map.iterator();
+    while (iter.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "instance_id")) {
+            request.instance_id = try parseInstanceId(entry.value_ptr.*);
+        } else {
+            return error.UnknownField;
+        }
+    }
+    return request;
 }
 
 fn parseSendInputArguments(allocator: std.mem.Allocator, object: ?std.json.ObjectMap) ParseError!SendInputRequest {
     const map = object orelse return error.MissingSessionId;
 
+    var instance_id: ?InstanceId = null;
     var session_id: ?usize = null;
     var text: ?[]const u8 = null;
     var submit = true;
@@ -426,7 +509,9 @@ fn parseSendInputArguments(allocator: std.mem.Allocator, object: ?std.json.Objec
         const key = entry.key_ptr.*;
         const field_value = entry.value_ptr.*;
 
-        if (std.mem.eql(u8, key, "session_id")) {
+        if (std.mem.eql(u8, key, "instance_id")) {
+            instance_id = try parseInstanceId(field_value);
+        } else if (std.mem.eql(u8, key, "session_id")) {
             session_id = try parseSessionId(field_value);
         } else if (std.mem.eql(u8, key, "text")) {
             text = try duplicateStringField(allocator, field_value, max_text_bytes, error.InvalidText);
@@ -442,6 +527,7 @@ fn parseSendInputArguments(allocator: std.mem.Allocator, object: ?std.json.Objec
     }
 
     return .{
+        .instance_id = instance_id orelse return error.MissingInstanceId,
         .session_id = session_id orelse return error.MissingSessionId,
         .text = text orelse return error.MissingText,
         .submit = submit,
@@ -452,6 +538,7 @@ fn parseSendInputArguments(allocator: std.mem.Allocator, object: ?std.json.Objec
 fn parseWaitArguments(object: ?std.json.ObjectMap) ParseError!WaitRequest {
     const map = object orelse return error.MissingSessionId;
 
+    var instance_id: ?InstanceId = null;
     var session_id: ?usize = null;
     var until: ?agent_state.StateSet = null;
     var after_seq: u64 = 0;
@@ -462,7 +549,9 @@ fn parseWaitArguments(object: ?std.json.ObjectMap) ParseError!WaitRequest {
         const key = entry.key_ptr.*;
         const field_value = entry.value_ptr.*;
 
-        if (std.mem.eql(u8, key, "session_id")) {
+        if (std.mem.eql(u8, key, "instance_id")) {
+            instance_id = try parseInstanceId(field_value);
+        } else if (std.mem.eql(u8, key, "session_id")) {
             session_id = try parseSessionId(field_value);
         } else if (std.mem.eql(u8, key, "until")) {
             until = try parseStateSet(field_value);
@@ -480,6 +569,7 @@ fn parseWaitArguments(object: ?std.json.ObjectMap) ParseError!WaitRequest {
     }
 
     return .{
+        .instance_id = instance_id orelse return error.MissingInstanceId,
         .session_id = session_id orelse return error.MissingSessionId,
         .condition = .{
             .until = until orelse return error.MissingUntil,
@@ -492,17 +582,28 @@ fn parseWaitArguments(object: ?std.json.ObjectMap) ParseError!WaitRequest {
 fn parseTerminateArguments(object: ?std.json.ObjectMap) ParseError!TerminateRequest {
     const map = object orelse return error.MissingSessionId;
 
+    var instance_id: ?InstanceId = null;
     var session_id: ?usize = null;
     var iter = map.iterator();
     while (iter.next()) |entry| {
-        if (std.mem.eql(u8, entry.key_ptr.*, "session_id")) {
+        if (std.mem.eql(u8, entry.key_ptr.*, "instance_id")) {
+            instance_id = try parseInstanceId(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, entry.key_ptr.*, "session_id")) {
             session_id = try parseSessionId(entry.value_ptr.*);
         } else {
             return error.UnknownField;
         }
     }
 
-    return .{ .session_id = session_id orelse return error.MissingSessionId };
+    return .{
+        .instance_id = instance_id orelse return error.MissingInstanceId,
+        .session_id = session_id orelse return error.MissingSessionId,
+    };
+}
+
+fn parseInstanceId(value: std.json.Value) ParseError!InstanceId {
+    if (value != .string) return error.InvalidInstanceId;
+    return InstanceId.fromSlice(value.string) catch return error.InvalidInstanceId;
 }
 
 fn parseSessionId(value: std.json.Value) ParseError!usize {
@@ -696,6 +797,7 @@ const ControlContext = struct {
     io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
+    instance_id: InstanceId,
     queue: *RequestQueue,
     board: *agent_state.Board,
     stop: *atomic.Value(bool),
@@ -719,6 +821,7 @@ pub fn startControlThread(
     io: std.Io,
     socket_path: [:0]const u8,
     discovery_path: []const u8,
+    instance_id: InstanceId,
     queue: *RequestQueue,
     board: *agent_state.Board,
     stop: *atomic.Value(bool),
@@ -735,6 +838,7 @@ pub fn startControlThread(
         .io = io,
         .socket_path = socket_path,
         .discovery_path = discovery_path,
+        .instance_id = instance_id,
         .queue = queue,
         .board = board,
         .stop = stop,
@@ -810,7 +914,7 @@ fn controlThreadMain(ctx: ControlContext) !void {
     std.Io.Dir.cwd().setFilePermissions(ctx.io, sock_path, .fromMode(0o600), .{}) catch |err| {
         log.warn("failed to chmod control socket: {}", .{err});
     };
-    writeDiscoveryFile(ctx.allocator, ctx.io, ctx.discovery_path, sock_path) catch |err| {
+    writeDiscoveryFile(ctx.allocator, ctx.io, ctx.discovery_path, sock_path, ctx.instance_id.slice()) catch |err| {
         log.warn("failed to write control discovery file: {}", .{err});
     };
 
@@ -926,6 +1030,7 @@ fn waitStatus(outcome: agent_state.WaitOutcome) WaitStatus {
 fn writeWaitResult(ctx: *const ControlContext, fd: posix.fd_t, record: agent_state.Record, outcome: agent_state.WaitOutcome) void {
     const reply = successReply(ctx.allocator, WaitResult, .{
         .status = waitStatus(outcome),
+        .instance_id = ctx.instance_id.slice(),
         .session_id = record.session_id,
         .agent_state = record.state,
         .state_seq = record.seq,
@@ -959,6 +1064,20 @@ fn handleControlConnection(ctx: *const ControlContext, conn_fd: posix.fd_t, park
         writeFailure(allocator, io, conn_fd, .{ .code = .invalid_request, .message = parseErrorMessage(err) });
         return false;
     };
+
+    // The client picked this socket from a discovery file; a stale file (or a
+    // reused pid) can point it at another app, whose session ids mean
+    // something else entirely.
+    if (request.targetInstance()) |target| {
+        if (!ctx.instance_id.eql(target.slice())) {
+            request.deinit(allocator);
+            writeFailure(allocator, io, conn_fd, .{
+                .code = .instance_not_found,
+                .message = "the request names a different Architect instance",
+            });
+            return false;
+        }
+    }
 
     switch (request) {
         .wait_for_session => |wait| return handleWaitRequest(ctx, conn_fd, wait, parked),
@@ -1076,8 +1195,8 @@ fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
     }
 }
 
-fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, socket_path: []const u8) !void {
-    const payload = try discoveryPayloadAlloc(allocator, socket_path);
+fn writeDiscoveryFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, socket_path: []const u8, instance_id: []const u8) !void {
+    const payload = try discoveryPayloadAlloc(allocator, socket_path, instance_id);
     defer allocator.free(payload);
 
     const dir_path = std.fs.path.dirname(path) orelse return error.InvalidDiscoveryPath;
@@ -1123,7 +1242,7 @@ fn deleteTempDiscoveryFile(io: std.Io, dir: *std.Io.Dir, temp_name: []const u8) 
     };
 }
 
-fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8, instance_id: []const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var json: std.json.Stringify = .{ .writer = &out.writer };
@@ -1133,6 +1252,8 @@ fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8) 
     try json.write(std.c.getpid());
     try json.objectField("socket_path");
     try json.write(socket_path);
+    try json.objectField("instance_id");
+    try json.write(instance_id);
     try json.endObject();
     try out.writer.writeByte('\n');
 
@@ -1212,15 +1333,34 @@ pub const ClientReply = struct {
 
 /// Sends one request to the newest reachable Architect instance and returns
 /// its reply. `arguments` is forwarded as-is; the app validates it again.
+/// Sends one request and returns its reply. With a `target` instance id the
+/// request goes to that app only; without one it goes to the newest
+/// reachable app. A target that is not running is an error, never a reason
+/// to fall back to another app: session ids are only unique per app.
 pub fn sendRequest(
     allocator: std.mem.Allocator,
     io: std.Io,
     op: Op,
     arguments: ?std.json.Value,
+    target: ?[]const u8,
 ) !ClientReply {
-    var connection = connectToNewestControlSocket(allocator, io) catch |err| switch (err) {
+    var runtime_dir = try controlRuntimeDirAlloc(allocator, io);
+    defer runtime_dir.deinit(allocator);
+    return sendRequestIn(allocator, io, runtime_dir.path, op, arguments, target);
+}
+
+fn sendRequestIn(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    runtime_dir: []const u8,
+    op: Op,
+    arguments: ?std.json.Value,
+    target: ?[]const u8,
+) !ClientReply {
+    var connection = connectToControlSocket(allocator, io, runtime_dir, target) catch |err| switch (err) {
         error.NoControlDiscoveryFile => return staticFailure(.app_not_running, "Architect is not running"),
         error.NoLiveControlSocket => return staticFailure(.app_not_running, "Architect is not accepting control requests"),
+        error.TargetInstanceNotRunning => return staticFailure(.instance_not_found, "the Architect instance named by instance_id is not running"),
         else => return err,
     };
     defer connection.deinit(allocator);
@@ -1276,22 +1416,47 @@ const ControlConnection = struct {
 
 const DiscoveryCandidate = struct {
     socket_path: []const u8,
+    /// Null for discovery files written by Architect versions without one.
+    instance_id: ?[]const u8,
     mtime: std.Io.Timestamp,
 
     fn deinit(self: *DiscoveryCandidate, allocator: std.mem.Allocator) void {
         allocator.free(self.socket_path);
+        if (self.instance_id) |id| allocator.free(id);
         self.* = undefined;
     }
 };
 
-fn connectToNewestControlSocket(allocator: std.mem.Allocator, io: std.Io) !ControlConnection {
-    var candidates = try discoverControlCandidates(allocator, io);
+const DiscoveryEntry = struct {
+    socket_path: []const u8,
+    instance_id: ?[]const u8,
+};
+
+fn connectToControlSocket(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    runtime_dir: []const u8,
+    target: ?[]const u8,
+) !ControlConnection {
+    var candidates = try discoverControlCandidates(allocator, io, runtime_dir);
     defer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
     }
 
     if (candidates.items.len == 0) return error.NoControlDiscoveryFile;
+
+    if (target) |wanted| {
+        var idx: usize = candidates.items.len;
+        while (idx > 0) {
+            idx -= 1;
+            const matches = if (candidates.items[idx].instance_id) |id| std.mem.eql(u8, id, wanted) else false;
+            if (matches) continue;
+            var removed = candidates.swapRemove(idx);
+            removed.deinit(allocator);
+        }
+        if (candidates.items.len == 0) return error.TargetInstanceNotRunning;
+    }
 
     while (candidates.items.len > 0) {
         const idx = newestDiscoveryCandidateIndex(candidates.items);
@@ -1309,20 +1474,17 @@ fn connectToNewestControlSocket(allocator: std.mem.Allocator, io: std.Io) !Contr
         };
     }
 
-    return error.NoLiveControlSocket;
+    return if (target != null) error.TargetInstanceNotRunning else error.NoLiveControlSocket;
 }
 
-fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.ArrayList(DiscoveryCandidate) {
+fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io, runtime_dir: []const u8) !std.ArrayList(DiscoveryCandidate) {
     var candidates: std.ArrayList(DiscoveryCandidate) = .empty;
     errdefer {
         for (candidates.items) |*candidate| candidate.deinit(allocator);
         candidates.deinit(allocator);
     }
 
-    var runtime_dir = try controlRuntimeDirAlloc(allocator, io);
-    defer runtime_dir.deinit(allocator);
-
-    var dir = std.Io.Dir.openDirAbsolute(io, runtime_dir.path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(io, runtime_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return candidates,
         else => return err,
     };
@@ -1346,16 +1508,18 @@ fn discoverControlCandidates(allocator: std.mem.Allocator, io: std.Io) !std.Arra
         };
         defer allocator.free(discovery);
 
-        const socket_path = parseDiscoverySocketPath(allocator, discovery) catch |err| {
+        const parsed_entry = parseDiscoveryEntry(allocator, discovery) catch |err| {
             log.debug("failed to parse control discovery file {s}: {}", .{ entry.name, err });
             continue;
         };
 
         candidates.append(allocator, .{
-            .socket_path = socket_path,
+            .socket_path = parsed_entry.socket_path,
+            .instance_id = parsed_entry.instance_id,
             .mtime = stat.mtime,
         }) catch |err| {
-            allocator.free(socket_path);
+            allocator.free(parsed_entry.socket_path);
+            if (parsed_entry.instance_id) |id| allocator.free(id);
             return err;
         };
     }
@@ -1379,14 +1543,22 @@ fn connectControlSocket(io: std.Io, socket_path: []const u8) !posix.fd_t {
     return stream.socket.handle;
 }
 
-fn parseDiscoverySocketPath(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+fn parseDiscoveryEntry(allocator: std.mem.Allocator, bytes: []const u8) !DiscoveryEntry {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
     defer parsed.deinit();
 
     if (parsed.value != .object) return error.InvalidDiscovery;
     const socket_value = parsed.value.object.get("socket_path") orelse return error.InvalidDiscovery;
     if (socket_value != .string or socket_value.string.len == 0) return error.InvalidDiscovery;
-    return try allocator.dupe(u8, socket_value.string);
+    const instance_value = parsed.value.object.get("instance_id");
+    if (instance_value) |value| {
+        if (value != .string) return error.InvalidDiscovery;
+    }
+
+    const socket_path = try allocator.dupe(u8, socket_value.string);
+    errdefer allocator.free(socket_path);
+    const instance_id = if (instance_value) |value| try allocator.dupe(u8, value.string) else null;
+    return .{ .socket_path = socket_path, .instance_id = instance_id };
 }
 
 fn parseRequestText(allocator: std.mem.Allocator, text: []const u8) !Request {
@@ -1407,15 +1579,21 @@ test "parseRequest accepts every operation and applies defaults" {
     var list = try parseRequestText(allocator, "{\"op\":\"list_sessions\"}");
     defer list.deinit(allocator);
     try std.testing.expect(list == .list_sessions);
+    try std.testing.expectEqual(@as(?InstanceId, null), list.targetInstance());
 
-    var send = try parseRequestText(allocator, "{\"op\":\"send_input\",\"arguments\":{\"session_id\":4,\"text\":\"hello\"}}");
+    var targeted_list = try parseRequestText(allocator, "{\"op\":\"list_sessions\",\"arguments\":{\"instance_id\":\"42-0f\"}}");
+    defer targeted_list.deinit(allocator);
+    const target = targeted_list.targetInstance() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("42-0f", target.slice());
+
+    var send = try parseRequestText(allocator, "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":4,\"text\":\"hello\"}}");
     defer send.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 4), send.send_input.session_id);
     try std.testing.expectEqualStrings("hello", send.send_input.text);
     try std.testing.expect(send.send_input.submit);
     try std.testing.expect(!send.send_input.require_idle);
 
-    var wait = try parseRequestText(allocator, "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":2,\"until\":[\"idle\",\"exited\"],\"after_seq\":9,\"timeout_ms\":0}}");
+    var wait = try parseRequestText(allocator, "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":2,\"until\":[\"idle\",\"exited\"],\"after_seq\":9,\"timeout_ms\":0}}");
     defer wait.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 2), wait.wait_for_session.session_id);
     try std.testing.expect(wait.wait_for_session.condition.until.contains(.idle));
@@ -1424,12 +1602,12 @@ test "parseRequest accepts every operation and applies defaults" {
     try std.testing.expectEqual(@as(u64, 9), wait.wait_for_session.condition.after_seq);
     try std.testing.expectEqual(@as(u32, 0), wait.wait_for_session.timeout_ms);
 
-    var default_wait = try parseRequestText(allocator, "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":2,\"until\":[\"idle\"]}}");
+    var default_wait = try parseRequestText(allocator, "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":2,\"until\":[\"idle\"]}}");
     defer default_wait.deinit(allocator);
     try std.testing.expectEqual(default_wait_timeout_ms, default_wait.wait_for_session.timeout_ms);
     try std.testing.expectEqual(@as(u64, 0), default_wait.wait_for_session.condition.after_seq);
 
-    var terminate = try parseRequestText(allocator, "{\"op\":\"terminate_session\",\"arguments\":{\"session_id\":0}}");
+    var terminate = try parseRequestText(allocator, "{\"op\":\"terminate_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":0}}");
     defer terminate.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), terminate.terminate_session.session_id);
 }
@@ -1450,20 +1628,26 @@ test "parseRequest rejects invalid shapes with specific errors" {
         .{ .text = "{\"op\":\"spawn_session\",\"arguments\":{\"cwd\":7}}", .err = error.InvalidCwd },
         .{ .text = "{\"op\":\"spawn_session\",\"arguments\":{\"cwd\":\"/tmp\",\"command\":\"\"}}", .err = error.InvalidCommand },
         .{ .text = "{\"op\":\"spawn_session\",\"arguments\":{\"cwd\":\"/tmp\",\"extra\":true}}", .err = error.UnknownField },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"text\":\"hi\"}}", .err = error.MissingSessionId },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":-1,\"text\":\"hi\"}}", .err = error.InvalidSessionId },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1}}", .err = error.MissingText },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1,\"text\":\"\"}}", .err = error.InvalidText },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1,\"text\":\"a\\u0000b\"}}", .err = error.InvalidText },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1,\"text\":\"hi\",\"submit\":\"yes\"}}", .err = error.InvalidSubmit },
-        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1,\"text\":\"hi\",\"require_idle\":1}}", .err = error.InvalidRequireIdle },
-        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1}}", .err = error.MissingUntil },
-        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[]}}", .err = error.InvalidUntil },
-        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"sleeping\"]}}", .err = error.InvalidUntil },
-        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"idle\"],\"after_seq\":-2}}", .err = error.InvalidAfterSeq },
-        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":600001}}", .err = error.InvalidTimeout },
-        .{ .text = "{\"op\":\"terminate_session\",\"arguments\":{}}", .err = error.MissingSessionId },
-        .{ .text = "{\"op\":\"terminate_session\",\"arguments\":{\"session_id\":1,\"force\":true}}", .err = error.UnknownField },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"text\":\"hi\"}}", .err = error.MissingSessionId },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":-1,\"text\":\"hi\"}}", .err = error.InvalidSessionId },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1}}", .err = error.MissingText },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"text\":\"\"}}", .err = error.InvalidText },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"text\":\"a\\u0000b\"}}", .err = error.InvalidText },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"text\":\"hi\",\"submit\":\"yes\"}}", .err = error.InvalidSubmit },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"text\":\"hi\",\"require_idle\":1}}", .err = error.InvalidRequireIdle },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1}}", .err = error.MissingUntil },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[]}}", .err = error.InvalidUntil },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"sleeping\"]}}", .err = error.InvalidUntil },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"idle\"],\"after_seq\":-2}}", .err = error.InvalidAfterSeq },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":600001}}", .err = error.InvalidTimeout },
+        .{ .text = "{\"op\":\"terminate_session\",\"arguments\":{\"instance_id\":\"1-ab\"}}", .err = error.MissingSessionId },
+        .{ .text = "{\"op\":\"terminate_session\",\"arguments\":{\"session_id\":1}}", .err = error.MissingInstanceId },
+        .{ .text = "{\"op\":\"send_input\",\"arguments\":{\"session_id\":1,\"text\":\"hi\"}}", .err = error.MissingInstanceId },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"idle\"]}}", .err = error.MissingInstanceId },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"\",\"session_id\":1,\"until\":[\"idle\"]}}", .err = error.InvalidInstanceId },
+        .{ .text = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"../x\",\"session_id\":1,\"until\":[\"idle\"]}}", .err = error.InvalidInstanceId },
+        .{ .text = "{\"op\":\"list_sessions\",\"arguments\":{\"instance_id\":7}}", .err = error.InvalidInstanceId },
+        .{ .text = "{\"op\":\"terminate_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"force\":true}}", .err = error.UnknownField },
     };
 
     for (cases) |case| {
@@ -1504,7 +1688,7 @@ test "send_input rejects text above the size limit" {
     defer allocator.free(text);
     @memset(text, 'x');
 
-    const request = try std.fmt.allocPrint(allocator, "{{\"op\":\"send_input\",\"arguments\":{{\"session_id\":1,\"text\":\"{s}\"}}}}", .{text});
+    const request = try std.fmt.allocPrint(allocator, "{{\"op\":\"send_input\",\"arguments\":{{\"instance_id\":\"1-ab\",\"session_id\":1,\"text\":\"{s}\"}}}}", .{text});
     defer allocator.free(request);
     try std.testing.expectError(error.InvalidText, parseRequestText(allocator, request));
 }
@@ -1512,7 +1696,7 @@ test "send_input rejects text above the size limit" {
 test "request payloads round-trip through parseRequest" {
     const allocator = std.testing.allocator;
 
-    var arguments = try std.json.parseFromSlice(std.json.Value, allocator, "{\"session_id\":3,\"text\":\"line one\\nline two\",\"submit\":false}", .{});
+    var arguments = try std.json.parseFromSlice(std.json.Value, allocator, "{\"instance_id\":\"1-ab\",\"session_id\":3,\"text\":\"line one\\nline two\",\"submit\":false}", .{});
     defer arguments.deinit();
     const payload = try requestPayloadAlloc(allocator, .send_input, arguments.value);
     defer allocator.free(payload);
@@ -1542,7 +1726,7 @@ test "replies round-trip success results and failures" {
         .agent_state = .awaiting_approval,
         .state_seq = 17,
     }};
-    const reply = try successReply(allocator, ListResult, .{ .sessions = &sessions });
+    const reply = try successReply(allocator, ListResult, .{ .instance_id = "1-ab", .sessions = &sessions });
     defer allocator.free(reply.success);
 
     var success = try parseClientReply(allocator, reply.success);
@@ -1599,6 +1783,10 @@ const TestServer = struct {
     sock_path_buf: [128]u8 = undefined,
     sock_path: [:0]const u8 = undefined,
     discovery_path: []u8 = &.{},
+    instance_id: []const u8 = "1-ab",
+    /// Where to publish the discovery file under its real name, so client
+    /// discovery can find it. Null keeps it out of any discovery scan.
+    discovery_dir: ?[]const u8 = null,
     thread: ?std.Thread = null,
 
     fn start(self: *TestServer, name: []const u8) !void {
@@ -1608,13 +1796,17 @@ const TestServer = struct {
             else => return err,
         };
         self.sock_path = try std.fmt.bufPrintSentinel(&self.sock_path_buf, ".tmp/ctl_{s}_{d}.sock", .{ name, std.c.getpid() }, 0);
-        self.discovery_path = try std.fmt.allocPrint(self.allocator, ".tmp/ctl_{s}_{d}.json", .{ name, std.c.getpid() });
+        self.discovery_path = if (self.discovery_dir) |dir|
+            try std.fmt.allocPrint(self.allocator, "{s}/{s}{d}_{s}{s}", .{ dir, discovery_file_prefix, std.c.getuid(), name, discovery_file_suffix })
+        else
+            try std.fmt.allocPrint(self.allocator, ".tmp/ctl_{s}_{d}.json", .{ name, std.c.getpid() });
         self.board.on_change = .{ .context = &self.wake, .callback = signalWake };
         self.thread = try startControlThread(
             self.allocator,
             io,
             self.sock_path,
             self.discovery_path,
+            try InstanceId.fromSlice(self.instance_id),
             &self.queue,
             &self.board,
             &self.stop,
@@ -1701,7 +1893,7 @@ test "wait_for_session parks on the listener and resolves when the board changes
     var request_buf: [160]u8 = undefined;
     const request = try std.fmt.bufPrint(
         &request_buf,
-        "{{\"op\":\"wait_for_session\",\"arguments\":{{\"session_id\":5,\"until\":[\"idle\"],\"after_seq\":{d},\"timeout_ms\":10000}}}}\n",
+        "{{\"op\":\"wait_for_session\",\"arguments\":{{\"instance_id\":\"1-ab\",\"session_id\":5,\"until\":[\"idle\"],\"after_seq\":{d},\"timeout_ms\":10000}}}}\n",
         .{delivered_seq},
     );
     var client = TestClient{ .sock_path = server.sock_path, .request = request };
@@ -1712,7 +1904,7 @@ test "wait_for_session parks on the listener and resolves when the board changes
     try std.testing.expectEqual(@as(?[]u8, null), client.reply);
 
     const started = clock.nowNanos(io);
-    server.board.applyHook(io, 5, .done);
+    _ = server.board.applyHook(io, 5, .done);
     client_thread.join();
     const elapsed_ns = clock.nowNanos(io) - started;
 
@@ -1749,7 +1941,7 @@ test "a parked wait survives a client that half-closes after sending its request
             try writeAllWithTimeout(
                 std.testing.io,
                 fd,
-                "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":6,\"until\":[\"idle\"],\"timeout_ms\":10000}}\n",
+                "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":6,\"until\":[\"idle\"],\"timeout_ms\":10000}}\n",
                 control_response_write_timeout_ms,
             );
             if (std.c.shutdown(fd, std.c.SHUT.WR) != 0) return error.ShutdownFailed;
@@ -1761,7 +1953,7 @@ test "a parked wait survives a client that half-closes after sending its request
     const client_thread = try std.Thread.spawn(.{}, HalfCloseClient.run, .{&client});
     // Let the listener park the wait and observe the request-side EOF.
     clock.sleepNanos(io, 150 * std.time.ns_per_ms);
-    server.board.applyHook(io, 6, .done);
+    _ = server.board.applyHook(io, 6, .done);
     client_thread.join();
 
     if (client.err) |err| return err;
@@ -1780,19 +1972,19 @@ test "wait_for_session reports timeouts, exits, and unknown sessions" {
     try server.board.track(allocator, io, 1);
 
     {
-        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":50}}\n");
+        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":50}}\n");
         defer allocator.free(reply);
         try expectWaitReply(reply, "timed_out", "unknown");
     }
     {
-        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"unknown\"],\"timeout_ms\":0}}\n");
+        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"unknown\"],\"timeout_ms\":0}}\n");
         defer allocator.free(reply);
         try expectWaitReply(reply, "matched", "unknown");
     }
     {
         var client = TestClient{
             .sock_path = server.sock_path,
-            .request = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":10000}}\n",
+            .request = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":1,\"until\":[\"idle\"],\"timeout_ms\":10000}}\n",
         };
         const client_thread = try std.Thread.spawn(.{}, TestClient.run, .{&client});
         clock.sleepNanos(io, 50 * std.time.ns_per_ms);
@@ -1804,7 +1996,7 @@ test "wait_for_session reports timeouts, exits, and unknown sessions" {
         try expectWaitReply(reply, "exited", "exited");
     }
     {
-        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":77,\"until\":[\"idle\"]}}\n");
+        const reply = try testRoundTrip(allocator, server.sock_path, "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":77,\"until\":[\"idle\"]}}\n");
         defer allocator.free(reply);
         var parsed = try parseClientReply(allocator, reply);
         defer parsed.deinit();
@@ -1821,7 +2013,7 @@ test "main-thread operations are queued and answered with the completion's reply
 
     var client = TestClient{
         .sock_path = server.sock_path,
-        .request = "{\"op\":\"terminate_session\",\"arguments\":{\"session_id\":8}}\n",
+        .request = "{\"op\":\"terminate_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":8}}\n",
     };
     const client_thread = try std.Thread.spawn(.{}, TestClient.run, .{&client});
 
@@ -1836,7 +2028,7 @@ test "main-thread operations are queued and answered with the completion's reply
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     const item = &pending.items[0];
     try std.testing.expectEqual(@as(usize, 8), item.request.terminate_session.session_id);
-    item.completion.succeed(allocator, io, TerminateResult, .{ .session_id = 8 });
+    item.completion.succeed(allocator, io, TerminateResult, .{ .instance_id = "1-ab", .session_id = 8 });
     item.request.deinit(allocator);
 
     client_thread.join();
@@ -1858,7 +2050,7 @@ test "parked waits are answered when the listener shuts down" {
 
     var client = TestClient{
         .sock_path = server.sock_path,
-        .request = "{\"op\":\"wait_for_session\",\"arguments\":{\"session_id\":2,\"until\":[\"idle\"],\"timeout_ms\":600000}}\n",
+        .request = "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-ab\",\"session_id\":2,\"until\":[\"idle\"],\"timeout_ms\":600000}}\n",
     };
     const client_thread = try std.Thread.spawn(.{}, TestClient.run, .{&client});
     clock.sleepNanos(io, 50 * std.time.ns_per_ms);
@@ -1875,6 +2067,65 @@ test "parked waits are answered when the listener shuts down" {
     var parsed = try parseClientReply(allocator, reply);
     defer parsed.deinit();
     try std.testing.expectEqual(ErrorCode.app_not_running, parsed.outcome.failure.code);
+}
+
+test "session requests reach the instance that issued the session and never another one" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var discovery = std.testing.tmpDir(.{});
+    defer discovery.cleanup();
+    const discovery_dir = try discovery.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(discovery_dir);
+
+    var first = TestServer{ .allocator = allocator, .wake = try wake_pipe.WakePipe.init(), .instance_id = "1-aa", .discovery_dir = discovery_dir };
+    defer first.deinit();
+    try first.start("insta");
+    try first.board.track(allocator, io, 0);
+    _ = first.board.applyHook(io, 0, .done);
+
+    // Session ids restart in every app: the newer instance has a session 0 too.
+    clock.sleepNanos(io, 20 * std.time.ns_per_ms);
+    var second = TestServer{ .allocator = allocator, .wake = try wake_pipe.WakePipe.init(), .instance_id = "2-bb", .discovery_dir = discovery_dir };
+    defer second.deinit();
+    try second.start("instb");
+    try second.board.track(allocator, io, 0);
+
+    var arguments = try std.json.parseFromSlice(std.json.Value, allocator, "{\"instance_id\":\"1-aa\",\"session_id\":0,\"until\":[\"idle\"],\"timeout_ms\":0}", .{});
+    defer arguments.deinit();
+
+    {
+        var reply = try sendRequestIn(allocator, io, discovery_dir, .wait_for_session, arguments.value, "1-aa");
+        defer reply.deinit();
+        const result = reply.outcome.success.object;
+        try std.testing.expectEqualStrings("1-aa", result.get("instance_id").?.string);
+        try std.testing.expectEqualStrings("idle", result.get("agent_state").?.string);
+    }
+    {
+        // A request that reaches the wrong app is refused by that app.
+        const reply = try testRoundTrip(
+            allocator,
+            second.sock_path,
+            "{\"op\":\"wait_for_session\",\"arguments\":{\"instance_id\":\"1-aa\",\"session_id\":0,\"until\":[\"unknown\"],\"timeout_ms\":0}}\n",
+        );
+        defer allocator.free(reply);
+        var parsed = try parseClientReply(allocator, reply);
+        defer parsed.deinit();
+        try std.testing.expectEqual(ErrorCode.instance_not_found, parsed.outcome.failure.code);
+    }
+
+    // The issuing app goes away but leaves its discovery file behind.
+    first.stop.store(true, .seq_cst);
+    first.wake.signal();
+    if (first.thread) |thread| thread.join();
+    first.thread = null;
+    {
+        var reply = try sendRequestIn(allocator, io, discovery_dir, .wait_for_session, arguments.value, "1-aa");
+        defer reply.deinit();
+        try std.testing.expectEqual(ErrorCode.instance_not_found, reply.outcome.failure.code);
+        // Answered by the client itself, not by the other app's listener.
+        try std.testing.expectEqualStrings("the Architect instance named by instance_id is not running", reply.outcome.failure.message);
+    }
 }
 
 test "a request still being received when shutdown starts is refused instead of queued" {
@@ -1977,9 +2228,9 @@ test "fallback control runtime directory does not use TMPDIR" {
 
 test "newestDiscoveryCandidateIndex picks the highest mtime" {
     const candidates = [_]DiscoveryCandidate{
-        .{ .socket_path = "/tmp/old.sock", .mtime = .fromNanoseconds(10) },
-        .{ .socket_path = "/tmp/new.sock", .mtime = .fromNanoseconds(30) },
-        .{ .socket_path = "/tmp/mid.sock", .mtime = .fromNanoseconds(20) },
+        .{ .socket_path = "/tmp/old.sock", .instance_id = null, .mtime = .fromNanoseconds(10) },
+        .{ .socket_path = "/tmp/new.sock", .instance_id = null, .mtime = .fromNanoseconds(30) },
+        .{ .socket_path = "/tmp/mid.sock", .instance_id = null, .mtime = .fromNanoseconds(20) },
     };
 
     try std.testing.expectEqual(@as(usize, 1), newestDiscoveryCandidateIndex(&candidates));

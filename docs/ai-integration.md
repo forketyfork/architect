@@ -22,7 +22,7 @@ Examples:
 
 `architect-mcp` is launched by an MCP client as a stdio server and forwards each tool call to the running Architect app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Architect is not already running. It answers one call at a time, so a client that waits on several sessions concurrently runs one helper per waiter.
 
-The running app writes a per-instance discovery file named `architect_control_<uid>_<pid>.json` under `XDG_RUNTIME_DIR` when that is set. Otherwise it uses a stable per-user runtime directory: `~/Library/Caches/Architect/runtime` on macOS, or `~/.cache/architect/runtime` on other platforms. The app logs the full discovery file path together with the socket path. When several Architect instances are running, `architect-mcp` tries the newest reachable discovery entry.
+The running app writes a per-instance discovery file named `architect_control_<uid>_<pid>.json` under `XDG_RUNTIME_DIR` when that is set. Otherwise it uses a stable per-user runtime directory: `~/Library/Caches/Architect/runtime` on macOS, or `~/.cache/architect/runtime` on other platforms. The app logs the full discovery file path together with the socket path. Each running app also has an `instance_id`, published in its discovery file and returned by every tool. Session ids restart at 0 in every app, so a session is identified by the pair (`instance_id`, `session_id`): `send_input`, `wait_for_session`, and `terminate_session` require both and only ever reach that instance, failing with `instance_not_found` when it is no longer running instead of trying another app. This holds across separate `architect-mcp` processes too. `spawn_session` and `list_sessions` accept an optional `instance_id`; without one they go to the newest reachable instance.
 
 Helper paths:
 
@@ -44,7 +44,7 @@ Each session has an `agent_state` and a `state_seq`. `state_seq` comes from one 
 | `idle` | A hook reported `done` (the turn is over), or `ready` while the state was `unknown` (the agent started and waits for its first prompt) |
 | `exited` | The shell process died or the session was closed |
 
-A submitted `send_input` itself moves the state to `working` for every agent (and shows the tile as running, as a `start` hook does). The other transitions come from the hooks below (`architect hook claude|codex|gemini`); without them a session never becomes `idle`. For Claude Code the installer adds `SessionStart` → `ready`, `UserPromptSubmit` → `start`, `Stop` → `done`, and `Notification` → `awaiting_approval`; run `architect hook claude` again to add the first two to an existing setup. `ready` only matters while the state is `unknown`, because `SessionStart` also fires on `/clear` and compaction. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked. The Codex and Gemini installers do not add `ready` or `start` yet, so a fresh Codex or Gemini session stays `unknown` until its first `done`: start it with its first message on the command line instead of delivering it with `send_input`.
+A submitted `send_input` itself moves the state to `working` for every agent (and shows the tile as running, as a `start` hook does). The other transitions come from the hooks below (`architect hook claude|codex|gemini`); without them a session never becomes `idle`. For Claude Code the installer adds `SessionStart` → `ready`, `UserPromptSubmit` → `start`, `Stop` → `done`, and `Notification` → `awaiting_approval`; run `architect hook claude` again to add the first two to an existing setup. `ready` only matters while the state is `unknown`, because `SessionStart` also fires on `/clear` and compaction. Claude Code's `Notification` hook also fires as an idle reminder about a minute after a turn ends; Architect ignores `awaiting_approval` while the agent is `idle`, so the reminder does not make an idle agent look blocked: the agent state stays `idle`, while the tile still shows the reminder's attention highlight, as it always has. Any other hook the agent state ignores (for example `ready` arriving mid-turn after a compaction) leaves the tile unchanged too. The Codex and Gemini installers do not add `ready` or `start` yet, so a fresh Codex or Gemini session stays `unknown` until its first `done`: start it with its first message on the command line instead of delivering it with `send_input`.
 
 ### `spawn_session`
 
@@ -54,50 +54,52 @@ A submitted `send_input` itself moves the state to `working` for every agent (an
 | `command` | string, at most 1023 bytes | Typed into the new shell; Architect appends a newline when needed. The shell may still be in canonical mode when the text arrives, and macOS keeps only 1024 bytes per line there, so longer commands are rejected: put them in a script and spawn `exec /path/to/script` |
 | `display_name` | string | Reserved for clients and future Architect UI |
 
-Result: `status: "spawned"`, `session_id`, `slot_index`. `session_id` is also exported to the shell as `ARCHITECT_SESSION_ID`, and ids are never reused while the app runs.
+Result: `status: "spawned"`, `instance_id`, `session_id`, `slot_index`. Store `instance_id` with the `session_id`; both are needed for every later call. `session_id` is also exported to the shell as `ARCHITECT_SESSION_ID`, and ids are never reused while the app runs.
 
 To drive an agent, start it with `exec` (for example `exec claude --session-id <uuid>`): the agent then replaces the shell, so when it exits the session exits too and waiters see `exited`. `list_sessions` reports `foreground_agent` only for agents started as a job of the shell, so it is `null` for `exec`-started agents.
 
 ### `list_sessions`
 
-No arguments. Result: `status: "ok"` and `sessions`, each with `session_id`, `slot_index`, `cwd`, `foreground_agent` (`claude`, `codex`, `gemini`, or `null`), `agent_state`, and `state_seq`.
+Optional `instance_id`. Result: `status: "ok"`, `instance_id`, and `sessions`, each with `session_id`, `slot_index`, `cwd`, `foreground_agent` (`claude`, `codex`, `gemini`, or `null`), `agent_state`, and `state_seq`.
 
 ### `send_input`
 
 | Argument | Type | Notes |
 | --- | --- | --- |
+| `instance_id` | string, required | From `spawn_session` or `list_sessions` |
 | `session_id` | integer, required | |
 | `text` | string, required | Up to 256 KiB, no NUL bytes |
 | `submit` | boolean, default `true` | Press Enter after the text |
 | `require_idle` | boolean, default `false` | Deliver only when `agent_state` is `idle` |
 
-The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. With `submit: false` the text is typed as a draft and the state does not change. Without bracketed paste only one line (no CR or LF) of at most 1023 bytes is accepted, in both submit modes, because the program may still be in canonical mode, where macOS keeps 1024 bytes per line. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state a submitted delivery recorded, or the unchanged state for a draft), and `bracketed_paste`.
+The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. With `submit: false` the text is typed as a draft and the state does not change. Without bracketed paste only one line (no CR or LF) of at most 1023 bytes is accepted, in both submit modes, because the program may still be in canonical mode, where macOS keeps 1024 bytes per line. Result: `status: "sent"`, `instance_id`, `session_id`, `state_seq` (the `working` state a submitted delivery recorded, or the unchanged state for a draft), and `bracketed_paste`.
 
 ### `wait_for_session`
 
 | Argument | Type | Notes |
 | --- | --- | --- |
+| `instance_id` | string, required | From `spawn_session` or `list_sessions` |
 | `session_id` | integer, required | |
 | `until` | array of `agent_state` values, required | |
 | `after_seq` | integer, default `0` | Only states with a larger `state_seq` match |
 | `timeout_ms` | integer, default `30000`, max `600000` | `0` returns the current state immediately |
 
-Result: `status` is `matched`, `exited` (the session ended and `until` does not contain `exited`), or `timed_out`, plus `session_id`, `agent_state`, and `state_seq`. A timeout is a normal result. Waits are held by the app's control listener and cost the app nothing while they are pending; make sure the MCP client's own tool-call timeout is longer than `timeout_ms`.
+Result: `status` is `matched`, `exited` (the session ended and `until` does not contain `exited`), or `timed_out`, plus `instance_id`, `session_id`, `agent_state`, and `state_seq`. A timeout is a normal result. Waits are held by the app's control listener and cost the app nothing while they are pending; make sure the MCP client's own tool-call timeout is longer than `timeout_ms`.
 
 ### `terminate_session`
 
-`session_id` is required. The session closes like closing its tile: the shell gets SIGTERM, the PTY closes, and the agent receives SIGHUP. Result: `status: "terminated"`, `session_id`.
+`instance_id` and `session_id` are required. The session closes like closing its tile: the shell gets SIGTERM, the PTY closes, and the agent receives SIGHUP. Result: `status: "terminated"`, `instance_id`, `session_id`.
 
 ### Driving an agent turn by turn
 
 ```text
-spawn_session(cwd, command: "exec claude --session-id <uuid>")
-wait_for_session(id, until: ["idle"], timeout_ms: 60000)               -> idle (ready), seq S
-send_input(id, text: "<first message>", require_idle: true)            -> sent, seq D
-wait_for_session(id, until: ["idle", "awaiting_approval"], after_seq: D) -> idle: turn over
-send_input(id, text: "<next message>", require_idle: true)             -> sent, seq E
-wait_for_session(id, until: ["idle", "awaiting_approval"], after_seq: E) -> idle: turn over
-terminate_session(id)
+spawn_session(cwd, command: "exec claude --session-id <uuid>")             -> instance I, session N
+wait_for_session(I, N, until: ["idle"], timeout_ms: 60000)                -> idle (ready), seq S
+send_input(I, N, text: "<first message>", require_idle: true)             -> sent, seq D
+wait_for_session(I, N, until: ["idle", "awaiting_approval"], after_seq: D) -> idle: turn over
+send_input(I, N, text: "<next message>", require_idle: true)              -> sent, seq E
+wait_for_session(I, N, until: ["idle", "awaiting_approval"], after_seq: E) -> idle: turn over
+terminate_session(I, N)
 ```
 
 On `session_busy`, wait for `idle` again and retry. `awaiting_approval` means the agent needs a human in Architect. Use one session per agent conversation: an interactive agent keeps one model context per process, and resuming with the agent's own session id (`claude --resume`, `codex resume`) restores a conversation in a new session.
@@ -110,6 +112,7 @@ On `session_busy`, wait for `idle` again and retry. `awaiting_approval` means th
 - `invalid_cwd`: `cwd` is not an absolute existing directory
 - `spawn_failed`: Architect accepted the request but could not create or initialize the terminal session
 - `session_not_found`: no session has this id
+- `instance_not_found`: the Architect instance named by `instance_id` is not running, or the request reached a different instance
 - `session_exited`: the session's process exited or the session was closed
 - `session_busy`: `require_idle` was set and the agent is not `idle`
 - `input_not_ready`: the terminal cannot take the input yet, for example multi-line or over-long text before the program enabled bracketed paste

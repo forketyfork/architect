@@ -101,6 +101,8 @@ const SpawnSessionContext = struct {
     cell_width_pixels: *c_int,
     cell_height_pixels: *c_int,
     agent_board: *agent_state.Board,
+    /// This app's control instance id, reported with every session reference.
+    instance_id: []const u8,
 };
 
 const ForegroundProcessCache = struct {
@@ -871,6 +873,37 @@ fn spawnSessionIntoGrid(
     return session;
 }
 
+/// Applies an agent-hook status notification to the agent board, then to the
+/// tile. The tile follows the board, so a signal the board ignores (for
+/// example `ready` arriving during a compaction mid-turn) leaves the tile
+/// alone; the one exception is Claude's idle reminder, which keeps showing
+/// that the agent wants attention while the board stays `idle`.
+fn applyStatusNotification(
+    io: std.Io,
+    board: *agent_state.Board,
+    interaction: *ui_mod.SessionInteractionComponent,
+    sessions: []const *SessionState,
+    anim_state: *const AnimationState,
+    note: notify.StatusNotification,
+    now: i64,
+) void {
+    const session_idx = findSessionIndexById(sessions, note.session) orelse return;
+    if (agent_control.hookSignal(note.state)) |signal| {
+        switch (board.applyHook(io, note.session, signal)) {
+            .accepted, .idle_reminder => {},
+            .ignored => return,
+        }
+    }
+    interaction.setStatus(session_idx, note.state);
+    const wants_attention = switch (note.state) {
+        .awaiting_approval, .done => true,
+        else => false,
+    };
+    const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
+    interaction.setAttention(session_idx, if (is_focused_full) false else wants_attention, now);
+    std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ note.session, session_idx, @tagName(note.state) });
+}
+
 /// Wakes the control listener so it re-evaluates parked waits.
 fn signalWakePipe(context: ?*anyopaque) void {
     const ctx = context orelse return;
@@ -923,6 +956,7 @@ fn handleExternalSpawnRequest(
         log.warn("failed to track spawned session {d}: {}", .{ session.id, err });
     };
     completion.succeed(allocator, io, control.SpawnResult, .{
+        .instance_id = context.instance_id,
         .session_id = session.id,
         .slot_index = session.slot_index,
     });
@@ -940,7 +974,7 @@ fn handleControlRequest(
     const io = context.io;
     switch (pending.request) {
         .spawn_session => |spawn| handleExternalSpawnRequest(context, spawn, pending.completion),
-        .list_sessions => agent_control.listSessions(allocator, io, context.sessions, context.agent_board, pending.completion),
+        .list_sessions => agent_control.listSessions(allocator, io, context.instance_id, context.sessions, context.agent_board, pending.completion),
         .send_input => |send| {
             if (agent_control.sendInput(allocator, io, context.sessions, context.agent_board, send, pending.completion)) |slot| {
                 const interaction = context.session_interaction_component;
@@ -983,7 +1017,10 @@ fn handleTerminations(
             log.info("control request terminates session {d}", .{session_id});
             despawnSessionAt(context, sessions, render_cache, idx);
             context.agent_board.markExited(io, session_id);
-            pending.completion.succeed(allocator, io, control.TerminateResult, .{ .session_id = session_id });
+            pending.completion.succeed(allocator, io, control.TerminateResult, .{
+                .instance_id = context.instance_id,
+                .session_id = session_id,
+            });
         } else if (context.agent_board.get(io, session_id) != null) {
             pending.completion.fail(io, .session_exited, "the session was already closed");
         } else {
@@ -1685,6 +1722,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
 
     const control_discovery_path = try control.getControlDiscoveryPath(allocator, io);
     defer allocator.free(control_discovery_path);
+    const control_instance_id = try control.InstanceId.generate(io);
 
     var notify_stop = std.atomic.Value(bool).init(false);
     var control_stop = std.atomic.Value(bool).init(false);
@@ -1822,6 +1860,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         io,
         control_sock,
         control_discovery_path,
+        control_instance_id,
         &control_queue,
         &agent_board,
         &control_stop,
@@ -2993,6 +3032,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             .cell_width_pixels = &cell_width_pixels,
             .cell_height_pixels = &cell_height_pixels,
             .agent_board = &agent_board,
+            .instance_id = control_instance_id.slice(),
         };
 
         // Track sessions spawned or restored since the last frame before their
@@ -3004,18 +3044,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
         const had_notifications = notifications.items.len > 0;
         for (notifications.items) |note| {
             switch (note) {
-                .status => |s| {
-                    const session_idx = findSessionIndexById(sessions, s.session) orelse continue;
-                    if (agent_control.hookSignal(s.state)) |signal| agent_board.applyHook(io, s.session, signal);
-                    session_interaction_component.setStatus(session_idx, s.state);
-                    const wants_attention = switch (s.state) {
-                        .awaiting_approval, .done => true,
-                        else => false,
-                    };
-                    const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
-                    session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention, now);
-                    std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ s.session, session_idx, @tagName(s.state) });
-                },
+                .status => |s| applyStatusNotification(io, &agent_board, session_interaction_component, sessions, &anim_state, s, now),
                 .story => |s| {
                     if (!story_overlay_component.show(s.path, now)) {
                         ui.showToast("Failed to open story file", now);
@@ -4250,4 +4279,59 @@ test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despaw
     try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
     try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
     try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
+}
+
+test "applyStatusNotification updates the tile only for hooks the agent board accepts" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var session: SessionState = undefined;
+    session.id = 4;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 0;
+    var sessions_storage = [_]*SessionState{&session};
+    const sessions: []*SessionState = &sessions_storage;
+    var views = [_]SessionViewState{.{}};
+    var interaction: ui_mod.SessionInteractionComponent = undefined;
+    interaction.sessions = sessions;
+    interaction.views = &views;
+    var anim_state: AnimationState = undefined;
+    anim_state.mode = .Grid;
+    anim_state.focused_session = 0;
+
+    var board = agent_state.Board{};
+    defer board.deinit(allocator);
+    try board.track(allocator, io, 4);
+
+    // ready from a fresh session is accepted: board and tile both go idle.
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .idle }, 10);
+    try std.testing.expectEqual(agent_state.AgentState.idle, (board.get(io, 4) orelse return error.TestUnexpectedResult).state);
+    try std.testing.expectEqual(app_state.SessionStatus.idle, views[0].status);
+
+    // ready during a turn (SessionStart after a compaction) changes nothing.
+    _ = board.markDelivered(io, 4);
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .awaiting_approval }, 20);
+    try std.testing.expectEqual(app_state.SessionStatus.awaiting_approval, views[0].status);
+    try std.testing.expect(views[0].attention);
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .idle }, 30);
+    try std.testing.expectEqual(agent_state.AgentState.awaiting_approval, (board.get(io, 4) orelse return error.TestUnexpectedResult).state);
+    try std.testing.expectEqual(app_state.SessionStatus.awaiting_approval, views[0].status);
+    try std.testing.expect(views[0].attention);
+
+    // The idle reminder keeps the tile's attention while the board stays idle.
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .done }, 40);
+    views[0].attention = false;
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .awaiting_approval }, 50);
+    try std.testing.expectEqual(agent_state.AgentState.idle, (board.get(io, 4) orelse return error.TestUnexpectedResult).state);
+    try std.testing.expectEqual(app_state.SessionStatus.awaiting_approval, views[0].status);
+    try std.testing.expect(views[0].attention);
+
+    // An approval for an exited session is ignored by both.
+    board.markExited(io, 4);
+    views[0].status = .done;
+    views[0].attention = false;
+    applyStatusNotification(io, &board, &interaction, sessions, &anim_state, .{ .session = 4, .state = .awaiting_approval }, 60);
+    try std.testing.expectEqual(app_state.SessionStatus.done, views[0].status);
+    try std.testing.expect(!views[0].attention);
 }
