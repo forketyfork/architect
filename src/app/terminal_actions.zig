@@ -77,8 +77,10 @@ fn buildInputPayloadWithOptions(
     submit: bool,
     options: ghostty_vt.input.PasteOptions,
 ) SubmittedPasteError![]u8 {
+    // CR submits a line just like LF does, so either would execute part of an
+    // unsubmitted draft or split a submitted message into several lines.
     if (!options.bracketed and
-        (std.mem.indexOfScalar(u8, text, '\n') != null or text.len > max_unbracketed_input_bytes))
+        (std.mem.indexOfAny(u8, text, "\r\n") != null or text.len > max_unbracketed_input_bytes))
     {
         return error.BracketedPasteUnavailable;
     }
@@ -274,6 +276,15 @@ test "input payload without bracketed paste accepts one line and rejects several
         error.BracketedPasteUnavailable,
         buildInputPayloadWithOptions(std.testing.allocator, "one\ntwo", true, .{ .bracketed = false }),
     );
+}
+
+test "input payload without bracketed paste rejects carriage returns in both submit modes" {
+    for ([_]bool{ false, true }) |submit| {
+        try std.testing.expectError(
+            error.BracketedPasteUnavailable,
+            buildInputPayloadWithOptions(std.testing.allocator, "echo one\recho two", submit, .{ .bracketed = false }),
+        );
+    }
 }
 
 test "input payload without bracketed paste rejects a line longer than one canonical-mode line" {

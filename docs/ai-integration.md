@@ -71,7 +71,7 @@ No arguments. Result: `status: "ok"` and `sessions`, each with `session_id`, `sl
 | `submit` | boolean, default `true` | Press Enter after the text |
 | `require_idle` | boolean, default `false` | Deliver only when `agent_state` is `idle` |
 
-The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. With `submit: false` the text is typed as a draft and the state does not change. Without bracketed paste only one line of at most 1023 bytes is accepted, because the program may still be in canonical mode, where macOS keeps 1024 bytes per line. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state a submitted delivery recorded, or the unchanged state for a draft), and `bracketed_paste`.
+The text is encoded like a user paste: control characters that could end a bracketed paste early are replaced, and the text is wrapped in bracketed-paste markers when the terminal enabled them. With `require_idle`, the state check and the write are atomic, so two clients cannot both deliver into the same idle turn. With `submit: false` the text is typed as a draft and the state does not change. Without bracketed paste only one line (no CR or LF) of at most 1023 bytes is accepted, in both submit modes, because the program may still be in canonical mode, where macOS keeps 1024 bytes per line. Result: `status: "sent"`, `session_id`, `state_seq` (the `working` state a submitted delivery recorded, or the unchanged state for a draft), and `bracketed_paste`.
 
 ### `wait_for_session`
 

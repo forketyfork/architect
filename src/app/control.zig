@@ -234,15 +234,43 @@ pub const PendingRequest = struct {
 pub const RequestQueue = struct {
     mutex: std.Io.Mutex = .init,
     items: std.ArrayList(PendingRequest) = .empty,
+    /// Set by `closeAndFail` at shutdown. Checked under the same lock as the
+    /// append, so no request can be queued after the main loop stopped
+    /// draining; the listener would otherwise block on its completion forever.
+    closed: bool = false,
 
     pub fn deinit(self: *RequestQueue, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
     }
 
-    pub fn push(self: *RequestQueue, allocator: std.mem.Allocator, io: std.Io, item: PendingRequest) !void {
+    pub fn push(self: *RequestQueue, allocator: std.mem.Allocator, io: std.Io, item: PendingRequest) error{ QueueClosed, OutOfMemory }!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        if (self.closed) return error.QueueClosed;
         try self.items.append(allocator, item);
+    }
+
+    /// Closes the queue against new requests and fails the ones still queued.
+    pub fn closeAndFail(
+        self: *RequestQueue,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        code: ErrorCode,
+        message: []const u8,
+    ) void {
+        var pending = blk: {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            self.closed = true;
+            const items = self.items;
+            self.items = .empty;
+            break :blk items;
+        };
+        defer pending.deinit(allocator);
+        for (pending.items) |*item| {
+            item.completion.fail(io, code, message);
+            item.request.deinit(allocator);
+        }
     }
 
     pub fn drainAll(self: *RequestQueue, io: std.Io) std.ArrayList(PendingRequest) {
@@ -716,21 +744,6 @@ pub fn startControlThread(
     return try std.Thread.spawn(.{}, controlThreadMain, .{ctx});
 }
 
-pub fn failPending(
-    queue: *RequestQueue,
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    code: ErrorCode,
-    message: []const u8,
-) void {
-    var pending = queue.drainAll(io);
-    defer pending.deinit(allocator);
-    for (pending.items) |*item| {
-        item.completion.fail(io, code, message);
-        item.request.deinit(allocator);
-    }
-}
-
 /// A `wait_for_session` connection held open until the board satisfies it,
 /// its deadline passes, or the client goes away.
 const ParkedWait = struct {
@@ -957,9 +970,14 @@ fn handleControlConnection(ctx: *const ControlContext, conn_fd: posix.fd_t, park
         .request = request,
         .completion = &completion,
     }) catch |err| {
-        log.warn("failed to queue control request: {}", .{err});
         request.deinit(allocator);
-        writeFailure(allocator, io, conn_fd, .{ .code = .internal_error, .message = "failed to queue the request" });
+        switch (err) {
+            error.QueueClosed => writeFailure(allocator, io, conn_fd, .{ .code = .app_not_running, .message = "Architect is shutting down" }),
+            error.OutOfMemory => {
+                log.warn("failed to queue control request: {}", .{err});
+                writeFailure(allocator, io, conn_fd, .{ .code = .internal_error, .message = "failed to queue the request" });
+            },
+        }
         return false;
     };
 
@@ -1857,6 +1875,61 @@ test "parked waits are answered when the listener shuts down" {
     var parsed = try parseClientReply(allocator, reply);
     defer parsed.deinit();
     try std.testing.expectEqual(ErrorCode.app_not_running, parsed.outcome.failure.code);
+}
+
+test "a request still being received when shutdown starts is refused instead of queued" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var server = TestServer{ .allocator = allocator, .wake = try wake_pipe.WakePipe.init() };
+    defer server.deinit();
+    try server.start("closing");
+
+    const SlowClient = struct {
+        sock_path: []const u8,
+        reply: ?[]u8 = null,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.reply = self.roundTrip() catch |err| {
+                self.err = err;
+                return;
+            };
+        }
+
+        fn roundTrip(self: *@This()) ![]u8 {
+            const fd = try connectControlSocket(std.testing.io, self.sock_path);
+            defer _ = std.c.close(fd);
+            // The listener accepts and starts reading this request before
+            // shutdown begins, then receives the rest after the queue closed.
+            try writeAllWithTimeout(std.testing.io, fd, "{", control_response_write_timeout_ms);
+            clock.sleepNanos(std.testing.io, 200 * std.time.ns_per_ms);
+            try writeAllWithTimeout(std.testing.io, fd, "\"op\":\"list_sessions\"}\n", control_response_write_timeout_ms);
+            return try readLineFromFd(std.testing.allocator, std.testing.io, fd, max_message_bytes);
+        }
+    };
+
+    var client = SlowClient{ .sock_path = server.sock_path };
+    const client_thread = try std.Thread.spawn(.{}, SlowClient.run, .{&client});
+    clock.sleepNanos(io, 100 * std.time.ns_per_ms);
+
+    // The runtime's shutdown order: stop, wake, fail the queue, then join.
+    server.stop.store(true, .seq_cst);
+    server.wake.signal();
+    server.queue.closeAndFail(allocator, io, .app_not_running, "Architect is shutting down");
+    client_thread.join();
+    if (server.thread) |thread| thread.join();
+    server.thread = null;
+
+    if (client.err) |err| return err;
+    const reply = client.reply orelse return error.TestUnexpectedResult;
+    defer allocator.free(reply);
+    var parsed = try parseClientReply(allocator, reply);
+    defer parsed.deinit();
+    try std.testing.expectEqual(ErrorCode.app_not_running, parsed.outcome.failure.code);
+
+    var leftover = server.queue.drainAll(io);
+    defer leftover.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), leftover.items.len);
 }
 
 test "control thread stops promptly when signaled while blocked in poll" {

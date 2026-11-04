@@ -207,6 +207,12 @@ const TestSession = struct {
         const n = try std.posix.read(self.pipe_fds[0], buf);
         return buf[0..n];
     }
+
+    fn expectNothingWritten(self: *TestSession) !void {
+        var fds = [_]std.posix.pollfd{.{ .fd = self.pipe_fds[0], .events = std.posix.POLL.IN, .revents = 0 }};
+        try std.testing.expectEqual(@as(usize, 0), try std.posix.poll(&fds, 0));
+        try std.testing.expectEqual(@as(usize, 0), self.session.pending_write.items.len);
+    }
 };
 
 fn expectFailure(completion: *control.Completion, code: control.ErrorCode) !void {
@@ -350,6 +356,33 @@ test "sendInput without submit leaves the agent idle so the next delivery is acc
         "\x1b[200~draft\x1b[201~\x1b[200~ done\x1b[201~\r",
         try test_session.readWritten(&buf),
     );
+}
+
+test "sendInput refuses carriage returns without bracketed paste and writes nothing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var test_session: TestSession = undefined;
+    try test_session.init(10, false);
+    defer test_session.deinit();
+    const sessions = [_]*SessionState{&test_session.session};
+
+    var board = agent_state.Board{};
+    defer board.deinit(allocator);
+    try board.track(allocator, io, 10);
+    board.applyHook(io, 10, .done);
+    const idle = board.get(io, 10) orelse return error.TestUnexpectedResult;
+
+    for ([_]bool{ false, true }) |submit| {
+        var completion = control.Completion{};
+        try std.testing.expectEqual(@as(?usize, null), sendInput(allocator, io, &sessions, &board, .{
+            .session_id = 10,
+            .text = "echo one\recho two",
+            .submit = submit,
+        }, &completion));
+        try expectFailure(&completion, .input_not_ready);
+    }
+    try test_session.expectNothingWritten();
+    try std.testing.expectEqual(idle, board.get(io, 10) orelse return error.TestUnexpectedResult);
 }
 
 test "sendInput reports missing, exited, and not-ready sessions" {

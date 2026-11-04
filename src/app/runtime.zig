@@ -1834,7 +1834,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
     defer {
         control_stop.store(true, .seq_cst);
         control_wake.signal();
-        control.failPending(&control_queue, allocator, io, .app_not_running, "Architect is shutting down");
+        control_queue.closeAndFail(allocator, io, .app_not_running, "Architect is shutting down");
         control_thread.join();
         control.cleanupControlFiles(io, control_sock, control_discovery_path);
     }
