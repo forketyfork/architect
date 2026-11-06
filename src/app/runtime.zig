@@ -2274,10 +2274,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, log_dir_override: ?[]const 
             }
             if (ui_consumed) continue;
             if (scaled_event.type == c.SDL_EVENT_KEY_DOWN and scaled_event.key.repeat) {
-                if (terminal_key_presses.get(scaled_event.key.scancode)) |target| {
-                    try input_keys.sendToTarget(sessions, target, scaled_event.key.mod, .repeat);
-                    continue;
-                }
+                if (try terminal_key_presses.handleRepeat(sessions, &scaled_event)) continue;
             }
 
             switch (scaled_event.type) {

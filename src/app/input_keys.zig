@@ -38,12 +38,25 @@ pub const TerminalKeyPresses = struct {
 
     pub fn handlePress(self: *TerminalKeyPresses, focused: *SessionState, event: *const c.SDL_Event) !void {
         if (event.key.repeat) return;
-        if (builtin.os.tag == .macos and input.isMacosMenuKeyEquivalent(event.key.key, event.key.mod)) return;
+        if (isMenuKeyEquivalent(event)) return;
         if (try handleKeyInput(focused, event.key.key, event.key.mod, .press)) {
             if (scancodeIndex(event.key.scancode)) |index| {
                 self.pressed[index] = .{ .session_id = focused.id, .process_generation = focused.process_generation, .key = event.key.key };
             }
         }
+    }
+
+    /// Returns whether the repeat belongs to a delivered press. Modifiers pressed while
+    /// the key is held can turn its repeats into a menu key equivalent; those are not
+    /// forwarded, but the press stays owned so its release still reaches the terminal.
+    pub fn handleRepeat(self: *const TerminalKeyPresses, sessions: []const *SessionState, event: *const c.SDL_Event) !bool {
+        const target = self.get(event.key.scancode) orelse return false;
+        if (!isMenuKeyEquivalent(event)) try sendToTarget(sessions, target, event.key.mod, .repeat);
+        return true;
+    }
+
+    fn isMenuKeyEquivalent(event: *const c.SDL_Event) bool {
+        return builtin.os.tag == .macos and input.isMacosMenuKeyEquivalent(event.key.key, event.key.mod);
     }
 
     fn scancodeIndex(scancode: c.SDL_Scancode) ?usize {
@@ -268,6 +281,34 @@ test "macOS menu key equivalents never reach the terminal, including their relea
     const target = keys.take(event.key.scancode) orelse return error.TestUnexpectedResult;
     try sendToTarget(&sessions, target, event.key.mod, .release);
     try fixture.expectOutput("\x1b[100;13u\x1b[100;13:3u");
+}
+
+test "repeats that become a menu key equivalent are withheld but the release is kept" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var fixture = try KeyInputTestSession.init(7, "\x1b[>3u");
+    defer fixture.deinit();
+    const sessions = [_]*SessionState{&fixture.session};
+    var keys: TerminalKeyPresses = .{};
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_F;
+    event.key.scancode = c.SDL_SCANCODE_F;
+    event.key.mod = c.SDL_KMOD_LCTRL;
+    keys.beginPress(&event);
+    try keys.handlePress(&fixture.session, &event);
+
+    // Command goes down while Ctrl+F is held: its repeats are now Ctrl+Cmd+F.
+    event.key.repeat = true;
+    event.key.mod = c.SDL_KMOD_LCTRL | c.SDL_KMOD_LGUI;
+    keys.beginPress(&event);
+    try std.testing.expect(try keys.handleRepeat(&sessions, &event));
+    event.key.mod = c.SDL_KMOD_LCTRL;
+    try std.testing.expect(try keys.handleRepeat(&sessions, &event));
+
+    const released = keys.take(event.key.scancode) orelse return error.TestUnexpectedResult;
+    try sendToTarget(&sessions, released, 0, .release);
+    try fixture.expectOutput("\x1b[102;5u\x1b[102;5:2u\x1b[102;1:3u");
+    try std.testing.expect(!try keys.handleRepeat(&sessions, &event));
 }
 
 test "key events cannot reach a restarted or removed session" {

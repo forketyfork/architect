@@ -325,7 +325,8 @@ expansion shortcuts reject extra modifiers so terminal combinations reach the
 focused session. Font shortcuts permit Shift only on main-row Equals.
 On macOS, SDL queues a key press before AppKit performs the matching item of
 the application menu SDL installs (Hide, Hide Others, Quit, Close, Minimize,
-Toggle Full Screen), so those exact chords never reach a terminal. Command
+Toggle Full Screen), so those exact chords never reach a terminal, including
+repeats of a held key that a later modifier turns into one. Command
 reaches a terminal only in a sequence that encodes it: legacy encodings have no
 Command bit for text keys, Backspace, or keypad Enter, so those
 Command-modified keys send nothing rather than a different key (Ctrl+Cmd+F
