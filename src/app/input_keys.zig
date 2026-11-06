@@ -2,6 +2,7 @@ const input = @import("../input/mapper.zig");
 const session_state = @import("../session/state.zig");
 const c = @import("../c.zig");
 const std = @import("std");
+const builtin = @import("builtin");
 const app_state = @import("app_state.zig");
 
 const SessionState = session_state.SessionState;
@@ -37,6 +38,7 @@ pub const TerminalKeyPresses = struct {
 
     pub fn handlePress(self: *TerminalKeyPresses, focused: *SessionState, event: *const c.SDL_Event) !void {
         if (event.key.repeat) return;
+        if (builtin.os.tag == .macos and input.isMacosMenuKeyEquivalent(event.key.key, event.key.mod)) return;
         if (try handleKeyInput(focused, event.key.key, event.key.mod, .press)) {
             if (scancodeIndex(event.key.scancode)) |index| {
                 self.pressed[index] = .{ .session_id = focused.id, .process_generation = focused.process_generation, .key = event.key.key };
@@ -240,6 +242,32 @@ test "app-consumed and text presses do not produce terminal releases" {
     try fixture.expectOutput("");
     try std.testing.expect(keys.take(c.SDL_SCANCODE_UNKNOWN) == null);
     try std.testing.expect(keys.take(c.SDL_SCANCODE_COUNT) == null);
+}
+
+test "macOS menu key equivalents never reach the terminal, including their releases" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var fixture = try KeyInputTestSession.init(7, "\x1b[>11u");
+    defer fixture.deinit();
+    const sessions = [_]*SessionState{&fixture.session};
+    var keys: TerminalKeyPresses = .{};
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_F;
+    event.key.scancode = c.SDL_SCANCODE_F;
+    event.key.mod = c.SDL_KMOD_LCTRL | c.SDL_KMOD_LGUI;
+    keys.beginPress(&event);
+    try keys.handlePress(&fixture.session, &event);
+    try std.testing.expect(keys.take(event.key.scancode) == null);
+    try fixture.expectOutput("");
+
+    // An unreserved Ctrl+Cmd chord still reaches a Kitty-aware application, with its release.
+    event.key.key = c.SDLK_D;
+    event.key.scancode = c.SDL_SCANCODE_D;
+    keys.beginPress(&event);
+    try keys.handlePress(&fixture.session, &event);
+    const target = keys.take(event.key.scancode) orelse return error.TestUnexpectedResult;
+    try sendToTarget(&sessions, target, event.key.mod, .release);
+    try fixture.expectOutput("\x1b[100;13u\x1b[100;13:3u");
 }
 
 test "key events cannot reach a restarted or removed session" {
