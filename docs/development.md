@@ -118,7 +118,10 @@ Keyboard regression tests cover all combinations of Shift, Ctrl, Option, and
 Command on navigation and function keys in normal/application cursor modes and
 legacy/Kitty encoding. They also verify exact app shortcuts, compatibility
 bindings with left/right/both-side SDL modifiers, negotiated terminal options,
-and Kitty press/repeat/release actions. Pipe-backed input tests verify event
+and Kitty press/repeat/release actions. A property test checks every mapped key
+with every Command combination across legacy, modifyOtherKeys, and Kitty
+encodings: the output is empty, an explicit macOS line-editing binding, or a
+sequence whose modifier parameter carries Command. Pipe-backed input tests verify event
 delivery, press ownership across focus changes, invalidation on session restart,
 and deferred Escape tap/hold behavior. Extend this coverage when adding a key
 mapping or shortcut; use side-specific SDL masks to model real keyboard events.

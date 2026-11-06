@@ -97,8 +97,10 @@ pub fn encodeKeyEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod, action: KeyAction, 
     if ((printable or keypad_operator) and (mod & c.SDL_KMOD_CTRL) == 0 and !command_font_key and action != .release) return 0;
     if (!printable and mapped_key == .unidentified) return 0;
 
-    var text: [1]u8 = undefined;
     const has_text = printable or keypad_operator;
+    if (legacyDropsCommand(key, mod, has_text, options)) return 0;
+
+    var text: [1]u8 = undefined;
     if (has_text) {
         text[0] = if (printable) @intCast(key) else if (key == c.SDLK_KP_PLUS) '+' else '-';
         if ((mod & c.SDL_KMOD_SHIFT) != 0 and std.ascii.isLower(text[0])) {
@@ -175,6 +177,52 @@ fn compatibilityKeyBinding(key: c.SDL_Keycode, mod: c.SDL_Keymod, options: KeyEn
         };
     }
     return null;
+}
+
+/// Outside Kitty, Ghostty encodes keypad Enter as a bare CR, and without modifyOtherKeys
+/// it encodes text keys through fixterms CSI u and Backspace through xterm's table. None
+/// of these has a Cmd bit: Ctrl+Cmd+F would become Ctrl+F. Send nothing rather than a
+/// different key.
+fn legacyDropsCommand(key: c.SDL_Keycode, mod: c.SDL_Keymod, has_text: bool, options: KeyEncodingOptions) bool {
+    if ((mod & c.SDL_KMOD_GUI) == 0 or options.kitty_flags.int() != 0) return false;
+    if (key == c.SDLK_KP_ENTER) return true;
+    if (options.modify_other_keys_state_2) return false;
+    return has_text or key == c.SDLK_BACKSPACE;
+}
+
+/// Key equivalents of the application menu SDL installs on macOS: Hide, Hide Others,
+/// Quit, Close, Minimize, and Toggle Full Screen. SDL queues the key press before
+/// AppKit performs the menu action, so the press must not also reach a terminal.
+pub fn isMacosMenuKeyEquivalent(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    const binding_mods = bindingModifiers(mod);
+    return switch (key) {
+        c.SDLK_H => binding_mods == c.SDL_KMOD_GUI or binding_mods == (c.SDL_KMOD_GUI | c.SDL_KMOD_ALT),
+        c.SDLK_M, c.SDLK_Q, c.SDLK_W => binding_mods == c.SDL_KMOD_GUI,
+        c.SDLK_F => binding_mods == (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL),
+        else => false,
+    };
+}
+
+test "macOS menu key equivalents match SDL's menu exactly" {
+    const matches = [_]struct { key: c.SDL_Keycode, mod: c.SDL_Keymod }{
+        .{ .key = c.SDLK_F, .mod = c.SDL_KMOD_LCTRL | c.SDL_KMOD_RGUI },
+        .{ .key = c.SDLK_F, .mod = c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI | c.SDL_KMOD_CAPS },
+        .{ .key = c.SDLK_H, .mod = c.SDL_KMOD_LGUI },
+        .{ .key = c.SDLK_H, .mod = c.SDL_KMOD_LGUI | c.SDL_KMOD_RALT },
+        .{ .key = c.SDLK_M, .mod = c.SDL_KMOD_RGUI },
+        .{ .key = c.SDLK_Q, .mod = c.SDL_KMOD_LGUI },
+        .{ .key = c.SDLK_W, .mod = c.SDL_KMOD_LGUI },
+    };
+    for (matches) |case| try std.testing.expect(isMacosMenuKeyEquivalent(case.key, case.mod));
+    const misses = [_]struct { key: c.SDL_Keycode, mod: c.SDL_Keymod }{
+        .{ .key = c.SDLK_F, .mod = c.SDL_KMOD_LCTRL },
+        .{ .key = c.SDLK_F, .mod = c.SDL_KMOD_LGUI },
+        .{ .key = c.SDLK_F, .mod = c.SDL_KMOD_LCTRL | c.SDL_KMOD_LGUI | c.SDL_KMOD_LSHIFT },
+        .{ .key = c.SDLK_D, .mod = c.SDL_KMOD_LCTRL | c.SDL_KMOD_LGUI },
+        .{ .key = c.SDLK_H, .mod = c.SDL_KMOD_LGUI | c.SDL_KMOD_LSHIFT },
+        .{ .key = c.SDLK_M, .mod = c.SDL_KMOD_LGUI | c.SDL_KMOD_LCTRL },
+    };
+    for (misses) |case| try std.testing.expect(!isMacosMenuKeyEquivalent(case.key, case.mod));
 }
 
 fn terminalKey(key: c.SDL_Keycode) ghostty_vt.input.Key {
@@ -874,6 +922,83 @@ test "encodeKeyWithMod - ctrl+tab kitty mode" {
     const n = try encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_CTRL, testKeyOptions(false, true), &buf);
     // Ctrl(4) + 1 = 5
     try std.testing.expectEqualSlices(u8, "\x1b[9;5u", buf[0..n]);
+}
+
+fn sequenceCarriesCommand(sequence: []const u8) bool {
+    if (sequence.len < 4 or !std.mem.startsWith(u8, sequence, "\x1b[")) return false;
+    var params = std.mem.splitScalar(u8, sequence[2 .. sequence.len - 1], ';');
+    _ = params.next() orelse return false;
+    const modifier_param = params.next() orelse return false;
+    var modifier_fields = std.mem.splitScalar(u8, modifier_param, ':');
+    const modifier = std.fmt.parseInt(u16, modifier_fields.first(), 10) catch return false;
+    // xterm, fixterms, and Kitty all encode modifiers as 1 + bitmask with Cmd as 8.
+    return modifier >= 1 and ((modifier - 1) & 8) != 0;
+}
+
+test "command-modified keys never reach the terminal with Cmd dropped" {
+    var keys: [36 + 40]c.SDL_Keycode = undefined;
+    var key_count: usize = 0;
+    for (0..26) |i| {
+        keys[key_count] = c.SDLK_A + @as(c.SDL_Keycode, @intCast(i));
+        key_count += 1;
+    }
+    for (0..10) |i| {
+        keys[key_count] = c.SDLK_0 + @as(c.SDL_Keycode, @intCast(i));
+        key_count += 1;
+    }
+    for ([_]c.SDL_Keycode{
+        c.SDLK_RETURN,    c.SDLK_RETURN2,    c.SDLK_KP_ENTER,    c.SDLK_KP_PLUS,      c.SDLK_KP_MINUS,
+        c.SDLK_TAB,       c.SDLK_BACKSPACE,  c.SDLK_ESCAPE,      c.SDLK_UP,           c.SDLK_DOWN,
+        c.SDLK_RIGHT,     c.SDLK_LEFT,       c.SDLK_HOME,        c.SDLK_END,          c.SDLK_INSERT,
+        c.SDLK_DELETE,    c.SDLK_PAGEUP,     c.SDLK_PAGEDOWN,    c.SDLK_F1,           c.SDLK_F5,
+        c.SDLK_F12,       c.SDLK_SPACE,      c.SDLK_LEFTBRACKET, c.SDLK_RIGHTBRACKET, c.SDLK_BACKSLASH,
+        c.SDLK_SLASH,     c.SDLK_MINUS,      c.SDLK_EQUALS,      c.SDLK_COMMA,        c.SDLK_PERIOD,
+        c.SDLK_SEMICOLON, c.SDLK_APOSTROPHE, c.SDLK_GRAVE,
+    }) |key| {
+        keys[key_count] = key;
+        key_count += 1;
+    }
+    const option_sets = [_]KeyEncodingOptions{
+        .default,
+        .{ .cursor_key_application = true },
+        .{ .modify_other_keys_state_2 = true },
+        .{ .kitty_flags = .{ .disambiguate = true } },
+        .{ .kitty_flags = .{ .disambiguate = true, .report_events = true, .report_all = true } },
+    };
+    var buf: [64]u8 = undefined;
+    for (keys[0..key_count]) |key| {
+        for (0..8) |extra_bits| {
+            var mod: c.SDL_Keymod = c.SDL_KMOD_LGUI;
+            if ((extra_bits & 1) != 0) mod |= c.SDL_KMOD_LSHIFT;
+            if ((extra_bits & 2) != 0) mod |= c.SDL_KMOD_LCTRL;
+            if ((extra_bits & 4) != 0) mod |= c.SDL_KMOD_LALT;
+            for (option_sets) |options| {
+                for ([_]KeyAction{ .press, .repeat, .release }) |action| {
+                    const n = try encodeKeyEvent(key, mod, action, options, &buf);
+                    if (n == 0 or sequenceCarriesCommand(buf[0..n])) continue;
+                    // Architect's explicit macOS line-editing bindings for Cmd alone.
+                    const line_binding = mod == c.SDL_KMOD_LGUI and action != .release and
+                        (key == c.SDLK_LEFT or key == c.SDLK_RIGHT or key == c.SDLK_BACKSPACE);
+                    if (line_binding) continue;
+                    std.debug.print("key={x} mod={x} action={s} options={any} -> {any}\n", .{ key, mod, @tagName(action), options, buf[0..n] });
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+    }
+}
+
+test "ctrl+cmd letters encode Cmd where the protocol can carry it" {
+    const cases = [_]struct { options: KeyEncodingOptions, expected: []const u8 }{
+        .{ .options = .default, .expected = "" },
+        .{ .options = .{ .modify_other_keys_state_2 = true }, .expected = "\x1b[27;13;103~" },
+        .{ .options = .{ .kitty_flags = .{ .disambiguate = true } }, .expected = "\x1b[103;13u" },
+    };
+    var buf: [64]u8 = undefined;
+    for (cases) |case| {
+        const n = try encodeKeyEvent('g', c.SDL_KMOD_LCTRL | c.SDL_KMOD_LGUI, .press, case.options, &buf);
+        try std.testing.expectEqualSlices(u8, case.expected, buf[0..n]);
+    }
 }
 
 pub const MouseScrollDirection = enum { up, down };
